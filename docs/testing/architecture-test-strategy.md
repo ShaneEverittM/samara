@@ -20,6 +20,7 @@ Define required test layers and acceptance gates for a strict TEA + Tokio archit
 ### L2: Effect Handler Contract Tests
 - Validate each `Cmd` variant maps to expected async behavior.
 - Confirm handler failures are mapped to structured runtime error messages.
+- Validate adapter/protocol composition boundaries (mechanism vs policy split).
 
 ### L3: Runtime Loop Integration Tests
 - Validate mailbox ingestion, update execution, command dispatch, and message re-entry.
@@ -33,17 +34,24 @@ Define required test layers and acceptance gates for a strict TEA + Tokio archit
 - Validate queue pressure behavior and runtime stability.
 - Produce metrics for Option A operating envelopes and migration trigger checks.
 
-### L6: Topology Reconsideration Validation Suite
+### L6: Simulation-Time and Acceleration Tests
+- Validate that runtime scheduling semantics can run in simulated time.
+- Validate faster-than-real-time execution paths for simulation workloads.
+- Confirm determinism across repeated accelerated runs with identical inputs.
+
+### L7: Topology Reconsideration Validation Suite
 - Run only when proposing a topology change beyond Option A.
 - Capture determinism, throughput, and fault isolation findings for superseding ADR proposals.
 
 ## Required Scenario Coverage
 - Deterministic transitions for representative domain message sets.
 - Command correctness for happy path and failure path transitions.
+- Adapter/protocol translation correctness (`AppCmd <-> system operations <-> Msg`).
 - Runtime fault conversion into explicit `Msg` variants.
 - Cancellation behavior for long-running and short-running commands.
 - Backpressure behavior under burst and sustained load.
 - Recovery behavior after handler and runtime errors.
+- Simulated-time progression behavior (including faster-than-real-time runs) for timer-driven flows.
 
 ## Acceptance Gates by Change Type
 
@@ -55,10 +63,11 @@ Define required test layers and acceptance gates for a strict TEA + Tokio archit
 ### Runtime Execution Changes
 - Must include L3 and L4 coverage.
 - Must include failure-path assertions.
+- Time-sensitive runtime changes must include L6 coverage.
 
 ### Topology-Coupled Changes
 - Must conform to ADR-0001 Option A semantics.
-- Any change away from Option A requires a superseding ADR and L6 evidence.
+- Any change away from Option A requires a superseding ADR and L7 evidence.
 
 ## PR Evidence Requirements
 - Invariant impact summary.

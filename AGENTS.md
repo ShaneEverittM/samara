@@ -10,6 +10,8 @@ This repository is in a documentation-first architecture phase for a Tokio + TEA
 - `Cmd` is a typed enum of effect intents. Opaque async closures are not allowed in v0.
 - Side effects run only in effect handlers on Tokio tasks.
 - Async code must not mutate state directly; it can only emit `Msg` values back to the runtime mailbox.
+- Runtime APIs must preserve a path to simulated time execution, including faster-than-real-time test runs.
+- Runtime-owned effects must be mechanism-only; protocol/app policy belongs in adapters or app handlers.
 
 ## Runtime Topology Rule
 - v0 runtime topology is fixed by ADR `docs/adr/0001-runtime-topology.md`:
@@ -34,6 +36,8 @@ This repository is in a documentation-first architecture phase for a Tokio + TEA
 - Keep command semantics explicit and typed.
 - Preserve deterministic processing guarantees as documented for the selected topology.
 - Add traceability between requirement, design artifact, tests, and implementation.
+- Isolate time behind runtime-owned scheduling abstractions so test harnesses can control clock progression.
+- Split large effect behavior into composable adapter/protocol modules rather than one monolithic handler.
 
 ## Core Don'ts
 - No hidden side effects in reducers or update paths.
@@ -41,6 +45,8 @@ This repository is in a documentation-first architecture phase for a Tokio + TEA
 - No direct state mutation from async tasks.
 - No architecture change merged without matching test and invariant updates.
 - No "temporary" bypass of message flow.
+- No hard-coding wall-clock assumptions into reusable runtime APIs.
+- No embedding protocol-specific retry/reconnect/framing policy into core runtime effects.
 
 ## Progress Patterns
 - Pattern A: `Msg` and state transition table -> tests -> implementation.

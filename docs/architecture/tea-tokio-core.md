@@ -9,6 +9,7 @@
 - Combine Tokio async execution with strict The Elm Architecture (TEA) boundaries.
 - Keep state evolution deterministic and inspectable.
 - Keep side effects explicit, typed, and isolated from pure update logic.
+- Support simulation-oriented execution, including faster-than-real-time progression for embedded-software testing scenarios.
 
 ## Non-Goals (v0)
 - Durable event persistence and replay.
@@ -52,6 +53,10 @@ async fn handle(cmd: Cmd) -> Result<Vec<Msg>, RuntimeError>;
 - Effect handlers run on Tokio.
 - Handler output is transformed into `Msg` values and re-enqueued into the runtime mailbox.
 - Handler failures must become structured runtime error messages.
+- Effect layering rule:
+  - Runtime-level effects define mechanism.
+  - Adapter/protocol and app layers define policy.
+  - See `docs/architecture/effects-layering.md`.
 
 ### Runtime Contract
 - Runtime responsibilities:
@@ -62,6 +67,15 @@ async fn handle(cmd: Cmd) -> Result<Vec<Msg>, RuntimeError>;
   - Supervise task lifecycle, cancellation, and shutdown.
   - Re-enqueue handler output messages.
 - Runtime must be the only component coordinating message flow and command execution.
+
+### Time and Simulation Contract
+- The runtime must provide a clock/scheduling abstraction boundary that can support:
+  - Real-time execution.
+  - Simulated-time execution controlled by tests/simulation harnesses.
+  - Faster-than-real-time progression when simulation conditions allow.
+- Timer semantics must be representable as explicit commands so scheduling can be mediated by the runtime boundary.
+- Public runtime APIs must avoid forcing hard wall-clock coupling that would prevent time acceleration.
+- Deterministic simulation runs must be possible with controlled clock progression.
 
 ## Error Channel Design
 - Domain failures:
@@ -89,3 +103,4 @@ async fn handle(cmd: Cmd) -> Result<Vec<Msg>, RuntimeError>;
 
 ## Related Design Sketches
 - Thin-slice API comparison and PoC shape: `docs/architecture/thin-slice-value.md`.
+- Effect mechanism/policy split: `docs/architecture/effects-layering.md`.

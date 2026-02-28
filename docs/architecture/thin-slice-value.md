@@ -346,6 +346,38 @@ Risk and mitigation:
 - Risk: internal type erasure can hide mistakes.
 - Mitigation: strict runtime diagnostics (`RuntimeMsg`) and dead-letter capture by default.
 
+## 5) Core Effects + Adapters/Protocols Split
+
+### Recommended Ownership
+- Runtime/core library:
+  - Own primitive mechanism (time, socket I/O primitives, cancellation, supervision).
+- Adapter/protocol modules:
+  - Own policy (retries, framing, reconnection, domain mapping).
+- Domain app:
+  - Emits app intents and consumes mapped messages.
+
+### Why This Scales Better
+- Avoids one giant effect handler that grows with every feature.
+- Keeps core runtime stable and reusable across applications.
+- Preserves simulation and faster-than-real-time control at backend boundaries.
+
+### Composition Sketch
+```rust
+enum AppCmd {
+    Telemetry(TelemetryCmd),
+    Firmware(FirmwareCmd),
+}
+
+fn app_effect_handler(cmd: AppCmd) -> impl Future<Output = Vec<Msg>> {
+    match cmd {
+        AppCmd::Telemetry(c) => telemetry_adapter::handle(c),
+        AppCmd::Firmware(c) => firmware_adapter::handle(c),
+    }
+}
+```
+
+Each adapter may use shared primitive runtime capabilities while preserving independent policy logic.
+
 ## Thin Slice Recommendation
 - API shape:
   - `update` as a free function.
@@ -357,6 +389,8 @@ Risk and mitigation:
 - Effects to include in first PoC:
   - `PersistCount(u64)` (simulated async persistence).
   - `ScheduleTick(Duration)` (timer-based message emission).
+- Time requirement carry-forward:
+  - Treat timer commands as runtime-scheduled intents so the system can evolve to simulated/faster-than-real-time execution modes.
 
 ## Success Criteria for the PoC
 - Public API shows a clear TEA contract (`Model`, `Msg`, `Cmd`, `update`).

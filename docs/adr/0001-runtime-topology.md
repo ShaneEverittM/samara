@@ -14,6 +14,7 @@ This ADR governs topology-specific implementation work for v0.
 - Keep side effects isolated behind typed commands and handlers.
 - Maintain testability and clear fault handling.
 - Support expected load while preserving operational simplicity.
+- Preserve a path to simulated-time and faster-than-real-time execution for embedded test scenarios.
 
 ## Considered Options
 
@@ -45,6 +46,7 @@ This ADR governs topology-specific implementation work for v0.
   - Highest determinism and easiest reasoning about state transitions.
   - Simplest testing and debugging model for the first implementation phase.
   - Lowest architecture and operational complexity for v0.
+  - Single mailbox sequencing aligns well with deterministic simulation playback.
 - Negative:
   - State transition throughput is bounded by one update loop.
   - Mailbox contention and backlog risk increase with high command fan-out.

@@ -26,6 +26,7 @@
 - Testability.
 - Throughput under load.
 - Fault isolation and recovery boundaries.
+- Simulation compatibility (deterministic virtual-time control and faster-than-real-time viability).
 
 ## Ordering Guarantee Candidates
 

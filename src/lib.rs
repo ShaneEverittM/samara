@@ -1,12 +1,10 @@
 #![doc = r#"
-Samara is currently in a documentation-first architecture phase.
+Samara is a Tokio + TEA runtime exploration library.
 
-See:
-- `AGENTS.md`
-- `docs/architecture/tea-tokio-core.md`
-- `docs/architecture/topology-options.md`
-- `docs/adr/0001-runtime-topology.md`
-- `docs/testing/architecture-test-strategy.md`
+This crate currently contains runtime primitives for a thin-slice proof of concept:
+- Open-set message routing via typed addresses and erased envelopes.
+- Option A runtime loop (single mailbox) with supervised async effects.
+- Example user actors/effects live in integration tests and examples, not in library modules.
 "#]
 
-// Intentionally empty while architecture contracts are finalized.
+pub mod runtime;
