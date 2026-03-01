@@ -4,14 +4,16 @@ use std::{
     future::Future,
     marker::PhantomData,
     pin::Pin,
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 use tokio::{
     sync::mpsc,
-    task::{JoinError, JoinSet},
+    task::JoinSet,
     time::{Duration, Instant},
 };
+
+use crate::system_effects::{materialize_effect_run, EffectRun, SystemBackend};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ActorId(pub u64);
@@ -120,17 +122,18 @@ pub trait Actor: Send + 'static {
     fn on_msg(&mut self, msg: Self::Msg) -> Vec<Self::Cmd>;
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum DispatchErrorKind {
-    TypeMismatch,
-    DowncastFailed,
+pub trait EffectDriver<C>: Send + Sync + 'static {
+    fn run(&self, issued: IssuedCmd<C>) -> EffectRun;
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DispatchError {
-    pub header: EnvelopeHeader,
-    pub expected_type: TypeId,
-    pub kind: DispatchErrorKind,
+impl<C, F> EffectDriver<C> for F
+where
+    C: Send + 'static,
+    F: Fn(IssuedCmd<C>) -> EffectRun + Send + Sync + 'static,
+{
+    fn run(&self, issued: IssuedCmd<C>) -> EffectRun {
+        (self)(issued)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -157,141 +160,116 @@ pub struct EffectError {
 }
 
 pub type EffectFuture = Pin<Box<dyn Future<Output = Result<Vec<Envelope>, EffectError>> + Send>>;
-pub type EffectHandler<C> = Arc<dyn Fn(IssuedCmd<C>) -> EffectFuture + Send + Sync>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RegisterError {
     DuplicateActorId(ActorId),
 }
 
-trait ErasedActor<C>: Send {
-    fn dispatch(&mut self, env: Envelope) -> Result<Vec<IssuedCmd<C>>, DispatchError>;
-    fn as_any(&self) -> &dyn Any;
+struct RouteEntry {
+    expected_msg_type: TypeId,
+    inbox_tx: mpsc::Sender<Envelope>,
 }
 
-struct ActorCell<A, C> {
-    id: ActorId,
-    actor: A,
-    marker: PhantomData<C>,
+pub struct Runtime {
+    mailbox_capacity: usize,
+    router_tx: mpsc::Sender<Envelope>,
+    router_rx: mpsc::Receiver<Envelope>,
+    routes: HashMap<ActorId, RouteEntry>,
+    actor_states: HashMap<ActorId, Box<dyn Any + Send + Sync>>,
+    actor_tasks: JoinSet<()>,
+    backend: Arc<dyn SystemBackend>,
+    dead_letters: Arc<Mutex<Vec<DeadLetter>>>,
 }
 
-impl<A, C> ErasedActor<C> for ActorCell<A, C>
-where
-    A: Actor<Cmd = C>,
-    C: Send + 'static,
-{
-    fn dispatch(&mut self, env: Envelope) -> Result<Vec<IssuedCmd<C>>, DispatchError> {
-        let header = env.header();
-        let expected_type = TypeId::of::<A::Msg>();
-        if header.msg_type != expected_type {
-            return Err(DispatchError {
-                header,
-                expected_type,
-                kind: DispatchErrorKind::TypeMismatch,
-            });
-        }
-
-        let body = env.body.downcast::<A::Msg>().map_err(|_| DispatchError {
-            header: header.clone(),
-            expected_type,
-            kind: DispatchErrorKind::DowncastFailed,
-        })?;
-
-        let cmds = self
-            .actor
-            .on_msg(*body)
-            .into_iter()
-            .map(|cmd| IssuedCmd {
-                origin: self.id,
-                meta: header.meta.clone(),
-                cmd,
-            })
-            .collect();
-
-        Ok(cmds)
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
-pub struct Runtime<C>
-where
-    C: Send + 'static,
-{
-    tx: mpsc::Sender<Envelope>,
-    rx: mpsc::Receiver<Envelope>,
-    registry: HashMap<ActorId, Box<dyn ErasedActor<C>>>,
-    effect_handler: EffectHandler<C>,
-    dead_letters: Vec<DeadLetter>,
-}
-
-impl<C> Runtime<C>
-where
-    C: Send + 'static,
-{
-    pub fn new(mailbox_capacity: usize, effect_handler: EffectHandler<C>) -> Self {
-        let (tx, rx) = mpsc::channel(mailbox_capacity.max(1));
+impl Runtime {
+    pub fn new(mailbox_capacity: usize, backend: Arc<dyn SystemBackend>) -> Self {
+        let mailbox_capacity = mailbox_capacity.max(1);
+        let (router_tx, router_rx) = mpsc::channel(mailbox_capacity);
         Self {
-            tx,
-            rx,
-            registry: HashMap::new(),
-            effect_handler,
-            dead_letters: Vec::new(),
+            mailbox_capacity,
+            router_tx,
+            router_rx,
+            routes: HashMap::new(),
+            actor_states: HashMap::new(),
+            actor_tasks: JoinSet::new(),
+            backend,
+            dead_letters: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
-    pub fn register_actor<A>(&mut self, id: ActorId, actor: A) -> Result<Addr<A::Msg>, RegisterError>
+    pub fn register_actor<A, D>(
+        &mut self,
+        id: ActorId,
+        actor: A,
+        effects: D,
+    ) -> Result<Addr<A::Msg>, RegisterError>
     where
-        A: Actor<Cmd = C> + 'static,
+        A: Actor,
+        D: EffectDriver<A::Cmd>,
     {
-        if self.registry.contains_key(&id) {
+        if self.routes.contains_key(&id) {
             return Err(RegisterError::DuplicateActorId(id));
         }
 
-        self.registry.insert(
+        let (inbox_tx, inbox_rx) = mpsc::channel(self.mailbox_capacity);
+        let actor_state = Arc::new(tokio::sync::Mutex::new(actor));
+
+        self.actor_states.insert(id, Box::new(Arc::clone(&actor_state)));
+        self.routes.insert(
             id,
-            Box::new(ActorCell::<A, C> {
-                id,
-                actor,
-                marker: PhantomData,
-            }),
+            RouteEntry {
+                expected_msg_type: TypeId::of::<A::Msg>(),
+                inbox_tx,
+            },
         );
+
+        let router_tx = self.router_tx.clone();
+        let backend = Arc::clone(&self.backend);
+        let dead_letters = Arc::clone(&self.dead_letters);
+        self.actor_tasks.spawn(run_actor_task(
+            id,
+            actor_state,
+            effects,
+            inbox_rx,
+            router_tx,
+            backend,
+            dead_letters,
+        ));
 
         Ok(Addr {
             id,
-            tx: self.tx.clone(),
+            tx: self.router_tx.clone(),
             marker: PhantomData,
         })
     }
 
     pub async fn send_envelope(&self, envelope: Envelope) -> Result<(), SendError> {
-        self.tx
+        self.router_tx
             .send(envelope)
             .await
             .map_err(|_| SendError::MailboxClosed)
     }
 
-    pub fn actor<A>(&self, id: ActorId) -> Option<&A>
+    pub fn actor<A>(&self, id: ActorId) -> Option<Arc<tokio::sync::Mutex<A>>>
     where
-        A: Actor<Cmd = C> + 'static,
+        A: Actor + 'static,
     {
-        self.registry
+        self.actor_states
             .get(&id)?
-            .as_any()
-            .downcast_ref::<ActorCell<A, C>>()
-            .map(|cell| &cell.actor)
+            .downcast_ref::<Arc<tokio::sync::Mutex<A>>>()
+            .cloned()
     }
 
-    pub fn dead_letters(&self) -> &[DeadLetter] {
-        &self.dead_letters
+    pub fn dead_letters(&self) -> Vec<DeadLetter> {
+        self.dead_letters
+            .lock()
+            .expect("dead letter collection should not be poisoned")
+            .clone()
     }
 
     pub async fn run_for(&mut self, duration: Duration) {
         let deadline = Instant::now() + duration;
-        let mut effects = JoinSet::<Result<Vec<Envelope>, EffectError>>::new();
-
         loop {
             if Instant::now() >= deadline {
                 break;
@@ -304,107 +282,151 @@ where
                 _ = &mut sleep => {
                     break;
                 }
-                maybe_env = self.rx.recv() => {
+                maybe_env = self.router_rx.recv() => {
                     let Some(env) = maybe_env else {
                         break;
                     };
-                    self.dispatch_envelope(env, &mut effects);
+                    self.route_envelope(env).await;
                 }
-                maybe_joined = effects.join_next(), if !effects.is_empty() => {
-                    self.handle_effect_join(maybe_joined).await;
-                }
-            }
-        }
-
-        effects.abort_all();
-        while let Some(joined) = effects.join_next().await {
-            if let Err(err) = joined {
-                self.dead_letters.push(DeadLetter {
-                    header: EnvelopeHeader {
-                        to: ActorId(0),
-                        msg_type: TypeId::of::<()>(),
-                        meta: Meta::default(),
-                    },
-                    reason: DeadLetterReason::EffectJoinFailed(err.to_string()),
-                });
-            }
-        }
-    }
-
-    fn dispatch_envelope(
-        &mut self,
-        env: Envelope,
-        effects: &mut JoinSet<Result<Vec<Envelope>, EffectError>>,
-    ) {
-        let header = env.header();
-        let Some(actor) = self.registry.get_mut(&header.to) else {
-            self.dead_letters.push(DeadLetter {
-                header,
-                reason: DeadLetterReason::UnknownTarget,
-            });
-            return;
-        };
-
-        match actor.dispatch(env) {
-            Ok(cmds) => {
-                for issued in cmds {
-                    let handler = Arc::clone(&self.effect_handler);
-                    effects.spawn(async move { (handler)(issued).await });
-                }
-            }
-            Err(err) => {
-                let reason = match err.kind {
-                    DispatchErrorKind::TypeMismatch => DeadLetterReason::TypeMismatch,
-                    DispatchErrorKind::DowncastFailed => DeadLetterReason::DowncastFailed,
-                };
-                self.dead_letters.push(DeadLetter {
-                    header: err.header,
-                    reason,
-                });
-            }
-        }
-    }
-
-    async fn handle_effect_join(
-        &mut self,
-        maybe_joined: Option<Result<Result<Vec<Envelope>, EffectError>, JoinError>>,
-    ) {
-        let Some(joined) = maybe_joined else {
-            return;
-        };
-
-        match joined {
-            Ok(Ok(envelopes)) => {
-                for env in envelopes {
-                    let header = env.header();
-                    if self.tx.send(env).await.is_err() {
-                        self.dead_letters.push(DeadLetter {
-                            header,
-                            reason: DeadLetterReason::MailboxClosed,
-                        });
+                maybe_done = self.actor_tasks.join_next(), if !self.actor_tasks.is_empty() => {
+                    if let Some(Err(err)) = maybe_done {
+                        push_dead_letter(
+                            &self.dead_letters,
+                            EnvelopeHeader {
+                                to: ActorId(0),
+                                msg_type: TypeId::of::<()>(),
+                                meta: Meta::default(),
+                            },
+                            DeadLetterReason::EffectJoinFailed(err.to_string()),
+                        );
                     }
                 }
             }
-            Ok(Err(err)) => {
-                self.dead_letters.push(DeadLetter {
-                    header: EnvelopeHeader {
-                        to: err.origin,
-                        msg_type: TypeId::of::<()>(),
-                        meta: err.meta,
-                    },
-                    reason: DeadLetterReason::EffectHandlerFailed(err.message),
-                });
+        }
+    }
+
+    async fn route_envelope(&mut self, env: Envelope) {
+        let header = env.header();
+        let Some(route) = self.routes.get(&header.to) else {
+            push_dead_letter(&self.dead_letters, header, DeadLetterReason::UnknownTarget);
+            return;
+        };
+
+        if header.msg_type != route.expected_msg_type {
+            push_dead_letter(&self.dead_letters, header, DeadLetterReason::TypeMismatch);
+            return;
+        }
+
+        if route.inbox_tx.send(env).await.is_err() {
+            push_dead_letter(&self.dead_letters, header, DeadLetterReason::MailboxClosed);
+        }
+    }
+}
+
+fn push_dead_letter(
+    dead_letters: &Arc<Mutex<Vec<DeadLetter>>>,
+    header: EnvelopeHeader,
+    reason: DeadLetterReason,
+) {
+    dead_letters
+        .lock()
+        .expect("dead letter collection should not be poisoned")
+        .push(DeadLetter { header, reason });
+}
+
+async fn run_actor_task<A, D>(
+    actor_id: ActorId,
+    actor: Arc<tokio::sync::Mutex<A>>,
+    effects: D,
+    mut inbox_rx: mpsc::Receiver<Envelope>,
+    router_tx: mpsc::Sender<Envelope>,
+    backend: Arc<dyn SystemBackend>,
+    dead_letters: Arc<Mutex<Vec<DeadLetter>>>,
+) where
+    A: Actor,
+    D: EffectDriver<A::Cmd>,
+{
+    let mut effect_tasks = JoinSet::<Result<Vec<Envelope>, EffectError>>::new();
+
+    loop {
+        tokio::select! {
+            maybe_env = inbox_rx.recv() => {
+                let Some(env) = maybe_env else {
+                    break;
+                };
+                let header = env.header();
+
+                let msg = match env.body.downcast::<A::Msg>() {
+                    Ok(msg) => *msg,
+                    Err(_) => {
+                        push_dead_letter(&dead_letters, header, DeadLetterReason::DowncastFailed);
+                        continue;
+                    }
+                };
+
+                let cmds = {
+                    let mut guard = actor.lock().await;
+                    guard.on_msg(msg)
+                };
+
+                for cmd in cmds {
+                    let run = effects.run(IssuedCmd {
+                        origin: actor_id,
+                        meta: header.meta.clone(),
+                        cmd,
+                    });
+                    let backend = Arc::clone(&backend);
+                    effect_tasks.spawn(async move { materialize_effect_run(run, backend).await });
+                }
             }
-            Err(err) => {
-                self.dead_letters.push(DeadLetter {
-                    header: EnvelopeHeader {
-                        to: ActorId(0),
-                        msg_type: TypeId::of::<()>(),
-                        meta: Meta::default(),
-                    },
-                    reason: DeadLetterReason::EffectJoinFailed(err.to_string()),
-                });
+            maybe_joined = effect_tasks.join_next(), if !effect_tasks.is_empty() => {
+                handle_effect_completion(maybe_joined, &router_tx, &dead_letters).await;
             }
+        }
+    }
+
+    effect_tasks.abort_all();
+}
+
+async fn handle_effect_completion(
+    maybe_joined: Option<Result<Result<Vec<Envelope>, EffectError>, tokio::task::JoinError>>,
+    router_tx: &mpsc::Sender<Envelope>,
+    dead_letters: &Arc<Mutex<Vec<DeadLetter>>>,
+) {
+    let Some(joined) = maybe_joined else {
+        return;
+    };
+
+    match joined {
+        Ok(Ok(envelopes)) => {
+            for env in envelopes {
+                let header = env.header();
+                if router_tx.send(env).await.is_err() {
+                    push_dead_letter(dead_letters, header, DeadLetterReason::MailboxClosed);
+                }
+            }
+        }
+        Ok(Err(err)) => {
+            push_dead_letter(
+                dead_letters,
+                EnvelopeHeader {
+                    to: err.origin,
+                    msg_type: TypeId::of::<()>(),
+                    meta: err.meta,
+                },
+                DeadLetterReason::EffectHandlerFailed(err.message),
+            );
+        }
+        Err(err) => {
+            push_dead_letter(
+                dead_letters,
+                EnvelopeHeader {
+                    to: ActorId(0),
+                    msg_type: TypeId::of::<()>(),
+                    meta: Meta::default(),
+                },
+                DeadLetterReason::EffectJoinFailed(err.to_string()),
+            );
         }
     }
 }

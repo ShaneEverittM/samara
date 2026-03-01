@@ -1,4 +1,7 @@
-use samara::runtime::{EffectFuture, Envelope, IssuedCmd};
+use samara::{
+    runtime::{Envelope, IssuedCmd},
+    system_effects::EffectRun,
+};
 
 use crate::support::{
     counter::{CounterMsg, PersistCmd},
@@ -15,9 +18,9 @@ impl PersistenceEffects {
         Self { store }
     }
 
-    pub fn handle(&self, issued: IssuedCmd<PersistCmd>) -> EffectFuture {
+    pub fn handle(&self, issued: IssuedCmd<PersistCmd>) -> EffectRun {
         let store = self.store.clone();
-        Box::pin(async move {
+        EffectRun::Future(Box::pin(async move {
             let to = issued.origin;
             match issued.cmd {
                 PersistCmd::PersistCount(value) => {
@@ -35,6 +38,6 @@ impl PersistenceEffects {
                     }
                 }
             }
-        })
+        }))
     }
 }

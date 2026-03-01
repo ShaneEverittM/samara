@@ -1,32 +1,41 @@
-use std::sync::Arc;
-
-use samara::runtime::{EffectHandler, IssuedCmd};
+use samara::runtime::{EffectDriver, IssuedCmd};
 
 use crate::support::{
-    counter::AppCmd,
+    counter::CounterCmd,
     store::InMemoryStore,
 };
 
 mod persistence;
 mod timer;
 
-pub fn app_effect_handler(store: InMemoryStore) -> EffectHandler<AppCmd> {
-    let persistence = persistence::PersistenceEffects::new(store);
-    let timer = timer::TimerEffects;
+pub struct CounterEffectDriver {
+    persistence: persistence::PersistenceEffects,
+    timer: timer::TimerEffects,
+}
 
-    Arc::new(move |issued: IssuedCmd<AppCmd>| {
+impl CounterEffectDriver {
+    pub fn new(store: InMemoryStore) -> Self {
+        Self {
+            persistence: persistence::PersistenceEffects::new(store),
+            timer: timer::TimerEffects,
+        }
+    }
+}
+
+impl EffectDriver<CounterCmd> for CounterEffectDriver {
+    fn run(&self, issued: IssuedCmd<CounterCmd>) -> samara::system_effects::EffectRun {
         let IssuedCmd { origin, meta, cmd } = issued;
         match cmd {
-            AppCmd::Persist(cmd) => persistence.handle(IssuedCmd {
+            CounterCmd::Persist(cmd) => self.persistence.handle(IssuedCmd {
                 origin,
                 meta,
                 cmd,
             }),
-            AppCmd::Timer(cmd) => timer.handle(IssuedCmd {
+            CounterCmd::Timer(cmd) => self.timer.handle(IssuedCmd {
                 origin,
                 meta,
                 cmd,
             }),
         }
-    })
+    }
 }

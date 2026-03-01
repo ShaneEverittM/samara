@@ -67,3 +67,12 @@ If "core effects" include policy, they become large and rigid:
   - `SocketRead(socket_id, max_bytes)`
 
 Adapters/protocols bridge between the two.
+
+## Typed-Fallibility API POC
+- A compileable prototype for this pattern lives in `src/system_effects.rs`.
+- The prototype includes:
+  - `SystemEffect` with associated `Output` and `Error` types.
+  - `Sleep` with `Error = Infallible`.
+  - `SocketConnect` with `Error = SystemIoError`.
+  - `ComposedEffect<E, OkMap, ErrMap>` wrapper for mapping system results into envelopes.
+  - `EffectRun::{Future, Composed}` for escape-hatch vs structured composition.

@@ -29,18 +29,18 @@ pub enum TimerCmd {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum AppCmd {
+pub enum CounterCmd {
     Persist(PersistCmd),
     Timer(TimerCmd),
 }
 
-pub fn update(mut model: CounterModel, msg: CounterMsg) -> (CounterModel, Vec<AppCmd>) {
+pub fn update(mut model: CounterModel, msg: CounterMsg) -> (CounterModel, Vec<CounterCmd>) {
     match msg {
         CounterMsg::IncrementRequested => {
             model.count += 1;
             let cmds = vec![
-                AppCmd::Persist(PersistCmd::PersistCount(model.count)),
-                AppCmd::Timer(TimerCmd::ScheduleTick(Duration::from_millis(5))),
+                CounterCmd::Persist(PersistCmd::PersistCount(model.count)),
+                CounterCmd::Timer(TimerCmd::ScheduleTick(Duration::from_millis(5))),
             ];
             (model, cmds)
         }
@@ -75,7 +75,7 @@ impl CounterActor {
 
 impl Actor for CounterActor {
     type Msg = CounterMsg;
-    type Cmd = AppCmd;
+    type Cmd = CounterCmd;
 
     fn on_msg(&mut self, msg: Self::Msg) -> Vec<Self::Cmd> {
         let current = std::mem::take(&mut self.model);

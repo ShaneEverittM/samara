@@ -2,10 +2,13 @@ use std::time::Duration;
 
 mod support;
 
-use samara::runtime::{ActorId, DeadLetterReason, Envelope, Meta, Runtime};
+use samara::{
+    runtime::{ActorId, DeadLetterReason, Envelope, Meta, Runtime},
+    system_effects::TokioBackend,
+};
 use support::{
     counter::{update, CounterActor, CounterModel, CounterMsg},
-    effects::app_effect_handler,
+    effects::CounterEffectDriver,
     store::InMemoryStore,
 };
 
@@ -23,12 +26,15 @@ fn update_is_deterministic() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn user_can_drive_counter_actor_with_two_effects() {
     let store = InMemoryStore::default();
-    let handler = app_effect_handler(store.clone());
-    let mut runtime = Runtime::new(128, handler);
+    let mut runtime = Runtime::new(128, std::sync::Arc::new(TokioBackend));
 
     let counter_id = ActorId(1);
     let counter_addr = runtime
-        .register_actor(counter_id, CounterActor::new(CounterModel::default()))
+        .register_actor(
+            counter_id,
+            CounterActor::new(CounterModel::default()),
+            CounterEffectDriver::new(store.clone()),
+        )
         .expect("counter id must be unique");
 
     counter_addr
@@ -47,6 +53,8 @@ async fn user_can_drive_counter_actor_with_two_effects() {
     let model = runtime
         .actor::<CounterActor>(counter_id)
         .expect("counter should be registered")
+        .lock()
+        .await
         .model()
         .clone();
 
@@ -62,10 +70,14 @@ async fn user_can_drive_counter_actor_with_two_effects() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unknown_target_is_recorded_as_dead_letter() {
-    let mut runtime = Runtime::new(16, app_effect_handler(Default::default()));
+    let mut runtime = Runtime::new(16, std::sync::Arc::new(TokioBackend));
 
     let _counter_addr = runtime
-        .register_actor(ActorId(1), CounterActor::new(CounterModel::default()))
+        .register_actor(
+            ActorId(1),
+            CounterActor::new(CounterModel::default()),
+            CounterEffectDriver::new(Default::default()),
+        )
         .expect("counter id must be unique");
 
     runtime
@@ -83,10 +95,14 @@ async fn unknown_target_is_recorded_as_dead_letter() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn type_mismatch_is_recorded_as_dead_letter() {
-    let mut runtime = Runtime::new(16, app_effect_handler(Default::default()));
+    let mut runtime = Runtime::new(16, std::sync::Arc::new(TokioBackend));
 
     let _counter_addr = runtime
-        .register_actor(ActorId(1), CounterActor::new(CounterModel::default()))
+        .register_actor(
+            ActorId(1),
+            CounterActor::new(CounterModel::default()),
+            CounterEffectDriver::new(Default::default()),
+        )
         .expect("counter id must be unique");
 
     runtime

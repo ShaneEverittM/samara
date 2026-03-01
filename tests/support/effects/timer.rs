@@ -1,4 +1,7 @@
-use samara::runtime::{EffectFuture, Envelope, IssuedCmd};
+use samara::{
+    runtime::{Envelope, IssuedCmd},
+    system_effects::{composed, infallible_to_envelopes, EffectRun, Sleep},
+};
 
 use crate::support::counter::{CounterMsg, TimerCmd};
 
@@ -6,16 +9,18 @@ use crate::support::counter::{CounterMsg, TimerCmd};
 pub struct TimerEffects;
 
 impl TimerEffects {
-    pub fn handle(&self, issued: IssuedCmd<TimerCmd>) -> EffectFuture {
-        Box::pin(async move {
-            let to = issued.origin;
-            match issued.cmd {
-                TimerCmd::ScheduleTick(delay) => {
-                    tokio::time::sleep(delay).await;
-                    let env = Envelope::with_meta(to, CounterMsg::Tick, issued.meta);
-                    Ok(vec![env])
-                }
+    pub fn handle(&self, issued: IssuedCmd<TimerCmd>) -> EffectRun {
+        let to = issued.origin;
+        match issued.cmd {
+            TimerCmd::ScheduleTick(delay) => {
+                let meta = issued.meta;
+                let effect = composed(
+                    Sleep(delay),
+                    move |_| vec![Envelope::with_meta(to, CounterMsg::Tick, meta)],
+                    infallible_to_envelopes,
+                );
+                EffectRun::Composed(vec![Box::new(effect)])
             }
-        })
+        }
     }
 }
