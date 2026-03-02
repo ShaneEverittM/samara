@@ -78,6 +78,18 @@ async fn handle(cmd: Cmd) -> Result<Vec<Msg>, RuntimeError>;
 - No direct I/O or reply-channel sending in `update`.
 - Type-based actor linking (`RuntimeRef::tell` / `RuntimeRef::ask`) must preserve the same mailbox and error semantics.
 
+### Actor Decoupling Contract (`Port` / protocol binding)
+- Multi-actor collaboration should prefer protocol-level ports over concrete actor type lookup.
+- `Port` contracts define stable request/response types independent of provider actor implementations.
+- Runtime binding maps `Port` to a provider actor at startup (`real` vs `mock`), so swapping implementations does not require consumer code changes.
+- Provider actors implement protocol adapters (`PortHandler::request`) to translate a request into actor `Msg` without branching on `ask` vs `tell`.
+- Runtime owns request-reply transport details for port calls.
+  - `ask` attaches a waiting runtime reply slot.
+  - `tell` attaches a detached runtime reply slot that discards the response.
+  - `update` reads an opaque `ReplyToken` from `UpdateContext`; effect handlers resolve it through runtime APIs.
+  - Actor message types stay protocol-shaped and do not carry concrete reply channels.
+- Port calls (`PortRef::tell` / `PortRef::ask`) must preserve the same mailbox and failure semantics as direct actor refs.
+
 ### Time and Simulation Contract
 - The runtime must provide a clock/scheduling abstraction boundary that can support:
   - Real-time execution.

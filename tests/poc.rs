@@ -3,15 +3,18 @@ use std::time::Duration;
 mod support;
 
 use samara::{
-    runtime::{
-        Actor, ActorId, AskError, DeadLetterReason, Envelope, RegisterError, RunUntil,
-        RunUntilExit, Runtime, RuntimeAskError, RuntimeTellError,
-    },
     effects::TokioBackend,
+    runtime::{
+        Actor, ActorId, AskError, DeadLetterReason, Envelope, RegisterError, RegisterPortError,
+        RunUntil, RunUntilExit, Runtime, RuntimeAskError, RuntimeTellError,
+    },
 };
 use support::{
     adder::{AdderActor, AdderModel, AdderMsg},
     counter::{self, CounterActor, CounterModel, CounterMsg},
+    ports::{
+        AccumulatorPort, AccumulatorReq, AccumulatorRes, MockAccumulatorActor, RealAccumulatorActor,
+    },
     store::InMemoryStore,
 };
 
@@ -322,4 +325,118 @@ async fn run_until_supports_deadline_condition() {
         .run_until(RunUntil::for_duration(Duration::from_millis(1)))
         .await;
     assert_eq!(exit, RunUntilExit::DeadlineReached);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn port_ref_can_target_real_provider_actor() {
+    let mut runtime = Runtime::new(32, std::sync::Arc::new(TokioBackend));
+    runtime
+        .register_actor(
+            ActorId(1000),
+            RealAccumulatorActor::new(),
+            RealAccumulatorActor::effect_driver(()),
+        )
+        .expect("real provider registration should succeed");
+
+    let port = runtime
+        .register_port::<AccumulatorPort, RealAccumulatorActor>()
+        .expect("port registration should succeed");
+
+    port.tell(AccumulatorReq::Add(7))
+        .await
+        .expect("tell through port should succeed");
+    let exit = runtime.run_until_idle().await;
+    assert_eq!(exit, RunUntilExit::Idle);
+
+    let ask_task = tokio::spawn({
+        let port = port.clone();
+        async move { port.ask(AccumulatorReq::GetTotal).await }
+    });
+    let exit = runtime.run_until_predicate(|| ask_task.is_finished()).await;
+    assert_eq!(exit, RunUntilExit::ConditionMet);
+
+    let total = ask_task
+        .await
+        .expect("ask task should not panic")
+        .expect("ask should resolve");
+    assert_eq!(total, AccumulatorRes::Total(7));
+    assert!(
+        runtime.dead_letters().is_empty(),
+        "port tell replies should be discarded without runtime failures"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn port_ref_can_target_mock_provider_actor() {
+    let mut runtime = Runtime::new(32, std::sync::Arc::new(TokioBackend));
+    runtime
+        .register_actor(
+            ActorId(1001),
+            MockAccumulatorActor::new(999),
+            MockAccumulatorActor::effect_driver(()),
+        )
+        .expect("mock provider registration should succeed");
+
+    let port = runtime
+        .register_port::<AccumulatorPort, MockAccumulatorActor>()
+        .expect("port registration should succeed");
+
+    port.tell(AccumulatorReq::Add(7))
+        .await
+        .expect("tell through port should succeed");
+    let exit = runtime.run_until_idle().await;
+    assert_eq!(exit, RunUntilExit::Idle);
+
+    let ask_task = tokio::spawn({
+        let port = port.clone();
+        async move { port.ask(AccumulatorReq::GetTotal).await }
+    });
+    let exit = runtime.run_until_predicate(|| ask_task.is_finished()).await;
+    assert_eq!(exit, RunUntilExit::ConditionMet);
+
+    let total = ask_task
+        .await
+        .expect("ask task should not panic")
+        .expect("ask should resolve");
+    assert_eq!(total, AccumulatorRes::Total(999));
+    assert!(
+        runtime.dead_letters().is_empty(),
+        "port tell replies should be discarded without runtime failures"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn register_port_requires_provider_actor_and_unique_port_type() {
+    let mut runtime = Runtime::new(32, std::sync::Arc::new(TokioBackend));
+
+    let missing_provider = match runtime.register_port::<AccumulatorPort, RealAccumulatorActor>() {
+        Ok(_) => panic!("provider actor type should be required before port binding"),
+        Err(err) => err,
+    };
+    assert_eq!(
+        missing_provider,
+        RegisterPortError::ProviderActorTypeNotRegistered(std::any::type_name::<
+            RealAccumulatorActor,
+        >())
+    );
+
+    runtime
+        .register_actor(
+            ActorId(1002),
+            RealAccumulatorActor::new(),
+            RealAccumulatorActor::effect_driver(()),
+        )
+        .expect("real provider registration should succeed");
+    runtime
+        .register_port::<AccumulatorPort, RealAccumulatorActor>()
+        .expect("first port registration should succeed");
+
+    let duplicate = match runtime.register_port::<AccumulatorPort, RealAccumulatorActor>() {
+        Ok(_) => panic!("duplicate port registrations should fail"),
+        Err(err) => err,
+    };
+    assert_eq!(
+        duplicate,
+        RegisterPortError::DuplicatePortType(std::any::type_name::<AccumulatorPort>())
+    );
 }
