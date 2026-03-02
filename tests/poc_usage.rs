@@ -3,11 +3,11 @@ use std::time::Duration;
 mod support;
 
 use samara::{
-    runtime::{Actor, ActorId, DeadLetterReason, Envelope, Runtime},
+    runtime::{Actor, ActorId, DeadLetterReason, Envelope, RegisterError, Runtime},
     system_effects::TokioBackend,
 };
 use support::{
-    counter::{CounterActor, CounterModel, CounterMsg, self},
+    counter::{self, CounterActor, CounterModel, CounterMsg},
     store::InMemoryStore,
 };
 
@@ -114,5 +114,72 @@ async fn type_mismatch_is_recorded_as_dead_letter() {
             .dead_letters()
             .iter()
             .any(|d| d.reason == DeadLetterReason::TypeMismatch)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn type_lookup_and_weak_refs_are_available_for_singletons() {
+    let store = InMemoryStore::default();
+    let mut runtime = Runtime::new(64, std::sync::Arc::new(TokioBackend));
+
+    let direct_ref = runtime
+        .register_actor(
+            ActorId(77),
+            CounterActor::new(CounterModel::default()),
+            CounterActor::effect_driver(store.clone()),
+        )
+        .expect("counter id must be unique");
+
+    let by_type = runtime
+        .actor_ref::<CounterActor>()
+        .expect("type-based lookup should resolve");
+    assert_eq!(by_type.actor_id(), direct_ref.actor_id());
+
+    let weak = runtime
+        .weak_actor_ref::<CounterActor>()
+        .expect("weak type-based lookup should resolve");
+    let upgraded = weak.upgrade().expect("runtime still holds sender");
+    assert_eq!(upgraded.actor_id(), direct_ref.actor_id());
+
+    by_type
+        .send(CounterMsg::IncrementRequested)
+        .await
+        .expect("mailbox should be open");
+    runtime.run_for(Duration::from_millis(50)).await;
+
+    let model = runtime
+        .actor::<CounterActor>(ActorId(77))
+        .expect("counter should be registered")
+        .lock()
+        .await
+        .model()
+        .clone();
+    assert_eq!(model.count, 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn runtime_enforces_one_actor_instance_per_type() {
+    let mut runtime = Runtime::new(16, std::sync::Arc::new(TokioBackend));
+
+    runtime
+        .register_actor(
+            ActorId(1),
+            CounterActor::new(CounterModel::default()),
+            CounterActor::effect_driver(Default::default()),
+        )
+        .expect("first counter registration should succeed");
+
+    let err = runtime
+        .register_actor(
+            ActorId(2),
+            CounterActor::new(CounterModel::default()),
+            CounterActor::effect_driver(Default::default()),
+        )
+        .err()
+        .expect("second counter registration should fail for singleton-per-type");
+
+    assert_eq!(
+        err,
+        RegisterError::DuplicateActorType(std::any::type_name::<CounterActor>())
     );
 }

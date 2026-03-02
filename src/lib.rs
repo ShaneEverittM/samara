@@ -7,5 +7,6 @@ This crate currently contains runtime primitives for a thin-slice proof of conce
 - Example user actors/effects live in integration tests and examples, not in library modules.
 "#]
 
+pub mod prelude;
 pub mod runtime;
 pub mod system_effects;

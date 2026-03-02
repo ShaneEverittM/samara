@@ -1,8 +1,8 @@
 use tokio::time::Duration;
 
 use samara::{
-    runtime::{Actor, EffectDriver, Envelope, IssuedCmd},
-    system_effects::{composed, infallible_to_envelopes, EffectRun, Sleep},
+    runtime::{Actor, EffectContext, EffectDriver, Envelope, IssuedCmd, UpdateContext},
+    system_effects::{EffectRun, Sleep},
 };
 
 use crate::support::store::InMemoryStore;
@@ -83,7 +83,7 @@ impl Actor for CounterActor {
     type Driver = CounterEffectDriver;
     type DriverContext = InMemoryStore;
 
-    fn update(&mut self, msg: Self::Msg) -> Vec<Self::Cmd> {
+    fn update(&mut self, msg: Self::Msg, _ctx: &UpdateContext) -> Vec<Self::Cmd> {
         update(&mut self.model, msg)
     }
 
@@ -110,19 +110,11 @@ impl CounterEffectDriver {
 }
 
 impl EffectDriver<CounterCmd> for CounterEffectDriver {
-    fn run(&self, issued: IssuedCmd<CounterCmd>) -> EffectRun {
+    fn run(&self, issued: IssuedCmd<CounterCmd>, _ctx: &EffectContext) -> EffectRun {
         let IssuedCmd { origin, meta, cmd } = issued;
         match cmd {
-            CounterCmd::Persist(cmd) => self.persistence.handle(IssuedCmd {
-                origin,
-                meta,
-                cmd,
-            }),
-            CounterCmd::Timer(cmd) => self.timer.handle(IssuedCmd {
-                origin,
-                meta,
-                cmd,
-            }),
+            CounterCmd::Persist(cmd) => self.persistence.handle(IssuedCmd { origin, meta, cmd }),
+            CounterCmd::Timer(cmd) => self.timer.handle(IssuedCmd { origin, meta, cmd }),
         }
     }
 }
@@ -139,7 +131,7 @@ impl PersistenceEffects {
 
     fn handle(&self, issued: IssuedCmd<PersistCmd>) -> EffectRun {
         let store = self.store.clone();
-        EffectRun::Future(Box::pin(async move {
+        EffectRun::user(async move {
             let to = issued.origin;
             match issued.cmd {
                 PersistCmd::PersistCount(value) => {
@@ -152,12 +144,13 @@ impl PersistenceEffects {
                         Ok(vec![env])
                     } else {
                         store.push(value).await;
-                        let env = Envelope::with_meta(to, CounterMsg::Persisted(value), issued.meta);
+                        let env =
+                            Envelope::with_meta(to, CounterMsg::Persisted(value), issued.meta);
                         Ok(vec![env])
                     }
                 }
             }
-        }))
+        })
     }
 }
 
@@ -170,12 +163,9 @@ impl TimerEffects {
         match issued.cmd {
             TimerCmd::ScheduleTick(delay) => {
                 let meta = issued.meta;
-                let effect = composed(
-                    Sleep(delay),
-                    move |_| vec![Envelope::with_meta(to, CounterMsg::Tick, meta)],
-                    infallible_to_envelopes,
-                );
-                EffectRun::Composed(vec![Box::new(effect)])
+                EffectRun::system_effect(Sleep(delay))
+                    .on_ok(move |_| vec![Envelope::with_meta(to, CounterMsg::Tick, meta)])
+                    .into_run()
             }
         }
     }

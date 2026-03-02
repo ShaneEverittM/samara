@@ -1,10 +1,11 @@
 use std::{
+    any::type_name,
     any::{Any, TypeId},
     collections::HashMap,
     future::Future,
     marker::PhantomData,
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, RwLock},
 };
 
 use tokio::{
@@ -13,7 +14,7 @@ use tokio::{
     time::{Duration, Instant},
 };
 
-use crate::system_effects::{materialize_effect_run, EffectRun, SystemBackend};
+use crate::system_effects::{EffectRun, SystemBackend, materialize_effect_run};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ActorId(pub u64);
@@ -72,13 +73,13 @@ pub enum SendError {
     MailboxClosed,
 }
 
-pub struct Addr<M> {
+pub struct ActorRef<A: Actor> {
     id: ActorId,
     tx: mpsc::Sender<Envelope>,
-    marker: PhantomData<fn(M)>,
+    marker: PhantomData<fn(A)>,
 }
 
-impl<M> Clone for Addr<M> {
+impl<A: Actor> Clone for ActorRef<A> {
     fn clone(&self) -> Self {
         Self {
             id: self.id,
@@ -88,23 +89,138 @@ impl<M> Clone for Addr<M> {
     }
 }
 
-impl<M> Addr<M> {
+impl<A: Actor> ActorRef<A> {
     pub fn actor_id(&self) -> ActorId {
         self.id
     }
-}
 
-impl<M> Addr<M>
-where
-    M: Send + 'static,
-{
-    pub async fn send(&self, msg: M) -> Result<(), SendError> {
+    pub async fn send(&self, msg: A::Msg) -> Result<(), SendError> {
         self.send_with_meta(msg, Meta::default()).await
     }
 
-    pub async fn send_with_meta(&self, msg: M, meta: Meta) -> Result<(), SendError> {
+    pub async fn send_with_meta(&self, msg: A::Msg, meta: Meta) -> Result<(), SendError> {
         let env = Envelope::with_meta(self.id, msg, meta);
-        self.tx.send(env).await.map_err(|_| SendError::MailboxClosed)
+        self.tx
+            .send(env)
+            .await
+            .map_err(|_| SendError::MailboxClosed)
+    }
+
+    pub fn downgrade(&self) -> WeakActorRef<A> {
+        WeakActorRef {
+            id: self.id,
+            tx: self.tx.downgrade(),
+            marker: PhantomData,
+        }
+    }
+}
+
+pub struct WeakActorRef<A: Actor> {
+    id: ActorId,
+    tx: mpsc::WeakSender<Envelope>,
+    marker: PhantomData<fn(A)>,
+}
+
+impl<A: Actor> Clone for WeakActorRef<A> {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id,
+            tx: self.tx.clone(),
+            marker: PhantomData,
+        }
+    }
+}
+
+impl<A: Actor> WeakActorRef<A> {
+    pub fn actor_id(&self) -> ActorId {
+        self.id
+    }
+
+    pub fn upgrade(&self) -> Option<ActorRef<A>> {
+        let tx = self.tx.upgrade()?;
+        Some(ActorRef {
+            id: self.id,
+            tx,
+            marker: PhantomData,
+        })
+    }
+}
+
+#[derive(Clone)]
+pub struct RuntimeRef {
+    router_tx: mpsc::Sender<Envelope>,
+    actor_type_index: Arc<RwLock<HashMap<TypeId, ActorId>>>,
+}
+
+impl RuntimeRef {
+    pub async fn send_envelope(&self, envelope: Envelope) -> Result<(), SendError> {
+        self.router_tx
+            .send(envelope)
+            .await
+            .map_err(|_| SendError::MailboxClosed)
+    }
+
+    pub fn actor_ref<A>(&self) -> Option<ActorRef<A>>
+    where
+        A: Actor + 'static,
+    {
+        let id = *self
+            .actor_type_index
+            .read()
+            .expect("actor type index lock should not be poisoned")
+            .get(&TypeId::of::<A>())?;
+        Some(ActorRef {
+            id,
+            tx: self.router_tx.clone(),
+            marker: PhantomData,
+        })
+    }
+
+    pub fn weak_actor_ref<A>(&self) -> Option<WeakActorRef<A>>
+    where
+        A: Actor + 'static,
+    {
+        self.actor_ref::<A>().map(|strong| strong.downgrade())
+    }
+}
+
+#[derive(Clone)]
+pub struct UpdateContext {
+    actor_id: ActorId,
+    runtime: RuntimeRef,
+}
+
+impl UpdateContext {
+    pub fn new(actor_id: ActorId, runtime: RuntimeRef) -> Self {
+        Self { actor_id, runtime }
+    }
+
+    pub fn actor_id(&self) -> ActorId {
+        self.actor_id
+    }
+
+    pub fn runtime(&self) -> &RuntimeRef {
+        &self.runtime
+    }
+}
+
+#[derive(Clone)]
+pub struct EffectContext {
+    actor_id: ActorId,
+    runtime: RuntimeRef,
+}
+
+impl EffectContext {
+    pub fn new(actor_id: ActorId, runtime: RuntimeRef) -> Self {
+        Self { actor_id, runtime }
+    }
+
+    pub fn actor_id(&self) -> ActorId {
+        self.actor_id
+    }
+
+    pub fn runtime(&self) -> &RuntimeRef {
+        &self.runtime
     }
 }
 
@@ -121,7 +237,7 @@ pub trait Actor: Send + 'static {
     type Driver: EffectDriver<Self::Cmd>;
     type DriverContext;
 
-    fn update(&mut self, msg: Self::Msg) -> Vec<Self::Cmd>;
+    fn update(&mut self, msg: Self::Msg, ctx: &UpdateContext) -> Vec<Self::Cmd>;
 
     fn effect_driver(context: Self::DriverContext) -> Self::Driver
     where
@@ -129,16 +245,16 @@ pub trait Actor: Send + 'static {
 }
 
 pub trait EffectDriver<C>: Send + Sync + 'static {
-    fn run(&self, issued: IssuedCmd<C>) -> EffectRun;
+    fn run(&self, issued: IssuedCmd<C>, ctx: &EffectContext) -> EffectRun;
 }
 
 impl<C, F> EffectDriver<C> for F
 where
     C: Send + 'static,
-    F: Fn(IssuedCmd<C>) -> EffectRun + Send + Sync + 'static,
+    F: Fn(IssuedCmd<C>, &EffectContext) -> EffectRun + Send + Sync + 'static,
 {
-    fn run(&self, issued: IssuedCmd<C>) -> EffectRun {
-        (self)(issued)
+    fn run(&self, issued: IssuedCmd<C>, ctx: &EffectContext) -> EffectRun {
+        (self)(issued, ctx)
     }
 }
 
@@ -170,6 +286,7 @@ pub type EffectFuture = Pin<Box<dyn Future<Output = Result<Vec<Envelope>, Effect
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RegisterError {
     DuplicateActorId(ActorId),
+    DuplicateActorType(&'static str),
 }
 
 struct RouteEntry {
@@ -182,6 +299,7 @@ pub struct Runtime {
     router_tx: mpsc::Sender<Envelope>,
     router_rx: mpsc::Receiver<Envelope>,
     routes: HashMap<ActorId, RouteEntry>,
+    actor_type_index: Arc<RwLock<HashMap<TypeId, ActorId>>>,
     actor_states: HashMap<ActorId, Box<dyn Any + Send + Sync>>,
     actor_tasks: JoinSet<()>,
     backend: Arc<dyn SystemBackend>,
@@ -197,6 +315,7 @@ impl Runtime {
             router_tx,
             router_rx,
             routes: HashMap::new(),
+            actor_type_index: Arc::new(RwLock::new(HashMap::new())),
             actor_states: HashMap::new(),
             actor_tasks: JoinSet::new(),
             backend,
@@ -209,7 +328,7 @@ impl Runtime {
         id: ActorId,
         actor: A,
         effects: D,
-    ) -> Result<Addr<A::Msg>, RegisterError>
+    ) -> Result<ActorRef<A>, RegisterError>
     where
         A: Actor,
         D: EffectDriver<A::Cmd>,
@@ -217,11 +336,21 @@ impl Runtime {
         if self.routes.contains_key(&id) {
             return Err(RegisterError::DuplicateActorId(id));
         }
+        let actor_type = TypeId::of::<A>();
+        if self
+            .actor_type_index
+            .read()
+            .expect("actor type index lock should not be poisoned")
+            .contains_key(&actor_type)
+        {
+            return Err(RegisterError::DuplicateActorType(type_name::<A>()));
+        }
 
         let (inbox_tx, inbox_rx) = mpsc::channel(self.mailbox_capacity);
         let actor_state = Arc::new(tokio::sync::Mutex::new(actor));
 
-        self.actor_states.insert(id, Box::new(Arc::clone(&actor_state)));
+        self.actor_states
+            .insert(id, Box::new(Arc::clone(&actor_state)));
         self.routes.insert(
             id,
             RouteEntry {
@@ -229,8 +358,13 @@ impl Runtime {
                 inbox_tx,
             },
         );
+        self.actor_type_index
+            .write()
+            .expect("actor type index lock should not be poisoned")
+            .insert(actor_type, id);
 
         let router_tx = self.router_tx.clone();
+        let runtime_ref = self.runtime_ref();
         let backend = Arc::clone(&self.backend);
         let dead_letters = Arc::clone(&self.dead_letters);
         self.actor_tasks.spawn(run_actor_task(
@@ -239,11 +373,12 @@ impl Runtime {
             effects,
             inbox_rx,
             router_tx,
+            runtime_ref,
             backend,
             dead_letters,
         ));
 
-        Ok(Addr {
+        Ok(ActorRef {
             id,
             tx: self.router_tx.clone(),
             marker: PhantomData,
@@ -251,10 +386,14 @@ impl Runtime {
     }
 
     pub async fn send_envelope(&self, envelope: Envelope) -> Result<(), SendError> {
-        self.router_tx
-            .send(envelope)
-            .await
-            .map_err(|_| SendError::MailboxClosed)
+        self.runtime_ref().send_envelope(envelope).await
+    }
+
+    pub fn runtime_ref(&self) -> RuntimeRef {
+        RuntimeRef {
+            router_tx: self.router_tx.clone(),
+            actor_type_index: Arc::clone(&self.actor_type_index),
+        }
     }
 
     pub fn actor<A>(&self, id: ActorId) -> Option<Arc<tokio::sync::Mutex<A>>>
@@ -267,11 +406,56 @@ impl Runtime {
             .cloned()
     }
 
+    pub fn actor_ref<A>(&self) -> Option<ActorRef<A>>
+    where
+        A: Actor + 'static,
+    {
+        let id = *self
+            .actor_type_index
+            .read()
+            .expect("actor type index lock should not be poisoned")
+            .get(&TypeId::of::<A>())?;
+        let route = self.routes.get(&id)?;
+        if route.expected_msg_type != TypeId::of::<A::Msg>() {
+            return None;
+        }
+
+        Some(ActorRef {
+            id,
+            tx: self.router_tx.clone(),
+            marker: PhantomData,
+        })
+    }
+
+    pub fn weak_actor_ref<A>(&self) -> Option<WeakActorRef<A>>
+    where
+        A: Actor + 'static,
+    {
+        let strong = self.actor_ref::<A>()?;
+        Some(strong.downgrade())
+    }
+
     pub fn dead_letters(&self) -> Vec<DeadLetter> {
         self.dead_letters
             .lock()
             .expect("dead letter collection should not be poisoned")
             .clone()
+    }
+
+    pub async fn run(&mut self) {
+        loop {
+            tokio::select! {
+                maybe_env = self.router_rx.recv() => {
+                    let Some(env) = maybe_env else {
+                        break;
+                    };
+                    self.route_envelope(env).await;
+                }
+                maybe_done = self.actor_tasks.join_next(), if !self.actor_tasks.is_empty() => {
+                    self.handle_actor_task_join(maybe_done);
+                }
+            }
+        }
     }
 
     pub async fn run_for(&mut self, duration: Duration) {
@@ -295,17 +479,7 @@ impl Runtime {
                     self.route_envelope(env).await;
                 }
                 maybe_done = self.actor_tasks.join_next(), if !self.actor_tasks.is_empty() => {
-                    if let Some(Err(err)) = maybe_done {
-                        push_dead_letter(
-                            &self.dead_letters,
-                            EnvelopeHeader {
-                                to: ActorId(0),
-                                msg_type: TypeId::of::<()>(),
-                                meta: Meta::default(),
-                            },
-                            DeadLetterReason::EffectJoinFailed(err.to_string()),
-                        );
-                    }
+                    self.handle_actor_task_join(maybe_done);
                 }
             }
         }
@@ -327,6 +501,20 @@ impl Runtime {
             push_dead_letter(&self.dead_letters, header, DeadLetterReason::MailboxClosed);
         }
     }
+
+    fn handle_actor_task_join(&self, maybe_done: Option<Result<(), tokio::task::JoinError>>) {
+        if let Some(Err(err)) = maybe_done {
+            push_dead_letter(
+                &self.dead_letters,
+                EnvelopeHeader {
+                    to: ActorId(0),
+                    msg_type: TypeId::of::<()>(),
+                    meta: Meta::default(),
+                },
+                DeadLetterReason::EffectJoinFailed(err.to_string()),
+            );
+        }
+    }
 }
 
 fn push_dead_letter(
@@ -346,12 +534,15 @@ async fn run_actor_task<A, D>(
     effects: D,
     mut inbox_rx: mpsc::Receiver<Envelope>,
     router_tx: mpsc::Sender<Envelope>,
+    runtime_ref: RuntimeRef,
     backend: Arc<dyn SystemBackend>,
     dead_letters: Arc<Mutex<Vec<DeadLetter>>>,
 ) where
     A: Actor,
     D: EffectDriver<A::Cmd>,
 {
+    let update_ctx = UpdateContext::new(actor_id, runtime_ref.clone());
+    let effect_ctx = EffectContext::new(actor_id, runtime_ref);
     let mut effect_tasks = JoinSet::<Result<Vec<Envelope>, EffectError>>::new();
 
     loop {
@@ -372,7 +563,7 @@ async fn run_actor_task<A, D>(
 
                 let cmds = {
                     let mut guard = actor.lock().await;
-                    guard.update(msg)
+                    guard.update(msg, &update_ctx)
                 };
 
                 for cmd in cmds {
@@ -380,7 +571,7 @@ async fn run_actor_task<A, D>(
                         origin: actor_id,
                         meta: header.meta.clone(),
                         cmd,
-                    });
+                    }, &effect_ctx);
                     let backend = Arc::clone(&backend);
                     effect_tasks.spawn(async move { materialize_effect_run(run, backend).await });
                 }
