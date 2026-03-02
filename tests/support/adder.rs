@@ -2,7 +2,7 @@ use tokio::sync::oneshot;
 
 use samara::{
     runtime::{Actor, EffectContext, EffectDriver, IssuedCmd, UpdateContext},
-    system_effects::EffectRun,
+    effects::EffectRun,
 };
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

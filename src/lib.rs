@@ -9,4 +9,4 @@ This crate currently contains runtime primitives for a thin-slice proof of conce
 
 pub mod prelude;
 pub mod runtime;
-pub mod system_effects;
+pub mod effects;

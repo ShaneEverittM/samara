@@ -4,10 +4,10 @@ mod support;
 
 use samara::{
     runtime::{
-        Actor, ActorId, AskError, DeadLetterReason, Envelope, RegisterError, Runtime,
-        RuntimeAskError, RuntimeTellError,
+        Actor, ActorId, AskError, DeadLetterReason, Envelope, RegisterError, RunUntil,
+        RunUntilExit, Runtime, RuntimeAskError, RuntimeTellError,
     },
-    system_effects::TokioBackend,
+    effects::TokioBackend,
 };
 use support::{
     adder::{AdderActor, AdderModel, AdderMsg},
@@ -47,7 +47,8 @@ async fn user_can_drive_counter_actor_with_two_effects() {
         .await
         .expect("mailbox should be open");
 
-    runtime.run_for(Duration::from_millis(50)).await;
+    let exit = runtime.run_until_idle().await;
+    assert_eq!(exit, RunUntilExit::Idle);
 
     let model = runtime
         .actor::<CounterActor>(counter_id)
@@ -84,7 +85,8 @@ async fn unknown_target_is_recorded_as_dead_letter() {
         .await
         .expect("mailbox should be open");
 
-    runtime.run_for(Duration::from_millis(5)).await;
+    let exit = runtime.run_until_idle().await;
+    assert_eq!(exit, RunUntilExit::Idle);
 
     assert!(
         runtime
@@ -111,7 +113,8 @@ async fn type_mismatch_is_recorded_as_dead_letter() {
         .await
         .expect("mailbox should be open");
 
-    runtime.run_for(Duration::from_millis(5)).await;
+    let exit = runtime.run_until_idle().await;
+    assert_eq!(exit, RunUntilExit::Idle);
 
     assert!(
         runtime
@@ -149,7 +152,8 @@ async fn type_lookup_and_weak_refs_are_available_for_singletons() {
         .send(CounterMsg::IncrementRequested)
         .await
         .expect("mailbox should be open");
-    runtime.run_for(Duration::from_millis(50)).await;
+    let exit = runtime.run_until_idle().await;
+    assert_eq!(exit, RunUntilExit::Idle);
 
     let model = runtime
         .actor::<CounterActor>(ActorId(77))
@@ -203,14 +207,15 @@ async fn actor_ref_supports_tell_and_ask_patterns() {
         .tell(AdderMsg::Add(7))
         .await
         .expect("tell should enqueue message");
-    runtime.run_for(Duration::from_millis(10)).await;
+    let exit = runtime.run_until_idle().await;
+    assert_eq!(exit, RunUntilExit::Idle);
 
     let ask_task = tokio::spawn({
         let adder = adder.clone();
         async move { adder.ask(|reply_to| AdderMsg::GetTotal(reply_to)).await }
     });
-    tokio::task::yield_now().await;
-    runtime.run_for(Duration::from_millis(10)).await;
+    let exit = runtime.run_until_predicate(|| ask_task.is_finished()).await;
+    assert_eq!(exit, RunUntilExit::ConditionMet);
 
     let total = ask_task
         .await
@@ -238,8 +243,8 @@ async fn ask_reports_when_reply_channel_is_dropped() {
                 .await
         }
     });
-    tokio::task::yield_now().await;
-    runtime.run_for(Duration::from_millis(10)).await;
+    let exit = runtime.run_until_predicate(|| ask_task.is_finished()).await;
+    assert_eq!(exit, RunUntilExit::ConditionMet);
 
     let err = ask_task
         .await
@@ -265,7 +270,8 @@ async fn runtime_ref_supports_type_based_tell_and_ask_patterns() {
         .tell::<AdderActor>(AdderMsg::Add(11))
         .await
         .expect("type-based tell should resolve");
-    runtime.run_for(Duration::from_millis(10)).await;
+    let exit = runtime.run_until_idle().await;
+    assert_eq!(exit, RunUntilExit::Idle);
 
     let ask_task = tokio::spawn({
         let runtime_ref = runtime_ref.clone();
@@ -275,8 +281,8 @@ async fn runtime_ref_supports_type_based_tell_and_ask_patterns() {
                 .await
         }
     });
-    tokio::task::yield_now().await;
-    runtime.run_for(Duration::from_millis(10)).await;
+    let exit = runtime.run_until_predicate(|| ask_task.is_finished()).await;
+    assert_eq!(exit, RunUntilExit::ConditionMet);
 
     let total = ask_task
         .await
@@ -307,4 +313,13 @@ async fn runtime_ref_reports_missing_actor_type_for_tell_and_ask() {
         ask_err,
         RuntimeAskError::ActorTypeNotRegistered(std::any::type_name::<AdderActor>())
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn run_until_supports_deadline_condition() {
+    let mut runtime = Runtime::new(8, std::sync::Arc::new(TokioBackend));
+    let exit = runtime
+        .run_until(RunUntil::for_duration(Duration::from_millis(1)))
+        .await;
+    assert_eq!(exit, RunUntilExit::DeadlineReached);
 }

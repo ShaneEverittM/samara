@@ -2,7 +2,7 @@ use tokio::time::Duration;
 
 use samara::{
     runtime::{Actor, EffectContext, EffectDriver, Envelope, IssuedCmd, UpdateContext},
-    system_effects::{EffectRun, Sleep},
+    effects::{EffectRun, Sleep},
 };
 
 use crate::support::store::InMemoryStore;

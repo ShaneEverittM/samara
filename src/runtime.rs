@@ -5,16 +5,19 @@ use std::{
     future::Future,
     marker::PhantomData,
     pin::Pin,
-    sync::{Arc, Mutex, RwLock},
+    sync::{
+        Arc, Mutex, RwLock,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use tokio::{
-    sync::{mpsc, oneshot},
+    sync::{Notify, mpsc, mpsc::error::TryRecvError, oneshot},
     task::JoinSet,
     time::{Duration, Instant},
 };
 
-use crate::system_effects::{EffectRun, SystemBackend, materialize_effect_run};
+use crate::effects::{EffectRun, SystemBackend, materialize_effect_run};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ActorId(pub u64);
@@ -107,6 +110,26 @@ impl From<AskError> for RuntimeAskError {
             AskError::ResponseChannelClosed => Self::ResponseChannelClosed,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RunUntil {
+    Idle,
+    Deadline(Instant),
+}
+
+impl RunUntil {
+    pub fn for_duration(duration: Duration) -> Self {
+        Self::Deadline(Instant::now() + duration)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RunUntilExit {
+    ConditionMet,
+    Idle,
+    DeadlineReached,
+    MailboxClosed,
 }
 
 pub struct ActorRef<A: Actor> {
@@ -383,6 +406,77 @@ struct RouteEntry {
     inbox_tx: mpsc::Sender<Envelope>,
 }
 
+#[derive(Default)]
+struct RuntimeActivity {
+    actor_mailbox_depth: AtomicUsize,
+    actors_busy: AtomicUsize,
+    in_flight_effects: AtomicUsize,
+    idle_notify: Notify,
+}
+
+impl RuntimeActivity {
+    fn note_actor_enqueued(&self) {
+        self.actor_mailbox_depth.fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn note_actor_dequeued(&self) {
+        decrement_counter(&self.actor_mailbox_depth);
+        self.maybe_notify_idle();
+    }
+
+    fn note_actor_started(&self) {
+        self.actors_busy.fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn note_actor_finished(&self) {
+        decrement_counter(&self.actors_busy);
+        self.maybe_notify_idle();
+    }
+
+    fn note_effect_spawned(&self) {
+        self.in_flight_effects.fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn note_effect_completed(&self) {
+        decrement_counter(&self.in_flight_effects);
+        self.maybe_notify_idle();
+    }
+
+    fn note_effects_aborted(&self, count: usize) {
+        if count == 0 {
+            return;
+        }
+        decrement_counter_by(&self.in_flight_effects, count);
+        self.maybe_notify_idle();
+    }
+
+    fn is_idle(&self) -> bool {
+        self.actor_mailbox_depth.load(Ordering::Acquire) == 0
+            && self.actors_busy.load(Ordering::Acquire) == 0
+            && self.in_flight_effects.load(Ordering::Acquire) == 0
+    }
+
+    fn maybe_notify_idle(&self) {
+        if self.is_idle() {
+            self.idle_notify.notify_waiters();
+        }
+    }
+
+    fn idle_notified(&self) -> impl Future<Output = ()> + '_ {
+        self.idle_notify.notified()
+    }
+}
+
+fn decrement_counter(counter: &AtomicUsize) {
+    let prev = counter.fetch_sub(1, Ordering::AcqRel);
+    debug_assert!(prev > 0, "counter underflow");
+}
+
+fn decrement_counter_by(counter: &AtomicUsize, count: usize) {
+    let prev = counter.fetch_sub(count, Ordering::AcqRel);
+    debug_assert!(prev >= count, "counter underflow");
+}
+
 pub struct Runtime {
     mailbox_capacity: usize,
     router_tx: mpsc::Sender<Envelope>,
@@ -393,6 +487,7 @@ pub struct Runtime {
     actor_tasks: JoinSet<()>,
     backend: Arc<dyn SystemBackend>,
     dead_letters: Arc<Mutex<Vec<DeadLetter>>>,
+    activity: Arc<RuntimeActivity>,
 }
 
 impl Runtime {
@@ -409,6 +504,7 @@ impl Runtime {
             actor_tasks: JoinSet::new(),
             backend,
             dead_letters: Arc::new(Mutex::new(Vec::new())),
+            activity: Arc::new(RuntimeActivity::default()),
         }
     }
 
@@ -456,6 +552,7 @@ impl Runtime {
         let runtime_ref = self.runtime_ref();
         let backend = Arc::clone(&self.backend);
         let dead_letters = Arc::clone(&self.dead_letters);
+        let activity = Arc::clone(&self.activity);
         self.actor_tasks.spawn(run_actor_task(
             id,
             actor_state,
@@ -465,6 +562,7 @@ impl Runtime {
             runtime_ref,
             backend,
             dead_letters,
+            activity,
         ));
 
         Ok(ActorRef {
@@ -564,28 +662,116 @@ impl Runtime {
     }
 
     pub async fn run_for(&mut self, duration: Duration) {
-        let deadline = Instant::now() + duration;
+        let _ = self.run_until(RunUntil::for_duration(duration)).await;
+    }
+
+    pub async fn run_until_idle(&mut self) -> RunUntilExit {
+        self.run_until(RunUntil::Idle).await
+    }
+
+    pub async fn run_until_predicate<F>(&mut self, mut done: F) -> RunUntilExit
+    where
+        F: FnMut() -> bool,
+    {
         loop {
-            if Instant::now() >= deadline {
-                break;
+            if done() {
+                return RunUntilExit::ConditionMet;
             }
 
-            let sleep = tokio::time::sleep_until(deadline);
-            tokio::pin!(sleep);
-
             tokio::select! {
-                _ = &mut sleep => {
-                    break;
-                }
                 maybe_env = self.router_rx.recv() => {
                     let Some(env) = maybe_env else {
-                        break;
+                        return RunUntilExit::MailboxClosed;
                     };
                     self.route_envelope(env).await;
                 }
                 maybe_done = self.actor_tasks.join_next(), if !self.actor_tasks.is_empty() => {
                     self.handle_actor_task_join(maybe_done);
                 }
+                _ = self.activity.idle_notified() => {
+                    // Re-check predicate on wake.
+                }
+                _ = tokio::task::yield_now() => {
+                    // Ensure the predicate is re-checked even if no runtime events occur.
+                }
+            }
+        }
+    }
+
+    pub async fn run_until(&mut self, until: RunUntil) -> RunUntilExit {
+        loop {
+            if matches!(until, RunUntil::Idle) && self.activity.is_idle() {
+                match self.route_ready_envelopes().await {
+                    Ok(0) => {
+                        // Avoid racing with just-spawned senders that have not yet run.
+                        tokio::task::yield_now().await;
+                        if self.activity.is_idle() {
+                            match self.route_ready_envelopes().await {
+                                Ok(0) => return RunUntilExit::Idle,
+                                Ok(_) => {}
+                                Err(exit) => return exit,
+                            }
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(exit) => return exit,
+                }
+            }
+
+            if let RunUntil::Deadline(deadline) = until {
+                if Instant::now() >= deadline {
+                    return RunUntilExit::DeadlineReached;
+                }
+
+                let sleep = tokio::time::sleep_until(deadline);
+                tokio::pin!(sleep);
+
+                tokio::select! {
+                    _ = &mut sleep => {
+                        return RunUntilExit::DeadlineReached;
+                    }
+                    maybe_env = self.router_rx.recv() => {
+                        let Some(env) = maybe_env else {
+                            return RunUntilExit::MailboxClosed;
+                        };
+                        self.route_envelope(env).await;
+                    }
+                    maybe_done = self.actor_tasks.join_next(), if !self.actor_tasks.is_empty() => {
+                        self.handle_actor_task_join(maybe_done);
+                    }
+                }
+            } else {
+                tokio::select! {
+                    maybe_env = self.router_rx.recv() => {
+                        let Some(env) = maybe_env else {
+                            return RunUntilExit::MailboxClosed;
+                        };
+                        self.route_envelope(env).await;
+                    }
+                    maybe_done = self.actor_tasks.join_next(), if !self.actor_tasks.is_empty() => {
+                        self.handle_actor_task_join(maybe_done);
+                    }
+                    _ = self.activity.idle_notified() => {
+                        // Re-check idle condition on wake.
+                    }
+                    _ = tokio::task::yield_now() => {
+                        // Re-check idle condition even without runtime events.
+                    }
+                }
+            }
+        }
+    }
+
+    async fn route_ready_envelopes(&mut self) -> Result<usize, RunUntilExit> {
+        let mut routed = 0usize;
+        loop {
+            match self.router_rx.try_recv() {
+                Ok(env) => {
+                    self.route_envelope(env).await;
+                    routed += 1;
+                }
+                Err(TryRecvError::Empty) => return Ok(routed),
+                Err(TryRecvError::Disconnected) => return Err(RunUntilExit::MailboxClosed),
             }
         }
     }
@@ -602,8 +788,11 @@ impl Runtime {
             return;
         }
 
+        self.activity.note_actor_enqueued();
         if route.inbox_tx.send(env).await.is_err() {
+            self.activity.note_actor_dequeued();
             push_dead_letter(&self.dead_letters, header, DeadLetterReason::MailboxClosed);
+            return;
         }
     }
 
@@ -642,6 +831,7 @@ async fn run_actor_task<A, D>(
     runtime_ref: RuntimeRef,
     backend: Arc<dyn SystemBackend>,
     dead_letters: Arc<Mutex<Vec<DeadLetter>>>,
+    activity: Arc<RuntimeActivity>,
 ) where
     A: Actor,
     D: EffectDriver<A::Cmd>,
@@ -656,12 +846,15 @@ async fn run_actor_task<A, D>(
                 let Some(env) = maybe_env else {
                     break;
                 };
+                activity.note_actor_dequeued();
+                activity.note_actor_started();
                 let header = env.header();
 
                 let msg = match env.body.downcast::<A::Msg>() {
                     Ok(msg) => *msg,
                     Err(_) => {
                         push_dead_letter(&dead_letters, header, DeadLetterReason::DowncastFailed);
+                        activity.note_actor_finished();
                         continue;
                     }
                 };
@@ -672,6 +865,7 @@ async fn run_actor_task<A, D>(
                 };
 
                 for cmd in cmds {
+                    activity.note_effect_spawned();
                     let run = effects.run(IssuedCmd {
                         origin: actor_id,
                         meta: header.meta.clone(),
@@ -680,13 +874,19 @@ async fn run_actor_task<A, D>(
                     let backend = Arc::clone(&backend);
                     effect_tasks.spawn(async move { materialize_effect_run(run, backend).await });
                 }
+                activity.note_actor_finished();
             }
             maybe_joined = effect_tasks.join_next(), if !effect_tasks.is_empty() => {
+                let completed = maybe_joined.is_some();
                 handle_effect_completion(maybe_joined, &router_tx, &dead_letters).await;
+                if completed {
+                    activity.note_effect_completed();
+                }
             }
         }
     }
 
+    activity.note_effects_aborted(effect_tasks.len());
     effect_tasks.abort_all();
 }
 

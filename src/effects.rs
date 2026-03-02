@@ -32,9 +32,7 @@ impl SystemIoError {
 
 pub trait SystemBackend: Send + Sync + 'static {
     fn sleep(&self, duration: Duration) -> SystemUnitFuture<'_>;
-
     fn stdout_println(&self, line: String) -> SystemUnitFuture<'_>;
-
     fn socket_connect(&self, endpoint: Endpoint) -> SystemFuture<'_, SocketId, SystemIoError>;
 }
 

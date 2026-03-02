@@ -67,6 +67,7 @@ async fn handle(cmd: Cmd) -> Result<Vec<Msg>, RuntimeError>;
   - Supervise task lifecycle, cancellation, and shutdown.
   - Re-enqueue handler output messages.
 - Runtime must be the only component coordinating message flow and command execution.
+- Runtime driving APIs should support condition-based execution (`run_until(...)` / `run_until_predicate(...)`) and quiescence execution (`run_until_idle()`), so tests/simulations do not depend on hard-coded wall-clock sleeps.
 
 ### Actor Interaction Contract (`tell` / `ask`)
 - `tell` is a one-way message send (`ActorRef::tell`), with delivery acknowledgment only (`MailboxClosed` on failure).
