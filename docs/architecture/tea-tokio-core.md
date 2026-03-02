@@ -68,6 +68,15 @@ async fn handle(cmd: Cmd) -> Result<Vec<Msg>, RuntimeError>;
   - Re-enqueue handler output messages.
 - Runtime must be the only component coordinating message flow and command execution.
 
+### Actor Interaction Contract (`tell` / `ask`)
+- `tell` is a one-way message send (`ActorRef::tell`), with delivery acknowledgment only (`MailboxClosed` on failure).
+- `ask` is request/reply over message flow (`ActorRef::ask`), where a reply channel is carried in the request message.
+- `update` remains pure for `ask` handling:
+  - `update` may emit a typed `Cmd` containing reply intent/handle.
+  - Effect handlers perform the actual reply side effect and return control to runtime flow.
+- No direct I/O or reply-channel sending in `update`.
+- Type-based actor linking (`RuntimeRef::tell` / `RuntimeRef::ask`) must preserve the same mailbox and error semantics.
+
 ### Time and Simulation Contract
 - The runtime must provide a clock/scheduling abstraction boundary that can support:
   - Real-time execution.

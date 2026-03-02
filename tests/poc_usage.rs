@@ -3,10 +3,14 @@ use std::time::Duration;
 mod support;
 
 use samara::{
-    runtime::{Actor, ActorId, DeadLetterReason, Envelope, RegisterError, Runtime},
+    runtime::{
+        Actor, ActorId, AskError, DeadLetterReason, Envelope, RegisterError, Runtime,
+        RuntimeAskError, RuntimeTellError,
+    },
     system_effects::TokioBackend,
 };
 use support::{
+    adder::{AdderActor, AdderModel, AdderMsg},
     counter::{self, CounterActor, CounterModel, CounterMsg},
     store::InMemoryStore,
 };
@@ -181,5 +185,126 @@ async fn runtime_enforces_one_actor_instance_per_type() {
     assert_eq!(
         err,
         RegisterError::DuplicateActorType(std::any::type_name::<CounterActor>())
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn actor_ref_supports_tell_and_ask_patterns() {
+    let mut runtime = Runtime::new(32, std::sync::Arc::new(TokioBackend));
+    let adder = runtime
+        .register_actor(
+            ActorId(900),
+            AdderActor::new(AdderModel::default()),
+            AdderActor::effect_driver(()),
+        )
+        .expect("adder registration should succeed");
+
+    adder
+        .tell(AdderMsg::Add(7))
+        .await
+        .expect("tell should enqueue message");
+    runtime.run_for(Duration::from_millis(10)).await;
+
+    let ask_task = tokio::spawn({
+        let adder = adder.clone();
+        async move { adder.ask(|reply_to| AdderMsg::GetTotal(reply_to)).await }
+    });
+    tokio::task::yield_now().await;
+    runtime.run_for(Duration::from_millis(10)).await;
+
+    let total = ask_task
+        .await
+        .expect("ask task should not panic")
+        .expect("ask should resolve");
+    assert_eq!(total, 7);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ask_reports_when_reply_channel_is_dropped() {
+    let mut runtime = Runtime::new(32, std::sync::Arc::new(TokioBackend));
+    let adder = runtime
+        .register_actor(
+            ActorId(901),
+            AdderActor::new(AdderModel::default()),
+            AdderActor::effect_driver(()),
+        )
+        .expect("adder registration should succeed");
+
+    let ask_task = tokio::spawn({
+        let adder = adder.clone();
+        async move {
+            adder
+                .ask(|reply_to| AdderMsg::DropTotalRequest(reply_to))
+                .await
+        }
+    });
+    tokio::task::yield_now().await;
+    runtime.run_for(Duration::from_millis(10)).await;
+
+    let err = ask_task
+        .await
+        .expect("ask task should not panic")
+        .expect_err("ask should fail when actor drops reply");
+    assert_eq!(err, AskError::ResponseChannelClosed);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn runtime_ref_supports_type_based_tell_and_ask_patterns() {
+    let mut runtime = Runtime::new(32, std::sync::Arc::new(TokioBackend));
+    runtime
+        .register_actor(
+            ActorId(902),
+            AdderActor::new(AdderModel::default()),
+            AdderActor::effect_driver(()),
+        )
+        .expect("adder registration should succeed");
+
+    let runtime_ref = runtime.runtime_ref();
+
+    runtime_ref
+        .tell::<AdderActor>(AdderMsg::Add(11))
+        .await
+        .expect("type-based tell should resolve");
+    runtime.run_for(Duration::from_millis(10)).await;
+
+    let ask_task = tokio::spawn({
+        let runtime_ref = runtime_ref.clone();
+        async move {
+            runtime_ref
+                .ask::<AdderActor, u64, _>(|reply_to| AdderMsg::GetTotal(reply_to))
+                .await
+        }
+    });
+    tokio::task::yield_now().await;
+    runtime.run_for(Duration::from_millis(10)).await;
+
+    let total = ask_task
+        .await
+        .expect("ask task should not panic")
+        .expect("type-based ask should resolve");
+    assert_eq!(total, 11);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn runtime_ref_reports_missing_actor_type_for_tell_and_ask() {
+    let runtime = Runtime::new(8, std::sync::Arc::new(TokioBackend));
+    let runtime_ref = runtime.runtime_ref();
+
+    let tell_err = runtime_ref
+        .tell::<AdderActor>(AdderMsg::Add(1))
+        .await
+        .expect_err("tell should fail when actor type is not registered");
+    assert_eq!(
+        tell_err,
+        RuntimeTellError::ActorTypeNotRegistered(std::any::type_name::<AdderActor>())
+    );
+
+    let ask_err = runtime_ref
+        .ask::<AdderActor, u64, _>(|reply_to| AdderMsg::GetTotal(reply_to))
+        .await
+        .expect_err("ask should fail when actor type is not registered");
+    assert_eq!(
+        ask_err,
+        RuntimeAskError::ActorTypeNotRegistered(std::any::type_name::<AdderActor>())
     );
 }

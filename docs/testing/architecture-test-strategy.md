@@ -48,6 +48,7 @@ Define required test layers and acceptance gates for a strict TEA + Tokio archit
 - Command correctness for happy path and failure path transitions.
 - Adapter/protocol translation correctness (`AppCmd <-> system operations <-> Msg`).
 - Runtime fault conversion into explicit `Msg` variants.
+- Actor interaction coverage for `tell` (fire-and-forget) and `ask` (request/reply), including dropped-reply failure paths.
 - Cancellation behavior for long-running and short-running commands.
 - Backpressure behavior under burst and sustained load.
 - Recovery behavior after handler and runtime errors.

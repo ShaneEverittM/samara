@@ -1,9 +1,9 @@
 //! Convenience re-exports for common Samara runtime and system-effect types.
 
 pub use crate::runtime::{
-    Actor, ActorId, ActorRef, DeadLetter, DeadLetterReason, EffectContext, EffectDriver,
+    Actor, ActorId, ActorRef, AskError, DeadLetter, DeadLetterReason, EffectContext, EffectDriver,
     EffectError, EffectFuture, Envelope, EnvelopeHeader, IssuedCmd, Meta, RegisterError, Runtime,
-    RuntimeRef, SendError, UpdateContext, WeakActorRef,
+    RuntimeAskError, RuntimeRef, RuntimeTellError, SendError, UpdateContext, WeakActorRef,
 };
 pub use crate::system_effects::{
     EffectRun, Endpoint, ErasedComposedEffect, Sleep, SocketConnect, SocketId, StdoutPrintln,

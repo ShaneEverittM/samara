@@ -9,7 +9,7 @@ use std::{
 };
 
 use tokio::{
-    sync::mpsc,
+    sync::{mpsc, oneshot},
     task::JoinSet,
     time::{Duration, Instant},
 };
@@ -73,6 +73,42 @@ pub enum SendError {
     MailboxClosed,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AskError {
+    MailboxClosed,
+    ResponseChannelClosed,
+}
+
+impl From<SendError> for AskError {
+    fn from(value: SendError) -> Self {
+        match value {
+            SendError::MailboxClosed => Self::MailboxClosed,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RuntimeTellError {
+    ActorTypeNotRegistered(&'static str),
+    MailboxClosed,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RuntimeAskError {
+    ActorTypeNotRegistered(&'static str),
+    MailboxClosed,
+    ResponseChannelClosed,
+}
+
+impl From<AskError> for RuntimeAskError {
+    fn from(value: AskError) -> Self {
+        match value {
+            AskError::MailboxClosed => Self::MailboxClosed,
+            AskError::ResponseChannelClosed => Self::ResponseChannelClosed,
+        }
+    }
+}
+
 pub struct ActorRef<A: Actor> {
     id: ActorId,
     tx: mpsc::Sender<Envelope>,
@@ -94,16 +130,44 @@ impl<A: Actor> ActorRef<A> {
         self.id
     }
 
-    pub async fn send(&self, msg: A::Msg) -> Result<(), SendError> {
-        self.send_with_meta(msg, Meta::default()).await
+    pub async fn tell(&self, msg: A::Msg) -> Result<(), SendError> {
+        self.tell_with_meta(msg, Meta::default()).await
     }
 
-    pub async fn send_with_meta(&self, msg: A::Msg, meta: Meta) -> Result<(), SendError> {
+    pub async fn tell_with_meta(&self, msg: A::Msg, meta: Meta) -> Result<(), SendError> {
         let env = Envelope::with_meta(self.id, msg, meta);
         self.tx
             .send(env)
             .await
             .map_err(|_| SendError::MailboxClosed)
+    }
+
+    pub async fn send(&self, msg: A::Msg) -> Result<(), SendError> {
+        self.tell(msg).await
+    }
+
+    pub async fn send_with_meta(&self, msg: A::Msg, meta: Meta) -> Result<(), SendError> {
+        self.tell_with_meta(msg, meta).await
+    }
+
+    pub async fn ask<R, Build>(&self, build: Build) -> Result<R, AskError>
+    where
+        R: Send + 'static,
+        Build: FnOnce(oneshot::Sender<R>) -> A::Msg,
+    {
+        self.ask_with_meta(build, Meta::default()).await
+    }
+
+    pub async fn ask_with_meta<R, Build>(&self, build: Build, meta: Meta) -> Result<R, AskError>
+    where
+        R: Send + 'static,
+        Build: FnOnce(oneshot::Sender<R>) -> A::Msg,
+    {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tell_with_meta(build(reply_tx), meta)
+            .await
+            .map_err(AskError::from)?;
+        reply_rx.await.map_err(|_| AskError::ResponseChannelClosed)
     }
 
     pub fn downgrade(&self) -> WeakActorRef<A> {
@@ -181,6 +245,31 @@ impl RuntimeRef {
         A: Actor + 'static,
     {
         self.actor_ref::<A>().map(|strong| strong.downgrade())
+    }
+
+    pub async fn tell<A>(&self, msg: A::Msg) -> Result<(), RuntimeTellError>
+    where
+        A: Actor + 'static,
+    {
+        let actor_ref = self
+            .actor_ref::<A>()
+            .ok_or(RuntimeTellError::ActorTypeNotRegistered(type_name::<A>()))?;
+        actor_ref
+            .tell(msg)
+            .await
+            .map_err(|_| RuntimeTellError::MailboxClosed)
+    }
+
+    pub async fn ask<A, R, Build>(&self, build: Build) -> Result<R, RuntimeAskError>
+    where
+        A: Actor + 'static,
+        R: Send + 'static,
+        Build: FnOnce(oneshot::Sender<R>) -> A::Msg,
+    {
+        let actor_ref = self
+            .actor_ref::<A>()
+            .ok_or(RuntimeAskError::ActorTypeNotRegistered(type_name::<A>()))?;
+        actor_ref.ask(build).await.map_err(RuntimeAskError::from)
     }
 }
 
@@ -387,6 +476,22 @@ impl Runtime {
 
     pub async fn send_envelope(&self, envelope: Envelope) -> Result<(), SendError> {
         self.runtime_ref().send_envelope(envelope).await
+    }
+
+    pub async fn tell<A>(&self, msg: A::Msg) -> Result<(), RuntimeTellError>
+    where
+        A: Actor + 'static,
+    {
+        self.runtime_ref().tell::<A>(msg).await
+    }
+
+    pub async fn ask<A, R, Build>(&self, build: Build) -> Result<R, RuntimeAskError>
+    where
+        A: Actor + 'static,
+        R: Send + 'static,
+        Build: FnOnce(oneshot::Sender<R>) -> A::Msg,
+    {
+        self.runtime_ref().ask::<A, R, Build>(build).await
     }
 
     pub fn runtime_ref(&self) -> RuntimeRef {
