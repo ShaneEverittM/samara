@@ -118,8 +118,14 @@ pub struct IssuedCmd<C> {
 pub trait Actor: Send + 'static {
     type Msg: Send + 'static;
     type Cmd: Send + 'static;
+    type Driver: EffectDriver<Self::Cmd>;
+    type DriverContext;
 
-    fn on_msg(&mut self, msg: Self::Msg) -> Vec<Self::Cmd>;
+    fn update(&mut self, msg: Self::Msg) -> Vec<Self::Cmd>;
+
+    fn effect_driver(context: Self::DriverContext) -> Self::Driver
+    where
+        Self: Sized;
 }
 
 pub trait EffectDriver<C>: Send + Sync + 'static {
@@ -366,7 +372,7 @@ async fn run_actor_task<A, D>(
 
                 let cmds = {
                     let mut guard = actor.lock().await;
-                    guard.on_msg(msg)
+                    guard.update(msg)
                 };
 
                 for cmd in cmds {

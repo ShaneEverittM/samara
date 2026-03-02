@@ -3,24 +3,25 @@ use std::time::Duration;
 mod support;
 
 use samara::{
-    runtime::{ActorId, DeadLetterReason, Envelope, Meta, Runtime},
+    runtime::{Actor, ActorId, DeadLetterReason, Envelope, Runtime},
     system_effects::TokioBackend,
 };
 use support::{
-    counter::{update, CounterActor, CounterModel, CounterMsg},
-    effects::CounterEffectDriver,
+    counter::{CounterActor, CounterModel, CounterMsg, self},
     store::InMemoryStore,
 };
 
 #[test]
 fn update_is_deterministic() {
-    let model = CounterModel::default();
+    let mut first_model = CounterModel::default();
+    let mut second_model = CounterModel::default();
     let msg = CounterMsg::IncrementRequested;
 
-    let first = update(model.clone(), msg.clone());
-    let second = update(model, msg);
+    let first_cmds = counter::update(&mut first_model, msg.clone());
+    let second_cmds = counter::update(&mut second_model, msg);
 
-    assert_eq!(first, second);
+    assert_eq!(first_model, second_model);
+    assert_eq!(first_cmds, second_cmds);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -33,18 +34,12 @@ async fn user_can_drive_counter_actor_with_two_effects() {
         .register_actor(
             counter_id,
             CounterActor::new(CounterModel::default()),
-            CounterEffectDriver::new(store.clone()),
+            CounterActor::effect_driver(store.clone()),
         )
         .expect("counter id must be unique");
 
     counter_addr
-        .send_with_meta(
-            CounterMsg::IncrementRequested,
-            Meta {
-                correlation_id: Some(42),
-                causation_id: None,
-            },
-        )
+        .send(CounterMsg::IncrementRequested)
         .await
         .expect("mailbox should be open");
 
@@ -76,7 +71,7 @@ async fn unknown_target_is_recorded_as_dead_letter() {
         .register_actor(
             ActorId(1),
             CounterActor::new(CounterModel::default()),
-            CounterEffectDriver::new(Default::default()),
+            CounterActor::effect_driver(Default::default()),
         )
         .expect("counter id must be unique");
 
@@ -87,10 +82,12 @@ async fn unknown_target_is_recorded_as_dead_letter() {
 
     runtime.run_for(Duration::from_millis(5)).await;
 
-    assert!(runtime
-        .dead_letters()
-        .iter()
-        .any(|d| d.reason == DeadLetterReason::UnknownTarget));
+    assert!(
+        runtime
+            .dead_letters()
+            .iter()
+            .any(|d| d.reason == DeadLetterReason::UnknownTarget)
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -101,7 +98,7 @@ async fn type_mismatch_is_recorded_as_dead_letter() {
         .register_actor(
             ActorId(1),
             CounterActor::new(CounterModel::default()),
-            CounterEffectDriver::new(Default::default()),
+            <CounterActor as Actor>::effect_driver(Default::default()),
         )
         .expect("counter id must be unique");
 
@@ -112,8 +109,10 @@ async fn type_mismatch_is_recorded_as_dead_letter() {
 
     runtime.run_for(Duration::from_millis(5)).await;
 
-    assert!(runtime
-        .dead_letters()
-        .iter()
-        .any(|d| d.reason == DeadLetterReason::TypeMismatch));
+    assert!(
+        runtime
+            .dead_letters()
+            .iter()
+            .any(|d| d.reason == DeadLetterReason::TypeMismatch)
+    );
 }
