@@ -163,9 +163,16 @@ pub trait Port: Send + Sync + 'static {
     type Res: Send + 'static;
 }
 
+pub trait Request<A: Actor>: Send + 'static {
+    type Reply: Send + 'static;
+
+    fn into_msg(self) -> A::Msg;
+}
+
 pub struct ActorRef<A: Actor> {
     id: ActorId,
     tx: mpsc::Sender<Envelope>,
+    reply_state: Arc<ReplyState>,
     marker: PhantomData<fn(A)>,
 }
 
@@ -174,6 +181,7 @@ impl<A: Actor> Clone for ActorRef<A> {
         Self {
             id: self.id,
             tx: self.tx.clone(),
+            reply_state: Arc::clone(&self.reply_state),
             marker: PhantomData,
         }
     }
@@ -182,6 +190,49 @@ impl<A: Actor> Clone for ActorRef<A> {
 impl<A: Actor> ActorRef<A> {
     pub fn actor_id(&self) -> ActorId {
         self.id
+    }
+
+    pub async fn tell_request<R>(&self, req: R) -> Result<(), SendError>
+    where
+        R: Request<A>,
+    {
+        self.tell_request_with_meta(req, Meta::default()).await
+    }
+
+    pub async fn tell_request_with_meta<R>(&self, req: R, meta: Meta) -> Result<(), SendError>
+    where
+        R: Request<A>,
+    {
+        let token = self.reply_state.allocate_detached::<R::Reply>();
+        let mut meta = meta;
+        meta.reply_token_id = Some(token.id());
+        let env = Envelope::with_meta(self.id, req.into_msg(), meta);
+        self.tx.send(env).await.map_err(|_| {
+            let _ = self.reply_state.cancel(token);
+            SendError::MailboxClosed
+        })
+    }
+
+    pub async fn ask_request<R>(&self, req: R) -> Result<R::Reply, AskError>
+    where
+        R: Request<A>,
+    {
+        self.ask_request_with_meta(req, Meta::default()).await
+    }
+
+    pub async fn ask_request_with_meta<R>(&self, req: R, meta: Meta) -> Result<R::Reply, AskError>
+    where
+        R: Request<A>,
+    {
+        let (token, reply_rx) = self.reply_state.allocate::<R::Reply>();
+        let mut meta = meta;
+        meta.reply_token_id = Some(token.id());
+        let env = Envelope::with_meta(self.id, req.into_msg(), meta);
+        self.tx.send(env).await.map_err(|_| {
+            let _ = self.reply_state.cancel(token);
+            AskError::MailboxClosed
+        })?;
+        reply_rx.await.map_err(|_| AskError::ResponseChannelClosed)
     }
 
     pub async fn tell(&self, msg: A::Msg) -> Result<(), SendError> {
@@ -228,6 +279,7 @@ impl<A: Actor> ActorRef<A> {
         WeakActorRef {
             id: self.id,
             tx: self.tx.downgrade(),
+            reply_state: Arc::clone(&self.reply_state),
             marker: PhantomData,
         }
     }
@@ -236,6 +288,7 @@ impl<A: Actor> ActorRef<A> {
 pub struct WeakActorRef<A: Actor> {
     id: ActorId,
     tx: mpsc::WeakSender<Envelope>,
+    reply_state: Arc<ReplyState>,
     marker: PhantomData<fn(A)>,
 }
 
@@ -244,6 +297,7 @@ impl<A: Actor> Clone for WeakActorRef<A> {
         Self {
             id: self.id,
             tx: self.tx.clone(),
+            reply_state: Arc::clone(&self.reply_state),
             marker: PhantomData,
         }
     }
@@ -259,6 +313,7 @@ impl<A: Actor> WeakActorRef<A> {
         Some(ActorRef {
             id: self.id,
             tx,
+            reply_state: Arc::clone(&self.reply_state),
             marker: PhantomData,
         })
     }
@@ -418,6 +473,7 @@ impl RuntimeRef {
         Some(ActorRef {
             id,
             tx: self.router_tx.clone(),
+            reply_state: Arc::clone(&self.reply_state),
             marker: PhantomData,
         })
     }
@@ -457,6 +513,20 @@ impl RuntimeRef {
             .map_err(|_| RuntimeTellError::MailboxClosed)
     }
 
+    pub async fn tell_request<A, R>(&self, req: R) -> Result<(), RuntimeTellError>
+    where
+        A: Actor + 'static,
+        R: Request<A>,
+    {
+        let actor_ref = self
+            .actor_ref::<A>()
+            .ok_or(RuntimeTellError::ActorTypeNotRegistered(type_name::<A>()))?;
+        actor_ref
+            .tell_request(req)
+            .await
+            .map_err(|_| RuntimeTellError::MailboxClosed)
+    }
+
     pub async fn ask<A, R, Build>(&self, build: Build) -> Result<R, RuntimeAskError>
     where
         A: Actor + 'static,
@@ -467,6 +537,20 @@ impl RuntimeRef {
             .actor_ref::<A>()
             .ok_or(RuntimeAskError::ActorTypeNotRegistered(type_name::<A>()))?;
         actor_ref.ask(build).await.map_err(RuntimeAskError::from)
+    }
+
+    pub async fn ask_request<A, R>(&self, req: R) -> Result<R::Reply, RuntimeAskError>
+    where
+        A: Actor + 'static,
+        R: Request<A>,
+    {
+        let actor_ref = self
+            .actor_ref::<A>()
+            .ok_or(RuntimeAskError::ActorTypeNotRegistered(type_name::<A>()))?;
+        actor_ref
+            .ask_request(req)
+            .await
+            .map_err(RuntimeAskError::from)
     }
 
     pub fn reply<R>(&self, token: ReplyToken<R>, value: R) -> Result<(), ReplyError>
@@ -581,11 +665,23 @@ impl UpdateContext {
         &self.meta
     }
 
-    pub fn reply_token<R>(&self) -> Option<ReplyToken<R>> {
-        let id = self.meta.reply_token_id?;
+    pub fn has_reply(&self) -> bool {
+        self.meta.reply_token_id.is_some()
+    }
+
+    pub fn claim_reply(&self) {
+        debug_assert!(
+            self.meta.reply_token_id.is_some(),
+            "claim_reply called without a reply token"
+        );
         if let Some(claimed) = &self.reply_claimed {
             claimed.store(1, Ordering::Release);
         }
+    }
+
+    pub fn reply_token<R>(&self) -> Option<ReplyToken<R>> {
+        let id = self.meta.reply_token_id?;
+        self.claim_reply();
         Some(ReplyToken::new(id))
     }
 
@@ -628,6 +724,46 @@ impl EffectContext {
 
     pub fn cancel_reply<R>(&self, token: ReplyToken<R>) -> Result<(), ReplyError> {
         self.runtime.cancel_reply(token)
+    }
+
+    pub fn reply_from_meta<R>(&self, meta: &Meta, value: R) -> Result<(), ReplyError>
+    where
+        R: Send + 'static,
+    {
+        let Some(token_id) = meta.reply_token_id else {
+            return Err(ReplyError::UnknownToken);
+        };
+        self.reply(ReplyToken::new(token_id), value)
+    }
+
+    pub fn reply_from_issued<C, R>(&self, issued: &IssuedCmd<C>, value: R) -> Result<(), ReplyError>
+    where
+        R: Send + 'static,
+    {
+        self.reply_from_meta(&issued.meta, value)
+    }
+
+    pub fn envelope_with_issued_meta<C, M>(
+        &self,
+        issued: &IssuedCmd<C>,
+        to: ActorId,
+        msg: M,
+    ) -> Envelope
+    where
+        M: Send + 'static,
+    {
+        Envelope::with_meta(to, msg, issued.meta.clone())
+    }
+
+    pub fn envelope_to_origin_with_issued_meta<C, M>(
+        &self,
+        issued: &IssuedCmd<C>,
+        msg: M,
+    ) -> Envelope
+    where
+        M: Send + 'static,
+    {
+        self.envelope_with_issued_meta(issued, issued.origin, msg)
     }
 }
 
@@ -895,6 +1031,7 @@ impl Runtime {
         Ok(ActorRef {
             id,
             tx: self.router_tx.clone(),
+            reply_state: Arc::clone(&self.reply_state),
             marker: PhantomData,
         })
     }
@@ -948,6 +1085,14 @@ impl Runtime {
         self.runtime_ref().tell::<A>(msg).await
     }
 
+    pub async fn tell_request<A, R>(&self, req: R) -> Result<(), RuntimeTellError>
+    where
+        A: Actor + 'static,
+        R: Request<A>,
+    {
+        self.runtime_ref().tell_request::<A, R>(req).await
+    }
+
     pub async fn ask<A, R, Build>(&self, build: Build) -> Result<R, RuntimeAskError>
     where
         A: Actor + 'static,
@@ -955,6 +1100,14 @@ impl Runtime {
         Build: FnOnce(oneshot::Sender<R>) -> A::Msg,
     {
         self.runtime_ref().ask::<A, R, Build>(build).await
+    }
+
+    pub async fn ask_request<A, R>(&self, req: R) -> Result<R::Reply, RuntimeAskError>
+    where
+        A: Actor + 'static,
+        R: Request<A>,
+    {
+        self.runtime_ref().ask_request::<A, R>(req).await
     }
 
     pub fn runtime_ref(&self) -> RuntimeRef {
@@ -994,6 +1147,7 @@ impl Runtime {
         Some(ActorRef {
             id,
             tx: self.router_tx.clone(),
+            reply_state: Arc::clone(&self.reply_state),
             marker: PhantomData,
         })
     }

@@ -1,38 +1,30 @@
-use std::{sync::Arc, time::Duration};
-
 use samara::prelude::*;
-
-struct GreetingPort;
-
-impl Port for GreetingPort {
-    type Req = String;
-    type Res = String;
-}
+use std::{sync::Arc, time::Duration};
+use tokio::time::Instant;
 
 struct Greeter;
+
+#[derive(Clone)]
+struct Greet(pub String);
+
+impl Request<Greeter> for Greet {
+    type Reply = String;
+
+    fn into_msg(self) -> <Greeter as Actor>::Msg {
+        MyMessage::Request(self.0)
+    }
+}
 
 enum MyMessage {
     Request(String),
 
-    GreetingReady {
-        message: String,
-        reply_to: ReplyToken<String>,
-    },
+    GreetingReady { message: String },
 }
 
 enum MyCommand {
-    WaitToGreet {
-        name: String,
-        duration: Duration,
-        reply_to: ReplyToken<String>,
-    },
-    Print {
-        message: String,
-    },
-    Reply {
-        message: String,
-        reply_to: ReplyToken<String>,
-    },
+    WaitToGreet { name: String, duration: Duration },
+    Print { message: String },
+    Reply { message: String },
 }
 
 impl Actor for Greeter {
@@ -44,21 +36,21 @@ impl Actor for Greeter {
     fn update(&mut self, msg: Self::Msg, ctx: &UpdateContext) -> Vec<Self::Cmd> {
         match msg {
             MyMessage::Request(name) => {
-                let Some(reply_to) = ctx.reply_token::<String>() else {
-                    return Vec::new();
-                };
+                ctx.claim_reply();
                 vec![MyCommand::WaitToGreet {
                     name,
                     duration: Duration::from_millis(500),
-                    reply_to,
                 }]
             }
-            MyMessage::GreetingReady { message, reply_to } => vec![
-                MyCommand::Print {
-                    message: message.clone(),
-                },
-                MyCommand::Reply { message, reply_to },
-            ],
+            MyMessage::GreetingReady { message } => {
+                ctx.claim_reply();
+                vec![
+                    MyCommand::Print {
+                        message: message.clone(),
+                    },
+                    MyCommand::Reply { message },
+                ]
+            }
         }
     }
 
@@ -70,39 +62,30 @@ impl Actor for Greeter {
     }
 }
 
-impl PortHandler<GreetingPort> for Greeter {
-    fn request(req: String) -> Self::Msg {
-        MyMessage::Request(req)
-    }
-}
-
 struct MyDriver;
 
 impl EffectDriver<MyCommand> for MyDriver {
     fn run(&self, issued: IssuedCmd<MyCommand>, ctx: &EffectContext) -> EffectRun {
         match issued.cmd {
-            MyCommand::WaitToGreet {
-                name,
-                duration,
-                reply_to,
-            } => EffectRun::system_effect(Sleep(duration))
+            MyCommand::WaitToGreet { name, duration } => EffectRun::system_effect(Sleep(duration))
                 .on_ok(move |_| {
-                    vec![Envelope::new(
+                    vec![Envelope::with_meta(
                         issued.origin,
                         MyMessage::GreetingReady {
                             message: format!("Hello, {}!", name),
-                            reply_to,
                         },
+                        issued.meta.clone(),
                     )]
                 })
                 .into_run(),
             MyCommand::Print { message } => {
                 EffectRun::side_effect_future(async move { println!("greet -> {message}") })
             }
-            MyCommand::Reply { message, reply_to } => {
-                let runtime = ctx.runtime().clone();
+            MyCommand::Reply { message } => {
+                let effect_ctx = ctx.clone();
+                let meta = issued.meta.clone();
                 EffectRun::side_effect_future(async move {
-                    let _ = runtime.reply(reply_to, message);
+                    let _ = effect_ctx.reply_from_meta(&meta, message);
                 })
             }
         }
@@ -112,23 +95,25 @@ impl EffectDriver<MyCommand> for MyDriver {
 #[tokio::main]
 async fn main() {
     let mut runtime = Runtime::new(128, Arc::new(TokioBackend));
-    runtime
+    let actor = runtime
         .register_actor(ActorId(1), Greeter, Greeter::effect_driver(()))
         .expect("unique id");
-    let port = runtime
-        .register_port::<GreetingPort, Greeter>()
-        .expect("bind greeting port to provider actor");
 
-    port.tell("Shane".to_string())
+    actor
+        .tell_request(Greet("Shane".to_string()))
         .await
         .expect("tell should enqueue");
 
     let ask_task = tokio::spawn({
-        let port = port.clone();
-        async move { port.ask("Samara".to_string()).await }
+        let actor = actor.clone();
+        async move { actor.ask_request(Greet("Samara".to_string())).await }
     });
 
+    let now = Instant::now();
     let exit = runtime.run_until_predicate(|| ask_task.is_finished()).await;
+    let elapsed = now.elapsed();
+    println!("Ran for {elapsed:?}");
+
     assert_eq!(exit, RunUntilExit::ConditionMet);
 
     let response = ask_task
@@ -137,6 +122,9 @@ async fn main() {
         .expect("ask should resolve");
     println!("ask -> {response}");
 
+    let now = Instant::now();
     let exit = runtime.run_until_idle().await;
+    let elapsed = now.elapsed();
+    println!("Ran for another {elapsed:?}");
     assert_eq!(exit, RunUntilExit::Idle);
 }

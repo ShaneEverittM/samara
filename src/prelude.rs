@@ -7,7 +7,8 @@ pub use crate::effects::{
 };
 pub use crate::runtime::{
     Actor, ActorId, ActorRef, AskError, DeadLetter, DeadLetterReason, EffectContext, EffectDriver,
-    EffectError, EffectFuture, Envelope, EnvelopeHeader, IssuedCmd, Meta, Port, PortHandler,
-    PortRef, RegisterError, RegisterPortError, ReplyError, ReplyToken, RunUntil, RunUntilExit,
-    Runtime, RuntimeAskError, RuntimeRef, RuntimeTellError, SendError, UpdateContext, WeakActorRef,
+    EffectError, EffectFuture, Envelope, EnvelopeHeader, IssuedCmd, Request, Meta, Port,
+    PortHandler, PortRef, RegisterError, RegisterPortError, ReplyError, ReplyToken, RunUntil,
+    RunUntilExit, Runtime, RuntimeAskError, RuntimeRef, RuntimeTellError, SendError, UpdateContext,
+    WeakActorRef,
 };

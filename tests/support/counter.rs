@@ -1,8 +1,8 @@
 use tokio::time::Duration;
 
 use samara::{
-    runtime::{Actor, EffectContext, EffectDriver, Envelope, IssuedCmd, UpdateContext},
     effects::{EffectRun, Sleep},
+    runtime::{Actor, EffectContext, EffectDriver, Envelope, IssuedCmd, UpdateContext},
 };
 
 use crate::support::store::InMemoryStore;

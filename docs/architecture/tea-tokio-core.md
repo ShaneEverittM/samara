@@ -71,10 +71,15 @@ async fn handle(cmd: Cmd) -> Result<Vec<Msg>, RuntimeError>;
 
 ### Actor Interaction Contract (`tell` / `ask`)
 - `tell` is a one-way message send (`ActorRef::tell`), with delivery acknowledgment only (`MailboxClosed` on failure).
-- `ask` is request/reply over message flow (`ActorRef::ask`), where a reply channel is carried in the request message.
+- `ask` is request/reply over message flow (`ActorRef::ask` / `ActorRef::ask_request`), with runtime-owned reply transport.
+- For request-style APIs, runtime supports typed request metadata via `Message<Actor>`:
+  - Request types implement `Message<A>` with associated `Reply`.
+  - Runtime APIs (`tell_request` / `ask_request`) infer reply behavior from the request type and attach runtime-owned reply tokens.
+  - Internal actor `Msg` enums remain domain-focused and do not need explicit reply channel fields.
 - `update` remains pure for `ask` handling:
-  - `update` may emit a typed `Cmd` containing reply intent/handle.
-  - Effect handlers perform the actual reply side effect and return control to runtime flow.
+  - `update` may emit a typed `Cmd` containing reply intent only (no reply field required).
+  - `update` claims reply lifecycle from context (`claim_reply`) when a deferred reply is expected.
+  - Effect handlers perform the actual reply side effect using runtime metadata helpers (`reply_from_issued` / `reply_from_meta`).
 - No direct I/O or reply-channel sending in `update`.
 - Type-based actor linking (`RuntimeRef::tell` / `RuntimeRef::ask`) must preserve the same mailbox and error semantics.
 

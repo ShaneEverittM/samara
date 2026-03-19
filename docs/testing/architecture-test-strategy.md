@@ -49,6 +49,8 @@ Define required test layers and acceptance gates for a strict TEA + Tokio archit
 - Adapter/protocol translation correctness (`AppCmd <-> system operations <-> Msg`).
 - Runtime fault conversion into explicit `Msg` variants.
 - Actor interaction coverage for `tell` (fire-and-forget) and `ask` (request/reply), including dropped-reply failure paths.
+- Typed request coverage for `Message<Actor>` mappings and `tell_request` / `ask_request` runtime flows.
+- Deferred-reply coverage where commands/messages do not carry explicit reply fields and runtime metadata is used instead.
 - Port/protocol binding coverage for provider swapping (`real` vs `mock`) without consumer code changes.
 - Port call coverage (`ask`/`tell`) for context-provided reply tokens, detached tell replies, and runtime-owned reply resolution.
 - Runtime drive-loop tests should prefer `run_until(...)` / `run_until_predicate(...)` / `run_until_idle()` over hard-coded sleep durations.

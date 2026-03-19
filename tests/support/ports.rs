@@ -1,8 +1,6 @@
 use samara::{
     effects::EffectRun,
-    runtime::{
-        Actor, EffectContext, EffectDriver, IssuedCmd, Port, PortHandler, ReplyToken, UpdateContext,
-    },
+    runtime::{Actor, EffectContext, EffectDriver, IssuedCmd, Port, PortHandler, UpdateContext},
 };
 
 pub struct AccumulatorPort;
@@ -25,10 +23,7 @@ pub enum AccumulatorRes {
 }
 
 pub enum PortCmd {
-    Reply {
-        response: AccumulatorRes,
-        reply_to: ReplyToken<AccumulatorRes>,
-    },
+    Reply { response: AccumulatorRes },
 }
 
 #[derive(Clone, Copy, Default)]
@@ -37,10 +32,11 @@ pub struct PortEffectDriver;
 impl EffectDriver<PortCmd> for PortEffectDriver {
     fn run(&self, issued: IssuedCmd<PortCmd>, ctx: &EffectContext) -> EffectRun {
         match issued.cmd {
-            PortCmd::Reply { response, reply_to } => {
-                let runtime = ctx.runtime().clone();
+            PortCmd::Reply { response } => {
+                let effect_ctx = ctx.clone();
+                let meta = issued.meta.clone();
                 EffectRun::side_effect_future(async move {
-                    let _ = runtime.reply(reply_to, response);
+                    let _ = effect_ctx.reply_from_meta(&meta, response);
                 })
             }
         }
@@ -70,9 +66,10 @@ impl Actor for RealAccumulatorActor {
     fn update(&mut self, msg: Self::Msg, ctx: &UpdateContext) -> Vec<Self::Cmd> {
         match msg {
             RealAccumulatorMsg::Request(req) => {
-                let Some(reply_to) = ctx.reply_token::<AccumulatorRes>() else {
+                if !ctx.has_reply() {
                     return Vec::new();
-                };
+                }
+                ctx.claim_reply();
                 let response = match req {
                     AccumulatorReq::Add(value) => {
                         self.total += value;
@@ -80,7 +77,7 @@ impl Actor for RealAccumulatorActor {
                     }
                     AccumulatorReq::GetTotal => AccumulatorRes::Total(self.total),
                 };
-                vec![PortCmd::Reply { response, reply_to }]
+                vec![PortCmd::Reply { response }]
             }
         }
     }
@@ -122,14 +119,15 @@ impl Actor for MockAccumulatorActor {
     fn update(&mut self, msg: Self::Msg, ctx: &UpdateContext) -> Vec<Self::Cmd> {
         match msg {
             MockAccumulatorMsg::Request(req) => {
-                let Some(reply_to) = ctx.reply_token::<AccumulatorRes>() else {
+                if !ctx.has_reply() {
                     return Vec::new();
-                };
+                }
+                ctx.claim_reply();
                 let response = match req {
                     AccumulatorReq::Add(_) => AccumulatorRes::Ack,
                     AccumulatorReq::GetTotal => AccumulatorRes::Total(self.fixed_total),
                 };
-                vec![PortCmd::Reply { response, reply_to }]
+                vec![PortCmd::Reply { response }]
             }
         }
     }

@@ -10,7 +10,7 @@ use samara::{
     },
 };
 use support::{
-    adder::{AdderActor, AdderModel, AdderMsg},
+    adder::{Add, AdderActor, AdderModel, DropTotalRequest, GetTotal},
     counter::{self, CounterActor, CounterModel, CounterMsg},
     ports::{
         AccumulatorPort, AccumulatorReq, AccumulatorRes, MockAccumulatorActor, RealAccumulatorActor,
@@ -207,7 +207,7 @@ async fn actor_ref_supports_tell_and_ask_patterns() {
         .expect("adder registration should succeed");
 
     adder
-        .tell(AdderMsg::Add(7))
+        .tell_request(Add(7))
         .await
         .expect("tell should enqueue message");
     let exit = runtime.run_until_idle().await;
@@ -215,7 +215,7 @@ async fn actor_ref_supports_tell_and_ask_patterns() {
 
     let ask_task = tokio::spawn({
         let adder = adder.clone();
-        async move { adder.ask(|reply_to| AdderMsg::GetTotal(reply_to)).await }
+        async move { adder.ask_request(GetTotal).await }
     });
     let exit = runtime.run_until_predicate(|| ask_task.is_finished()).await;
     assert_eq!(exit, RunUntilExit::ConditionMet);
@@ -240,11 +240,7 @@ async fn ask_reports_when_reply_channel_is_dropped() {
 
     let ask_task = tokio::spawn({
         let adder = adder.clone();
-        async move {
-            adder
-                .ask(|reply_to| AdderMsg::DropTotalRequest(reply_to))
-                .await
-        }
+        async move { adder.ask_request(DropTotalRequest).await }
     });
     let exit = runtime.run_until_predicate(|| ask_task.is_finished()).await;
     assert_eq!(exit, RunUntilExit::ConditionMet);
@@ -270,7 +266,7 @@ async fn runtime_ref_supports_type_based_tell_and_ask_patterns() {
     let runtime_ref = runtime.runtime_ref();
 
     runtime_ref
-        .tell::<AdderActor>(AdderMsg::Add(11))
+        .tell_request::<AdderActor, _>(Add(11))
         .await
         .expect("type-based tell should resolve");
     let exit = runtime.run_until_idle().await;
@@ -278,11 +274,7 @@ async fn runtime_ref_supports_type_based_tell_and_ask_patterns() {
 
     let ask_task = tokio::spawn({
         let runtime_ref = runtime_ref.clone();
-        async move {
-            runtime_ref
-                .ask::<AdderActor, u64, _>(|reply_to| AdderMsg::GetTotal(reply_to))
-                .await
-        }
+        async move { runtime_ref.ask_request::<AdderActor, _>(GetTotal).await }
     });
     let exit = runtime.run_until_predicate(|| ask_task.is_finished()).await;
     assert_eq!(exit, RunUntilExit::ConditionMet);
@@ -300,7 +292,7 @@ async fn runtime_ref_reports_missing_actor_type_for_tell_and_ask() {
     let runtime_ref = runtime.runtime_ref();
 
     let tell_err = runtime_ref
-        .tell::<AdderActor>(AdderMsg::Add(1))
+        .tell_request::<AdderActor, _>(Add(1))
         .await
         .expect_err("tell should fail when actor type is not registered");
     assert_eq!(
@@ -309,7 +301,7 @@ async fn runtime_ref_reports_missing_actor_type_for_tell_and_ask() {
     );
 
     let ask_err = runtime_ref
-        .ask::<AdderActor, u64, _>(|reply_to| AdderMsg::GetTotal(reply_to))
+        .ask_request::<AdderActor, _>(GetTotal)
         .await
         .expect_err("ask should fail when actor type is not registered");
     assert_eq!(
