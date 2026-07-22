@@ -1,7 +1,7 @@
 # TEA + Tokio Core Architecture (v0)
 
 ## Status
-- Phase: Documentation-only.
+- Phase: Phase 2 candidate contract; implementation not started.
 - Date: July 21, 2026.
 - Library scope: `samara` is library-first.
 
@@ -62,8 +62,10 @@
 update(&self, Model, Message) -> (Model, Commands<Message>)
 ```
 
-- This is not a frozen Rust signature. An implementation may use exclusively
-  owned in-place Model mutation when it is observationally equivalent.
+- The Phase 3 Rust signature is
+  `update(&self, &mut Model, Message) -> Command<Message>`. It uses exclusively
+  owned in-place Model mutation as an observationally equivalent spelling of
+  the conceptual transition and one composable Command value for finite work.
 - Requirements:
   - Pure: no I/O, sleep, locks, random, wall-clock, global mutable reads/writes.
   - Deterministic: for equivalent immutable Component configuration, the same

@@ -1,4 +1,4 @@
-//! A deliberately complete consumer sketch for a framed TCP telemetry feed.
+//! A deliberately complete reference Component for a framed TCP telemetry feed.
 //!
 //! The example makes Samara's architectural boundaries visible before those
 //! boundaries are backed by a real runtime implementation:
@@ -22,7 +22,7 @@
 
 use std::{future::pending, sync::Arc};
 
-use samara_api_sketch::prelude::*;
+use samara::prelude::*;
 
 /// Stable identity for the telemetry feed's reconciled subscription.
 const SOCKET: &str = "telemetry/socket";
@@ -188,7 +188,7 @@ impl SourceDriver<TcpBytes> for TokioTcpBytes {
 /// Stands in for the eventual first-party Tokio TCP Driver's socket read.
 async fn read_chunk(_endpoint: &Endpoint) -> Result<Option<Vec<u8>>, TcpError> {
     // Placeholder for Tokio socket reads. This never runs in the compile-only
-    // sketch, but makes the Driver boundary and ownership shape concrete.
+    // reference, but makes the Driver boundary and ownership shape concrete.
     pending().await
 }
 
@@ -326,7 +326,7 @@ struct TelemetryModel {
     /// Storage effects that later reported success.
     stored: u64,
 
-    /// Most recent source or storage failure rendered for this sketch.
+    /// Most recent source or storage failure rendered for this reference.
     last_failure: Option<String>,
 
     /// Request outcomes paired with requester-owned domain correlation.
@@ -690,7 +690,7 @@ fn controlled_shape() -> Result<(), RuntimeError> {
 
 /// Keeps the binary intentionally inert while its consumer shape is compiled.
 fn main() {
-    println!("compile-only API sketch; see this source and its unit tests");
+    println!("compile-checked Phase 2 reference; see this source and its unit tests");
 }
 
 #[cfg(test)]

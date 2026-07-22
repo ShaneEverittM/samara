@@ -2,7 +2,7 @@
 
 ## Status
 
-- Phase: Documentation-first.
+- Phase: Phase 2 candidate contract; implementation not started.
 - Date: July 21, 2026.
 - API names are provisional; semantic roles follow `docs/glossary.md`.
 
@@ -77,7 +77,7 @@ A **composed descriptor** contains one or more Layer applications around another
 descriptor. A **terminal descriptor** is the innermost descriptor directly handled by a
 live Driver or terminal controlled behavior. These modifiers apply to both EffectDescriptor
 and SourceDescriptor; `TelemetryFeed` is merely an application alias for one composed
-SourceDescriptor in the API sketch.
+SourceDescriptor in the framed-socket reference example.
 
 ## Layer and Driver Roles
 

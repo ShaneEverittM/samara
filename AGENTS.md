@@ -1,12 +1,15 @@
 # Samara Agent Rules
 
 ## Scope
-This repository is in a documentation-first architecture phase for a Tokio + TEA (The Elm Architecture) runtime library.
+This repository is in a documentation-first, acceptance-contract-gated implementation phase for a Tokio + TEA (The Elm Architecture) runtime library.
 
 ## Non-Negotiable Architecture Invariants
 - `Model` is the single source of truth.
 - `Message` is the only path for state transitions.
-- `update(Model, Message) -> (Model, Vec<Command>)` is pure, deterministic, and side-effect free.
+- The semantic transition `Model + Message -> Model + Commands` is pure,
+  deterministic, and side effect free. The Phase 3 Rust spelling is
+  `update(&self, &mut Model, Message) -> Command<Message>`; in-place mutation is
+  exclusively owned and one composable Command represents zero or more intents.
 - `Command` is a typed enum describing finite work. World-facing work remains explicit as typed `EffectDescriptor` values; opaque async closures are not allowed in v0.
 - Live side effects run only through Drivers on runtime-owned Tokio tasks.
 - Async code must not mutate state directly; it can only emit `Message` values back through runtime-managed message delivery.
@@ -65,7 +68,7 @@ This repository is in a documentation-first architecture phase for a Tokio + TEA
 ## Progress Patterns
 - Pattern A: `Message` and state transition table -> tests -> implementation.
 - Pattern B: `Command` and `EffectDescriptor` semantics spec -> Driver and controlled-behavior tests -> runtime integration.
-- Pattern C: ADR proposal -> tradeoff matrix -> explicit decision -> implementation.
+- Pattern C: ADR proposal → tradeoff matrix → explicit decision → implementation.
 
 ## Required PR Contents
 - Invariant impact summary.

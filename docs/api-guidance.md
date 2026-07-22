@@ -117,10 +117,12 @@ or `Framed<S, D>`—rather than mechanically appending `EffectDescriptor` or
 name would otherwise be ambiguous.
 
 Concrete inert types should not use `Source`, which is reserved for the running
-realization. The sketch's `MpscSource<T>` therefore becomes provisionally
-`MpscInput<T>`. A future Tokio bridge module may refine that concrete name to
-fit a larger, locally coherent family of bridge types without changing the
-underlying naming rule.
+realization. `StreamDescriptor<T>` uses the otherwise optional `Descriptor`
+suffix because plain `Stream` could be mistaken for that running realization.
+It names the logical stream independently of how the world realizes it;
+adapter-specific assembly methods such as `bind_mpsc` name the Tokio mechanism.
+A future bridge module may add neighboring bindings without changing the
+descriptor's application-facing meaning.
 
 ## Why Have Both Layers and Drivers?
 
@@ -273,9 +275,10 @@ application model.
 
 ## What Does This Document Deliberately Not Settle?
 
-Exact signatures remain open while the API sketch is being workshopped. The
-broader first-party Tokio bridge module organization, the Rust shape of Layer
-and execution-profile bindings, Request deadline and cancellation policy,
-notification delivery failures, shutdown policy, and runtime topology also
-require separate decisions. Those choices should follow the guidance above,
-but this document does not make them implicitly.
+The Phase 2 API contract freezes the Component-kernel signatures and records
+later compile-checked slices separately. The broader first-party Tokio bridge
+module organization, the Rust shape of Layer and execution-profile bindings,
+Request deadline and cancellation policy, notification delivery failures,
+shutdown policy, semantic trace API, and runtime topology still require
+separate decisions. Those choices should follow the guidance above, but this
+document does not make them implicitly.

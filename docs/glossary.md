@@ -8,12 +8,10 @@ This document defines how Samara currently uses its growing vocabulary. It is a
 reference for API design, implementation, testing, and documentation—not a
 substitute for the behavioral contracts in the vision and ADRs.
 
-The concepts below are canonical unless marked historical. Exact Rust type and
-method names remain provisional until the first public API is frozen.
-
-The API sketch still contains some earlier spellings. It should be migrated in a
-separate code-and-test pass; until then, this glossary is authoritative for
-forward-looking discussion and documentation.
+The concepts below are canonical unless marked historical. The Phase 2
+candidate Rust surface follows these spellings. `api-contract.md` records which
+API slice is frozen for each implementation phase and which policy-bearing
+surfaces remain provisional.
 
 ## Program and State
 
@@ -221,11 +219,10 @@ the trait name in every type. A `Descriptor` suffix is appropriate only when
 the semantic name would otherwise be ambiguous.
 
 Concrete descriptor types must not use `Source` to mean an inert declaration,
-because `Source` is reserved for the runtime-scoped realization. The current
-provisional replacement for the sketch's `MpscSource<T>` is `MpscInput<T>`.
-That concrete name may be revisited when a larger first-party Tokio bridge
-module provides enough neighboring types to establish a coherent local naming
-convention.
+because `Source` is reserved for the runtime-scoped realization.
+`StreamDescriptor<T>` uses the otherwise optional `Descriptor` suffix to avoid
+confusion with a running stream. It names logical event production independently
+of the live adapter; `bind_mpsc` names one concrete Tokio realization.
 
 Application aliases for composed descriptors should use intrinsic domain
 language when it exists. Names such as `TelemetryFeed` in examples are domain
@@ -411,7 +408,7 @@ to hold.
 | Error payload types named `*Failure`, such as `TcpFailure` | `*Error`, such as `TcpError` | Error names explanatory data; failure names the semantic occurrence carrying it. |
 | Result mapper | Message mapper | Name what the pure function produces. A request's one-shot mapper is its request continuation. |
 | Source meaning a descriptor | SourceDescriptor | Reserve *Source* for the runtime-scoped ongoing realization. |
-| `MpscSource<T>` | `MpscInput<T>` | This provisional name describes the logical program input without pretending to be a running Source or live receiver. |
+| `MpscSource<T>`, `MpscInput<T>` | `StreamDescriptor<T>` | Name the inert logical stream independently of its live adapter; reserve Source for its runtime realization. |
 | `Incoming<P, R>` | `RequestInvocation<P, R>` | Name the dynamic Request occurrence, not merely its direction. |
 | `Protocol::Inbound`, `HealthInbound` | `Protocol::Message`, `HealthProtocolMessage` | Name what the enum contains and associate concrete names with their Protocol. |
 | `ActorRef`, `Addr`, `PortRef`, `RuntimeRef` | `ComponentRef`, `ComponentHandle`, or `Port` | Choose the term that distinguishes logical address, live ingress capability, or dependency. |
@@ -424,8 +421,8 @@ to hold.
 
 ## Open API Questions
 
-These questions are intentionally recorded rather than answered by this
-checkpoint:
+These questions are intentionally recorded rather than answered by the Phase 2
+Component-kernel freeze:
 
 - The exact RequestOutcome variants and the deadline, cancellation,
   late-Reply, and abandoned-Reply policies.

@@ -1,11 +1,12 @@
 # Architecture Test Strategy (v0)
 
 ## Status
-- Phase: Documentation-first.
+- Phase: Phase 2 executable acceptance contract.
 - Date: July 21, 2026.
 
 ## Purpose
-Define required test layers and acceptance gates for a strict TEA + Tokio architecture before implementation begins.
+Define required test layers and acceptance gates for the strict TEA + Tokio
+architecture before each implementation slice begins.
 
 ## Test Layers
 

@@ -3,8 +3,9 @@
 //! The example has two Components: `Counter` owns a count, while `Quota` owns
 //! the authority to approve changes to it. An increment therefore crosses a
 //! named Port as a correlated request before it can become state. Successful
-//! increments also produce a typed persistence effect, and an `mpsc` source
-//! plus a logical timer demonstrate the two subscription/command lifecycles.
+//! increments also produce a typed persistence effect, and a logical stream
+//! (`mpsc`-backed in live execution) plus a timer demonstrate the two
+//! subscription/command lifecycles.
 //!
 //! This is deliberately more than a “hello world.” It keeps the important
 //! boundaries visible: Component configurations contain immutable wiring,
@@ -17,10 +18,13 @@
 
 use std::time::Duration;
 
-use samara_api_sketch::prelude::*;
+use samara::prelude::*;
 
-/// Stable identity shared by the input source, its binding, and subscription.
-const INCREMENTS: &str = "counter/increments";
+/// Logical first-party input bound by the surrounding runtime world.
+const INCREMENT_INPUT: &str = "counter/increment-input";
+
+/// Component-local identity used to reconcile desire for the input.
+const INCREMENT_SUBSCRIPTION: &str = "increments";
 
 /// The particular quota dependency used by this Counter instance.
 const QUOTA: &str = "counter/quota";
@@ -189,7 +193,7 @@ struct PersistError {
 /// Immutable logical wiring for one Counter Component instance.
 struct Counter {
     /// Descriptor for the ongoing external increment source.
-    increments: MpscInput<u64>,
+    increments: StreamDescriptor<u64>,
 
     /// Named dependency on any provider of the quota protocol.
     quota: Port<QuotaProtocol>,
@@ -261,7 +265,7 @@ impl Component for Counter {
         // reconcile this desired source across transitions without exposing a
         // task, receiver, or cancellation handle to the Component.
         Subscriptions::one(Subscription::source(
-            SubscriptionId::new(INCREMENTS),
+            SubscriptionId::new(INCREMENT_SUBSCRIPTION),
             self.increments.clone(),
             |event| match event {
                 SourceEvent::Item(by) => CounterMessage::Increment(by),
@@ -310,7 +314,7 @@ struct AppRefs {
 }
 
 /// Declares the logical application graph shared by every execution profile.
-fn program(increments: MpscInput<u64>) -> (Program, AppRefs) {
+fn program(increments: StreamDescriptor<u64>) -> (Program, AppRefs) {
     let mut program = Program::builder();
 
     // A named Port is immutable dependency wiring. Naming allows another Quota
@@ -335,11 +339,11 @@ fn program(increments: MpscInput<u64>) -> (Program, AppRefs) {
 
 /// Shows production-shaped execution with Tokio-backed world boundaries.
 ///
-/// This function is compile-checked documentation in the API sketch. It uses
+/// This function is compile-checked documentation in the candidate API. It uses
 /// the same `program` as controlled execution, but binds real receivers and an
 /// async effect Driver before spawning the live runtime.
 async fn live_shape() -> Result<(), RuntimeError> {
-    let increments = MpscInput::named(INCREMENTS);
+    let increments = StreamDescriptor::named(INCREMENT_INPUT);
     let (input, receiver) = tokio::sync::mpsc::channel(32);
     let (program, refs) = program(increments.clone());
 
@@ -370,17 +374,17 @@ async fn live_shape() -> Result<(), RuntimeError> {
 /// harness says so. Component code and logical assembly are unchanged from
 /// `live_shape`; only runtime decisions and boundary bindings differ.
 fn controlled_shape() -> Result<(), RuntimeError> {
-    let increments = MpscInput::named(INCREMENTS);
+    let increments = StreamDescriptor::named(INCREMENT_INPUT);
     let (program, refs) = program(increments.clone());
 
     let mut runtime = ControlledRuntime::builder(program)
-        .control_mpsc(increments.clone())
+        .control_stream(increments.clone())
         .control_effect::<PersistCount>()
         .build()?;
 
     // This single controlled input drives the full causal chain:
     // Increment -> quota request -> Quota transition -> reply -> Counter transition.
-    runtime.emit_mpsc(&increments, 3)?;
+    runtime.emit_stream(&increments, 3)?;
     runtime.run_until_idle()?;
 
     // The world-facing persistence intent is now pending, rather than having
@@ -414,7 +418,7 @@ fn controlled_shape() -> Result<(), RuntimeError> {
 
 /// Keeps the binary intentionally inert while its consumer shape is compiled.
 fn main() {
-    println!("compile-only API sketch; see this source and its unit tests");
+    println!("compile-checked Phase 2 reference; see this source and its unit tests");
 }
 
 #[cfg(test)]
@@ -429,7 +433,7 @@ mod tests {
     /// the desired subscription remains inspectable data.
     #[test]
     fn transition_and_subscription_shape_are_directly_testable() {
-        let increments = MpscInput::named(INCREMENTS);
+        let increments = StreamDescriptor::named(INCREMENT_INPUT);
         let mut program = Program::builder();
         let quota = program.port(PortId::new(QUOTA));
         let component = Counter {
@@ -463,7 +467,8 @@ mod tests {
         // the receiver or depending on a particular task/mailbox topology.
         let subscriptions = component.subscriptions(&model);
         assert_eq!(
-            subscriptions.find::<MpscInput<u64>>(&SubscriptionId::new(INCREMENTS)),
+            subscriptions
+                .find::<StreamDescriptor<u64>>(&SubscriptionId::new(INCREMENT_SUBSCRIPTION)),
             Some(&increments)
         );
     }

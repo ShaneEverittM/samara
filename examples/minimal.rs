@@ -1,7 +1,7 @@
 //! The shallowest complete Samara application shape.
 //!
 //! `Counter` owns one integer and receives increments from an ordinary Tokio
-//! `mpsc` channel through Samara's first-party-shaped [`MpscInput`] bridge.
+//! `mpsc` channel through Samara's first-party [`StreamDescriptor`] bridge.
 //! Its transition is synchronous and side effect free: only a
 //! `CounterMessage` can change `CounterModel`, while the runtime owns channel
 //! polling and delivery.
@@ -10,21 +10,23 @@
 //! Only the runtime binding changes from a real Tokio receiver to scripted
 //! input.
 //!
-//! # Current sketch limitation
+//! # Current Phase 2 limitation
 //!
-//! The crate currently defines runtime API signatures but does not implement a
-//! runtime. This binary therefore has a real `#[tokio::main]` entry point and
-//! honest live assembly, but running it ends with the façade's explicit
-//! `API sketch has no runtime implementation` error. The end-to-end controlled
-//! test is retained as an ignored executable requirement until that façade is
-//! implemented; the direct Component test runs today.
+//! The crate currently freezes the Component-kernel contract but does not
+//! implement a runtime. This example therefore has a real `#[tokio::main]`
+//! entry point and honest live assembly, but running it ends with the façade's
+//! explicit Phase 2 error. The end-to-end controlled test is retained as a
+//! visibly staged executable requirement; the direct Component test runs now.
 
 use std::error::Error;
 
-use samara_api_sketch::prelude::*;
+use samara::prelude::*;
 
-/// Stable identity shared by the Component subscription and runtime binding.
-const INCREMENTS: &str = "counter/increments";
+/// Logical first-party input bound by the surrounding runtime world.
+const INCREMENT_INPUT: &str = "counter/increment-input";
+
+/// Component-local identity used to reconcile its desire for that input.
+const INCREMENT_SUBSCRIPTION: &str = "increments";
 
 /// All mutable application state owned by the Counter Component.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -48,10 +50,10 @@ enum CounterMessage {
 
 /// One Counter instance and its immutable logical input wiring.
 ///
-/// `MpscInput` is only a descriptor. The live `Receiver` remains at assembly
+/// `StreamDescriptor` is only a descriptor. The live `Receiver` remains at assembly
 /// time, outside both this value and `CounterModel`.
 struct Counter {
-    increments: MpscInput<u64>,
+    increments: StreamDescriptor<u64>,
 }
 
 impl Component for Counter {
@@ -86,7 +88,7 @@ impl Component for Counter {
         }
 
         Subscriptions::one(Subscription::source(
-            SubscriptionId::new(INCREMENTS),
+            SubscriptionId::new(INCREMENT_SUBSCRIPTION),
             self.increments.clone(),
             |event| match event {
                 SourceEvent::Item(amount) => CounterMessage::Increment(amount),
@@ -101,7 +103,7 @@ impl Component for Counter {
 ///
 /// No Tokio receiver or scripted test input enters this function. It contains
 /// only the Component and the logical source descriptor they share.
-fn program(increments: MpscInput<u64>) -> (Program, ComponentRef<Counter>) {
+fn program(increments: StreamDescriptor<u64>) -> (Program, ComponentRef<Counter>) {
     let mut program = Program::builder();
     let counter = program.component(ComponentId::new("counter"), Counter { increments });
     (program.build(), counter)
@@ -113,7 +115,7 @@ fn program(increments: MpscInput<u64>) -> (Program, ComponentRef<Counter>) {
 /// and dropping `input` becomes `CounterMessage::InputClosed`. Samara owns that
 /// bridge; the application does not write a polling task or Driver.
 async fn run_live() -> Result<(), Box<dyn Error>> {
-    let increments = MpscInput::named(INCREMENTS);
+    let increments = StreamDescriptor::named(INCREMENT_INPUT);
     let (input, receiver) = tokio::sync::mpsc::channel(8);
     let (program, _counter) = program(increments.clone());
 
@@ -124,14 +126,14 @@ async fn run_live() -> Result<(), Box<dyn Error>> {
     drop(input);
 
     // Binding transfers the unique receiver into Samara's structured runtime
-    // scope. The Component still contains only `MpscInput`.
+    // scope. The Component still contains only `StreamDescriptor`.
     let runtime = LiveRuntime::builder(program)
         .bind_mpsc(increments, receiver)
         .build()?;
     let runtime = runtime.spawn();
 
     // Drain expresses that this finite source should be processed before the
-    // owned runtime scope ends. Today this call returns the explicit sketch
+    // owned runtime scope ends. Today this call returns the explicit Phase 2
     // error described in the module documentation.
     let report = runtime.shutdown(Shutdown::Drain).await?;
     assert!(report.is_clean());
@@ -151,7 +153,7 @@ mod tests {
     /// Exercises the pure transition and declarative subscription immediately.
     #[test]
     fn component_logic_is_directly_testable() {
-        let increments = MpscInput::named(INCREMENTS);
+        let increments = StreamDescriptor::named(INCREMENT_INPUT);
         let counter = Counter {
             increments: increments.clone(),
         };
@@ -160,7 +162,7 @@ mod tests {
         assert_eq!(
             counter
                 .subscriptions(&model)
-                .find::<MpscInput<u64>>(&SubscriptionId::new(INCREMENTS)),
+                .find::<StreamDescriptor<u64>>(&SubscriptionId::new(INCREMENT_SUBSCRIPTION)),
             Some(&increments)
         );
 
@@ -181,17 +183,17 @@ mod tests {
     /// runtime exists, removing `ignore` turns this into the canonical
     /// whole-program onboarding test without changing application logic.
     #[test]
-    #[ignore = "ControlledRuntime is an API façade without an implementation"]
-    fn controlled_mpsc_updates_the_same_program() -> Result<(), RuntimeError> {
-        let increments = MpscInput::named(INCREMENTS);
+    #[ignore = "staged for the controlled-runtime implementation phase"]
+    fn controlled_stream_updates_the_same_program() -> Result<(), RuntimeError> {
+        let increments = StreamDescriptor::named(INCREMENT_INPUT);
         let (program, counter) = program(increments.clone());
         let mut runtime = ControlledRuntime::builder(program)
-            .control_mpsc(increments.clone())
+            .control_stream(increments.clone())
             .build()?;
 
-        runtime.emit_mpsc(&increments, 2)?;
-        runtime.emit_mpsc(&increments, 3)?;
-        runtime.close_mpsc(&increments)?;
+        runtime.emit_stream(&increments, 2)?;
+        runtime.emit_stream(&increments, 3)?;
+        runtime.close_stream(&increments)?;
         runtime.run_until_idle()?;
 
         assert_eq!(

@@ -599,9 +599,9 @@ and leave later choices to focused ADRs and roadmaps.
 The following questions remain intentionally open:
 
 - Whether to provide a blessed escape hatch and how it advertises weakened guarantees.
-- The concrete Rust API.
-- The broader first-party Tokio bridge module organization and naming beyond
-  the provisional `MpscInput<T>` descriptor.
+- API slices beyond the Phase 2 Component-kernel contract.
+- The broader first-party Tokio bridge module organization and bindings beyond
+  the initial `StreamDescriptor<T>` plus `mpsc` bridge.
 - The initial Rust shape of Layer and execution-profile binding abstractions.
 - The controlled scheduler's exact equal-time tie-break.
 - Subscription restart and retry semantics.
