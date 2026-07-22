@@ -8,11 +8,12 @@ Samara is a framework for building asynchronous applications in Rust.
 
 ## Status
 
-Samara's Phase 2 executable contract is accepted. The root crate exposes the
-frozen Component-kernel API and compile-checked candidate surfaces for later
-phases, but the live and controlled runtimes are not implemented yet. Direct
-Component and API-contract tests run now; end-to-end runtime scenarios remain
-visibly staged for their owning implementation phases.
+Samara's Phase 2 executable contract and Phase 3 Component kernel are accepted.
+An assembled Program now retains
+each Component's immutable configuration, exclusively owned Model, and startup
+Command behind a per-Component serialization boundary. Declarative work
+interpretation and the live and controlled runtimes are not implemented yet;
+their end-to-end scenarios remain visibly staged for the phases that own them.
 
 The earlier Actor proof of concept remains available in Git history at commit
 `8408509`, but it is not a compatibility target for the new runtime.
@@ -28,6 +29,7 @@ The earlier Actor proof of concept remains available in Git history at commit
 - [V1-V11 acceptance matrix](docs/testing/v0-acceptance-matrix.md)
 - [Goal-mode implementation checklist](docs/goal-mode-checklist.md)
 - [Phase 2 audit packet](docs/audits/phase-2-executable-acceptance-contract.md)
+- [Phase 3 audit packet](docs/audits/phase-3-component-kernel.md)
 
 ## Reference Components
 

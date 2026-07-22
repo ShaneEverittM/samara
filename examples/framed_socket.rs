@@ -690,7 +690,7 @@ fn controlled_shape() -> Result<(), RuntimeError> {
 
 /// Keeps the binary intentionally inert while its consumer shape is compiled.
 fn main() {
-    println!("compile-checked Phase 2 reference; see this source and its unit tests");
+    println!("compile-checked Phase 3 reference; see this source and its unit tests");
 }
 
 #[cfg(test)]

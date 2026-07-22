@@ -5,11 +5,14 @@
 //!
 //! # Status
 //!
-//! Phase 2 freezes the Component-kernel slice described in
-//! `docs/api-contract.md`. Later runtime surfaces remain compile-checked
-//! candidates and intentionally return placeholder errors until their
-//! implementation phase. The consumers in `examples` keep ownership, typing,
-//! and ergonomics visible while those slices are activated one at a time.
+//! Phase 3 implements the Component-kernel slice frozen in
+//! `docs/api-contract.md`: program assembly retains each Component's immutable
+//! configuration, exclusively owned Model, and startup Command, while a local
+//! serialization boundary prevents overlapping transitions. Later declarative
+//! work and runtime surfaces remain compile-checked candidates and
+//! intentionally return placeholder errors until their implementation phase.
+//! The consumers in `examples` keep ownership, typing, and ergonomics visible
+//! while those slices are activated one at a time.
 //!
 //! # Mental model
 //!
@@ -34,6 +37,10 @@ use std::{
     any::Any, error::Error, fmt, future::Future, marker::PhantomData, pin::Pin, sync::Arc,
     time::Duration,
 };
+
+mod component_kernel;
+
+use component_kernel::{ComponentKernel, ErasedComponentKernel};
 
 /// Convenient imports for writing Components and assembling either runtime
 /// profile.
@@ -187,6 +194,23 @@ impl<Model, Message> Init<Model, Message> {
 /// runtime, clock, I/O, or mutable state handles. The runtime owns `Model` and
 /// guarantees that two calls to [`Component::update`] for the same Component
 /// never overlap.
+///
+/// The associated Message type makes every transition input explicit. Values
+/// from another vocabulary cannot be delivered accidentally:
+///
+/// ```compile_fail
+/// use samara::{Command, Component};
+///
+/// struct OtherMessage;
+///
+/// fn deliver_wrong_type<C: Component>(
+///     component: &C,
+///     model: &mut C::Model,
+///     message: OtherMessage,
+/// ) -> Command<C::Message> {
+///     component.update(model, message)
+/// }
+/// ```
 pub trait Component: Send + 'static {
     /// All mutable application state exclusively owned by this Component.
     type Model: Send + 'static;
@@ -1399,6 +1423,17 @@ impl<P: Protocol> fmt::Debug for Port<P> {
 /// provider-neutral protocol. A Component reference exposes no model access and
 /// does not itself send messages, so transitions receive no runtime capability.
 /// This address is independent of mailbox or task topology.
+///
+/// Delivery remains a runtime-interpreted Command rather than a capability on
+/// the reference itself:
+///
+/// ```compile_fail
+/// use samara::{Component, ComponentRef};
+///
+/// fn bypass_runtime<C: Component>(target: &ComponentRef<C>, message: C::Message) {
+///     target.send(message);
+/// }
+/// ```
 pub struct ComponentRef<C: Component> {
     id: ComponentId,
     marker: PhantomData<fn() -> C>,
@@ -1434,14 +1469,15 @@ impl<C: Component> fmt::Debug for ComponentRef<C> {
 /// A program contains logical Component, effect, source, and protocol
 /// relationships but no live Tokio resources. Call the same program factory for
 /// [`LiveRuntime`] and [`ControlledRuntime`] assembly.
-pub struct Program;
+pub struct Program {
+    components: Vec<Box<dyn ErasedComponentKernel>>,
+}
 
 impl Program {
     /// Begins assembling a program blueprint.
     pub fn builder() -> ProgramBuilder {
         ProgramBuilder {
-            next_component_id: 0,
-            next_port_id: 0,
+            components: Vec::new(),
         }
     }
 }
@@ -1452,8 +1488,7 @@ impl Program {
 /// specified by the Phase 2 freeze; the implemented builder must reject ambiguous
 /// program graphs at build time.
 pub struct ProgramBuilder {
-    next_component_id: u64,
-    next_port_id: u64,
+    components: Vec<Box<dyn ErasedComponentKernel>>,
 }
 
 impl ProgramBuilder {
@@ -1466,12 +1501,14 @@ impl ProgramBuilder {
     where
         C: Component,
     {
-        let _ = component;
-        self.next_component_id += 1;
-        ComponentRef {
-            id,
+        let component_ref = ComponentRef {
+            id: id.clone(),
             marker: PhantomData,
-        }
+        };
+        self.components
+            .push(Box::new(ComponentKernel::new(id, component)));
+
+        component_ref
     }
 
     /// Declares one named logical dependency on protocol `P`.
@@ -1483,7 +1520,6 @@ impl ProgramBuilder {
     where
         P: Protocol,
     {
-        self.next_port_id += 1;
         Port {
             id,
             marker: PhantomData,
@@ -1513,8 +1549,9 @@ impl ProgramBuilder {
 
     /// Finishes the topology-neutral program blueprint.
     pub fn build(self) -> Program {
-        let _ = self;
-        Program
+        Program {
+            components: self.components,
+        }
     }
 }
 
@@ -1594,7 +1631,7 @@ pub struct RuntimeError(&'static str);
 
 impl RuntimeError {
     fn sketch() -> Self {
-        Self("Samara's runtime is not implemented in Phase 2")
+        Self("this Samara runtime surface is not implemented in Phase 3")
     }
 }
 
@@ -1621,7 +1658,9 @@ pub struct LiveRuntimeBuilder {
 ///
 /// Live execution preserves per-Component serialization and causality, but does
 /// not promise deterministic order between independent events.
-pub struct LiveRuntime;
+pub struct LiveRuntime {
+    program: Program,
+}
 
 impl LiveRuntime {
     /// Starts live assembly for a topology-neutral program blueprint.
@@ -1647,7 +1686,9 @@ impl LiveRuntime {
     /// The returned [`RuntimeTask`] is the ownership handle used to shut down and
     /// account for all Samara-authorized work.
     pub fn spawn(self) -> RuntimeTask {
-        RuntimeTask
+        RuntimeTask {
+            program: self.program,
+        }
     }
 }
 
@@ -1691,8 +1732,9 @@ impl LiveRuntimeBuilder {
 
     /// Validates bindings and finishes live assembly.
     pub fn build(self) -> Result<LiveRuntime, RuntimeError> {
-        let _ = self.program;
-        Ok(LiveRuntime)
+        Ok(LiveRuntime {
+            program: self.program,
+        })
     }
 }
 
@@ -1702,6 +1744,16 @@ impl LiveRuntimeBuilder {
 /// [`Command::request`], or through lower-level [`Command::send`] when tight coupling is
 /// intentional. This capability is for surrounding Tokio code at the Samara
 /// program boundary.
+///
+/// A live handle deliberately exposes no Model access or mutation capability:
+///
+/// ```compile_fail
+/// use samara::{Component, ComponentHandle};
+///
+/// fn replace_model<C: Component>(handle: &mut ComponentHandle<C>, model: C::Model) {
+///     *handle.model_mut() = model;
+/// }
+/// ```
 pub struct ComponentHandle<C: Component> {
     component: ComponentRef<C>,
 }
@@ -1721,13 +1773,15 @@ impl<C: Component> ComponentHandle<C> {
 ///
 /// Dropping or shutting down this scope must not leave detached commands,
 /// subscriptions, or Driver work.
-pub struct RuntimeTask;
+pub struct RuntimeTask {
+    program: Program,
+}
 
 impl RuntimeTask {
     /// Ends the program using the requested provisional shutdown policy and
     /// returns work-accounting evidence.
     pub async fn shutdown(self, mode: Shutdown) -> Result<ShutdownReport, RuntimeError> {
-        let _ = (self, mode);
+        let _ = (self.program, mode);
         Err(RuntimeError::sketch())
     }
 }
@@ -1779,7 +1833,9 @@ pub struct ControlledRuntimeBuilder {
 /// Components, commands, subscriptions, decoders, and declared boundary contracts
 /// are identical to live execution. The difference is runtime decisions: tests
 /// supply external events, effect outcomes, and logical-time progression.
-pub struct ControlledRuntime;
+pub struct ControlledRuntime {
+    program: Program,
+}
 
 impl ControlledRuntime {
     /// Starts controlled assembly for a topology-neutral program blueprint.
@@ -1915,7 +1971,7 @@ impl ControlledRuntime {
     /// a Component to observe cancellation must explicitly supply the
     /// appropriate typed cancellation outcome before calling this method.
     pub fn cancel(self) -> Result<ShutdownReport, RuntimeError> {
-        let _ = self;
+        let _ = self.program;
         Err(RuntimeError::sketch())
     }
 
@@ -1961,8 +2017,9 @@ impl ControlledRuntimeBuilder {
 
     /// Validates controlled bindings and creates a paused deterministic runtime.
     pub fn build(self) -> Result<ControlledRuntime, RuntimeError> {
-        let _ = self.program;
-        Ok(ControlledRuntime)
+        Ok(ControlledRuntime {
+            program: self.program,
+        })
     }
 }
 

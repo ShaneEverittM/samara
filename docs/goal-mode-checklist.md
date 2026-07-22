@@ -1,6 +1,6 @@
 # Samara Goal-Mode Checklist
 
-- Status: Phase 2 complete; Phase 3 ready
+- Status: Phase 3 complete; Phase 4 ready
 - Purpose: Track bounded implementation phases and their human audit gates.
 
 ## Working Rule
@@ -58,9 +58,12 @@ Audit packet: [Phase 2 Executable Acceptance Contract](audits/phase-2-executable
 
 ### 3. Component Kernel
 
-- [ ] Implement Component identity, state ownership, typed messages, and pure
+- [x] Implement Component identity, state ownership, typed messages, and pure
   serialized transitions; pass their acceptance tests.
-- [ ] Audit the reference Components and public API before continuing.
+- [x] Audit the reference Components and public API before continuing.
+- [x] Shane accepts the Phase 3 audit and authorizes Phase 4.
+
+Audit packet: [Phase 3 Component Kernel](audits/phase-3-component-kernel.md).
 
 ### 4. Declarative Work Kernel
 
