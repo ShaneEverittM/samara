@@ -9,16 +9,18 @@ This repository is in a documentation-first architecture phase for a Tokio + TEA
 - `update(Model, Msg) -> (Model, Vec<Cmd>)` is pure, deterministic, and side-effect free.
 - `Cmd` is a typed enum of effect intents. Opaque async closures are not allowed in v0.
 - Side effects run only in effect handlers on Tokio tasks.
-- Async code must not mutate state directly; it can only emit `Msg` values back to the runtime mailbox.
+- Async code must not mutate state directly; it can only emit `Msg` values back through runtime-managed message delivery.
 - Runtime APIs must preserve a path to simulated time execution, including faster-than-real-time test runs.
 - Runtime-owned effects must be mechanism-only; protocol/app policy belongs in adapters or app handlers.
 
-## Runtime Topology Rule
-- v0 runtime topology is fixed by ADR `docs/adr/0001-runtime-topology.md`:
-  - Option A (single mailbox loop).
-  - Global total order semantics.
-- Implementation must conform to Option A unless a superseding ADR is accepted.
-- Proposals to move to hybrid or actor topology must include migration evidence and updated ordering guarantees.
+## Runtime Semantics Rule
+- ADR `docs/adr/0002-runtime-topology-and-ordering.md` does not mandate a mailbox, task, or event-loop topology.
+- Each Component's transitions must be serialized and non-overlapping.
+- Causal relationships and explicitly promised FIFO/sequencing guarantees must be preserved.
+- Independent live events have no implicit program-wide order.
+- Controlled execution must produce a deterministic program-wide trace for identical controlled inputs and runtime semantics.
+- Public APIs, application logic, and conformance tests must not depend on incidental scheduler topology or global serialization.
+- Changes to observable ordering, causality, isolation, or controlled-determinism semantics require an ADR and matching evidence.
 
 ## Delivery Workflow (Maximum Rigor)
 1. Specify or update architecture contracts in docs before code.
@@ -34,7 +36,7 @@ This repository is in a documentation-first architecture phase for a Tokio + TEA
 - Keep `update` free from I/O, blocking, locks, and Tokio runtime handles.
 - Model domain and runtime failures as explicit `Msg` variants.
 - Keep command semantics explicit and typed.
-- Preserve deterministic processing guarantees as documented for the selected topology.
+- Preserve per-Component serialization, causal ordering, and controlled-execution determinism.
 - Add traceability between requirement, design artifact, tests, and implementation.
 - Isolate time behind runtime-owned scheduling abstractions so test harnesses can control clock progression.
 - Split large effect behavior into composable adapter/protocol modules rather than one monolithic handler.

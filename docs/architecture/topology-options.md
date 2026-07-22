@@ -1,10 +1,12 @@
-# Runtime Topology Options (Decision Recorded)
+# Runtime Topology Options (Historical Analysis)
 
 ## Decision Status
-- Runtime topology for v0 is decided in `docs/adr/0001-runtime-topology.md`.
-- **Selected topology: Option A (Single App Mailbox)**.
-- **Selected ordering guarantee: G1 (Global Total Order)**.
-- Options B and C remain documented as future alternatives that require a superseding ADR.
+- ADR-0001 originally selected Option A and G1 for v0.
+- ADR-0002 supersedes that selection and does not mandate a runtime topology.
+- Options A, B, and C remain valid implementation techniques when they preserve
+  per-Component serialization, explicit causality, and controlled determinism.
+- No implementation may expose incidental global serialization as a portable
+  application guarantee.
 
 ## Candidate Topologies
 
@@ -45,32 +47,37 @@
 - Best alignment: Option C.
 - Tradeoff: highest scalability and isolation, weakest global ordering story.
 
-## Comparison Matrix (Initial)
+## Comparison Matrix (Historical, Qualitative)
 | Criterion | Option A: Single Mailbox | Option B: Hybrid | Option C: Actors |
 |---|---|---|---|
-| Determinism | High | Medium-High | Medium |
+| Live scheduling simplicity | High | Medium-High | Medium |
 | Complexity | Low | Medium | High |
 | Testability | High | Medium | Medium-Low |
 | Throughput | Medium | Medium-High | High |
 | Fault Isolation | Medium | High | High |
 
+Controlled determinism is required of every conforming topology and is not a
+relative advantage of Option A.
+
 ## Recommendation Framework
 1. Define two representative workloads (normal and high contention).
-2. Validate correctness invariants against Option A baseline semantics.
+2. Validate the ADR-0002 observable semantics for every candidate.
 3. Measure throughput, tail latency, and shutdown behavior.
-4. Compare results against migration trigger thresholds.
-5. If thresholds are exceeded, evaluate B/C and propose a superseding ADR.
+4. Compare candidates without treating incidental global order as correctness.
+5. Select or change topology using implementation evidence; require an ADR only
+   when observable semantics would change.
 
-## Migration Trigger Checklist (A -> B/C)
+## Implementation Reconsideration Checklist
 - Queue depth shows sustained growth under target load.
 - P95/P99 loop latency exceeds service-level targets.
-- Single-loop CPU saturation blocks required throughput growth.
-- Failure isolation requirements exceed single-mailbox containment.
+- Scheduler CPU saturation blocks required throughput growth.
+- Failure isolation requirements exceed the current implementation's boundaries.
 
-## Required Evidence for Topology Reconsideration
-- Determinism and command emission tests.
-- Runtime loop integration tests.
+## Required Evidence for a Topology Selection or Change
+- Per-Component serialization and command emission tests.
+- Causal message-flow integration tests.
+- Repeated controlled-execution determinism tests.
 - Cancellation and graceful shutdown tests.
 - Failure-path tests mapping runtime faults to `Msg`.
 - Backpressure/load test results and interpretation.
-- Comparative A vs candidate (B or C) benchmark and operational complexity analysis.
+- Comparative current-versus-candidate benchmark and operational complexity analysis when replacing an implementation.

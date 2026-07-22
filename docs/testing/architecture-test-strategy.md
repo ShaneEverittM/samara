@@ -22,8 +22,10 @@ Define required test layers and acceptance gates for a strict TEA + Tokio archit
 - Confirm handler failures are mapped to structured runtime error messages.
 - Validate adapter/protocol composition boundaries (mechanism vs policy split).
 
-### L3: Runtime Loop Integration Tests
-- Validate mailbox ingestion, update execution, command dispatch, and message re-entry.
+### L3: Runtime Message-Flow Integration Tests
+- Validate message ingestion, target delivery, update execution, command dispatch, and message re-entry.
+- Confirm that transitions for one Component never overlap.
+- Confirm required causal edges without assuming an order between independent live events.
 - Confirm no bypass of message flow.
 
 ### L4: Cancellation and Shutdown Tests
@@ -32,27 +34,47 @@ Define required test layers and acceptance gates for a strict TEA + Tokio archit
 
 ### L5: Backpressure and Load Tests
 - Validate queue pressure behavior and runtime stability.
-- Produce metrics for Option A operating envelopes and migration trigger checks.
+- Produce throughput, tail-latency, isolation, and overload evidence for the selected implementation.
 
 ### L6: Simulation-Time and Acceleration Tests
 - Validate that runtime scheduling semantics can run in simulated time.
 - Validate faster-than-real-time execution paths for simulation workloads.
 - Confirm determinism across repeated accelerated runs with identical inputs.
 
-### L7: Topology Reconsideration Validation Suite
-- Run only when proposing a topology change beyond Option A.
-- Capture determinism, throughput, and fault isolation findings for superseding ADR proposals.
+### L7: Topology-Independent Conformance Suite
+- Validate per-Component serialization and required causal relationships.
+- Confirm application code and conformance tests do not rely on incidental scheduler topology.
+- Run before and after topology-coupled implementation changes and compare observable traces.
 
 ## Required Scenario Coverage
 - Deterministic transitions for representative domain message sets.
 - Command correctness for happy path and failure path transitions.
 - Adapter/protocol translation correctness (`AppCmd <-> system operations <-> Msg`).
 - Runtime fault conversion into explicit `Msg` variants.
-- Actor interaction coverage for `tell` (fire-and-forget) and `ask` (request/reply), including dropped-reply failure paths.
-- Typed request coverage for `Message<Actor>` mappings and `tell_request` / `ask_request` runtime flows.
-- Deferred-reply coverage where commands/messages do not carry explicit reply fields and runtime metadata is used instead.
+- Component interaction coverage for `Cmd::notify` (one-way) and
+  `Cmd::request` (request/reply), including dropped-reply failure paths.
+- Typed request coverage for `Request<P>` associated Reply mappings and
+  `RequestOutcome` runtime flows.
+- Deferred-reply coverage where provider messages carry an inert `ReplyTo` and
+  transitions emit `Cmd::reply` rather than using a live reply channel.
 - Port/protocol binding coverage for provider swapping (`real` vs `mock`) without consumer code changes.
-- Port call coverage (`ask`/`tell`) for context-provided reply tokens, detached tell replies, and runtime-owned reply resolution.
+- Port interaction coverage for the `Notification<P>` / `Cmd::notify` and
+  `Request<P>` / `Cmd::request` symmetry, opaque correlation, result mapping,
+  and runtime-owned reply resolution.
+- Reply-obligation coverage must demonstrate that:
+  - consuming `ReplyTo` into an interpreted `Cmd::reply` produces exactly one
+    typed outcome without a diagnostic violation;
+  - dropping an unresolved `ReplyTo` is reported with enough Component and
+    request context to locate the violation;
+  - constructing and then discarding `Cmd::reply` does not falsely discharge
+    the obligation;
+  - storing or deliberately forgetting `ReplyTo` cannot evade runtime-owned
+    detection when the defined request lifecycle ends; and
+  - diagnostic `Drop` checks never panic or influence application-visible
+    behavior.
+- Public API lint checks must verify that discarding a `ReplyTo`-valued
+  expression triggers its `#[must_use]` diagnostic without claiming that the
+  lint proves eventual consumption.
 - Runtime drive-loop tests should prefer `run_until(...)` / `run_until_predicate(...)` / `run_until_idle()` over hard-coded sleep durations.
 - Cancellation behavior for long-running and short-running commands.
 - Backpressure behavior under burst and sustained load.
@@ -72,8 +94,9 @@ Define required test layers and acceptance gates for a strict TEA + Tokio archit
 - Time-sensitive runtime changes must include L6 coverage.
 
 ### Topology-Coupled Changes
-- Must conform to ADR-0001 Option A semantics.
-- Any change away from Option A requires a superseding ADR and L7 evidence.
+- Must conform to ADR-0002's topology-neutral observable semantics.
+- Must include L7 evidence and relevant load, lifecycle, and fault-isolation evidence.
+- Require an ADR only when public ordering, causality, isolation, or controlled-determinism semantics change.
 
 ## PR Evidence Requirements
 - Invariant impact summary.

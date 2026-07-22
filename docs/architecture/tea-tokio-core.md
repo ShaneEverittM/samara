@@ -13,13 +13,14 @@
 
 ## Non-Goals (v0)
 - Durable event persistence and replay.
-- Changing runtime topology without a superseding ADR.
+- A program-wide order for independent live events.
+- Mandating a concrete mailbox, task, or event-loop topology.
 
 ## Core Contracts
 
 ### Model Contract
 - `Model` represents all mutable domain state.
-- No external actor or task may mutate `Model` directly.
+- No other Component or task may mutate `Model` directly.
 - `Model` changes only through the runtime applying `update` output.
 
 ### Msg Contract
@@ -51,7 +52,7 @@ async fn handle(cmd: Cmd) -> Result<Vec<Msg>, RuntimeError>;
 ```
 
 - Effect handlers run on Tokio.
-- Handler output is transformed into `Msg` values and re-enqueued into the runtime mailbox.
+- Handler output is transformed into `Msg` values and returned through runtime-managed message delivery.
 - Handler failures must become structured runtime error messages.
 - Effect layering rule:
   - Runtime-level effects define mechanism.
@@ -60,40 +61,59 @@ async fn handle(cmd: Cmd) -> Result<Vec<Msg>, RuntimeError>;
 
 ### Runtime Contract
 - Runtime responsibilities:
-  - Own mailbox ingestion.
-  - Pull one `Msg` at a time according to selected ordering policy.
-  - Execute `update`.
+  - Own message ingestion and routing.
+  - Serialize transitions for each Component without requiring global serialization.
+  - Execute each Component's `update` transition.
   - Dispatch resulting `Cmd` values to effect handlers.
   - Supervise task lifecycle, cancellation, and shutdown.
-  - Re-enqueue handler output messages.
-- Runtime must be the only component coordinating message flow and command execution.
+  - Deliver handler output messages to their target Components.
+- Only runtime-managed machinery may deliver messages or execute commands;
+  application Components express coordination through messages.
 - Runtime driving APIs should support condition-based execution (`run_until(...)` / `run_until_predicate(...)`) and quiescence execution (`run_until_idle()`), so tests/simulations do not depend on hard-coded wall-clock sleeps.
 
-### Actor Interaction Contract (`tell` / `ask`)
-- `tell` is a one-way message send (`ActorRef::tell`), with delivery acknowledgment only (`MailboxClosed` on failure).
-- `ask` is request/reply over message flow (`ActorRef::ask` / `ActorRef::ask_request`), with runtime-owned reply transport.
-- For request-style APIs, runtime supports typed request metadata via `Message<Actor>`:
-  - Request types implement `Message<A>` with associated `Reply`.
-  - Runtime APIs (`tell_request` / `ask_request`) infer reply behavior from the request type and attach runtime-owned reply tokens.
-  - Internal actor `Msg` enums remain domain-focused and do not need explicit reply channel fields.
-- `update` remains pure for `ask` handling:
-  - `update` may emit a typed `Cmd` containing reply intent only (no reply field required).
-  - `update` claims reply lifecycle from context (`claim_reply`) when a deferred reply is expected.
-  - Effect handlers perform the actual reply side effect using runtime metadata helpers (`reply_from_issued` / `reply_from_meta`).
-- No direct I/O or reply-channel sending in `update`.
-- Type-based actor linking (`RuntimeRef::tell` / `RuntimeRef::ask`) must preserve the same mailbox and error semantics.
+### Component Interaction Contract (`send` / `notify` / `request`)
+- Every cross-Component interaction is an explicit `Cmd`; constructing one does
+  not invoke another Component during the current transition.
+- `Cmd::send` is the lower-level one-way form for deliberate coupling to a
+  target `ComponentRef<C>` and its complete `C::Msg` vocabulary.
+- Provider-neutral interaction uses a named `Port<P>`:
+  - A value implementing `Notification<P>` is issued through `Cmd::notify` for
+    one-way delivery.
+  - A value implementing `Request<P>` declares one associated `Reply` type and
+    is issued through `Cmd::request` for a correlated terminal outcome.
+- `Cmd::request` includes a pure result mapper from `RequestOutcome<Reply>` to
+  the requester's ordinary `Msg`. The mapper is the continuation and may capture
+  application-owned domain correlation.
+- The runtime owns transport correlation and creates an opaque, typed
+  `ReplyTo<Reply>` when it interprets a request. Components do not allocate,
+  compare, or retain transport correlation identifiers.
+- A provider receives the request with its inert `ReplyTo`, then emits
+  `Cmd::reply`. Consuming the token expresses one-shot reply authority without
+  exposing a channel, future, or runtime handle inside `update`.
+- The requester never awaits inside `update`; the mapped `RequestOutcome` returns
+  through normal runtime-managed message delivery.
+- Request delivery, abandonment, timeout, and cancellation must be explicit
+  terminal outcomes where applicable. This contract does not select a default
+  deadline or cancellation policy.
 
-### Actor Decoupling Contract (`Port` / protocol binding)
-- Multi-actor collaboration should prefer protocol-level ports over concrete actor type lookup.
-- `Port` contracts define stable request/response types independent of provider actor implementations.
-- Runtime binding maps `Port` to a provider actor at startup (`real` vs `mock`), so swapping implementations does not require consumer code changes.
-- Provider actors implement protocol adapters (`PortHandler::request`) to translate a request into actor `Msg` without branching on `ask` vs `tell`.
-- Runtime owns request-reply transport details for port calls.
-  - `ask` attaches a waiting runtime reply slot.
-  - `tell` attaches a detached runtime reply slot that discards the response.
-  - `update` reads an opaque `ReplyToken` from `UpdateContext`; effect handlers resolve it through runtime APIs.
-  - Actor message types stay protocol-shaped and do not carry concrete reply channels.
-- Port calls (`PortRef::tell` / `PortRef::ask`) must preserve the same mailbox and failure semantics as direct actor refs.
+### Component Decoupling Contract (`Port` / protocol binding)
+- Reusable Component collaboration should prefer protocol-level Ports over
+  concrete Component message coupling.
+- A `Protocol` owns a provider-neutral inbound vocabulary independent of any
+  provider Component's private `Msg` type.
+- A `Port<P>` is an inert, named logical dependency. It contains no provider
+  reference, channel, runtime handle, or lookup capability.
+- Program assembly binds each exact named Port to a provider Component using a
+  pure mapping from the Protocol's inbound vocabulary to the provider's `Msg`.
+  Multiple named Ports of the same Protocol may be bound independently.
+- Swapping a real, mock, or controlled provider does not require consumer
+  transition changes.
+- Notification values and Request values use the symmetric `Cmd::notify` and
+  `Cmd::request` entry points; only Requests add an associated Reply and result
+  continuation.
+- Runtime-owned routing and reply resolution must preserve the delivery,
+  causality, and failure semantics promised by the interaction contract without
+  exposing runtime topology.
 
 ### Time and Simulation Contract
 - The runtime must provide a clock/scheduling abstraction boundary that can support:
@@ -112,21 +132,23 @@ async fn handle(cmd: Cmd) -> Result<Vec<Msg>, RuntimeError>;
 - No panic-based control flow for expected errors.
 
 ## Message and Effect Lifecycle
-1. `Msg` enters mailbox.
-2. Runtime dequeues per selected ordering guarantees.
-3. Runtime calls pure `update(model, msg)`.
+1. `Msg` enters runtime-managed delivery for a target Component.
+2. Runtime selects it according to per-Component serialization, causality, and any explicitly promised sequencing contract.
+3. Runtime calls the target Component's pure `update(model, msg)`.
 4. Runtime commits next `Model`.
 5. Runtime dispatches each `Cmd` to Tokio effect handlers.
 6. Effect handlers complete and emit `Msg` values.
-7. Runtime enqueues emitted `Msg` values.
-8. Loop continues until shutdown policy triggers.
+7. Runtime delivers emitted `Msg` values to their target Components.
+8. Execution continues until shutdown policy triggers.
 
 ## Topology Status
-- Topology is decided for v0: **Option A (Single App Mailbox)**.
-- Message ordering guarantee for v0 is **global total order**.
-- Runtime implementation must enforce a single mailbox update loop, with async handler output re-entering via `Msg`.
-- Any move to hybrid or actor topology requires a superseding ADR with migration evidence.
-- See `docs/architecture/topology-options.md` and `docs/adr/0001-runtime-topology.md`.
+- Runtime topology is not prescribed for v0.
+- A single loop, one loop per Component, a hybrid scheduler, or another design may conform.
+- Each Component's transitions are serialized; causal and explicitly promised sequencing guarantees are preserved.
+- Independent live events have no implicit program-wide order.
+- Controlled execution selects a deterministic schedule and produces a reproducible program-wide trace.
+- Internal topology may change without an ADR when these observable semantics remain unchanged.
+- See `docs/architecture/topology-options.md` and `docs/adr/0002-runtime-topology-and-ordering.md`.
 
 ## Related Design Sketches
 - Thin-slice API comparison and PoC shape: `docs/architecture/thin-slice-value.md`.
