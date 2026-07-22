@@ -1,9 +1,10 @@
 //! The shallowest complete Samara application shape.
 //!
 //! `Counter` owns one integer and receives increments from an ordinary Tokio
-//! `mpsc` channel through Samara's first-party-shaped [`MpscSource`] bridge.
-//! Its transition is synchronous and side-effect free: only a `CounterMsg` can
-//! change `CounterModel`, while the runtime owns channel polling and delivery.
+//! `mpsc` channel through Samara's first-party-shaped [`MpscInput`] bridge.
+//! Its transition is synchronous and side effect free: only a
+//! `CounterMessage` can change `CounterModel`, while the runtime owns channel
+//! polling and delivery.
 //!
 //! The `program` function is shared by live execution and the controlled test.
 //! Only the runtime binding changes from a real Tokio receiver to scripted
@@ -35,10 +36,10 @@ struct CounterModel {
     input_closed: bool,
 }
 
-/// The complete set of events that may change `CounterModel`.
+/// The complete set of messages that may change `CounterModel`.
 #[derive(Debug)]
-enum CounterMsg {
-    /// One value arrived from the adapted Tokio channel.
+enum CounterMessage {
+    /// One value arrived through the Tokio channel bridge.
     Increment(u64),
 
     /// The channel sender was dropped and no more values can arrive.
@@ -47,37 +48,37 @@ enum CounterMsg {
 
 /// One Counter instance and its immutable logical input wiring.
 ///
-/// `MpscSource` is only a descriptor. The live `Receiver` remains at assembly
+/// `MpscInput` is only a descriptor. The live `Receiver` remains at assembly
 /// time, outside both this value and `CounterModel`.
 struct Counter {
-    increments: MpscSource<u64>,
+    increments: MpscInput<u64>,
 }
 
 impl Component for Counter {
     type Model = CounterModel;
-    type Msg = CounterMsg;
+    type Message = CounterMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Msg> {
+    fn init(&self) -> Init<Self::Model, Self::Message> {
         Init::new(CounterModel::default())
     }
 
-    fn update(&self, model: &mut Self::Model, msg: Self::Msg) -> Cmd<Self::Msg> {
-        match msg {
-            CounterMsg::Increment(amount) => {
+    fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+        match message {
+            CounterMessage::Increment(amount) => {
                 // This is the whole state transition. It performs no channel
                 // read, Tokio call, spawn, or other world interaction.
                 model.total += amount;
             }
-            CounterMsg::InputClosed => {
+            CounterMessage::InputClosed => {
                 model.input_closed = true;
             }
         }
 
         // This Component has no finite effects to request.
-        Cmd::none()
+        Command::none()
     }
 
-    fn subscriptions(&self, model: &Self::Model) -> Subscriptions<Self::Msg> {
+    fn subscriptions(&self, model: &Self::Model) -> Subscriptions<Self::Message> {
         if model.input_closed {
             // Once the source reports normal completion, retaining desire for
             // it would ask reconciliation to start the same source again.
@@ -88,8 +89,8 @@ impl Component for Counter {
             SubscriptionId::new(INCREMENTS),
             self.increments.clone(),
             |event| match event {
-                SourceEvent::Item(amount) => CounterMsg::Increment(amount),
-                SourceEvent::Ended => CounterMsg::InputClosed,
+                SourceEvent::Item(amount) => CounterMessage::Increment(amount),
+                SourceEvent::Ended => CounterMessage::InputClosed,
                 SourceEvent::Failed(never) => match never {},
             },
         ))
@@ -100,7 +101,7 @@ impl Component for Counter {
 ///
 /// No Tokio receiver or scripted test input enters this function. It contains
 /// only the Component and the logical source descriptor they share.
-fn program(increments: MpscSource<u64>) -> (Program, ComponentRef<Counter>) {
+fn program(increments: MpscInput<u64>) -> (Program, ComponentRef<Counter>) {
     let mut program = Program::builder();
     let counter = program.component(ComponentId::new("counter"), Counter { increments });
     (program.build(), counter)
@@ -108,11 +109,11 @@ fn program(increments: MpscSource<u64>) -> (Program, ComponentRef<Counter>) {
 
 /// Runs the program with an ordinary Tokio channel as its world-facing input.
 ///
-/// In a real runtime, the two sends become `CounterMsg::Increment` messages and
-/// dropping `input` becomes `CounterMsg::InputClosed`. Samara owns that bridge;
-/// the application does not write a polling task or adapter.
+/// In a real runtime, the two sends become `CounterMessage::Increment` messages
+/// and dropping `input` becomes `CounterMessage::InputClosed`. Samara owns that
+/// bridge; the application does not write a polling task or Driver.
 async fn run_live() -> Result<(), Box<dyn Error>> {
-    let increments = MpscSource::named(INCREMENTS);
+    let increments = MpscInput::named(INCREMENTS);
     let (input, receiver) = tokio::sync::mpsc::channel(8);
     let (program, _counter) = program(increments.clone());
 
@@ -123,7 +124,7 @@ async fn run_live() -> Result<(), Box<dyn Error>> {
     drop(input);
 
     // Binding transfers the unique receiver into Samara's structured runtime
-    // scope. The Component still contains only `MpscSource`.
+    // scope. The Component still contains only `MpscInput`.
     let runtime = LiveRuntime::builder(program)
         .bind_mpsc(increments, receiver)
         .build()?;
@@ -150,7 +151,7 @@ mod tests {
     /// Exercises the pure transition and declarative subscription immediately.
     #[test]
     fn component_logic_is_directly_testable() {
-        let increments = MpscSource::named(INCREMENTS);
+        let increments = MpscInput::named(INCREMENTS);
         let counter = Counter {
             increments: increments.clone(),
         };
@@ -159,15 +160,15 @@ mod tests {
         assert_eq!(
             counter
                 .subscriptions(&model)
-                .find::<MpscSource<u64>>(&SubscriptionId::new(INCREMENTS)),
+                .find::<MpscInput<u64>>(&SubscriptionId::new(INCREMENTS)),
             Some(&increments)
         );
 
-        let cmd = counter.update(&mut model, CounterMsg::Increment(2));
+        let command = counter.update(&mut model, CounterMessage::Increment(2));
         assert_eq!(model.total, 2);
-        assert!(cmd.is_none());
+        assert!(command.is_none());
 
-        counter.update(&mut model, CounterMsg::InputClosed);
+        counter.update(&mut model, CounterMessage::InputClosed);
         assert!(model.input_closed);
         assert_eq!(counter.subscriptions(&model).iter().count(), 0);
     }
@@ -182,7 +183,7 @@ mod tests {
     #[test]
     #[ignore = "ControlledRuntime is an API façade without an implementation"]
     fn controlled_mpsc_updates_the_same_program() -> Result<(), RuntimeError> {
-        let increments = MpscSource::named(INCREMENTS);
+        let increments = MpscInput::named(INCREMENTS);
         let (program, counter) = program(increments.clone());
         let mut runtime = ControlledRuntime::builder(program)
             .control_mpsc(increments.clone())

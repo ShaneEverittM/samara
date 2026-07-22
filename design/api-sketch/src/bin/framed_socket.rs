@@ -35,7 +35,7 @@ const HEALTH: &str = "health/primary";
 struct Endpoint(Arc<str>);
 
 impl Endpoint {
-    /// Creates a cheaply cloneable endpoint value suitable for Models and specs.
+    /// Creates a cheaply cloneable endpoint value suitable for Models and descriptors.
     fn new(value: impl Into<Arc<str>>) -> Self {
         Self(value.into())
     }
@@ -45,24 +45,24 @@ impl Endpoint {
 ///
 /// This world-facing source descriptor intentionally says nothing about
 /// framing. `generation` lets otherwise identical reconnect attempts produce a
-/// changed subscription spec that the runtime can reconcile.
+/// changed SourceDescriptor that the runtime can reconcile.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct TcpBytes {
-    /// Where the transport adapter should connect.
+    /// Where the terminal transport Driver should connect.
     endpoint: Endpoint,
 
     /// Application-owned identity for this connection attempt.
     generation: u64,
 }
 
-impl Source for TcpBytes {
+impl SourceDescriptor for TcpBytes {
     type Item = Vec<u8>;
-    type Error = TcpFailure;
+    type Error = TcpError;
 }
 
-/// Failures owned by the TCP transport mechanism rather than the frame decoder.
+/// Error data owned by the TCP transport mechanism rather than the frame decoder.
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum TcpFailure {
+enum TcpError {
     /// Establishing the connection failed.
     Connect(String),
 
@@ -75,14 +75,14 @@ enum TcpFailure {
 struct Frame(Vec<u8>);
 
 /// Pure configuration. The incomplete-buffer state belongs to `DecoderState`,
-/// which the runtime-owned framing adapter creates for each subscription.
+/// which the runtime-owned framing Layer creates for each subscription.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct U16LengthDelimited {
     /// Policy supplied by the application to bound accepted frame sizes.
     max_frame_len: usize,
 }
 
-/// Per-subscription framing state owned by the framing adapter.
+/// Per-subscription framing state owned by the framing Layer.
 ///
 /// It is deliberately absent from `TelemetryModel`: buffering partial wire
 /// data is protocol mechanism, not durable application truth.
@@ -92,9 +92,9 @@ struct DecoderState {
     buffered: Vec<u8>,
 }
 
-/// Framing failures, kept distinct from transport failures by `FramedFailure`.
+/// Framing error data, kept distinct from transport errors by `FramedError`.
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum DecodeFailure {
+enum DecodeError {
     /// A length prefix exceeded the configured resource bound.
     FrameTooLarge { length: usize, maximum: usize },
 }
@@ -102,7 +102,7 @@ enum DecodeFailure {
 impl Decoder for U16LengthDelimited {
     type Chunk = Vec<u8>;
     type Frame = Frame;
-    type Error = DecodeFailure;
+    type Error = DecodeError;
     type State = DecoderState;
 
     fn start(&self) -> Self::State {
@@ -127,7 +127,7 @@ impl Decoder for U16LengthDelimited {
 
             let length = u16::from_be_bytes([state.buffered[0], state.buffered[1]]) as usize;
             if length > self.max_frame_len {
-                return Err(DecodeFailure::FrameTooLarge {
+                return Err(DecodeError::FrameTooLarge {
                     length,
                     maximum: self.max_frame_len,
                 });
@@ -149,23 +149,23 @@ impl Decoder for U16LengthDelimited {
     }
 }
 
-/// The application-visible source after composing transport and framing.
-type TelemetrySource = Framed<TcpBytes, U16LengthDelimited>;
+/// The application-visible feed descriptor after composing transport and framing.
+type TelemetryFeed = Framed<TcpBytes, U16LengthDelimited>;
 
-/// Preserves whether a feed ended because transport or decoding failed.
-type TelemetryFailure = FramedFailure<TcpFailure, DecodeFailure>;
+/// Error data preserving whether transport or decoding caused a feed failure.
+type TelemetryError = FramedError<TcpError, DecodeError>;
 
-/// Live Tokio owns only transport I/O. Framing remains the same pure adapter in
+/// Live Tokio owns only transport I/O. Framing remains the same pure Layer in
 /// live and controlled profiles.
 struct TokioTcpBytes;
 
-impl SourceAdapter<TcpBytes> for TokioTcpBytes {
+impl SourceDriver<TcpBytes> for TokioTcpBytes {
     /// Bridges live Tokio I/O into Samara's source sink; it never sees or
     /// mutates a Component Model.
-    fn run(&self, source: TcpBytes, sink: SourceSink<TcpBytes>) -> BoxFuture<()> {
+    fn run(&self, descriptor: TcpBytes, sink: SourceSink<TcpBytes>) -> BoxFuture<()> {
         Box::pin(async move {
             loop {
-                match read_chunk(&source.endpoint).await {
+                match read_chunk(&descriptor.endpoint).await {
                     Ok(Some(bytes)) => {
                         if sink.emit(bytes).await.is_err() {
                             return;
@@ -185,10 +185,10 @@ impl SourceAdapter<TcpBytes> for TokioTcpBytes {
     }
 }
 
-/// Stands in for the eventual first-party Tokio TCP adapter's socket read.
-async fn read_chunk(_endpoint: &Endpoint) -> Result<Option<Vec<u8>>, TcpFailure> {
+/// Stands in for the eventual first-party Tokio TCP Driver's socket read.
+async fn read_chunk(_endpoint: &Endpoint) -> Result<Option<Vec<u8>>, TcpError> {
     // Placeholder for Tokio socket reads. This never runs in the compile-only
-    // sketch, but makes the adapter boundary and ownership shape concrete.
+    // sketch, but makes the Driver boundary and ownership shape concrete.
     pending().await
 }
 
@@ -206,9 +206,9 @@ protocol! {
     /// Public interaction contract offered by the health provider.
     ///
     /// Requesters depend on this protocol through a `Port<HealthProtocol>`; they
-    /// do not depend on `Health`, `HealthMsg`, or its Model representation. The
-    /// generated marker remains a normal, nameable Port parameter.
-    type HealthProtocol => enum HealthInbound {
+    /// do not depend on `Health`, `HealthMessage`, or its Model representation.
+    /// The generated marker remains a normal, nameable Port parameter.
+    type HealthProtocol => enum HealthProtocolMessage {
         // One-way health observations with no correlated terminal result.
         Connecting(Endpoint),
         FrameSeen,
@@ -233,11 +233,17 @@ struct HealthSnapshot {
 /// Private message vocabulary of the health Component.
 ///
 /// Port users never need to name this type; assembly supplies the conversion
-/// from public protocol input to this Component-specific message.
+/// from a public protocol message to this Component-specific message.
 #[derive(Debug)]
-enum HealthMsg {
+enum HealthMessage {
     /// An operation delivered through a bound `HealthProtocol` Port.
-    Protocol(HealthInbound),
+    Protocol(HealthProtocolMessage),
+}
+
+impl From<HealthProtocolMessage> for HealthMessage {
+    fn from(value: HealthProtocolMessage) -> Self {
+        Self::Protocol(value)
+    }
 }
 
 /// State-owning provider for `HealthProtocol`.
@@ -245,43 +251,46 @@ struct Health;
 
 impl Component for Health {
     type Model = HealthModel;
-    type Msg = HealthMsg;
+    type Message = HealthMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Msg> {
+    fn init(&self) -> Init<Self::Model, Self::Message> {
         Init::new(HealthModel::default())
     }
 
-    fn update(&self, model: &mut Self::Model, msg: Self::Msg) -> Cmd<Self::Msg> {
-        let HealthMsg::Protocol(incoming) = msg;
-
-        match incoming {
+    fn update(
+        &self,
+        model: &mut Self::Model,
+        HealthMessage::Protocol(message): Self::Message,
+    ) -> Command<Self::Message> {
+        match message {
             // Notifications update only this Component's Model. No sender
             // observes completion and no transport handle leaks in. Each
-            // operation is a direct inbound variant rather than a nested enum.
-            HealthInbound::Connecting(endpoint) => {
+            // operation is a direct protocol-message variant rather than a
+            // nested enum.
+            HealthProtocolMessage::Connecting(endpoint) => {
                 model.status = format!("connecting to {}", endpoint.0);
-                Cmd::none()
+                Command::none()
             }
-            HealthInbound::FrameSeen => {
+            HealthProtocolMessage::FrameSeen => {
                 model.status = "receiving".to_owned();
                 model.frames_seen += 1;
-                Cmd::none()
+                Command::none()
             }
-            HealthInbound::Disconnected => {
+            HealthProtocolMessage::Disconnected => {
                 model.status = "disconnected".to_owned();
-                Cmd::none()
+                Command::none()
             }
-            HealthInbound::Failed(error) => {
+            HealthProtocolMessage::Failed(error) => {
                 model.status = format!("failed: {error}");
-                Cmd::none()
+                Command::none()
             }
-            HealthInbound::Read(incoming) => {
+            HealthProtocolMessage::Read(invocation) => {
                 // `ReplyTo` identifies this dynamic invocation. The provider
                 // returns a typed reply intent without inspecting correlation
                 // IDs or sending directly from async code.
-                let _ = incoming.request;
-                Cmd::reply(
-                    incoming.reply_to,
+                let _ = invocation.request;
+                Command::reply(
+                    invocation.reply_to,
                     HealthSnapshot {
                         status: model.status.clone(),
                         frames_seen: model.frames_seen,
@@ -326,7 +335,7 @@ struct TelemetryModel {
 
 /// Every message capable of transitioning `TelemetryModel`.
 #[derive(Debug)]
-enum TelemetryMsg {
+enum TelemetryMessage {
     /// Declare or replace the desired feed configuration.
     Connect(FeedConfig),
 
@@ -334,10 +343,10 @@ enum TelemetryMsg {
     Disconnect,
 
     /// Lifecycle or item event emitted by the framed source.
-    Socket(SourceEvent<Frame, TelemetryFailure>),
+    Socket(SourceEvent<Frame, TelemetryError>),
 
     /// Completion event for a previously emitted storage effect.
-    Stored(EffectEvent<FrameId, StoreFailure>),
+    Stored(EffectOutcome<FrameId, StoreError>),
 
     /// Issue two independent snapshot requests from one transition.
     CheckHealth([ProbeId; 2]),
@@ -362,24 +371,24 @@ struct FrameId(u64);
 /// Typed, finite intent to persist one decoded frame.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct StoreFrame {
-    /// Immutable payload handed to the storage effect adapter.
+    /// Immutable payload handed to the storage Driver.
     frame: Frame,
 }
 
-impl Effect for StoreFrame {
+impl EffectDescriptor for StoreFrame {
     type Output = FrameId;
-    type Error = StoreFailure;
+    type Error = StoreError;
 }
 
-/// Application-visible failure reported by the storage adapter.
+/// Application-visible error data reported when the storage Driver fails.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct StoreFailure(String);
+struct StoreError(String);
 
 /// Telemetry Component definition and its immutable, assembly-supplied wiring.
 ///
 /// The Port belongs here because it is a stable dependency of this Component
 /// instance. Mutable feed state belongs in `TelemetryModel`; live connection
-/// and decoder state belong in runtime adapters.
+/// and decoder state belong in the runtime Driver and framing Layer.
 struct Telemetry {
     /// Named protocol dependency, independent of the provider's message enum.
     health: Port<HealthProtocol>,
@@ -393,125 +402,126 @@ struct Telemetry {
 /// correlation.
 fn health_checked(
     probe: ProbeId,
-) -> impl FnOnce(RequestOutcome<HealthSnapshot>) -> TelemetryMsg + Send + 'static {
-    move |event| TelemetryMsg::HealthChecked { probe, event }
+) -> impl FnOnce(RequestOutcome<HealthSnapshot>) -> TelemetryMessage + Send + 'static {
+    move |event| TelemetryMessage::HealthChecked { probe, event }
 }
 
 impl Component for Telemetry {
     type Model = TelemetryModel;
-    type Msg = TelemetryMsg;
+    type Message = TelemetryMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Msg> {
+    fn init(&self) -> Init<Self::Model, Self::Message> {
         Init::new(TelemetryModel::default())
     }
 
-    fn update(&self, model: &mut Self::Model, msg: Self::Msg) -> Cmd<Self::Msg> {
-        match msg {
-            TelemetryMsg::Connect(config) => {
+    fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+        match message {
+            TelemetryMessage::Connect(config) => {
                 // Changing the Model changes the desired subscription returned
                 // below; the runtime performs the actual start or replacement.
                 model.desired = Some(config.clone());
                 model.last_failure = None;
-                Cmd::notify(self.health.clone(), Connecting(config.endpoint))
+                Command::notify(self.health.clone(), Connecting(config.endpoint))
             }
-            TelemetryMsg::Disconnect => {
+            TelemetryMessage::Disconnect => {
                 // Removing desire is enough. Reconciliation and cancellation
                 // are runtime work, not reducer-side effects.
                 model.desired = None;
-                Cmd::notify(self.health.clone(), Disconnected)
+                Command::notify(self.health.clone(), Disconnected)
             }
-            TelemetryMsg::Socket(SourceEvent::Item(frame)) => {
+            TelemetryMessage::Socket(SourceEvent::Item(frame)) => {
                 model.received += 1;
                 // One transition can declare independent intents without
                 // performing either operation inline.
-                Cmd::batch([
-                    Cmd::notify(self.health.clone(), FrameSeen),
-                    Cmd::effect(StoreFrame { frame }, TelemetryMsg::Stored),
+                Command::batch([
+                    Command::notify(self.health.clone(), FrameSeen),
+                    Command::effect(StoreFrame { frame }, TelemetryMessage::Stored),
                 ])
             }
-            TelemetryMsg::Socket(SourceEvent::Failed(error)) => {
+            TelemetryMessage::Socket(SourceEvent::Failed(error)) => {
                 // Failure is terminal. Reconnect policy must arrive as another
                 // explicit message with a new desired configuration.
                 model.desired = None;
                 let error = format!("{error:?}");
                 model.last_failure = Some(error.clone());
-                Cmd::notify(self.health.clone(), Failed(error))
+                Command::notify(self.health.clone(), Failed(error))
             }
-            TelemetryMsg::Socket(SourceEvent::Ended) => {
+            TelemetryMessage::Socket(SourceEvent::Ended) => {
                 model.desired = None;
-                Cmd::notify(self.health.clone(), Disconnected)
+                Command::notify(self.health.clone(), Disconnected)
             }
-            TelemetryMsg::Stored(EffectEvent::Succeeded(_frame_id)) => {
-                // Async completion re-enters the Component only as a Msg.
+            TelemetryMessage::Stored(EffectOutcome::Succeeded(_frame_id)) => {
+                // Async completion re-enters the Component only as a Message.
                 model.stored += 1;
-                Cmd::none()
+                Command::none()
             }
-            TelemetryMsg::Stored(EffectEvent::Failed(error)) => {
+            TelemetryMessage::Stored(EffectOutcome::Failed(error)) => {
                 model.last_failure = Some(error.0);
-                Cmd::none()
+                Command::none()
             }
-            TelemetryMsg::Stored(EffectEvent::Cancelled(reason)) => {
+            TelemetryMessage::Stored(EffectOutcome::Cancelled(reason)) => {
                 model.last_failure = Some(format!("store cancelled: {reason:?}"));
-                Cmd::none()
+                Command::none()
             }
-            TelemetryMsg::CheckHealth(probes) => {
+            TelemetryMessage::CheckHealth(probes) => {
                 // Both requests become outstanding from one transition. Completion
                 // order is intentionally not assumed; each pure mapper captures
                 // the domain key needed to interpret its eventual reply.
-                Cmd::batch(
-                    probes.map(|probe| {
-                        Cmd::request(self.health.clone(), Read, health_checked(probe))
-                    }),
-                )
+                Command::batch(probes.map(|probe| {
+                    Command::request(self.health.clone(), Read, move |event| {
+                        TelemetryMessage::HealthChecked { probe, event }
+                    })
+                }))
             }
-            TelemetryMsg::HealthChecked { probe, event } => {
+            TelemetryMessage::HealthChecked { probe, event } => {
                 model.health_checks.push((probe, event));
-                Cmd::none()
+                Command::none()
             }
         }
     }
 
-    fn subscriptions(&self, model: &Self::Model) -> Subscriptions<Self::Msg> {
+    fn subscriptions(&self, model: &Self::Model) -> Subscriptions<Self::Message> {
         // Subscriptions are a pure projection of current Model state, analogous
         // to declarative resource desire rather than imperative task spawning.
         let Some(config) = &model.desired else {
             return Subscriptions::none();
         };
 
-        let source = Framed::new(
-            TcpBytes {
-                endpoint: config.endpoint.clone(),
-                generation: config.generation,
-            },
-            U16LengthDelimited {
-                max_frame_len: config.max_frame_len,
-            },
-        );
-
-        // Reconciliation compares both stable identity and typed spec: absence
-        // stops it, equal identity/spec preserves it, and changed spec replaces
-        // it while keeping the logical subscription identity.
+        // Reconciliation compares stable identity and the typed descriptor:
+        // absence stops it, an equal descriptor preserves it, and a changed
+        // descriptor replaces it while keeping the logical subscription
+        // identity.
         Subscriptions::one(Subscription::source(
             SubscriptionId::new(SOCKET),
-            source,
-            TelemetryMsg::Socket,
+            Framed::new(
+                TcpBytes {
+                    endpoint: config.endpoint.clone(),
+                    generation: config.generation,
+                },
+                U16LengthDelimited {
+                    max_frame_len: config.max_frame_len,
+                },
+            ),
+            TelemetryMessage::Socket,
         ))
     }
 }
 
-/// Live adapter for the `StoreFrame` effect boundary.
+/// Live Driver for the `StoreFrame` effect boundary.
 ///
 /// Production code would perform Tokio-backed storage here. App retry or
 /// classification policy would still be modeled by messages and Components.
 struct LiveFrameStore;
 
-impl EffectAdapter<StoreFrame> for LiveFrameStore {
+impl EffectDriver<StoreFrame> for LiveFrameStore {
     fn execute(
         &self,
-        effect: StoreFrame,
-    ) -> BoxFuture<Result<<StoreFrame as Effect>::Output, <StoreFrame as Effect>::Error>> {
+        descriptor: StoreFrame,
+    ) -> BoxFuture<
+        Result<<StoreFrame as EffectDescriptor>::Output, <StoreFrame as EffectDescriptor>::Error>,
+    > {
         Box::pin(async move {
-            let _ = effect;
+            let _ = descriptor;
             Ok(FrameId(1))
         })
     }
@@ -543,9 +553,10 @@ fn program() -> (Program, AppRefs) {
     let health_port = program.port(PortId::new(HEALTH));
     let health = program.component(ComponentId::new("health"), Health);
 
-    // Assembly owns the only knowledge that public `HealthInbound` values enter
-    // this particular provider as `HealthMsg::Protocol`.
-    program.bind_port(&health_port, &health, HealthMsg::Protocol);
+    // Assembly selects the provider; `HealthMessage` declares the canonical
+    // Protocol conversion through its `From` implementation.
+    program.bind_port(&health_port, &health);
+
     let telemetry = program.component(
         ComponentId::new("telemetry"),
         Telemetry {
@@ -572,7 +583,7 @@ fn config(endpoint: &str, generation: u64) -> FeedConfig {
     }
 }
 
-/// Shows the live host shape: bind real adapters, spawn, interact, and perform
+/// Shows the live host shape: bind real Drivers, spawn, interact, and perform
 /// structured shutdown through the runtime owner.
 async fn live_shape() -> Result<(), RuntimeError> {
     let (program, refs) = program();
@@ -584,13 +595,13 @@ async fn live_shape() -> Result<(), RuntimeError> {
     let telemetry = runtime.handle(&refs.telemetry)?;
     let runtime = runtime.spawn();
 
-    // Host interaction still enters through a Msg; obtaining a handle does not
+    // Host interaction still enters through a Message; obtaining a handle does not
     // grant direct access to the Component's Model.
     telemetry
-        .send(TelemetryMsg::Connect(config("127.0.0.1:7000", 1)))
+        .send(TelemetryMessage::Connect(config("127.0.0.1:7000", 1)))
         .await?;
 
-    // Runtime-owned work is joined or cancelled as one structured lifetime.
+    // Runtime-owned work is joined or canceled as one structured lifetime.
     // The returned report makes incomplete cleanup observable to the host.
     let report = runtime.shutdown(Shutdown::Cancel).await?;
     assert!(report.is_clean());
@@ -611,14 +622,14 @@ fn controlled_shape() -> Result<(), RuntimeError> {
 
     runtime.send(
         &refs.telemetry,
-        TelemetryMsg::Connect(config("simulated:7000", 1)),
+        TelemetryMessage::Connect(config("simulated:7000", 1)),
     )?;
     runtime.run_until_idle()?;
 
     // Controlled execution exposes declared runtime state for assertions; it
-    // does not require poking at an adapter's private task or socket.
+    // does not require poking at a Driver's private task or socket.
     let socket = SubscriptionId::new(SOCKET);
-    let active: TelemetrySource = runtime.subscription_spec(&refs.telemetry, &socket)?;
+    let active: TelemetryFeed = runtime.source_descriptor(&refs.telemetry, &socket)?;
     assert_eq!(active.source.endpoint, Endpoint::new("simulated:7000"));
 
     // Inject raw chunks at the TcpBytes layer. The first chunk is partial; the
@@ -642,24 +653,24 @@ fn controlled_shape() -> Result<(), RuntimeError> {
     assert_eq!(first.intent.frame, Frame(b"abc".to_vec()));
     let second = runtime.next_effect::<StoreFrame>()?;
     assert_eq!(second.intent.frame, Frame(b"x".to_vec()));
-    runtime.complete(first, EffectEvent::Succeeded(FrameId(1)))?;
-    runtime.complete(second, EffectEvent::Succeeded(FrameId(2)))?;
+    runtime.complete(first, EffectOutcome::Succeeded(FrameId(1)))?;
+    runtime.complete(second, EffectOutcome::Succeeded(FrameId(2)))?;
     runtime.run_until_idle()?;
     assert_eq!(runtime.state(&refs.telemetry)?.stored, 2);
 
     // Same subscription identity, changed resource configuration: replace it.
     runtime.send(
         &refs.telemetry,
-        TelemetryMsg::Connect(config("simulated:8000", 2)),
+        TelemetryMessage::Connect(config("simulated:8000", 2)),
     )?;
     runtime.run_until_idle()?;
-    let replaced: TelemetrySource = runtime.subscription_spec(&refs.telemetry, &socket)?;
+    let replaced: TelemetryFeed = runtime.source_descriptor(&refs.telemetry, &socket)?;
     assert_ne!(active, replaced);
 
     runtime.emit_source::<Telemetry, TcpBytes>(
         &refs.telemetry,
         &socket,
-        SourceEvent::Failed(TcpFailure::Read("connection reset".to_owned())),
+        SourceEvent::Failed(TcpError::Read("connection reset".to_owned())),
     )?;
     runtime.run_until_idle()?;
     assert!(runtime.state(&refs.telemetry)?.desired.is_none());
@@ -705,7 +716,7 @@ mod tests {
         );
     }
 
-    /// Proves reconciliation can observe a spec replacement even though the
+    /// Proves reconciliation can observe a descriptor replacement even though the
     /// logical subscription retains the same stable identity.
     #[test]
     fn same_subscription_identity_exposes_changed_configuration() {
@@ -715,13 +726,13 @@ mod tests {
         let mut model = component.init().model;
         let id = SubscriptionId::new(SOCKET);
 
-        component.update(&mut model, TelemetryMsg::Connect(config("one:7000", 1)));
+        component.update(&mut model, TelemetryMessage::Connect(config("one:7000", 1)));
         let first = component.subscriptions(&model);
-        let first = first.find::<TelemetrySource>(&id).unwrap();
+        let first = first.find::<TelemetryFeed>(&id).unwrap();
 
-        component.update(&mut model, TelemetryMsg::Connect(config("two:7000", 2)));
+        component.update(&mut model, TelemetryMessage::Connect(config("two:7000", 2)));
         let second = component.subscriptions(&model);
-        let second = second.find::<TelemetrySource>(&id).unwrap();
+        let second = second.find::<TelemetryFeed>(&id).unwrap();
 
         assert_ne!(first, second);
         assert_eq!(first.source.endpoint, Endpoint::new("one:7000"));
@@ -737,8 +748,14 @@ mod tests {
         let fallback = builder.port::<HealthProtocol>(PortId::new("health/fallback"));
         let provider = builder.component(ComponentId::new("health"), Health);
 
-        builder.bind_port(&primary, &provider, HealthMsg::Protocol);
-        builder.bind_port(&fallback, &provider, HealthMsg::Protocol);
+        builder.bind_port(&primary, &provider);
+        builder.bind_port(&fallback, &provider);
+
+        let converted: HealthMessage = HealthProtocolMessage::FrameSeen.into();
+        assert!(matches!(
+            converted,
+            HealthMessage::Protocol(HealthProtocolMessage::FrameSeen)
+        ));
 
         assert_ne!(primary, fallback);
         assert_eq!(primary.id(), &PortId::new("health/primary"));
@@ -746,7 +763,7 @@ mod tests {
     }
 
     /// Proves consumers emit public protocol notifications without importing or
-    /// constructing the provider's private `HealthMsg` vocabulary.
+    /// constructing the provider's private `HealthMessage` vocabulary.
     #[test]
     fn telemetry_emits_protocol_notifications_without_provider_messages() {
         let mut builder = Program::builder();
@@ -754,15 +771,16 @@ mod tests {
         let component = Telemetry { health };
         let mut model = component.init().model;
 
-        let cmd = component.update(&mut model, TelemetryMsg::Connect(config("one:7000", 1)));
-        let notifications = cmd.notification_intents::<Connecting>();
+        let command =
+            component.update(&mut model, TelemetryMessage::Connect(config("one:7000", 1)));
+        let notifications = command.notification_intents::<Connecting>();
 
         assert_eq!(notifications.len(), 1);
         assert_eq!(notifications[0].0, &PortId::new(HEALTH));
         assert_eq!(notifications[0].1.0, Endpoint::new("one:7000"));
     }
 
-    /// Proves concurrent requests use one result Msg variant while preserving
+    /// Proves concurrent requests use one result Message variant while preserving
     /// requester-owned identity independently of completion order.
     #[test]
     fn two_requests_share_one_result_variant_and_keep_domain_correlation() {
@@ -777,11 +795,11 @@ mod tests {
         let component = Telemetry { health };
         let mut model = component.init().model;
 
-        let cmd = component.update(
+        let command = component.update(
             &mut model,
-            TelemetryMsg::CheckHealth([ProbeId(17), ProbeId(29)]),
+            TelemetryMessage::CheckHealth([ProbeId(17), ProbeId(29)]),
         );
-        let requests = cmd.request_intents::<Read>();
+        let requests = command.request_intents::<Read>();
 
         assert_eq!(requests.len(), 2);
         assert!(

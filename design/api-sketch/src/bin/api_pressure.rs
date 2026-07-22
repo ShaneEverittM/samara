@@ -7,10 +7,11 @@
 //! plus a logical timer demonstrate the two subscription/command lifecycles.
 //!
 //! This is deliberately more than a “hello world.” It keeps the important
-//! boundaries visible: Component values contain immutable wiring, Models hold
-//! mutable behavioral state, `update` only changes state and declares intent,
-//! and adapters perform world-facing work. `live_shape` and `controlled_shape`
-//! assemble the same application while giving those intents different worlds.
+//! boundaries visible: Component configurations contain immutable wiring,
+//! Models hold mutable behavioral state, `update` only changes state and
+//! declares intent, and Drivers perform world-facing work. `live_shape` and
+//! `controlled_shape` assemble the same application while giving those intents
+//! different worlds.
 
 #![allow(dead_code)]
 
@@ -26,19 +27,20 @@ const QUOTA: &str = "counter/quota";
 
 /// Provider-neutral vocabulary for quota operations.
 ///
-/// The protocol is separate from `QuotaMsg`, so consumers depend on the service
-/// contract rather than the provider Component's complete private message API.
+/// The protocol is separate from `QuotaMessage`, so consumers depend on the
+/// service contract rather than the provider Component's complete private
+/// Message API.
 struct QuotaProtocol;
 
 impl Protocol for QuotaProtocol {
-    type Inbound = QuotaInbound;
+    type Message = QuotaProtocolMessage;
 }
 
 #[derive(Debug)]
 /// Values that program assembly can route through a `QuotaProtocol` Port.
-enum QuotaInbound {
+enum QuotaProtocolMessage {
     /// A typed request together with the inert token needed to return its reply.
-    Reserve(Incoming<QuotaProtocol, Reserve>),
+    Reserve(RequestInvocation<QuotaProtocol, Reserve>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -49,7 +51,7 @@ struct Reserve {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// The domain result of evaluating a reservation request.
+/// The domain outcome of evaluating a reservation request.
 enum Reservation {
     /// The requested capacity was consumed on the requester's behalf.
     Granted { amount: u64 },
@@ -61,10 +63,10 @@ enum Reservation {
 impl Request<QuotaProtocol> for Reserve {
     type Reply = Reservation;
 
-    fn into_inbound(self, reply_to: ReplyTo<Self::Reply>) -> QuotaInbound {
+    fn into_message(self, reply_to: ReplyTo<Self::Reply>) -> QuotaProtocolMessage {
         // This conversion packages domain data with runtime-owned correlation
         // data. Neither requester nor provider needs to see a correlation ID.
-        QuotaInbound::Reserve(Incoming::new(self, reply_to))
+        QuotaProtocolMessage::Reserve(RequestInvocation::new(self, reply_to))
     }
 }
 
@@ -77,9 +79,15 @@ struct QuotaModel {
 
 #[derive(Debug)]
 /// Quota's private message vocabulary.
-enum QuotaMsg {
+enum QuotaMessage {
     /// A provider-neutral protocol value routed here by program assembly.
-    Protocol(QuotaInbound),
+    Protocol(QuotaProtocolMessage),
+}
+
+impl From<QuotaProtocolMessage> for QuotaMessage {
+    fn from(message: QuotaProtocolMessage) -> Self {
+        Self::Protocol(message)
+    }
 }
 
 /// Immutable configuration for one Quota Component instance.
@@ -90,21 +98,21 @@ struct Quota {
 
 impl Component for Quota {
     type Model = QuotaModel;
-    type Msg = QuotaMsg;
+    type Message = QuotaMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Msg> {
+    fn init(&self) -> Init<Self::Model, Self::Message> {
         Init::new(QuotaModel {
             remaining: self.initial,
         })
     }
 
-    fn update(&self, model: &mut Self::Model, msg: Self::Msg) -> Cmd<Self::Msg> {
-        match msg {
-            QuotaMsg::Protocol(QuotaInbound::Reserve(incoming)) => {
+    fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+        match message {
+            QuotaMessage::Protocol(QuotaProtocolMessage::Reserve(invocation)) => {
                 // This is an ordinary deterministic transition: decide from
                 // current state, update owned state, and describe a reply. The
                 // runtime—not this function—delivers that reply.
-                let requested = incoming.request.amount;
+                let requested = invocation.request.amount;
                 let reservation = if requested <= model.remaining {
                     model.remaining -= requested;
                     Reservation::Granted { amount: requested }
@@ -115,7 +123,7 @@ impl Component for Quota {
                     }
                 };
 
-                Cmd::reply(incoming.reply_to, reservation)
+                Command::reply(invocation.reply_to, reservation)
             }
         }
     }
@@ -134,7 +142,7 @@ struct CounterModel {
     last_reservation: Option<RequestOutcome<Reservation>>,
 
     /// Most recent terminal outcome from the persistence effect.
-    last_save: Option<EffectEvent<(), PersistError>>,
+    last_save: Option<EffectOutcome<(), PersistError>>,
 
     /// Whether the ongoing increment source ended normally.
     input_closed: bool,
@@ -142,7 +150,7 @@ struct CounterModel {
 
 #[derive(Debug)]
 /// Every message that may drive a Counter state transition.
-enum CounterMsg {
+enum CounterMessage {
     /// A proposed increment, regardless of whether it came from a source or send.
     Increment(u64),
 
@@ -153,26 +161,26 @@ enum CounterMsg {
     Reserved(RequestOutcome<Reservation>),
 
     /// A terminal outcome from persisting an approved count.
-    Persisted(EffectEvent<(), PersistError>),
+    Persisted(EffectOutcome<(), PersistError>),
 
     /// One interval elapsed on the runtime's clock.
     Tick,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// Typed intent to persist the latest approved count.
+/// Typed effect descriptor for persisting the latest approved count.
 struct PersistCount {
-    /// Snapshot to write; the adapter does not read Component state directly.
+    /// Snapshot to write; the Driver does not read Component state directly.
     value: u64,
 }
 
-impl Effect for PersistCount {
+impl EffectDescriptor for PersistCount {
     type Output = ();
     type Error = PersistError;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// Domain-facing persistence failure returned by an adapter.
+/// Domain-facing persistence error data returned by a Driver.
 struct PersistError {
     /// Human-readable explanation suitable for state or diagnostics.
     message: String,
@@ -181,7 +189,7 @@ struct PersistError {
 /// Immutable logical wiring for one Counter Component instance.
 struct Counter {
     /// Descriptor for the ongoing external increment source.
-    increments: MpscSource<u64>,
+    increments: MpscInput<u64>,
 
     /// Named dependency on any provider of the quota protocol.
     quota: Port<QuotaProtocol>,
@@ -189,59 +197,66 @@ struct Counter {
 
 impl Component for Counter {
     type Model = CounterModel;
-    type Msg = CounterMsg;
+    type Message = CounterMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Msg> {
+    fn init(&self) -> Init<Self::Model, Self::Message> {
         // `after` declares timer intent against the runtime's clock. It does
         // not sleep, acquire a Tokio handle, or perform work during init.
         Init::new(CounterModel::default())
-            .with_cmd(Cmd::after(Duration::from_secs(1), CounterMsg::Tick))
+            .with_command(Command::after(Duration::from_secs(1), CounterMessage::Tick))
     }
 
-    fn update(&self, model: &mut Self::Model, msg: Self::Msg) -> Cmd<Self::Msg> {
-        match msg {
-            CounterMsg::Increment(amount) => {
+    fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+        match message {
+            CounterMessage::Increment(amount) => {
                 // The count deliberately remains unchanged until authority is
-                // granted. `CounterMsg::Reserved` is the explicit continuation:
-                // the runtime maps this request's eventual terminal event back
+                // granted. `CounterMessage::Reserved` is the explicit continuation:
+                // the runtime maps this request's eventual terminal outcome back
                 // into the requester's ordinary message stream.
-                Cmd::request(self.quota.clone(), Reserve { amount }, CounterMsg::Reserved)
+                Command::request(
+                    self.quota.clone(),
+                    Reserve { amount },
+                    CounterMessage::Reserved,
+                )
             }
-            CounterMsg::Reserved(event) => {
+            CounterMessage::Reserved(outcome) => {
                 // Request correlation is runtime machinery, but its meaningful
                 // outcomes remain explicit data. Only a granted domain reply
                 // authorizes the state change and consequent side effect.
-                let cmd = match &event {
+                let command = match &outcome {
                     RequestOutcome::Replied(Reservation::Granted { amount }) => {
                         model.count += amount;
-                        Cmd::effect(PersistCount { value: model.count }, CounterMsg::Persisted)
+                        Command::effect(
+                            PersistCount { value: model.count },
+                            CounterMessage::Persisted,
+                        )
                     }
                     RequestOutcome::Replied(Reservation::Denied { .. })
                     | RequestOutcome::Failed(_)
                     | RequestOutcome::TimedOut
-                    | RequestOutcome::Cancelled => Cmd::none(),
+                    | RequestOutcome::Cancelled => Command::none(),
                 };
-                model.last_reservation = Some(event);
-                cmd
+                model.last_reservation = Some(outcome);
+                command
             }
-            CounterMsg::Persisted(result) => {
-                model.last_save = Some(result);
-                Cmd::none()
+            CounterMessage::Persisted(outcome) => {
+                model.last_save = Some(outcome);
+                Command::none()
             }
-            CounterMsg::InputClosed => {
+            CounterMessage::InputClosed => {
                 model.input_closed = true;
-                Cmd::none()
+                Command::none()
             }
-            CounterMsg::Tick => {
+            CounterMessage::Tick => {
                 model.ticks += 1;
                 // Re-issuing the command makes repetition explicit and keeps
                 // time controllable; no background interval mutates the Model.
-                Cmd::after(Duration::from_secs(1), CounterMsg::Tick)
+                Command::after(Duration::from_secs(1), CounterMessage::Tick)
             }
         }
     }
 
-    fn subscriptions(&self, _model: &Self::Model) -> Subscriptions<Self::Msg> {
+    fn subscriptions(&self, _model: &Self::Model) -> Subscriptions<Self::Message> {
         // Subscriptions describe ongoing demand. The stable ID lets the runtime
         // reconcile this desired source across transitions without exposing a
         // task, receiver, or cancellation handle to the Component.
@@ -249,29 +264,34 @@ impl Component for Counter {
             SubscriptionId::new(INCREMENTS),
             self.increments.clone(),
             |event| match event {
-                SourceEvent::Item(by) => CounterMsg::Increment(by),
-                SourceEvent::Ended => CounterMsg::InputClosed,
+                SourceEvent::Item(by) => CounterMessage::Increment(by),
+                SourceEvent::Ended => CounterMessage::InputClosed,
                 SourceEvent::Failed(never) => match never {},
             },
         ))
     }
 }
 
-/// Live executor for `PersistCount` intents.
+/// Live Driver for `PersistCount` descriptors.
 ///
-/// Operational resources would belong here (or in fields on this adapter), not
+/// Operational resources would belong here (or in fields on this Driver), not
 /// in `CounterModel` or `Counter::update`.
 struct LivePersistence;
 
-impl EffectAdapter<PersistCount> for LivePersistence {
+impl EffectDriver<PersistCount> for LivePersistence {
     fn execute(
         &self,
-        effect: PersistCount,
-    ) -> BoxFuture<Result<<PersistCount as Effect>::Output, <PersistCount as Effect>::Error>> {
+        descriptor: PersistCount,
+    ) -> BoxFuture<
+        Result<
+            <PersistCount as EffectDescriptor>::Output,
+            <PersistCount as EffectDescriptor>::Error,
+        >,
+    > {
         Box::pin(async move {
-            // Replace with a real persistence boundary. The adapter, not the
+            // Replace with a real persistence boundary. The Driver, not the
             // Component, owns the side effect.
-            let _ = effect;
+            let _ = descriptor;
             Ok(())
         })
     }
@@ -290,7 +310,7 @@ struct AppRefs {
 }
 
 /// Declares the logical application graph shared by every execution profile.
-fn program(increments: MpscSource<u64>) -> (Program, AppRefs) {
+fn program(increments: MpscInput<u64>) -> (Program, AppRefs) {
     let mut program = Program::builder();
 
     // A named Port is immutable dependency wiring. Naming allows another Quota
@@ -298,9 +318,10 @@ fn program(increments: MpscSource<u64>) -> (Program, AppRefs) {
     let quota_port = program.port(PortId::new(QUOTA));
     let quota = program.component(ComponentId::new("quota"), Quota { initial: 100 });
 
-    // Assembly chooses the concrete provider and the single translation into
-    // its private Msg vocabulary; Counter never needs to know `QuotaMsg`.
-    program.bind_port(&quota_port, &quota, QuotaMsg::Protocol);
+    // Assembly chooses the concrete provider. `QuotaMessage` declares its
+    // canonical Protocol conversion through `From`; Counter never needs to
+    // know that private Message vocabulary.
+    program.bind_port(&quota_port, &quota);
     let counter = program.component(
         ComponentId::new("counter"),
         Counter {
@@ -316,9 +337,9 @@ fn program(increments: MpscSource<u64>) -> (Program, AppRefs) {
 ///
 /// This function is compile-checked documentation in the API sketch. It uses
 /// the same `program` as controlled execution, but binds real receivers and an
-/// async effect adapter before spawning the live runtime.
+/// async effect Driver before spawning the live runtime.
 async fn live_shape() -> Result<(), RuntimeError> {
-    let increments = MpscSource::named(INCREMENTS);
+    let increments = MpscInput::named(INCREMENTS);
     let (input, receiver) = tokio::sync::mpsc::channel(32);
     let (program, refs) = program(increments.clone());
 
@@ -332,10 +353,10 @@ async fn live_shape() -> Result<(), RuntimeError> {
     let counter = runtime.handle(&refs.counter)?;
     let runtime = runtime.spawn();
 
-    // Both an adapted source and an explicit low-level send become CounterMsg
-    // values. Neither path is allowed to mutate CounterModel directly.
+    // Both a driven source and an explicit low-level send become
+    // CounterMessage values. Neither path may mutate CounterModel directly.
     let _ = input.send(3).await;
-    counter.send(CounterMsg::Increment(2)).await?;
+    counter.send(CounterMessage::Increment(2)).await?;
 
     // Structured shutdown joins runtime-owned work and reports its outcome.
     let report = runtime.shutdown(Shutdown::Cancel).await?;
@@ -349,7 +370,7 @@ async fn live_shape() -> Result<(), RuntimeError> {
 /// harness says so. Component code and logical assembly are unchanged from
 /// `live_shape`; only runtime decisions and boundary bindings differ.
 fn controlled_shape() -> Result<(), RuntimeError> {
-    let increments = MpscSource::named(INCREMENTS);
+    let increments = MpscInput::named(INCREMENTS);
     let (program, refs) = program(increments.clone());
 
     let mut runtime = ControlledRuntime::builder(program)
@@ -363,16 +384,16 @@ fn controlled_shape() -> Result<(), RuntimeError> {
     runtime.run_until_idle()?;
 
     // The world-facing persistence intent is now pending, rather than having
-    // executed invisibly. The harness chooses its terminal result and timing.
+    // executed invisibly. The harness chooses its terminal outcome and timing.
     let pending = runtime.next_effect::<PersistCount>()?;
     assert_eq!(pending.intent, PersistCount { value: 3 });
-    runtime.complete(pending, EffectEvent::Succeeded(()))?;
+    runtime.complete(pending, EffectOutcome::Succeeded(()))?;
     runtime.run_until_idle()?;
 
     // Advancing logical time deterministically delivers the scheduled Tick.
     runtime.advance(Duration::from_secs(1))?;
 
-    // State inspection proves the result across both independently owned
+    // State inspection proves the outcome across both independently owned
     // Models: Counter accepted three and Quota consumed exactly three.
     let model = runtime.state(&refs.counter)?;
     assert_eq!(model.count, 3);
@@ -408,7 +429,7 @@ mod tests {
     /// the desired subscription remains inspectable data.
     #[test]
     fn transition_and_subscription_shape_are_directly_testable() {
-        let increments = MpscSource::named(INCREMENTS);
+        let increments = MpscInput::named(INCREMENTS);
         let mut program = Program::builder();
         let quota = program.port(PortId::new(QUOTA));
         let component = Counter {
@@ -419,22 +440,22 @@ mod tests {
 
         // Dispatching a request declares intent only. The later reply is the sole
         // message that can authorize this change.
-        let cmd = component.update(&mut model, CounterMsg::Increment(3));
+        let command = component.update(&mut model, CounterMessage::Increment(3));
         assert_eq!(model.count, 0);
-        let requests = cmd.request_intents::<Reserve>();
+        let requests = command.request_intents::<Reserve>();
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].0, &PortId::new(QUOTA));
         assert_eq!(requests[0].1, &Reserve { amount: 3 });
 
         // Supplying the message shape produced by the continuation exercises
         // the resulting transition independently of transport correlation.
-        let cmd = component.update(
+        let command = component.update(
             &mut model,
-            CounterMsg::Reserved(RequestOutcome::Replied(Reservation::Granted { amount: 3 })),
+            CounterMessage::Reserved(RequestOutcome::Replied(Reservation::Granted { amount: 3 })),
         );
         assert_eq!(model.count, 3);
         assert_eq!(
-            cmd.effect_intent::<PersistCount>(),
+            command.effect_intent::<PersistCount>(),
             Some(&PersistCount { value: 3 })
         );
 
@@ -442,7 +463,7 @@ mod tests {
         // the receiver or depending on a particular task/mailbox topology.
         let subscriptions = component.subscriptions(&model);
         assert_eq!(
-            subscriptions.find::<MpscSource<u64>>(&SubscriptionId::new(INCREMENTS)),
+            subscriptions.find::<MpscInput<u64>>(&SubscriptionId::new(INCREMENTS)),
             Some(&increments)
         );
     }

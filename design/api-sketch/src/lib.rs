@@ -14,19 +14,20 @@
 //!
 //! 1. A [`Component`] owns a private model and accepts typed messages.
 //! 2. [`Component::update`] changes that model synchronously and returns a
-//!    [`Cmd`] describing finite work. It receives no runtime or I/O capability.
-//! 3. [`Component::subscriptions`] declares the ongoing [`Source`] values the
-//!    current model wants active. Declaring a subscription does not start work.
+//!    [`Command`] describing finite work. It receives no runtime or I/O capability.
+//! 3. [`Component::subscriptions`] declares the ongoing [`SourceDescriptor`]
+//!    values the current model wants active. Declaring a subscription does not
+//!    start work.
 //! 4. A [`Program`] assembles Components, typed references, and named [`Port`]
 //!    dependencies. Ports expose provider-neutral protocols rather than a
 //!    provider Component's private message enum.
-//! 5. [`LiveRuntime`] binds effect and source descriptors to Tokio adapters.
+//! 5. [`LiveRuntime`] binds effect and source descriptors to Tokio Drivers.
 //!    [`ControlledRuntime`] exposes the same boundaries as scripted inputs for
 //!    deterministic tests.
 //!
 //! Commands and subscriptions contain explicit, typed intent. The runtime owns
 //! their asynchronous execution and returns behaviorally relevant outcomes as
-//! messages through [`EffectEvent`], [`SourceEvent`], and [`RequestOutcome`].
+//! messages through [`EffectOutcome`], [`SourceEvent`], and [`RequestOutcome`].
 
 use std::{
     any::Any, error::Error, fmt, future::Future, marker::PhantomData, pin::Pin, sync::Arc,
@@ -37,19 +38,20 @@ use std::{
 /// profile.
 pub mod prelude {
     pub use crate::{
-        AdapterStopped, BoxFuture, CancelReason, Cmd, Component, ComponentHandle, ComponentId,
-        ComponentRef, ControlledRuntime, Decoder, Effect, EffectAdapter, EffectEvent, Framed,
-        FramedFailure, Incoming, Init, LiveRuntime, MpscSource, Notification, PendingEffect, Port,
-        PortId, Program, ProgramBuilder, Protocol, ReplyTo, Request, RequestError, RequestOutcome,
-        RunReport, RuntimeError, RuntimeTask, Shutdown, ShutdownReport, Source, SourceAdapter,
-        SourceEvent, SourceSink, Subscription, SubscriptionId, Subscriptions, TraceEvent, protocol,
+        BoxFuture, CancelReason, Command, Component, ComponentHandle, ComponentId, ComponentRef,
+        ControlledRuntime, Decoder, DriverStopped, EffectDescriptor, EffectDriver, EffectOutcome,
+        Framed, FramedError, Init, LiveRuntime, MpscInput, Notification, PendingEffect, Port,
+        PortId, Program, ProgramBuilder, Protocol, ReplyTo, Request, RequestError,
+        RequestInvocation, RequestOutcome, RunReport, RuntimeError, RuntimeTask, Shutdown,
+        ShutdownReport, SourceDescriptor, SourceDriver, SourceEvent, SourceSink, Subscription,
+        SubscriptionId, Subscriptions, TraceEvent, protocol,
     };
 }
 
-/// A boxed, sendable future returned by a live effect or source adapter.
+/// A boxed, sendable future returned by a live effect or source Driver.
 ///
 /// Returning the future to Samara transfers lifecycle ownership to the runtime;
-/// adapters should not detach untracked Tokio tasks behind this boundary.
+/// Drivers should not detach untracked Tokio tasks behind this boundary.
 pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 
 /// Stable logical identity of one Component instance in a [`Program`].
@@ -99,12 +101,12 @@ impl SubscriptionId {
 /// A typed description of finite world-facing work.
 ///
 /// Implementations are data only: they do not execute the effect. A live
-/// [`EffectAdapter`] interprets the value, while controlled execution exposes it
-/// as [`PendingEffect`] for scripted completion.
-pub trait Effect: Send + 'static {
+/// [`EffectDriver`] realizes the value in live execution, while controlled
+/// execution exposes it as [`PendingEffect`] for scripted completion.
+pub trait EffectDescriptor: Send + 'static {
     /// Value produced when the effect succeeds.
     type Output: Send + 'static;
-    /// Domain-facing failure produced by the effect interpreter.
+    /// Typed error explaining an effect failure.
     type Error: Send + 'static;
 }
 
@@ -113,16 +115,16 @@ pub trait Effect: Send + 'static {
 /// Equality is semantic: the runtime uses it during subscription reconciliation
 /// to decide whether an active source is unchanged. Operational state such as a
 /// socket handle or partial input buffer must not live in this descriptor.
-pub trait Source: Clone + PartialEq + fmt::Debug + Send + Sync + 'static {
+pub trait SourceDescriptor: Clone + PartialEq + fmt::Debug + Send + Sync + 'static {
     /// Item emitted while the source remains active.
     type Item: Send + 'static;
-    /// Failure that terminates the active source instance.
+    /// Typed error explaining a failure that terminates the active Source.
     type Error: Send + 'static;
 }
 
-/// Behaviorally relevant outcome of one finite [`Effect`].
+/// Behaviorally relevant terminal outcome of one finite [`EffectDescriptor`].
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum EffectEvent<Output, EffectError> {
+pub enum EffectOutcome<Output, EffectError> {
     /// The effect completed with its typed output.
     Succeeded(Output),
     /// The effect completed with its typed failure.
@@ -131,7 +133,7 @@ pub enum EffectEvent<Output, EffectError> {
     Cancelled(CancelReason),
 }
 
-/// Event delivered by an active [`Source`].
+/// Event delivered by an active Source realization.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SourceEvent<Item, SourceError> {
     /// The source emitted another typed item and remains active.
@@ -154,33 +156,33 @@ pub enum CancelReason {
 }
 
 /// Initial model and optional startup command for a [`Component`].
-pub struct Init<Model, Msg> {
+pub struct Init<Model, Message> {
     /// The Component's initial private state.
     pub model: Model,
     /// Finite work requested as the Component enters the program.
-    pub cmd: Cmd<Msg>,
+    pub command: Command<Message>,
 }
 
-impl<Model, Msg> Init<Model, Msg> {
+impl<Model, Message> Init<Model, Message> {
     /// Creates initialization with no startup command.
     pub fn new(model: Model) -> Self {
         Self {
             model,
-            cmd: Cmd::none(),
+            command: Command::none(),
         }
     }
 
     /// Adds finite work to request after the initial model is installed.
-    pub fn with_cmd(mut self, cmd: Cmd<Msg>) -> Self {
-        self.cmd = cmd;
+    pub fn with_command(mut self, command: Command<Message>) -> Self {
+        self.command = command;
         self
     }
 }
 
 /// Samara's topology-neutral unit of state and behavior.
 ///
-/// A Component value may contain immutable logical wiring such as a
-/// [`MpscSource`], [`Port`], or [`ComponentRef`], but it must not contain ambient
+/// A Component configuration may contain immutable logical wiring such as an
+/// [`MpscInput`], [`Port`], or [`ComponentRef`], but it must not contain ambient
 /// runtime, clock, I/O, or mutable state handles. The runtime owns `Model` and
 /// guarantees that two calls to [`Component::update`] for the same Component
 /// never overlap.
@@ -188,61 +190,62 @@ pub trait Component: Send + Sync + 'static {
     /// All mutable application state exclusively owned by this Component.
     type Model: Send + 'static;
     /// The only input allowed to trigger a state transition.
-    type Msg: Send + 'static;
+    type Message: Send + 'static;
 
     /// Produces the initial model and any explicit startup work.
-    fn init(&self) -> Init<Self::Model, Self::Msg>;
+    fn init(&self) -> Init<Self::Model, Self::Message>;
 
     /// Must be observationally pure. The mutable reference is exclusively owned
     /// for the duration of this non-overlapping transition.
-    fn update(&self, model: &mut Self::Model, msg: Self::Msg) -> Cmd<Self::Msg>;
+    fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message>;
 
     /// Purely describes the ongoing sources desired by the current model.
     ///
     /// The runtime evaluates this after a committed transition and reconciles
     /// the returned set by [`SubscriptionId`] plus source equality. The default
     /// declares no ongoing work.
-    fn subscriptions(&self, _model: &Self::Model) -> Subscriptions<Self::Msg> {
+    fn subscriptions(&self, _model: &Self::Model) -> Subscriptions<Self::Message> {
         Subscriptions::none()
     }
 }
 
 /// A provider-neutral set of values accepted through a [`Port`].
 ///
-/// `Inbound` is normally a protocol-owned enum containing notification values
-/// and typed [`Incoming`] requests. It is deliberately distinct from any
-/// provider Component's private [`Component::Msg`] type. Program assembly maps
-/// it into the selected provider through [`ProgramBuilder::bind_port`].
+/// `Message` is normally a protocol-owned enum containing notification values
+/// and typed [`RequestInvocation`] requests. It is deliberately distinct from
+/// any provider Component's private [`Component::Message`] type. Program
+/// assembly converts it into the selected provider's Message through the
+/// `From` relationship required by [`ProgramBuilder::bind_port`].
 pub trait Protocol: Send + Sync + 'static {
     /// Complete provider-facing input vocabulary for this protocol.
-    type Inbound: Send + 'static;
+    type Message: Send + 'static;
 }
 
 /// A one-way value belonging to protocol `P`.
 ///
-/// Conversion to [`Protocol::Inbound`] is synchronous application logic and
+/// Conversion to [`Protocol::Message`] is synchronous application logic and
 /// must be pure and deterministic. Sending the returned value remains a
 /// runtime-interpreted command rather than a direct provider call.
 pub trait Notification<P: Protocol>: Send + 'static {
     /// Wraps this notification in the protocol's provider-facing vocabulary.
-    fn into_inbound(self) -> P::Inbound;
+    fn into_message(self) -> P::Message;
 }
 
 /// A request belonging to protocol `P` with one statically known reply type.
 ///
 /// The runtime creates an opaque [`ReplyTo`] value when interpreting
-/// [`Cmd::request`]. This pure conversion places the request and token into the
-/// protocol's [`Protocol::Inbound`] vocabulary for delivery to its bound
+/// [`Command::request`]. This pure conversion places the request and token into
+/// the protocol's [`Protocol::Message`] vocabulary for delivery to its bound
 /// provider.
 pub trait Request<P: Protocol>: Send + 'static {
     /// Reply value accepted for this particular request type.
     type Reply: Send + 'static;
 
     /// Wraps the request and runtime-owned reply token for provider delivery.
-    fn into_inbound(self, reply_to: ReplyTo<Self::Reply>) -> P::Inbound;
+    fn into_message(self, reply_to: ReplyTo<Self::Reply>) -> P::Message;
 }
 
-/// Requester-visible terminal outcome of a correlated [`Cmd::request`].
+/// Requester-visible terminal outcome of a correlated [`Command::request`].
 ///
 /// The variants establish that request liveness is explicit Component input. The
 /// default timeout policy, cancellation taxonomy, and exact point at which a
@@ -259,7 +262,7 @@ pub enum RequestOutcome<Reply> {
     Cancelled,
 }
 
-/// Provisional topology-neutral failure reported through [`RequestOutcome`].
+/// Provisional topology-neutral error reported through [`RequestOutcome`].
 ///
 /// These variants distinguish delivery from abandoned-reply failures without
 /// committing to mailboxes, channels, tasks, or a particular provider failure
@@ -277,9 +280,9 @@ pub enum RequestError {
 ///
 /// This is inert typed data: it is not a oneshot sender, future, runtime handle,
 /// or state mutation capability. It deliberately does not implement `Clone`,
-/// so [`Cmd::reply`] consumes the only authority presented to the provider.
+/// so [`Command::reply`] consumes the only authority presented to the provider.
 /// Application code cannot construct a token; the runtime creates it while
-/// interpreting [`Cmd::request`].
+/// interpreting [`Command::request`].
 pub struct ReplyTo<Reply> {
     correlation: u64,
     marker: PhantomData<fn(Reply)>,
@@ -304,10 +307,10 @@ impl<Reply> fmt::Debug for ReplyTo<Reply> {
 /// One typed request delivered to a protocol provider.
 ///
 /// Protocol definitions normally place this value in a
-/// [`Protocol::Inbound`] enum variant. Provider Components inspect `request`
-/// and pass `reply_to` to [`Cmd::reply`]; they never await or access runtime
+/// [`Protocol::Message`] enum variant. Provider Components inspect `request`
+/// and pass `reply_to` to [`Command::reply`]; they never await or access runtime
 /// state while handling it.
-pub struct Incoming<P, R>
+pub struct RequestInvocation<P, R>
 where
     P: Protocol,
     R: Request<P>,
@@ -319,14 +322,14 @@ where
     protocol: PhantomData<fn() -> P>,
 }
 
-impl<P, R> Incoming<P, R>
+impl<P, R> RequestInvocation<P, R>
 where
     P: Protocol,
     R: Request<P>,
 {
     /// Couples a request to the runtime-created reply authority.
     ///
-    /// Protocol-owned [`Request::into_inbound`] implementations call this; the
+    /// Protocol-owned [`Request::into_message`] implementations call this; the
     /// private construction of [`ReplyTo`] prevents application code from
     /// manufacturing a live correlation.
     pub fn new(request: R, reply_to: ReplyTo<R::Reply>) -> Self {
@@ -338,14 +341,14 @@ where
     }
 }
 
-impl<P, R> fmt::Debug for Incoming<P, R>
+impl<P, R> fmt::Debug for RequestInvocation<P, R>
 where
     P: Protocol,
     R: Request<P> + fmt::Debug,
 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("Incoming")
+            .debug_struct("RequestInvocation")
             .field("request", &self.request)
             .field("reply_to", &self.reply_to)
             .finish()
@@ -356,16 +359,16 @@ where
 ///
 /// Each entry generates an ordinary, nameable operation type. The declaration
 /// also generates a marker type, its [`Protocol`] implementation, a
-/// provider-facing inbound enum, and the corresponding [`Notification`] and
-/// [`Request`] conversions. Provider Components still match the generated
-/// inbound enum themselves.
+/// provider-facing protocol-message enum, and the corresponding
+/// [`Notification`] and [`Request`] conversions. Provider Components still
+/// match the generated protocol-message enum themselves.
 ///
 /// This is deliberately a small `macro_rules!` experiment. An entry with no
 /// reply type is a notification; an entry followed by `-> Reply` is a request.
 /// Entries may be unit operations or carry one tuple field. Notification
 /// variants are flattened to that field, while request variants carry a typed
-/// [`Incoming`]. A request with a unit reply must therefore spell `-> ()`.
-/// Generated operation types and the inbound enum currently derive
+/// [`RequestInvocation`]. A request with a unit reply must therefore spell
+/// `-> ()`. Generated operation types and the protocol-message enum currently derive
 /// [`Debug`](fmt::Debug).
 ///
 /// The prototype does not yet accept per-operation attributes, multiple
@@ -379,23 +382,23 @@ where
 /// pub struct HealthSnapshot;
 ///
 /// protocol! {
-///     pub type HealthProtocol => enum HealthInbound {
+///     pub type HealthProtocol => enum HealthProtocolMessage {
 ///         Changed(String),
 ///         Disconnected,
 ///         Read -> HealthSnapshot,
 ///     }
 /// }
 ///
-/// let changed = <Changed as Notification<HealthProtocol>>::into_inbound(
+/// let changed = <Changed as Notification<HealthProtocol>>::into_message(
 ///     Changed("receiving".to_owned()),
 /// );
-/// assert!(matches!(changed, HealthInbound::Changed(status) if status == "receiving"));
+/// assert!(matches!(changed, HealthProtocolMessage::Changed(status) if status == "receiving"));
 /// ```
 #[macro_export]
 macro_rules! protocol {
     (
         $(#[$protocol_attr:meta])*
-        $visibility:vis type $protocol:ident => enum $inbound:ident {
+        $visibility:vis type $protocol:ident => enum $message:ident {
             $($entries:tt)*
         }
     ) => {
@@ -404,7 +407,7 @@ macro_rules! protocol {
             [$(#[$protocol_attr])*]
             [$visibility]
             [$protocol]
-            [$inbound]
+            [$message]
             []
             []
             []
@@ -413,46 +416,46 @@ macro_rules! protocol {
     };
 
     // Finishes the TT muncher after accumulating generated operation items,
-    // inbound variants, and trait implementations. Building the complete enum
+    // protocol-message variants, and trait implementations. Building the complete enum
     // here avoids relying on nested macros to expand to individual variants.
     (
         @parse
         [$(#[$protocol_attr:meta])*]
         [$visibility:vis]
         [$protocol:ident]
-        [$inbound:ident]
+        [$message:ident]
         [$($operation_items:tt)*]
-        [$($inbound_variants:tt)*]
+        [$($message_variants:tt)*]
         [$($implementations:tt)*]
     ) => {
         $(#[$protocol_attr])*
         $visibility struct $protocol;
 
         impl $crate::Protocol for $protocol {
-            type Inbound = $inbound;
+            type Message = $message;
         }
 
         $($operation_items)*
 
         #[doc = concat!("Provider-facing envelope for `", stringify!($protocol), "`.")]
         #[derive(Debug)]
-        $visibility enum $inbound {
-            $($inbound_variants)*
+        $visibility enum $message {
+            $($message_variants)*
         }
 
         $($implementations)*
     };
 
     // A payload-carrying request generates a tuple operation type, while its
-    // inbound variant carries the complete operation plus correlation token.
+    // protocol-message variant carries the operation plus correlation token.
     (
         @parse
         [$($protocol_attr:tt)*]
         [$visibility:vis]
         [$protocol:ident]
-        [$inbound:ident]
+        [$message:ident]
         [$($operation_items:tt)*]
-        [$($inbound_variants:tt)*]
+        [$($message_variants:tt)*]
         [$($implementations:tt)*]
         $operation:ident($payload:ty) -> $reply:ty,
         $($remaining:tt)*
@@ -462,7 +465,7 @@ macro_rules! protocol {
             [$($protocol_attr)*]
             [$visibility]
             [$protocol]
-            [$inbound]
+            [$message]
             [
                 $($operation_items)*
                 #[doc = concat!("Payload-carrying request operation in `", stringify!($protocol), "`.")]
@@ -473,20 +476,20 @@ macro_rules! protocol {
                 );
             ]
             [
-                $($inbound_variants)*
+                $($message_variants)*
                 #[doc = concat!("Request operation `", stringify!($operation), "`.")]
-                $operation($crate::Incoming<$protocol, $operation>),
+                $operation($crate::RequestInvocation<$protocol, $operation>),
             ]
             [
                 $($implementations)*
                 impl $crate::Request<$protocol> for $operation {
                     type Reply = $reply;
 
-                    fn into_inbound(
+                    fn into_message(
                         self,
                         reply_to: $crate::ReplyTo<Self::Reply>,
-                    ) -> $inbound {
-                        $inbound::$operation($crate::Incoming::new(self, reply_to))
+                    ) -> $message {
+                        $message::$operation($crate::RequestInvocation::new(self, reply_to))
                     }
                 }
             ]
@@ -494,16 +497,17 @@ macro_rules! protocol {
         }
     };
 
-    // A unit request still has a tuple inbound variant because `Incoming`
+    // A unit request still has a tuple protocol-message variant because
+    // `RequestInvocation`
     // carries the runtime-created reply authority.
     (
         @parse
         [$($protocol_attr:tt)*]
         [$visibility:vis]
         [$protocol:ident]
-        [$inbound:ident]
+        [$message:ident]
         [$($operation_items:tt)*]
-        [$($inbound_variants:tt)*]
+        [$($message_variants:tt)*]
         [$($implementations:tt)*]
         $operation:ident -> $reply:ty,
         $($remaining:tt)*
@@ -513,7 +517,7 @@ macro_rules! protocol {
             [$($protocol_attr)*]
             [$visibility]
             [$protocol]
-            [$inbound]
+            [$message]
             [
                 $($operation_items)*
                 #[doc = concat!("Unit request operation in `", stringify!($protocol), "`.")]
@@ -521,20 +525,20 @@ macro_rules! protocol {
                 $visibility struct $operation;
             ]
             [
-                $($inbound_variants)*
+                $($message_variants)*
                 #[doc = concat!("Request operation `", stringify!($operation), "`.")]
-                $operation($crate::Incoming<$protocol, $operation>),
+                $operation($crate::RequestInvocation<$protocol, $operation>),
             ]
             [
                 $($implementations)*
                 impl $crate::Request<$protocol> for $operation {
                     type Reply = $reply;
 
-                    fn into_inbound(
+                    fn into_message(
                         self,
                         reply_to: $crate::ReplyTo<Self::Reply>,
-                    ) -> $inbound {
-                        $inbound::$operation($crate::Incoming::new(self, reply_to))
+                    ) -> $message {
+                        $message::$operation($crate::RequestInvocation::new(self, reply_to))
                     }
                 }
             ]
@@ -549,9 +553,9 @@ macro_rules! protocol {
         [$($protocol_attr:tt)*]
         [$visibility:vis]
         [$protocol:ident]
-        [$inbound:ident]
+        [$message:ident]
         [$($operation_items:tt)*]
-        [$($inbound_variants:tt)*]
+        [$($message_variants:tt)*]
         [$($implementations:tt)*]
         $operation:ident($payload:ty),
         $($remaining:tt)*
@@ -561,7 +565,7 @@ macro_rules! protocol {
             [$($protocol_attr)*]
             [$visibility]
             [$protocol]
-            [$inbound]
+            [$message]
             [
                 $($operation_items)*
                 #[doc = concat!("Payload-carrying notification operation in `", stringify!($protocol), "`.")]
@@ -572,16 +576,16 @@ macro_rules! protocol {
                 );
             ]
             [
-                $($inbound_variants)*
+                $($message_variants)*
                 #[doc = concat!("Notification operation `", stringify!($operation), "`.")]
                 $operation($payload),
             ]
             [
                 $($implementations)*
                 impl $crate::Notification<$protocol> for $operation {
-                    fn into_inbound(self) -> $inbound {
+                    fn into_message(self) -> $message {
                         let $operation(payload) = self;
-                        $inbound::$operation(payload)
+                        $message::$operation(payload)
                     }
                 }
             ]
@@ -589,15 +593,15 @@ macro_rules! protocol {
         }
     };
 
-    // A unit notification becomes a unit inbound variant.
+    // A unit notification becomes a unit protocol-message variant.
     (
         @parse
         [$($protocol_attr:tt)*]
         [$visibility:vis]
         [$protocol:ident]
-        [$inbound:ident]
+        [$message:ident]
         [$($operation_items:tt)*]
-        [$($inbound_variants:tt)*]
+        [$($message_variants:tt)*]
         [$($implementations:tt)*]
         $operation:ident,
         $($remaining:tt)*
@@ -607,7 +611,7 @@ macro_rules! protocol {
             [$($protocol_attr)*]
             [$visibility]
             [$protocol]
-            [$inbound]
+            [$message]
             [
                 $($operation_items)*
                 #[doc = concat!("Unit notification operation in `", stringify!($protocol), "`.")]
@@ -615,15 +619,15 @@ macro_rules! protocol {
                 $visibility struct $operation;
             ]
             [
-                $($inbound_variants)*
+                $($message_variants)*
                 #[doc = concat!("Notification operation `", stringify!($operation), "`.")]
                 $operation,
             ]
             [
                 $($implementations)*
                 impl $crate::Notification<$protocol> for $operation {
-                    fn into_inbound(self) -> $inbound {
-                        $inbound::$operation
+                    fn into_message(self) -> $message {
+                        $message::$operation
                     }
                 }
             ]
@@ -632,7 +636,7 @@ macro_rules! protocol {
     };
 }
 
-trait ErasedEffectCommand<Msg>: Send {
+trait ErasedEffectCommand<Message>: Send {
     fn intent(&self) -> &dyn Any;
     fn intent_type_name(&self) -> &'static str;
     fn mapper_type_name(&self) -> &'static str;
@@ -643,11 +647,11 @@ struct Perform<E, Map> {
     map: Map,
 }
 
-impl<Msg, E, Map> ErasedEffectCommand<Msg> for Perform<E, Map>
+impl<Message, E, Map> ErasedEffectCommand<Message> for Perform<E, Map>
 where
-    Msg: Send + 'static,
-    E: Effect,
-    Map: FnOnce(EffectEvent<E::Output, E::Error>) -> Msg + Send + 'static,
+    Message: Send + 'static,
+    E: EffectDescriptor,
+    Map: FnOnce(EffectOutcome<E::Output, E::Error>) -> Message + Send + 'static,
 {
     fn intent(&self) -> &dyn Any {
         &self.effect
@@ -669,7 +673,7 @@ trait ErasedSendCommand: Send {
 
 struct SendTo<C: Component> {
     target: ComponentRef<C>,
-    msg: C::Msg,
+    message: C::Message,
 }
 
 impl<C: Component> ErasedSendCommand for SendTo<C> {
@@ -678,7 +682,7 @@ impl<C: Component> ErasedSendCommand for SendTo<C> {
     }
 
     fn message_type_name(&self) -> &'static str {
-        std::any::type_name::<C::Msg>()
+        std::any::type_name::<C::Message>()
     }
 }
 
@@ -720,7 +724,7 @@ where
     }
 }
 
-trait ErasedRequestCommand<Msg>: Send {
+trait ErasedRequestCommand<Message>: Send {
     fn port(&self) -> &PortId;
     fn request(&self) -> &dyn Any;
     fn request_type_name(&self) -> &'static str;
@@ -739,12 +743,12 @@ where
     map: Map,
 }
 
-impl<Msg, P, R, Map> ErasedRequestCommand<Msg> for RequestCommand<P, R, Map>
+impl<Message, P, R, Map> ErasedRequestCommand<Message> for RequestCommand<P, R, Map>
 where
-    Msg: Send + 'static,
+    Message: Send + 'static,
     P: Protocol,
     R: Request<P>,
-    Map: FnOnce(RequestOutcome<R::Reply>) -> Msg + Send + 'static,
+    Map: FnOnce(RequestOutcome<R::Reply>) -> Message + Send + 'static,
 {
     fn port(&self) -> &PortId {
         self.port.id()
@@ -796,47 +800,48 @@ where
 
 /// A value describing finite work; never the work itself.
 ///
-/// `Cmd<Msg>` can hold heterogeneous typed [`Effect`] values because the
-/// runtime preserves their concrete types internally. Effect result mappers are
-/// synchronous application logic and must be pure and deterministic. Mapper
-/// object identity is not part of command semantics.
+/// `Command<Message>` can hold heterogeneous typed [`EffectDescriptor`] values
+/// because the runtime preserves their concrete types internally. Effect
+/// message mappers are synchronous application logic and must be pure and
+/// deterministic. Mapper object identity is not part of command semantics.
 ///
 /// Commands intentionally do not implement `Clone`, `Debug`, or `PartialEq`:
-/// they may contain one-shot result mappers. Transition tests inspect concrete
-/// intent through [`Cmd::effect_intent`], [`Cmd::notification_intents`], and
-/// [`Cmd::request_intents`], then test pure mappers with equivalent outcomes.
-pub struct Cmd<Msg>(CmdKind<Msg>);
+/// they may contain one-shot message mappers. Transition tests inspect concrete
+/// intent through [`Command::effect_intent`],
+/// [`Command::notification_intents`], and [`Command::request_intents`], then
+/// test pure mappers with equivalent outcomes.
+pub struct Command<Message>(CommandKind<Message>);
 
-enum CmdKind<Msg> {
+enum CommandKind<Message> {
     None,
-    Effect(Box<dyn ErasedEffectCommand<Msg>>),
+    Effect(Box<dyn ErasedEffectCommand<Message>>),
     Send(Box<dyn ErasedSendCommand>),
     Notify(Box<dyn ErasedNotificationCommand>),
-    Request(Box<dyn ErasedRequestCommand<Msg>>),
+    Request(Box<dyn ErasedRequestCommand<Message>>),
     Reply(Box<dyn ErasedReplyCommand>),
-    After { delay: Duration, msg: Msg },
-    Batch(Vec<Cmd<Msg>>),
+    After { delay: Duration, message: Message },
+    Batch(Vec<Command<Message>>),
 }
 
-impl<Msg> Cmd<Msg> {
+impl<Message> Command<Message> {
     /// Requests no finite work.
     pub fn none() -> Self {
-        Self(CmdKind::None)
+        Self(CommandKind::None)
     }
 
     /// Combines a typed effect intent with its pure message mapper.
     ///
-    /// Live execution passes `effect` to the registered [`EffectAdapter<E>`].
+    /// Live execution passes `effect` to the registered [`EffectDriver<E>`].
     /// Controlled execution exposes it through
     /// [`ControlledRuntime::next_effect`] and invokes `map` when
-    /// [`ControlledRuntime::complete`] supplies an [`EffectEvent`].
+    /// [`ControlledRuntime::complete`] supplies an [`EffectOutcome`].
     pub fn effect<E, Map>(effect: E, map: Map) -> Self
     where
-        Msg: Send + 'static,
-        E: Effect,
-        Map: FnOnce(EffectEvent<E::Output, E::Error>) -> Msg + Send + 'static,
+        Message: Send + 'static,
+        E: EffectDescriptor,
+        Map: FnOnce(EffectOutcome<E::Output, E::Error>) -> Message + Send + 'static,
     {
-        Self(CmdKind::Effect(Box::new(Perform { effect, map })))
+        Self(CommandKind::Effect(Box::new(Perform { effect, map })))
     }
 
     /// Requests one-way delivery to another Component.
@@ -844,20 +849,20 @@ impl<Msg> Cmd<Msg> {
     /// This is cross-Component effect intent, not a direct method call. The
     /// target's transition occurs later through normal message delivery.
     /// Delivery failure is diagnostic-only in this provisional lower-level
-    /// shape. Prefer [`Cmd::notify`] for a provider-neutral one-way protocol and
-    /// [`Cmd::request`] when the sender needs a typed terminal outcome.
-    pub fn send<C>(target: ComponentRef<C>, msg: C::Msg) -> Self
+    /// shape. Prefer [`Command::notify`] for a provider-neutral one-way protocol
+    /// and [`Command::request`] when the sender needs a typed terminal outcome.
+    pub fn send<C>(target: ComponentRef<C>, message: C::Message) -> Self
     where
         C: Component,
     {
-        Self(CmdKind::Send(Box::new(SendTo { target, msg })))
+        Self(CommandKind::Send(Box::new(SendTo { target, message })))
     }
 
     /// Requests one-way delivery through a named provider-neutral [`Port`].
     ///
     /// The sender depends on `P` and notification `N`, not the bound provider's
-    /// private [`Component::Msg`] enum. The runtime converts `N` through
-    /// [`Notification::into_inbound`] and routes it using the exact Port binding
+    /// private [`Component::Message`] enum. The runtime converts `N` through
+    /// [`Notification::into_message`] and routes it using the exact Port binding
     /// declared by [`ProgramBuilder::bind_port`]. No provider transition occurs
     /// while this command is constructed.
     pub fn notify<P, N>(port: Port<P>, notification: N) -> Self
@@ -865,35 +870,35 @@ impl<Msg> Cmd<Msg> {
         P: Protocol,
         N: Notification<P>,
     {
-        Self(CmdKind::Notify(Box::new(Notify { port, notification })))
+        Self(CommandKind::Notify(Box::new(Notify { port, notification })))
     }
 
     /// Sends a correlated request through a named provider-neutral [`Port`].
     ///
     /// Interpreting the command creates a one-shot [`ReplyTo<R::Reply>`],
-    /// converts the request through [`Request::into_inbound`], and later invokes
-    /// `map` with exactly one terminal [`RequestOutcome`]. The mapper is
-    /// synchronous, pure application logic and may capture a domain correlation
-    /// key. The Component never waits for the reply; the mapped message arrives
-    /// through its ordinary transition path.
+    /// converts the request through [`Request::into_message`], and later invokes
+    /// the request continuation with exactly one terminal [`RequestOutcome`].
+    /// The continuation is synchronous, pure application logic and may capture
+    /// a domain correlation key. The Component never waits for the reply; the
+    /// mapped message arrives through its ordinary transition path.
     ///
     /// This sketch intentionally does not yet choose a default deadline or
     /// cancellation policy for requests.
     pub fn request<P, R, Map>(port: Port<P>, request: R, map: Map) -> Self
     where
-        Msg: Send + 'static,
+        Message: Send + 'static,
         P: Protocol,
         R: Request<P>,
-        Map: FnOnce(RequestOutcome<R::Reply>) -> Msg + Send + 'static,
+        Map: FnOnce(RequestOutcome<R::Reply>) -> Message + Send + 'static,
     {
-        Self(CmdKind::Request(Box::new(RequestCommand {
+        Self(CommandKind::Request(Box::new(RequestCommand {
             port,
             request,
             map,
         })))
     }
 
-    /// Emits a typed reply through an [`Incoming`] request's opaque token.
+    /// Emits a typed reply through a [`RequestInvocation`]'s opaque token.
     ///
     /// Consuming the token prevents a provider transition from intentionally
     /// issuing two replies from the same authority. This command is inert data;
@@ -903,15 +908,15 @@ impl<Msg> Cmd<Msg> {
     where
         ReplyValue: Send + 'static,
     {
-        Self(CmdKind::Reply(Box::new(Reply { reply_to, reply })))
+        Self(CommandKind::Reply(Box::new(Reply { reply_to, reply })))
     }
 
-    /// Requests delivery of `msg` after a runtime-controlled duration.
+    /// Requests delivery of `message` after a runtime-controlled duration.
     ///
     /// Live execution uses real time. Controlled execution uses logical time, so
     /// tests advance it without wall-clock sleeping.
-    pub fn after(delay: Duration, msg: Msg) -> Self {
-        Self(CmdKind::After { delay, msg })
+    pub fn after(delay: Duration, message: Message) -> Self {
+        Self(CommandKind::After { delay, message })
     }
 
     /// Groups commands emitted by one transition.
@@ -919,13 +924,13 @@ impl<Msg> Cmd<Msg> {
     /// Grouping does not promise effect completion order. If application logic
     /// requires sequencing, that dependency needs an explicit command contract
     /// or a later message transition.
-    pub fn batch(cmds: impl IntoIterator<Item = Self>) -> Self {
-        Self(CmdKind::Batch(cmds.into_iter().collect()))
+    pub fn batch(commands: impl IntoIterator<Item = Self>) -> Self {
+        Self(CommandKind::Batch(commands.into_iter().collect()))
     }
 
     /// Returns whether this value requests no work.
     pub fn is_none(&self) -> bool {
-        matches!(&self.0, CmdKind::None)
+        matches!(&self.0, CommandKind::None)
     }
 
     /// Finds the first concrete effect intent of type `E`, including inside a
@@ -933,16 +938,16 @@ impl<Msg> Cmd<Msg> {
     ///
     /// This inspection hook is intended for direct transition tests; it does not
     /// execute the effect or compare mapper identity.
-    pub fn effect_intent<E: Effect>(&self) -> Option<&E> {
+    pub fn effect_intent<E: EffectDescriptor>(&self) -> Option<&E> {
         match &self.0 {
-            CmdKind::Effect(command) => command.intent().downcast_ref(),
-            CmdKind::Batch(commands) => commands.iter().find_map(Self::effect_intent::<E>),
-            CmdKind::None
-            | CmdKind::Send(_)
-            | CmdKind::Notify(_)
-            | CmdKind::Request(_)
-            | CmdKind::Reply(_)
-            | CmdKind::After { .. } => None,
+            CommandKind::Effect(command) => command.intent().downcast_ref(),
+            CommandKind::Batch(commands) => commands.iter().find_map(Self::effect_intent::<E>),
+            CommandKind::None
+            | CommandKind::Send(_)
+            | CommandKind::Notify(_)
+            | CommandKind::Request(_)
+            | CommandKind::Reply(_)
+            | CommandKind::After { .. } => None,
         }
     }
 
@@ -950,7 +955,7 @@ impl<Msg> Cmd<Msg> {
     /// batch, paired with the exact named Port each notification targets.
     ///
     /// This is a direct-transition testing hook. It neither converts the value
-    /// to [`Protocol::Inbound`] nor delivers it to a provider.
+    /// to [`Protocol::Message`] nor delivers it to a provider.
     pub fn notification_intents<N: 'static>(&self) -> Vec<(&PortId, &N)> {
         let mut intents = Vec::new();
         self.collect_notification_intents(&mut intents);
@@ -962,22 +967,22 @@ impl<Msg> Cmd<Msg> {
         intents: &mut Vec<(&'a PortId, &'a N)>,
     ) {
         match &self.0 {
-            CmdKind::Notify(command) => {
+            CommandKind::Notify(command) => {
                 if let Some(notification) = command.notification().downcast_ref() {
                     intents.push((command.port(), notification));
                 }
             }
-            CmdKind::Batch(commands) => {
+            CommandKind::Batch(commands) => {
                 for command in commands {
                     command.collect_notification_intents(intents);
                 }
             }
-            CmdKind::None
-            | CmdKind::Effect(_)
-            | CmdKind::Send(_)
-            | CmdKind::Request(_)
-            | CmdKind::Reply(_)
-            | CmdKind::After { .. } => {}
+            CommandKind::None
+            | CommandKind::Effect(_)
+            | CommandKind::Send(_)
+            | CommandKind::Request(_)
+            | CommandKind::Reply(_)
+            | CommandKind::After { .. } => {}
         }
     }
 
@@ -994,22 +999,22 @@ impl<Msg> Cmd<Msg> {
 
     fn collect_request_intents<'a, R: 'static>(&'a self, intents: &mut Vec<(&'a PortId, &'a R)>) {
         match &self.0 {
-            CmdKind::Request(command) => {
+            CommandKind::Request(command) => {
                 if let Some(request) = command.request().downcast_ref() {
                     intents.push((command.port(), request));
                 }
             }
-            CmdKind::Batch(commands) => {
+            CommandKind::Batch(commands) => {
                 for command in commands {
                     command.collect_request_intents(intents);
                 }
             }
-            CmdKind::None
-            | CmdKind::Effect(_)
-            | CmdKind::Send(_)
-            | CmdKind::Notify(_)
-            | CmdKind::Reply(_)
-            | CmdKind::After { .. } => {}
+            CommandKind::None
+            | CommandKind::Effect(_)
+            | CommandKind::Send(_)
+            | CommandKind::Notify(_)
+            | CommandKind::Reply(_)
+            | CommandKind::After { .. } => {}
         }
     }
 
@@ -1026,22 +1031,22 @@ impl<Msg> Cmd<Msg> {
 
     fn collect_reply_intents<'a, ReplyValue: 'static>(&'a self, intents: &mut Vec<&'a ReplyValue>) {
         match &self.0 {
-            CmdKind::Reply(command) => {
+            CommandKind::Reply(command) => {
                 if let Some(reply) = command.reply().downcast_ref() {
                     intents.push(reply);
                 }
             }
-            CmdKind::Batch(commands) => {
+            CommandKind::Batch(commands) => {
                 for command in commands {
                     command.collect_reply_intents(intents);
                 }
             }
-            CmdKind::None
-            | CmdKind::Effect(_)
-            | CmdKind::Send(_)
-            | CmdKind::Notify(_)
-            | CmdKind::Request(_)
-            | CmdKind::After { .. } => {}
+            CommandKind::None
+            | CommandKind::Effect(_)
+            | CommandKind::Send(_)
+            | CommandKind::Notify(_)
+            | CommandKind::Request(_)
+            | CommandKind::After { .. } => {}
         }
     }
 
@@ -1051,40 +1056,40 @@ impl<Msg> Cmd<Msg> {
     /// batch returns `None`; use typed inspection for behavioral tests.
     pub fn effect_type_name(&self) -> Option<&'static str> {
         match &self.0 {
-            CmdKind::Effect(command) => Some(command.intent_type_name()),
-            CmdKind::None
-            | CmdKind::Send(_)
-            | CmdKind::Notify(_)
-            | CmdKind::Request(_)
-            | CmdKind::Reply(_)
-            | CmdKind::After { .. }
-            | CmdKind::Batch(_) => None,
+            CommandKind::Effect(command) => Some(command.intent_type_name()),
+            CommandKind::None
+            | CommandKind::Send(_)
+            | CommandKind::Notify(_)
+            | CommandKind::Request(_)
+            | CommandKind::Reply(_)
+            | CommandKind::After { .. }
+            | CommandKind::Batch(_) => None,
         }
     }
 }
 
-trait ErasedSubscription<Msg>: Send {
-    fn source(&self) -> &dyn Any;
-    fn source_type_name(&self) -> &'static str;
+trait ErasedSubscription<Message>: Send {
+    fn descriptor(&self) -> &dyn Any;
+    fn descriptor_type_name(&self) -> &'static str;
     fn mapper_type_name(&self) -> &'static str;
 }
 
-struct MappedSource<S, Map> {
-    source: S,
+struct MappedSourceDescriptor<S, Map> {
+    descriptor: S,
     map: Map,
 }
 
-impl<Msg, S, Map> ErasedSubscription<Msg> for MappedSource<S, Map>
+impl<Message, S, Map> ErasedSubscription<Message> for MappedSourceDescriptor<S, Map>
 where
-    Msg: Send + 'static,
-    S: Source,
-    Map: Fn(SourceEvent<S::Item, S::Error>) -> Msg + Send + Sync + 'static,
+    Message: Send + 'static,
+    S: SourceDescriptor,
+    Map: Fn(SourceEvent<S::Item, S::Error>) -> Message + Send + Sync + 'static,
 {
-    fn source(&self) -> &dyn Any {
-        &self.source
+    fn descriptor(&self) -> &dyn Any {
+        &self.descriptor
     }
 
-    fn source_type_name(&self) -> &'static str {
+    fn descriptor_type_name(&self) -> &'static str {
         std::any::type_name::<S>()
     }
 
@@ -1096,30 +1101,31 @@ where
 /// One declarative request for an ongoing source of messages.
 ///
 /// A subscription's logical identity is its owning [`ComponentId`] plus
-/// [`SubscriptionId`]. The `Source` value is comparable configuration:
-/// unchanged configuration remains active, while changed configuration is
-/// replaced or reconfigured. The mapper converts repeated [`SourceEvent`] values
-/// to messages and is deliberately excluded from reconciliation identity.
-pub struct Subscription<Msg> {
+/// [`SubscriptionId`]. The [`SourceDescriptor`] value is comparable
+/// configuration: unchanged configuration remains active, while changed
+/// configuration is replaced or reconfigured. The message mapper converts
+/// repeated [`SourceEvent`] values to Component messages and is deliberately
+/// excluded from reconciliation identity.
+pub struct Subscription<Message> {
     id: SubscriptionId,
-    source: Box<dyn ErasedSubscription<Msg>>,
+    descriptor: Box<dyn ErasedSubscription<Message>>,
 }
 
-impl<Msg> Subscription<Msg> {
+impl<Message> Subscription<Message> {
     /// Declares a typed source and its pure event-to-message mapping.
     ///
     /// Constructing this value starts no task and touches no external resource.
     /// `Map` is called repeatedly for the lifetime of an active source, so it is
-    /// `Fn` rather than the one-shot `FnOnce` accepted by [`Cmd::effect`].
-    pub fn source<S, Map>(id: SubscriptionId, source: S, map: Map) -> Self
+    /// `Fn` rather than the one-shot `FnOnce` accepted by [`Command::effect`].
+    pub fn source<S, Map>(id: SubscriptionId, descriptor: S, map: Map) -> Self
     where
-        Msg: Send + 'static,
-        S: Source,
-        Map: Fn(SourceEvent<S::Item, S::Error>) -> Msg + Send + Sync + 'static,
+        Message: Send + 'static,
+        S: SourceDescriptor,
+        Map: Fn(SourceEvent<S::Item, S::Error>) -> Message + Send + Sync + 'static,
     {
         Self {
             id,
-            source: Box::new(MappedSource { source, map }),
+            descriptor: Box::new(MappedSourceDescriptor { descriptor, map }),
         }
     }
 
@@ -1130,17 +1136,17 @@ impl<Msg> Subscription<Msg> {
 
     /// Returns the concrete source descriptor when it has type `S`.
     ///
-    /// Direct Component tests use this to assert desired resource configuration
-    /// without starting a live adapter.
-    pub fn source_spec<S: Source>(&self) -> Option<&S> {
-        self.source.source().downcast_ref()
+    /// Direct Component tests use this to assert the desired SourceDescriptor
+    /// without starting a live Driver.
+    pub fn source_descriptor<S: SourceDescriptor>(&self) -> Option<&S> {
+        self.descriptor.descriptor().downcast_ref()
     }
 
     /// Returns diagnostic Rust type metadata for the source descriptor.
     ///
     /// The returned name is not a stable protocol or serialization identifier.
-    pub fn source_type_name(&self) -> &'static str {
-        self.source.source_type_name()
+    pub fn descriptor_type_name(&self) -> &'static str {
+        self.descriptor.descriptor_type_name()
     }
 }
 
@@ -1148,54 +1154,54 @@ impl<Msg> Subscription<Msg> {
 ///
 /// The runtime compares this set with the active set after a committed
 /// transition. Omitting a previously desired identity requests cancellation.
-pub struct Subscriptions<Msg>(Vec<Subscription<Msg>>);
+pub struct Subscriptions<Message>(Vec<Subscription<Message>>);
 
-impl<Msg> Subscriptions<Msg> {
+impl<Message> Subscriptions<Message> {
     /// Declares no ongoing sources.
     pub fn none() -> Self {
         Self(Vec::new())
     }
 
     /// Creates a desired set containing exactly one subscription.
-    pub fn one(subscription: Subscription<Msg>) -> Self {
+    pub fn one(subscription: Subscription<Message>) -> Self {
         Self(vec![subscription])
     }
 
     /// Iterates over the desired subscriptions without executing them.
-    pub fn iter(&self) -> impl Iterator<Item = &Subscription<Msg>> {
+    pub fn iter(&self) -> impl Iterator<Item = &Subscription<Message>> {
         self.0.iter()
     }
 
-    /// Finds source configuration `S` for one stable subscription identity.
+    /// Finds SourceDescriptor `S` for one stable subscription identity.
     ///
     /// This is primarily an inspection helper for direct Component tests.
-    pub fn find<S: Source>(&self, id: &SubscriptionId) -> Option<&S> {
+    pub fn find<S: SourceDescriptor>(&self, id: &SubscriptionId) -> Option<&S> {
         self.0
             .iter()
             .find(|subscription| subscription.id() == id)
-            .and_then(Subscription::source_spec)
+            .and_then(Subscription::source_descriptor)
     }
 }
 
-impl<Msg> From<Vec<Subscription<Msg>>> for Subscriptions<Msg> {
-    fn from(value: Vec<Subscription<Msg>>) -> Self {
+impl<Message> From<Vec<Subscription<Message>>> for Subscriptions<Message> {
+    fn from(value: Vec<Subscription<Message>>) -> Self {
         Self(value)
     }
 }
 
-/// Logical inbound channel of `T` values.
+/// Logical input of `T` values.
 ///
 /// This descriptor is safe to store in a Component. The unique Tokio
 /// `mpsc::Receiver<T>` exists only in live assembly through
 /// [`LiveRuntimeBuilder::bind_mpsc`]. Controlled tests bind the same logical
 /// source through [`ControlledRuntimeBuilder::control_mpsc`]. Channel closure is
 /// delivered as [`SourceEvent::Ended`].
-pub struct MpscSource<T> {
+pub struct MpscInput<T> {
     binding: Arc<str>,
     marker: PhantomData<fn() -> T>,
 }
 
-impl<T> MpscSource<T> {
+impl<T> MpscInput<T> {
     /// Creates a reusable logical binding name for an external receiver.
     pub fn named(binding: impl Into<Arc<str>>) -> Self {
         Self {
@@ -1205,7 +1211,7 @@ impl<T> MpscSource<T> {
     }
 }
 
-impl<T> Clone for MpscSource<T> {
+impl<T> Clone for MpscInput<T> {
     fn clone(&self) -> Self {
         Self {
             binding: self.binding.clone(),
@@ -1214,24 +1220,24 @@ impl<T> Clone for MpscSource<T> {
     }
 }
 
-impl<T> PartialEq for MpscSource<T> {
+impl<T> PartialEq for MpscInput<T> {
     fn eq(&self, other: &Self) -> bool {
         self.binding == other.binding
     }
 }
 
-impl<T> Eq for MpscSource<T> {}
+impl<T> Eq for MpscInput<T> {}
 
-impl<T> fmt::Debug for MpscSource<T> {
+impl<T> fmt::Debug for MpscInput<T> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_tuple("MpscSource")
+            .debug_tuple("MpscInput")
             .field(&self.binding)
             .finish()
     }
 }
 
-impl<T: Send + 'static> Source for MpscSource<T> {
+impl<T: Send + 'static> SourceDescriptor for MpscInput<T> {
     type Item = T;
     type Error = std::convert::Infallible;
 }
@@ -1246,7 +1252,7 @@ pub trait Decoder: Clone + PartialEq + fmt::Debug + Send + Sync + 'static {
     type Chunk: Send + 'static;
     /// Decoded application value emitted by the framed source.
     type Frame: Send + 'static;
-    /// Protocol failure produced while decoding a chunk.
+    /// Typed error explaining a decoding failure.
     type Error: Send + 'static;
     /// Per-subscription mutable decoder state.
     type State: Send + 'static;
@@ -1262,10 +1268,11 @@ pub trait Decoder: Clone + PartialEq + fmt::Debug + Send + Sync + 'static {
     ) -> Result<Vec<Self::Frame>, Self::Error>;
 }
 
-/// Source composition that applies a pure stateful [`Decoder`] to another
-/// [`Source`].
+/// Source Description Layer that applies a pure stateful [`Decoder`] to another
+/// [`SourceDescriptor`].
 ///
-/// Live execution binds the underlying source to a world-facing adapter.
+/// Live execution binds the underlying source descriptor to a world-facing
+/// Driver.
 /// Controlled execution injects underlying chunks, ensuring the identical
 /// decoder and partial-frame behavior run in both profiles.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1283,28 +1290,28 @@ impl<S, D> Framed<S, D> {
     }
 }
 
-/// Terminal failure from either layer of a [`Framed`] source.
+/// Typed error explaining failure in either part of a [`Framed`] Layer.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum FramedFailure<SourceError, DecodeError> {
+pub enum FramedError<SourceError, DecodeError> {
     /// The underlying world-facing source failed.
     Source(SourceError),
     /// The pure decoder rejected input from an otherwise active source.
     Decode(DecodeError),
 }
 
-impl<S, D> Source for Framed<S, D>
+impl<S, D> SourceDescriptor for Framed<S, D>
 where
-    S: Source<Item = D::Chunk>,
+    S: SourceDescriptor<Item = D::Chunk>,
     D: Decoder,
 {
     type Item = D::Frame;
-    type Error = FramedFailure<S::Error, D::Error>;
+    type Error = FramedError<S::Error, D::Error>;
 }
 
 /// Named, immutable logical dependency on a provider-neutral [`Protocol`].
 ///
-/// A Component may store this value and use it with [`Cmd::notify`] or
-/// [`Cmd::request`]. It contains no provider reference, channel, runtime handle,
+/// A Component may store this value and use it with [`Command::notify`] or
+/// [`Command::request`]. It contains no provider reference, channel, runtime handle,
 /// or lookup capability. [`ProgramBuilder::bind_port`] selects the provider
 /// during program assembly, allowing the same Component definition to receive
 /// real, mock, or controlled providers without changing its transition logic.
@@ -1345,7 +1352,7 @@ impl<P: Protocol> fmt::Debug for Port<P> {
 
 /// Typed logical address of a Component in a [`Program`].
 ///
-/// A Component may retain this value and pass it to [`Cmd::send`] when tight
+/// A Component may retain this value and pass it to [`Command::send`] when tight
 /// coupling to another Component's complete message API is intentional. Normal
 /// reusable dependencies should prefer [`Port`], which exposes only a stable
 /// provider-neutral protocol. A Component reference exposes no model access and
@@ -1412,7 +1419,7 @@ impl ProgramBuilder {
     /// Adds a Component instance and returns its typed logical address.
     ///
     /// Registration order is assembly detail, not an application execution
-    /// order. The Component value may hold only logical configuration and typed
+    /// order. The Component configuration may hold only logical wiring and typed
     /// references—not live runtime resources.
     pub fn component<C>(&mut self, id: ComponentId, component: C) -> ComponentRef<C>
     where
@@ -1444,22 +1451,23 @@ impl ProgramBuilder {
 
     /// Binds one exact named Port to a provider Component.
     ///
-    /// `map` is a pure assembly-time route from the provider-neutral
-    /// [`Protocol::Inbound`] value to the selected Component's private message
-    /// type. A different binding can map another named `Port<P>` to another
-    /// provider—or distinguish two instances routed to the same provider.
+    /// The selected Component's private Message type implements
+    /// `From<P::Message>`. This makes Protocol acceptance a canonical type
+    /// relationship declared by the provider Message rather than a conversion
+    /// closure repeated at every binding site. Separate named `Port<P>` values
+    /// may still bind independently to different provider instances.
     ///
     /// This compiler-only sketch does not yet choose duplicate, missing, or
     /// cyclic binding diagnostics. A real [`ProgramBuilder::build`] must validate
     /// the assembled graph rather than falling back to a global binding by Rust
     /// `TypeId`.
-    pub fn bind_port<P, C, Map>(&mut self, port: &Port<P>, provider: &ComponentRef<C>, map: Map)
+    pub fn bind_port<P, C>(&mut self, port: &Port<P>, provider: &ComponentRef<C>)
     where
         P: Protocol,
         C: Component,
-        Map: Fn(P::Inbound) -> C::Msg + Send + Sync + 'static,
+        C::Message: From<P::Message>,
     {
-        let _ = (port, provider, map);
+        let _ = (port, provider);
     }
 
     /// Finishes the topology-neutral program blueprint.
@@ -1469,70 +1477,72 @@ impl ProgramBuilder {
     }
 }
 
-/// Live interpreter for one concrete [`Effect`] type.
+/// Terminal live-world implementation for one concrete [`EffectDescriptor`]
+/// type.
 ///
 /// This is an explicitly impure boundary. The runtime owns and supervises the
 /// returned future, then passes its result through the pure mapper stored in the
-/// originating [`Cmd`]. Controlled execution does not call this adapter.
-pub trait EffectAdapter<E: Effect>: Send + Sync + 'static {
+/// originating [`Command`]. Controlled execution does not call this Driver.
+pub trait EffectDriver<D: EffectDescriptor>: Send + Sync + 'static {
     /// Executes one typed intent and returns its typed success or failure.
-    fn execute(&self, effect: E) -> BoxFuture<Result<E::Output, E::Error>>;
+    fn execute(&self, descriptor: D) -> BoxFuture<Result<D::Output, D::Error>>;
 }
 
-/// Live interpreter for one concrete world-facing [`Source`] type.
+/// Terminal live-world implementation for one concrete world-facing
+/// [`SourceDescriptor`] type.
 ///
 /// The returned future belongs to the runtime's structured-concurrency scope.
 /// It may emit many items through [`SourceSink::emit`], then should terminate
 /// explicitly with [`SourceSink::fail`] or [`SourceSink::end`]. If the sink
-/// returns [`AdapterStopped`], the adapter should promptly release its resources
+/// returns [`DriverStopped`], the Driver should promptly release its resources
 /// and return. The meaning of returning without a terminal sink call remains an
 /// open API question in this sketch.
-pub trait SourceAdapter<S: Source>: Send + Sync + 'static {
+pub trait SourceDriver<D: SourceDescriptor>: Send + Sync + 'static {
     /// Runs one active instance of the source descriptor.
-    fn run(&self, source: S, sink: SourceSink<S>) -> BoxFuture<()>;
+    fn run(&self, descriptor: D, sink: SourceSink<D>) -> BoxFuture<()>;
 }
 
-/// Runtime-owned output channel supplied to a live [`SourceAdapter`].
+/// Runtime-owned output channel supplied to a live [`SourceDriver`].
 ///
-/// The sink translates adapter activity into [`SourceEvent`] values for the
+/// The sink translates Driver activity into [`SourceEvent`] values for the
 /// subscription mapper. It offers no path to Component state.
-pub struct SourceSink<S: Source> {
-    marker: PhantomData<fn() -> S>,
+pub struct SourceSink<D: SourceDescriptor> {
+    marker: PhantomData<fn() -> D>,
 }
 
-impl<S: Source> SourceSink<S> {
+impl<D: SourceDescriptor> SourceSink<D> {
     /// Emits one item while leaving the source active.
     ///
-    /// `AdapterStopped` means the owning subscription or runtime scope no longer
+    /// `DriverStopped` means the owning subscription or runtime scope no longer
     /// accepts events.
-    pub async fn emit(&self, item: S::Item) -> Result<(), AdapterStopped> {
+    pub async fn emit(&self, item: D::Item) -> Result<(), DriverStopped> {
         let _ = item;
-        Err(AdapterStopped)
+        Err(DriverStopped)
     }
 
     /// Emits a terminal source failure.
-    pub async fn fail(&self, error: S::Error) -> Result<(), AdapterStopped> {
+    pub async fn fail(&self, error: D::Error) -> Result<(), DriverStopped> {
         let _ = error;
-        Err(AdapterStopped)
+        Err(DriverStopped)
     }
 
     /// Emits normal terminal completion.
-    pub async fn end(&self) -> Result<(), AdapterStopped> {
-        Err(AdapterStopped)
+    pub async fn end(&self) -> Result<(), DriverStopped> {
+        Err(DriverStopped)
     }
 }
 
-/// Signal that runtime ownership of a live adapter has ended.
+/// Signal that runtime ownership of a live Driver has ended.
 #[derive(Clone, Copy, Debug)]
-pub struct AdapterStopped;
+pub struct DriverStopped;
 
-impl fmt::Display for AdapterStopped {
+impl fmt::Display for DriverStopped {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("the runtime stopped the adapter")
+        formatter.write_str("the runtime stopped the Driver")
     }
 }
 
-impl Error for AdapterStopped {}
+impl Error for DriverStopped {}
 
 /// Placeholder error returned by unimplemented runtime methods in this sketch.
 ///
@@ -1555,7 +1565,7 @@ impl fmt::Display for RuntimeError {
 
 impl Error for RuntimeError {}
 
-/// Binds a topology-neutral [`Program`] to live Tokio world interpreters.
+/// Binds a topology-neutral [`Program`] to live Tokio world Drivers.
 ///
 /// Binding is assembly-time work: Components still see only typed effect and
 /// source descriptors. Missing or duplicate bindings should make
@@ -1566,7 +1576,7 @@ pub struct LiveRuntimeBuilder {
 }
 
 /// Fully assembled live program that will use real Tokio scheduling, time, and
-/// world adapters.
+/// world Drivers.
 ///
 /// Live execution preserves per-Component serialization and causality, but does
 /// not promise deterministic order between independent events.
@@ -1601,40 +1611,40 @@ impl LiveRuntime {
 }
 
 impl LiveRuntimeBuilder {
-    /// Binds a logical [`MpscSource`] to one concrete Tokio receiver.
+    /// Binds a logical [`MpscInput`] to one concrete Tokio receiver.
     ///
     /// The receiver is unique live-world state and therefore stays out of the
     /// Component and [`Program`]. Closing it produces [`SourceEvent::Ended`].
     pub fn bind_mpsc<T: Send + 'static>(
         self,
-        source: MpscSource<T>,
+        source: MpscInput<T>,
         receiver: tokio::sync::mpsc::Receiver<T>,
     ) -> Self {
         let _ = (source, receiver);
         self
     }
 
-    /// Registers the live interpreter for effect type `E`.
-    pub fn bind_effect<E, Adapter>(self, adapter: Adapter) -> Self
+    /// Registers the live Driver for effect descriptor type `D`.
+    pub fn bind_effect<D, Driver>(self, driver: Driver) -> Self
     where
-        E: Effect,
-        Adapter: EffectAdapter<E>,
+        D: EffectDescriptor,
+        Driver: EffectDriver<D>,
     {
-        let _ = adapter;
+        let _ = driver;
         self
     }
 
-    /// Registers the live interpreter for world-facing source type `S`.
+    /// Registers the live Driver for world-facing source descriptor type `D`.
     ///
     /// Pure source composition such as [`Framed`] is evaluated above this
-    /// binding, so adapters operate on raw world events rather than application
+    /// binding, so Drivers operate on raw world events rather than application
     /// messages.
-    pub fn bind_source<S, Adapter>(self, adapter: Adapter) -> Self
+    pub fn bind_source<D, Driver>(self, driver: Driver) -> Self
     where
-        S: Source,
-        Adapter: SourceAdapter<S>,
+        D: SourceDescriptor,
+        Driver: SourceDriver<D>,
     {
-        let _ = adapter;
+        let _ = driver;
         self
     }
 
@@ -1647,8 +1657,8 @@ impl LiveRuntimeBuilder {
 
 /// Live external sender for one typed Component.
 ///
-/// Application Components normally communicate through [`Cmd::notify`] and
-/// [`Cmd::request`], or through lower-level [`Cmd::send`] when tight coupling is
+/// Application Components normally communicate through [`Command::notify`] and
+/// [`Command::request`], or through lower-level [`Command::send`] when tight coupling is
 /// intentional. This capability is for surrounding Tokio code at the Samara
 /// program boundary.
 pub struct ComponentHandle<C: Component> {
@@ -1660,8 +1670,8 @@ impl<C: Component> ComponentHandle<C> {
     ///
     /// In this provisional shape, successful return means accepted for delivery,
     /// not that the target transition has completed.
-    pub async fn send(&self, msg: C::Msg) -> Result<(), RuntimeError> {
-        let _ = (&self.component, msg);
+    pub async fn send(&self, message: C::Message) -> Result<(), RuntimeError> {
+        let _ = (&self.component, message);
         Err(RuntimeError::sketch())
     }
 }
@@ -1669,7 +1679,7 @@ impl<C: Component> ComponentHandle<C> {
 /// Ownership handle for a running live Samara program.
 ///
 /// Dropping or shutting down this scope must not leave detached commands,
-/// subscriptions, or adapter work.
+/// subscriptions, or Driver work.
 pub struct RuntimeTask;
 
 impl RuntimeTask {
@@ -1717,7 +1727,7 @@ impl ShutdownReport {
 
 /// Declares which effect and source boundaries the controlled world may script.
 ///
-/// Controlled assembly never falls back to a live adapter. Missing controlled
+/// Controlled assembly never falls back to a live Driver. Missing controlled
 /// behavior must fail explicitly so a test cannot accidentally touch the world.
 pub struct ControlledRuntimeBuilder {
     program: Program,
@@ -1725,7 +1735,7 @@ pub struct ControlledRuntimeBuilder {
 
 /// Deterministic, synchronously driven execution of a [`Program`].
 ///
-/// Components, commands, subscriptions, decoders, and logical adapter contracts
+/// Components, commands, subscriptions, decoders, and declared boundary contracts
 /// are identical to live execution. The difference is runtime decisions: tests
 /// supply external events, effect outcomes, and logical-time progression.
 pub struct ControlledRuntime;
@@ -1743,28 +1753,28 @@ impl ControlledRuntime {
     pub fn send<C: Component>(
         &mut self,
         component: &ComponentRef<C>,
-        msg: C::Msg,
+        message: C::Message,
     ) -> Result<(), RuntimeError> {
-        let _ = (component, msg);
+        let _ = (component, message);
         Err(RuntimeError::sketch())
     }
 
-    /// Emits one item through a controlled first-party [`MpscSource`].
+    /// Emits one item through a controlled first-party [`MpscInput`].
     pub fn emit_mpsc<T: Send + 'static>(
         &mut self,
-        source: &MpscSource<T>,
+        source: &MpscInput<T>,
         item: T,
     ) -> Result<(), RuntimeError> {
         let _ = (source, item);
         Err(RuntimeError::sketch())
     }
 
-    /// Ends a controlled first-party [`MpscSource`] normally.
+    /// Ends a controlled first-party [`MpscInput`] normally.
     ///
     /// Its subscription mapper receives [`SourceEvent::Ended`].
     pub fn close_mpsc<T: Send + 'static>(
         &mut self,
-        source: &MpscSource<T>,
+        source: &MpscInput<T>,
     ) -> Result<(), RuntimeError> {
         let _ = source;
         Err(RuntimeError::sketch())
@@ -1784,7 +1794,7 @@ impl ControlledRuntime {
     ) -> Result<(), RuntimeError>
     where
         C: Component,
-        S: Source,
+        S: SourceDescriptor,
     {
         let _ = (component, id, event);
         Err(RuntimeError::sketch())
@@ -1793,15 +1803,15 @@ impl ControlledRuntime {
     /// Returns a clone of the active source descriptor for inspection.
     ///
     /// Tests use this to verify subscription reconciliation and resource
-    /// configuration without observing adapter-owned operational state.
-    pub fn subscription_spec<C, S>(
+    /// configuration without observing Driver-owned operational state.
+    pub fn source_descriptor<C, S>(
         &self,
         component: &ComponentRef<C>,
         id: &SubscriptionId,
     ) -> Result<S, RuntimeError>
     where
         C: Component,
-        S: Source,
+        S: SourceDescriptor,
     {
         let _ = (component, id);
         Err(RuntimeError::sketch())
@@ -1811,20 +1821,20 @@ impl ControlledRuntime {
     ///
     /// Selection follows the controlled scheduler's stable deterministic order,
     /// which is reproducibility machinery rather than a live ordering promise.
-    pub fn next_effect<E: Effect>(&mut self) -> Result<PendingEffect<E>, RuntimeError> {
+    pub fn next_effect<E: EffectDescriptor>(&mut self) -> Result<PendingEffect<E>, RuntimeError> {
         Err(RuntimeError::sketch())
     }
 
-    /// Supplies a terminal event for a previously intercepted effect.
+    /// Supplies a terminal outcome for a previously intercepted effect.
     ///
     /// Completion invokes the command's pure mapper and enqueues the resulting
-    /// message; it never executes a live [`EffectAdapter`].
-    pub fn complete<E: Effect>(
+    /// message; it never executes a live [`EffectDriver`].
+    pub fn complete<E: EffectDescriptor>(
         &mut self,
         pending: PendingEffect<E>,
-        event: EffectEvent<E::Output, E::Error>,
+        outcome: EffectOutcome<E::Output, E::Error>,
     ) -> Result<(), RuntimeError> {
-        let _ = (pending, event);
+        let _ = (pending, outcome);
         Err(RuntimeError::sketch())
     }
 
@@ -1856,7 +1866,7 @@ impl ControlledRuntime {
     /// Consuming the runtime prevents the harness from supplying any further
     /// controlled input. Cancellation and accounting proceed in deterministic
     /// controlled-runtime order, covering commands, subscriptions, timers, and
-    /// any adapter work owned by the scope. Successful return guarantees that
+    /// any Driver work owned by the scope. Successful return guarantees that
     /// [`ShutdownReport::remaining`] is zero.
     ///
     /// This is lifecycle and diagnostic behavior only: it does not mean the
@@ -1889,14 +1899,14 @@ impl ControlledRuntime {
 }
 
 impl ControlledRuntimeBuilder {
-    /// Allows tests to script one logical first-party [`MpscSource`].
-    pub fn control_mpsc<T: Send + 'static>(self, source: MpscSource<T>) -> Self {
+    /// Allows tests to script one logical first-party [`MpscInput`].
+    pub fn control_mpsc<T: Send + 'static>(self, source: MpscInput<T>) -> Self {
         let _ = source;
         self
     }
 
     /// Allows tests to intercept and complete effect type `E`.
-    pub fn control_effect<E: Effect>(self) -> Self {
+    pub fn control_effect<E: EffectDescriptor>(self) -> Self {
         self
     }
 
@@ -1904,7 +1914,7 @@ impl ControlledRuntimeBuilder {
     ///
     /// For a composed [`Framed`] source, register and inject the underlying
     /// source type so the decoder remains part of the program under test.
-    pub fn control_source<S: Source>(self) -> Self {
+    pub fn control_source<S: SourceDescriptor>(self) -> Self {
         self
     }
 
@@ -1916,7 +1926,7 @@ impl ControlledRuntimeBuilder {
 }
 
 /// Typed effect intercepted before any live world interaction occurs.
-pub struct PendingEffect<E: Effect> {
+pub struct PendingEffect<E: EffectDescriptor> {
     /// Original effect intent emitted by the Component transition.
     pub intent: E,
     id: u64,
@@ -1961,7 +1971,7 @@ pub enum TraceEvent {
         /// Stable subscription identity within that Component.
         subscription: SubscriptionId,
         /// Diagnostic Rust type name of its source descriptor.
-        source_type: &'static str,
+        source_descriptor_type: &'static str,
     },
     /// Reconciliation stopped a removed, replaced, failed, or ended subscription.
     SubscriptionStopped {
@@ -1980,7 +1990,7 @@ mod protocol_macro_tests {
     struct Snapshot(u8);
 
     protocol! {
-        type MacroProtocol => enum MacroInbound {
+        type MacroProtocol => enum MacroProtocolMessage {
             SnapshotRequest -> Snapshot,
             Observation(u8),
             Refresh,
@@ -1989,7 +1999,7 @@ mod protocol_macro_tests {
     }
 
     protocol! {
-        type UnitReplyProtocol => enum UnitReplyInbound {
+        type UnitReplyProtocol => enum UnitReplyProtocolMessage {
             Reset -> (),
         }
     }
@@ -2003,19 +2013,19 @@ mod protocol_macro_tests {
         }
 
         assert_notification::<Observation>();
-        let inbound = <Observation as Notification<MacroProtocol>>::into_inbound(Observation(7));
+        let message = <Observation as Notification<MacroProtocol>>::into_message(Observation(7));
 
-        match inbound {
-            MacroInbound::Observation(observed) => assert_eq!(observed, 7),
+        match message {
+            MacroProtocolMessage::Observation(observed) => assert_eq!(observed, 7),
             _ => panic!("notification became a different operation"),
         }
     }
 
     #[test]
     fn generated_unit_notification_is_flattened() {
-        let inbound = <Refresh as Notification<MacroProtocol>>::into_inbound(Refresh);
+        let message = <Refresh as Notification<MacroProtocol>>::into_message(Refresh);
 
-        assert!(matches!(inbound, MacroInbound::Refresh));
+        assert!(matches!(message, MacroProtocolMessage::Refresh));
     }
 
     #[test]
@@ -2027,16 +2037,16 @@ mod protocol_macro_tests {
         }
 
         assert_reply_type::<SnapshotRequest>();
-        let inbound = <SnapshotRequest as Request<MacroProtocol>>::into_inbound(
+        let message = <SnapshotRequest as Request<MacroProtocol>>::into_message(
             SnapshotRequest,
             ReplyTo::<Snapshot>::sketch(41),
         );
 
-        match inbound {
-            MacroInbound::SnapshotRequest(incoming) => {
-                let SnapshotRequest = incoming.request;
-                assert_eq!(incoming.reply_to.correlation, 41);
-                let _: ReplyTo<Snapshot> = incoming.reply_to;
+        match message {
+            MacroProtocolMessage::SnapshotRequest(invocation) => {
+                let SnapshotRequest = invocation.request;
+                assert_eq!(invocation.reply_to.correlation, 41);
+                let _: ReplyTo<Snapshot> = invocation.reply_to;
             }
             _ => panic!("request became a different operation"),
         }
@@ -2051,15 +2061,15 @@ mod protocol_macro_tests {
         }
 
         assert_reply_type::<Lookup>();
-        let inbound = <Lookup as Request<MacroProtocol>>::into_inbound(
+        let message = <Lookup as Request<MacroProtocol>>::into_message(
             Lookup(17),
             ReplyTo::<Snapshot>::sketch(42),
         );
 
-        match inbound {
-            MacroInbound::Lookup(incoming) => {
-                assert_eq!(incoming.request.0, 17);
-                assert_eq!(incoming.reply_to.correlation, 42);
+        match message {
+            MacroProtocolMessage::Lookup(invocation) => {
+                assert_eq!(invocation.request.0, 17);
+                assert_eq!(invocation.reply_to.correlation, 42);
             }
             _ => panic!("request became a different operation"),
         }

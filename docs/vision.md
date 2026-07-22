@@ -10,8 +10,8 @@ Samara is a framework for building asynchronous applications in Rust. Its north 
 as follows:
 
 > Samara enables application programming on Tokio that is as side-effect-free as
-> practical: state transitions are pure, effects are explicit values, and asynchronous
-> execution is confined to controlled boundaries.
+> practical: state transitions are pure, effect descriptions are explicit values, and
+> asynchronous execution is confined to controlled boundaries.
 
 Useful applications necessarily interact with time, I/O, concurrency, and other systems.
 Samara does not attempt to eliminate those interactions. It makes them explicit,
@@ -36,15 +36,15 @@ causality, and controlled determinism are observable contracts.
 
 ## The Samara Program Boundary
 
-A **Samara program** is a declared collection of Components and their protocol, effect,
-and subscription contracts. A concrete execution binds those contracts to adapters, a
-runtime configuration, and a surrounding world. Samara's guarantees apply within that
-assembled boundary.
+A **Samara program** is a declared collection of Components and their Protocol,
+EffectDescriptor, and Subscription contracts. A concrete execution binds terminal
+descriptors to live Drivers or controlled behavior, plus a runtime configuration and a
+surrounding world. Samara's guarantees apply within that assembled boundary.
 
 A Samara program may be embedded in a larger Tokio process. Code outside the program
 boundary is part of the surrounding world and interacts with the program through
-explicit adapters. Samara does not claim control over arbitrary code elsewhere in the
-process.
+explicit boundary adapters or ingress APIs. Samara does not claim control over arbitrary
+code elsewhere in the process.
 
 This boundary makes incremental adoption possible without diluting the meaning of a
 conforming Samara program.
@@ -58,23 +58,29 @@ it is implemented as a single loop, one loop per Component, or another scheduler
 A Component:
 
 - Has a stable logical identity.
-- Owns its model and is the sole authority allowed to change it.
-- Accepts typed messages.
+- Owns its Model and is the sole authority allowed to change it.
+- Accepts typed Component Messages.
 - Applies one pure transition at a time.
-- Emits typed commands describing finite work.
-- Declares subscriptions describing ongoing message sources.
-- Interacts with other Components only through typed protocols and messages.
+- Emits typed Commands describing finite work.
+- Declares Subscriptions describing desired ongoing Sources.
+- Interacts with other Components only through typed Protocols and Messages.
 
 Conceptually:
 
 ```text
-update(Model, Msg) -> (Model, Vec<Cmd>)
-subscriptions(&Model) -> Vec<Subscription<Msg>>
+update(&self, Model, Message) -> (Model, Vec<Command<Message>>)
+subscriptions(&self, &Model) -> Vec<Subscription<Message>>
 ```
 
 These signatures describe semantics, not a final Rust API. Exclusively owned, in-place
 mutation may be used as an implementation technique when it is observationally
 equivalent to producing a new model value.
+
+The Rust type and `impl Component` form the Component implementation. A particular
+immutable value of that type is its Component configuration and may contain logical
+wiring such as Ports and SourceDescriptors. Receiving `&self` signals observational
+immutability; because Rust permits interior mutability, conformance still requires that
+behaviorally relevant mutable state belong in the Model.
 
 A Component does not imply a mailbox, Tokio task, thread, or event loop. Those are
 runtime decisions.
@@ -84,8 +90,7 @@ runtime decisions.
 - Component state is private.
 - A Component never has two overlapping transitions.
 - Components cannot directly read, mutate, or invoke one another.
-- Cross-Component communication is explicit message delivery and therefore an effect
-  intent.
+- Cross-Component communication is explicit Message delivery requested by a Command.
 - State requiring joint atomicity belongs in one Component or behind an explicit
   coordinating Component.
 
@@ -105,7 +110,7 @@ and reviewing Components.
 
 ### Readable, Not Unnecessarily Terse
 
-Samara code should make state transitions, effect intent, subscriptions, and Component
+Samara code should make state transitions, EffectDescriptors, Subscriptions, and Component
 interactions easy to follow. Concision is welcome when it improves clarity, but
 minimizing lines or tokens is not a goal. Explicit intermediate types and steps are
 preferable when they preserve meaning at the point of use.
@@ -137,16 +142,17 @@ and user feedback rather than reduced to mechanical conformance tests.
 The purity Samara seeks is observational rather than syntactic.
 
 For a conforming Component, the observable result of a transition depends only on its
-model and input message. A transition receives no ambient capability for I/O, time,
-randomness, locking, spawning, or runtime access.
+fixed Component implementation and configuration, Model, and input Message. A transition
+receives no ambient capability for I/O, time, randomness, locking, spawning, or runtime
+access.
 
 Samara should make the conforming path the natural path:
 
-- Runtime and adapter handles are not available to transitions.
+- Runtime and Driver handles are not available to transitions.
 - Component state is not exposed through mutable runtime handles.
-- All application-observable interaction with the world crosses declared command or
-  subscription boundaries.
-- Outcomes that can affect application decisions return as messages.
+- All application-observable interaction with the world crosses declared Command or
+  Subscription boundaries.
+- Outcomes that can affect application decisions return as Component Messages.
 
 Rust cannot prevent deliberately non-conforming code from reading globals, performing
 direct I/O, or spawning work. Purity therefore depends on both runtime correctness and
@@ -158,58 +164,65 @@ guarantees it forfeits are deferred.
 
 ## Commands and Effects
 
-A `Cmd` is a typed composition of explicit effect intent and deterministic result
-transformation.
+A `Command<Message>` is an inert typed description of finite work. For a world-facing
+interaction, it composes an explicit `EffectDescriptor` with a deterministic one-shot
+message mapper.
 
-The actual effect must remain separately identifiable and interceptable by the runtime.
-A command must not hide the world interaction inside an arbitrary async closure.
+The EffectDescriptor must remain separately identifiable and interceptable by the
+runtime. A Command must not hide world interaction inside an arbitrary async closure.
 
-Pure synchronous closures or function pointers may be used to transform typed effect
-results into messages. For example:
+Pure synchronous closures or function pointers may transform typed EffectOutcomes into
+Component Messages. For example:
 
 ```text
-perform(
+Command::effect(
     SocketRead { socket },
-    bytes -> Msg::Frames(decode(bytes)),
+    bytes -> SocketMessage::Frames(decode(bytes)),
 )
 ```
 
-In this example, `SocketRead` is the interceptable effect. The result mapping is
-application logic and must remain pure and deterministic.
+In this example, `SocketRead` is the interceptable EffectDescriptor. Live execution uses
+its terminal EffectDriver; controlled execution supplies an EffectOutcome without
+invoking that live Driver. The message mapper is application logic and must remain pure
+and deterministic.
 
-Closure object identity is not part of command semantics. Where commands carry pure
-code, conformance compares the explicit effect intent and the observable messages
-produced when equivalent controlled results are supplied. A runtime may additionally
-require a stable mapper descriptor for tracing or diagnosis.
+Closure object identity is not part of Command semantics. Where Commands carry pure
+code, conformance compares the EffectDescriptor and the observable Messages produced
+when equivalent controlled outcomes are supplied. A runtime may additionally require a
+stable mapper descriptor for tracing or diagnosis.
 
-Whenever an effect outcome can influence application behavior, its success, failure,
-timeout, or cancellation must be representable as a message. Runtime diagnostics that
-cannot influence application decisions may remain out of band.
+Whenever an EffectOutcome can influence application behavior, its success, failure,
+timeout, or cancellation must be representable as a Component Message. Runtime
+diagnostics that cannot influence application decisions may remain out of band.
 
 ## Subscriptions
 
-Commands describe finite work. A `Subscription<Msg>` declaratively describes an ongoing
-external source of messages.
+Commands describe finite work. A `Subscription<Message>` declaratively describes a
+Component's desire to maintain ongoing event production. It combines a stable
+Component-local identity, a comparable SourceDescriptor, and a reusable message mapper
+from SourceEvents to Component Messages.
 
 Subscriptions are derived purely from current Component state. Deriving a subscription
 does not start work; it describes the work the Component currently wants the runtime to
 maintain.
 
-After a committed transition, the runtime reconciles the desired subscriptions with the
-active subscriptions:
+After a committed transition, the runtime reconciles desired Subscriptions with active
+Subscription bookkeeping and Sources:
 
-- A newly desired subscription is started.
-- An unchanged subscription, identified by a stable logical key, remains active without
-  restarting.
-- A removed subscription is canceled.
-- A subscription whose resource configuration changes is replaced or reconfigured
-  according to its contract.
-- A failed subscription produces an explicit message.
+- A newly desired identity starts a Source.
+- The same identity with an equal SourceDescriptor retains its Source without restarting.
+- A removed identity cancels its Source.
+- The same identity with a changed SourceDescriptor replaces or reconfigures its Source
+  according to the contract.
+- A Source failure that affects application behavior produces an explicit Component
+  Message.
 
-The runtime or adapter may own operational resource state such as socket handles, read
-tasks, and incomplete frame buffers. Subscription desire remains explicit in Component
-state. Protocol and application policy may live in Components or explicit
-adapter/protocol layers, but never in core runtime effects. Automatic restart and retry
+A Source is the runtime-scoped ongoing realization behind the SourceDescriptor and may
+produce zero or more SourceEvents. A live SourceDriver may own world-facing operational
+resources such as socket handles and read tasks. A declarative Layer may own deterministic
+mechanism state such as an incomplete framing buffer. Subscription desire remains
+explicit in Component state. Protocol and application policy may live in Components or
+explicit Layers, but never in core runtime mechanism. Automatic restart and retry
 behavior are intentionally not defined here.
 
 ## Structured Concurrency
@@ -220,8 +233,8 @@ Samara owns the lifetime of the asynchronous work it authorizes.
 - No detached or untracked task is permitted behind the Samara boundary.
 - Completion, failure, and cancellation are observable through the applicable semantic
   or diagnostic channel.
-- Adapters may use internal tasks, but those tasks remain collectively owned and
-  cancellable through the adapter's scope.
+- Drivers and Sources may use internal tasks, but those tasks remain collectively owned
+  and cancellable through their runtime scope.
 - Controlled execution can account for pending work and distinguish immediately runnable
   work from work awaiting logical time or controlled input.
 
@@ -236,9 +249,10 @@ Samara has two first-class execution profiles:
 > runtime decisions about scheduling, time, effects, subscriptions, and the
 > surrounding world.
 
-Components, commands, subscriptions, pure result mappings, codecs, protocol logic, and
-logical adapter contracts remain the same across profiles. Runtime bindings and
-world-facing capability interpreters differ at the narrowest genuinely impure boundary.
+Component implementations and configurations, Models, Messages, Commands,
+EffectDescriptors, SourceDescriptors, Subscriptions, pure message mappers, Layers,
+codecs, and Protocol logic remain the same across profiles. Runtime decisions and
+terminal world bindings differ at the narrowest genuinely impure boundary.
 
 ### Live Execution
 
@@ -249,7 +263,8 @@ does not claim that live execution is reproducible.
 Live execution does guarantee the shared Component semantics:
 
 - Transitions for one Component do not overlap.
-- A given ordered `(Model, Msg)` transition is deterministic for conforming code.
+- For a fixed Component implementation and configuration, a given ordered
+  `(Model, Message)` transition is deterministic for conforming code.
 - Causal relationships established by the program are preserved.
 - Explicitly sequenced work preserves the sequence promised by its contract.
 - Independent events have no implicit program-wide order.
@@ -259,14 +274,14 @@ Live execution does guarantee the shared Component semantics:
 Controlled execution is a test and simulation environment that owns the world visible to
 the Samara program.
 
-Every effect and subscription used by the program must have a controlled interpreter.
-Time, randomness, identifiers, external inputs, and effect outcomes must be controlled
-or seeded. Missing controlled behavior fails explicitly; it must never silently fall
-back to the live world.
+Every terminal EffectDescriptor and SourceDescriptor used by the program must have
+controlled behavior. Time, randomness, identifiers, external inputs, EffectOutcomes, and
+SourceEvents must be controlled or seeded. Missing controlled behavior fails explicitly;
+it must never silently fall back to a live Driver or the live world.
 
-For a conforming program and conforming adapters, identical initial state,
-configuration, controlled inputs, seeds, and runtime semantics must produce the same
-program-wide:
+For a conforming program using conforming Components, Layers, and controlled bindings,
+identical initial state, Component configuration, controlled inputs, seeds, and runtime
+semantics must produce the same program-wide:
 
 - Component transition trace.
 - Command and subscription trace.
@@ -320,10 +335,11 @@ observe, not by its internal topology.
 
 Samara distinguishes application observability from runtime diagnostics.
 
-### In-Band Semantic Outcomes
+### In-Band Semantic Results
 
-Components observe the world only through messages. Every behaviorally relevant outcome
-of a declared command or subscription must be representable as a typed message.
+Components observe the world only through Messages. Every behaviorally relevant result
+of a declared Command or Subscription must be representable as a typed Component
+Message.
 
 ### Out-of-Band Semantic Trace
 
@@ -332,8 +348,8 @@ should represent, at minimum:
 
 - Component identity.
 - Message receipt and transition commitment.
-- Commands and desired subscriptions produced by a transition.
-- Effect and subscription lifecycle outcomes.
+- Commands and desired Subscriptions produced by a transition.
+- EffectOutcome and Source lifecycle results.
 - Logical or live timestamps.
 - Causation relationships.
 
@@ -358,7 +374,7 @@ A conforming runtime is responsible for:
 
 - Component state isolation and non-overlapping transitions.
 - Message-mediated state change.
-- Interceptable commands and subscriptions.
+- Interceptable Commands and reconciled Subscriptions.
 - Structured ownership of asynchronous work.
 - The documented live and controlled execution semantics.
 - Non-influential structured semantic tracing.
@@ -368,25 +384,29 @@ A conforming runtime is responsible for:
 A conforming Component author is responsible for:
 
 - Pure and deterministic transitions.
-- Pure and deterministic result-mapping closures.
+- Pure and deterministic message-mapping closures.
 - Keeping all application state under explicit Component ownership.
 - Avoiding direct access to ambient I/O, time, randomness, shared mutable state, or task
   spawning from pure paths.
 
-### Adapter-Author Obligations
+### Layer, Driver, and Controlled-Behavior Obligations
 
-A conforming adapter author is responsible for:
+Authors of conforming Layers, Drivers, and controlled behavior are responsible for the
+applicable obligations below:
 
-- Keeping world interaction behind declared effect or subscription contracts.
-- Preserving structured ownership of internal work.
-- Returning behaviorally relevant outcomes through messages.
-- Providing deterministic controlled behavior when claiming controlled support.
-- Introducing no hidden live dependency into controlled execution.
+- Keeping world interaction behind declared EffectDescriptor or SourceDescriptor
+  contracts.
+- Keeping Layers declarative, deterministic, and free of ambient I/O.
+- Preserving structured ownership of Driver and Source work.
+- Returning behaviorally relevant EffectOutcomes and SourceEvents through message
+  mappers.
+- Providing deterministic controlled behavior for every supported terminal descriptor.
+- Introducing no hidden live Driver or live dependency into controlled execution.
 
 The determinism claim is therefore conditional:
 
-> A conforming Samara program, using conforming adapters in a closed controlled
-> world, executes deterministically.
+> A conforming Samara program, using conforming Layers and controlled bindings in a
+> closed controlled world, executes deterministically.
 
 ## Testing as a First-Class Practice
 
@@ -396,12 +416,15 @@ the live world.
 
 The architecture should support:
 
-- Testing transitions directly as `Model + Msg -> Model + Cmds`.
-- Inspecting commands and subscriptions without executing live effects.
+- Testing transitions directly as fixed Component configuration plus
+  `Model + Message -> Model + Commands`.
+- Inspecting Commands, EffectDescriptors, and Subscriptions without executing live
+  Drivers.
 - Running programs with controlled time and scripted world behavior.
 - Asserting against structured semantic traces.
-- Injecting effect failure, subscription failure, and cancellation.
-- Reusable conformance suites for runtimes, Components, and adapters.
+- Injecting EffectOutcome failure, Source failure, and cancellation.
+- Reusable conformance suites for runtimes, Components, Layers, Drivers, and controlled
+  behavior.
 - Future replay and schedule-exploration tooling.
 
 This is a commitment to preserve testability, not a promise that every testing tool
@@ -410,35 +433,42 @@ ships in the first release.
 ## Tokio Interoperability and Adoption
 
 Samara meets Tokio through explicit, first-class interoperability boundaries. Common
-Tokio work and event sources should be adaptable into commands and subscriptions without
-exposing runtime capabilities to Components.
+Tokio work and event sources should be expressible as EffectDescriptors and
+SourceDescriptors without exposing runtime capabilities to Components.
 
-Samara intends to provide a small first-party interoperability layer. The exact adapter
+Samara intends to provide a small first-party set of Layers and Drivers. The exact
 catalog belongs to the roadmap; it is not promised here. The canonical initial proof is
-an inbound Tokio `mpsc` receiver translated into Component messages.
+a Tokio `mpsc` receiver translated into Component Messages through a first-party Source
+boundary.
 
 Conceptually:
 
 ```text
 Component:
-    subscribe(Inbound<Packet>) -> Msg::PacketReceived
+    Subscription(
+        identity = "packets",
+        descriptor = packet_input,
+        map = PacketMessage::Received,
+    )
 
-Live world:
-    bind Inbound<Packet> to TokioMpsc(receiver)
+Live profile:
+    bind packet_input to a first-party Tokio mpsc SourceDriver
 
-Controlled world:
-    bind Inbound<Packet> to ScriptedInput(events)
+Controlled profile:
+    bind packet_input to scripted SourceEvents
 ```
+
+This is schematic rather than a commitment to the concrete descriptor or binding API.
 
 The canonical shallow onboarding path is:
 
 1. Start inside an ordinary `#[tokio::main]` application.
-2. Define one Component with a model, messages, and a pure transition.
-3. Feed it from an existing `mpsc` receiver through a first-party adapter.
+2. Define one Component with a Model, Messages, and a pure transition.
+3. Feed it from an existing `mpsc` receiver through a first-party Source boundary.
 4. Observe its behavior without implementing runtime infrastructure.
 5. Reuse the same Component in a controlled test with scripted input.
 
-Advanced schedulers, adapters, subscriptions, and testing capabilities should be
+Advanced schedulers, Layers, Drivers, Subscriptions, and testing capabilities should be
 introduced through progressive disclosure. A user must not need to learn the entire
 architecture before receiving value.
 
@@ -453,12 +483,14 @@ representative conforming programs must be able to demonstrate the following sce
 
 ### V1. Repeatable Component Transition
 
-Given equivalent initial models and the same message, repeated execution of a conforming
-transition produces equivalent next models and commands. The runtime provides no ambient
-world capability to the transition.
+Given the same conforming Component implementation and equivalent immutable Component
+configuration, initial Model, and Message, repeated execution of a transition produces
+equivalent next Models and Commands. The runtime provides no ambient world capability to
+the transition.
 
-For commands containing pure code, equivalence compares explicit effect intent and the
-messages produced from equivalent controlled outcomes, not closure object identity.
+For Commands containing pure code, equivalence compares explicit EffectDescriptors and
+the Messages produced from equivalent controlled EffectOutcomes, not closure object
+identity.
 
 ### V2. Isolated State Ownership
 
@@ -466,32 +498,38 @@ When messages target the same Component concurrently, its transitions never over
 external runtime handle can mutate its model. Interaction with a second Component occurs
 only through declared messages and protocols.
 
-### V3. Interceptable Effect
+### V3. Interceptable Effect Descriptor
 
-Given a command containing a typed effect intent and a pure result mapper, a controlled
-interpreter can observe the intent, provide the result without performing the live
-effect, and cause the mapped message to enter the target Component.
+Given a Command containing a typed EffectDescriptor and a pure one-shot message mapper,
+controlled execution can observe the descriptor, apply the same declarative Layers,
+provide an EffectOutcome without invoking a live terminal EffectDriver, and cause the
+mapped Message to enter the target Component.
 
 ### V4. Declarative Subscription Lifecycle
 
-Given a model-derived subscription with a stable identity:
+Given a Model-derived Subscription containing a stable identity, SourceDescriptor, and
+message mapper:
 
-- It starts when first desired.
-- It remains active across transitions while unchanged.
-- It is canceled when no longer desired.
-- A same-identity subscription with changed resource configuration is replaced or
-  reconfigured according to its contract.
-- Its controlled events enter the Component as messages.
-- Its failure enters the Component as a message.
+- A Source starts when the identity is first desired.
+- The Source remains active while the same identity has an equal SourceDescriptor.
+- The Source is canceled when the identity is no longer desired.
+- The Source is replaced or reconfigured when the same identity has a changed
+  SourceDescriptor, according to its contract.
+- Its controlled SourceEvents enter the Component through the message mapper.
+- Its failure enters the Component as a Message.
 
 No automatic restart behavior is asserted.
+This requirement does not yet choose whether a newly declared message mapper
+replaces the prior mapper while equal identity and SourceDescriptor retain the
+Source.
 
 ### V5. Live and Controlled Program Parity
 
 The same Component program can be assembled once with live world bindings and once with
-controlled world bindings without changing Components, commands, subscriptions, codecs,
-protocol logic, or logical adapter contracts. Only runtime bindings and world-facing
-capability interpreters differ.
+controlled world bindings without changing Component implementations or configurations,
+Models, Messages, Commands, EffectDescriptors, SourceDescriptors, Subscriptions, Layers,
+codecs, Protocol logic, or message mappers. Only runtime decisions and terminal
+world-facing bindings differ.
 
 ### V6. Program-Wide Controlled Determinism
 
@@ -531,8 +569,9 @@ time, and causation.
 ### V11. Shallow Tokio Onboarding
 
 A compiling example embeds one Component in a normal Tokio application, adapts an `mpsc`
-receiver into messages using first-party interop, and reuses the same Component in a
-controlled test without custom runtime or adapter implementation.
+receiver into Messages using first-party interop, and reuses the same Component in a
+controlled test without custom runtime, Layer, Driver, or controlled-world
+infrastructure.
 
 ## Not Promised Here
 
@@ -541,13 +580,15 @@ This vision deliberately does not promise:
 - A particular runtime topology.
 - A global total execution order.
 - Deterministic ordering of independent events during live execution.
-- Proof that arbitrary Rust Components, closures, or adapters are pure.
+- Proof that arbitrary Rust Components, closures, Layers, Drivers, or controlled-world
+  code conforms.
 - Transparent distribution of Components across processes.
 - A prescribed backpressure, delivery, retry, or shutdown policy beyond observability
   and structured ownership.
 - Durable persistence, event sourcing, or a durable replay system.
-- A comprehensive Tokio adapter catalog in the initial product.
-- A complete Component, adapter, and runtime conformance toolkit in the initial product.
+- A comprehensive Tokio Layer and Driver catalog in the initial product.
+- A complete Component, Layer, Driver, controlled-world, and runtime conformance
+  toolkit in the initial product.
 - Maximum throughput at the expense of the semantic guarantees above.
 
 These are not permanent prohibitions. They are boundaries that keep this vision clear
@@ -559,10 +600,13 @@ The following questions remain intentionally open:
 
 - Whether to provide a blessed escape hatch and how it advertises weakened guarantees.
 - The concrete Rust API.
+- The broader first-party Tokio bridge module organization and naming beyond
+  the provisional `MpscInput<T>` descriptor.
+- The initial Rust shape of Layer and execution-profile binding abstractions.
 - The controlled scheduler's exact equal-time tie-break.
 - Subscription restart and retry semantics.
 - Delivery, backpressure, overload, and coalescing policies.
 - Shutdown drain-versus-cancel semantics.
-- The initial first-party adapter catalog beyond the canonical `mpsc` bridge.
+- The initial first-party Layer and Driver catalog beyond the canonical `mpsc` bridge.
 - The semantic trace representation, versioning, storage, and replay tooling.
 - The shape and release timing of reusable conformance harnesses.

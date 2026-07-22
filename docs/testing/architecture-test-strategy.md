@@ -2,7 +2,7 @@
 
 ## Status
 - Phase: Documentation-first.
-- Date: February 28, 2026.
+- Date: July 21, 2026.
 
 ## Purpose
 Define required test layers and acceptance gates for a strict TEA + Tokio architecture before implementation begins.
@@ -10,36 +10,67 @@ Define required test layers and acceptance gates for a strict TEA + Tokio archit
 ## Test Layers
 
 ### L0: Update Determinism Tests
-- Verify `update(model, msg)` is deterministic and side-effect free.
-- Same input must yield identical `(next_model, cmds)`.
+- Verify transitions are deterministic and side-effect free for fixed immutable
+  Component configuration.
+- Equivalent configuration + Model + Message input must yield equivalent next
+  Model and Command intent.
+- Confirm behaviorally relevant mutable state cannot hide in Component
+  configuration or bypass the Model.
 
 ### L1: Command Emission Tests
-- Validate message-to-command mapping.
+- Validate Message-to-Command mapping.
 - Ensure command intent is explicit and complete for each transition.
+- Inspect typed descriptors without executing live work and exercise pure message
+  mappers with equivalent outcomes or events.
 
-### L2: Effect Handler Contract Tests
-- Validate each `Cmd` variant maps to expected async behavior.
-- Confirm handler failures are mapped to structured runtime error messages.
-- Validate adapter/protocol composition boundaries (mechanism vs policy split).
+### L2: Descriptor, Layer, and Driver Contract Tests
+- Validate the public descriptor and Command boundary cannot substitute an
+  opaque async closure for an identifiable EffectDescriptor.
+- Validate each terminal EffectDescriptor reaches the matching live
+  EffectDriver or controlled behavior and produces exactly one EffectOutcome.
+- Validate the one-shot EffectOutcome message mapper is invoked exactly once and
+  emits the expected Component Message.
+- Validate SourceDescriptor equality has the promised reconciliation meaning
+  and each terminal SourceDescriptor reaches the matching live SourceDriver or
+  controlled behavior to realize a runtime-owned Source.
+- Validate a Source may emit zero or more SourceEvents and that its reusable
+  mapper can produce a Component Message for each delivered event.
+- Validate Layers compose descriptors and outcomes/events identically in live
+  and controlled execution without ambient I/O.
+- Validate a non-terminal descriptor passes through its Layers before only the
+  resulting terminal descriptor reaches a Driver or controlled behavior.
+- Validate Drivers remain terminal, selected by live-profile assembly, and
+  runtime-owned.
+- Validate mechanism-versus-policy boundaries without requiring a universal
+  Layer trait or a particular profile-binding API.
 
 ### L3: Runtime Message-Flow Integration Tests
 - Validate message ingestion, target delivery, update execution, command dispatch, and message re-entry.
 - Confirm that transitions for one Component never overlap.
 - Confirm required causal edges without assuming an order between independent live events.
 - Confirm no bypass of message flow.
+- Confirm Protocol Messages are mapped explicitly into provider Component
+  Messages rather than treated as the same vocabulary.
 
 ### L4: Cancellation and Shutdown Tests
 - Validate graceful shutdown with in-flight tasks.
 - Confirm expected message delivery guarantees during shutdown policy enforcement.
+- Confirm an issued EffectDescriptor still resolves through exactly one
+  EffectOutcome when its contract exposes cancellation.
+- Confirm canceling a Source does not manufacture a SourceEvent unless that
+  Source contract explicitly promises one.
 
 ### L5: Backpressure and Load Tests
-- Validate queue pressure behavior and runtime stability.
+- Validate ingress and work pressure behavior without assuming a particular
+  internal queue topology.
 - Produce throughput, tail-latency, isolation, and overload evidence for the selected implementation.
 
-### L6: Simulation-Time and Acceleration Tests
-- Validate that runtime scheduling semantics can run in simulated time.
+### L6: Controlled-Time and Acceleration Tests
+- Validate that runtime scheduling semantics can run in controlled time.
 - Validate faster-than-real-time execution paths for simulation workloads.
 - Confirm determinism across repeated accelerated runs with identical inputs.
+- Confirm controlled behavior never falls back to a live Driver when a binding
+  or scripted outcome/event is missing.
 
 ### L7: Topology-Independent Conformance Suite
 - Validate per-Component serialization and required causal relationships.
@@ -49,24 +80,36 @@ Define required test layers and acceptance gates for a strict TEA + Tokio archit
 ## Required Scenario Coverage
 - Deterministic transitions for representative domain message sets.
 - Command correctness for happy path and failure path transitions.
-- Adapter/protocol translation correctness (`AppCmd <-> system operations <-> Msg`).
-- Runtime fault conversion into explicit `Msg` variants.
-- Component interaction coverage for `Cmd::notify` (one-way) and
-  `Cmd::request` (request/reply), including dropped-reply failure paths.
+- EffectDescriptor-to-EffectOutcome coverage through both a live EffectDriver
+  test double and controlled behavior, including exactly-once message mapping.
+- SourceDescriptor-to-SourceEvent coverage through both a live SourceDriver test
+  double and controlled behavior, including zero-event, repeated-event, normal
+  end, failure, replacement, and cancellation paths where applicable.
+- Layer composition coverage proving the same descriptor and mapping semantics
+  across live and controlled profiles.
+- Runtime fault conversion into explicit Component Messages or typed boundary
+  outcomes/events where behaviorally relevant.
+- Component interaction coverage for `Command::notify` (one-way) and
+  `Command::request` (request/reply), including dropped-reply paths.
 - Typed request coverage for `Request<P>` associated Reply mappings and
   `RequestOutcome` runtime flows.
-- Deferred-reply coverage where provider messages carry an inert `ReplyTo` and
-  transitions emit `Cmd::reply` rather than using a live reply channel.
+- Protocol coverage proving `Protocol::Message` is provider-neutral, concrete
+  enums follow the `XProtocolMessage` role, and provider
+  `Component::Message` values implement the standard `From` conversion used by
+  assembly.
+- Request delivery coverage where provider Protocol Messages carry a
+  `RequestInvocation<P, R>` with inert `ReplyTo<R::Reply>` authority and
+  transitions emit `Command::reply` rather than using a live reply channel.
 - Port/protocol binding coverage for provider swapping (`real` vs `mock`) without consumer code changes.
-- Port interaction coverage for the `Notification<P>` / `Cmd::notify` and
-  `Request<P>` / `Cmd::request` symmetry, opaque correlation, result mapping,
+- Port interaction coverage for the `Notification<P>` / `Command::notify` and
+  `Request<P>` / `Command::request` symmetry, opaque correlation, message mapping,
   and runtime-owned reply resolution.
 - Reply-obligation coverage must demonstrate that:
-  - consuming `ReplyTo` into an interpreted `Cmd::reply` produces exactly one
+  - consuming `ReplyTo` into an interpreted `Command::reply` produces exactly one
     typed outcome without a diagnostic violation;
   - dropping an unresolved `ReplyTo` is reported with enough Component and
     request context to locate the violation;
-  - constructing and then discarding `Cmd::reply` does not falsely discharge
+  - constructing and then discarding `Command::reply` does not falsely discharge
     the obligation;
   - storing or deliberately forgetting `ReplyTo` cannot evade runtime-owned
     detection when the defined request lifecycle ends; and
@@ -78,15 +121,17 @@ Define required test layers and acceptance gates for a strict TEA + Tokio archit
 - Runtime drive-loop tests should prefer `run_until(...)` / `run_until_predicate(...)` / `run_until_idle()` over hard-coded sleep durations.
 - Cancellation behavior for long-running and short-running commands.
 - Backpressure behavior under burst and sustained load.
-- Recovery behavior after handler and runtime errors.
-- Simulated-time progression behavior (including faster-than-real-time runs) for timer-driven flows.
+- Recovery behavior after Driver and runtime failures without prescribing the
+  final boundary variant taxonomy.
+- Controlled-time progression behavior (including faster-than-real-time runs)
+  for timer-driven flows.
 
 ## Acceptance Gates by Change Type
 
 ### Architecture or Contract Changes
 - Must update architecture docs and relevant ADR.
 - Must update affected test strategy sections.
-- Must include new/updated tests for all impacted layers.
+- Must include new/updated tests for all impacted test levels and Layer or Driver roles.
 
 ### Runtime Execution Changes
 - Must include L3 and L4 coverage.
