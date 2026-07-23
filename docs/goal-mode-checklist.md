@@ -1,6 +1,6 @@
 # Samara Goal-Mode Checklist
 
-- Status: Phase 5 contract approved; implementation ready
+- Status: Phase 5 accepted; Phase 6 not started
 - Purpose: Track bounded implementation phases and their human audit gates.
 
 ## Working Rule
@@ -86,12 +86,14 @@ Audit packet: [Phase 4 Declarative Work Kernel](audits/phase-4-declarative-work-
   lowering, equal-time scheduling, structural tracing, graph validation,
   missing controlled behavior, semantic work accounting, and successful
   Request/Reply scope through ADR-0003.
-- [ ] Implement controlled terminal-descriptor behavior, Source maintenance,
+- [x] Implement controlled terminal-descriptor behavior, Source maintenance,
   scheduling, and logical time; demonstrate repeatable program-wide traces and
   final state with both reference Components.
-- [ ] Audit causality, equal-time behavior, pending-work accounting, failure
-  diagnostics, and proof that controlled execution never silently invokes a
-  live Driver.
+- [x] Shane audits causality, equal-time behavior, pending-work accounting,
+  failure diagnostics, and proof that controlled execution never silently
+  invokes a live Driver.
+
+Audit packet: [Phase 5 Controlled Execution](audits/phase-5-controlled-execution.md).
 
 ### 6. Live Tokio Runtime
 

@@ -565,7 +565,7 @@ fn program() -> (Program, AppRefs) {
     );
 
     (
-        program.build(),
+        program.build().expect("the example graph is valid"),
         AppRefs {
             health,
             health_port,
@@ -632,9 +632,9 @@ fn controlled_shape() -> Result<(), RuntimeError> {
     let active: TelemetryFeed = runtime.source_descriptor(&refs.telemetry, &socket)?;
     assert_eq!(active.source.endpoint, Endpoint::new("simulated:7000"));
 
-    // Inject raw chunks at the TcpBytes layer. The first chunk is partial; the
-    // second completes it and contains another whole frame. The same decoder
-    // therefore runs in controlled and live execution.
+    // Inject raw chunks at the terminal TcpBytes descriptor. The first chunk is
+    // partial; the second completes it and contains another whole frame. The
+    // same decoder Layer therefore runs in controlled and live execution.
     runtime.emit_source::<Telemetry, TcpBytes>(
         &refs.telemetry,
         &socket,
@@ -690,12 +690,19 @@ fn controlled_shape() -> Result<(), RuntimeError> {
 
 /// Keeps the binary intentionally inert while its consumer shape is compiled.
 fn main() {
-    println!("compile-checked Phase 4 reference; see this source and its unit tests");
+    println!("Phase 5 controlled reference; see this source and its unit tests");
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Activates the Phase 5 controlled path through Port notification,
+    /// composed Source Layers, typed effects, replacement, and failure input.
+    #[test]
+    fn controlled_reference_program_runs_end_to_end() -> Result<(), RuntimeError> {
+        controlled_shape()
+    }
 
     /// Proves the pure decoder handles both transport fragmentation and several
     /// application frames coalesced into one read.

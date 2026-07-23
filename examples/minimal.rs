@@ -10,14 +10,11 @@
 //! Only the runtime binding changes from a real Tokio receiver to scripted
 //! input.
 //!
-//! # Current Phase 4 limitation
+//! # Current Phase 5 boundary
 //!
-//! The crate now owns and serializes Component state and implements the inert
-//! declarative-work kernel, but it does not run either execution profile. This
-//! example therefore has a real `#[tokio::main]` entry point and honest live
-//! assembly, but running it ends with the façade's explicit Phase 4 error. The
-//! end-to-end controlled test is retained as a visibly staged executable
-//! requirement; the direct Component test runs now.
+//! The end-to-end controlled test runs this program with scripted stream input.
+//! The real `#[tokio::main]` entry point and live assembly remain compile-checked,
+//! but live Tokio Driver execution is the next implementation phase.
 
 use std::error::Error;
 
@@ -107,7 +104,10 @@ impl Component for Counter {
 fn program(increments: StreamDescriptor<u64>) -> (Program, ComponentRef<Counter>) {
     let mut program = Program::builder();
     let counter = program.component(ComponentId::new("counter"), Counter { increments });
-    (program.build(), counter)
+    (
+        program.build().expect("the example graph is valid"),
+        counter,
+    )
 }
 
 /// Runs the program with an ordinary Tokio channel as its world-facing input.
@@ -134,8 +134,7 @@ async fn run_live() -> Result<(), Box<dyn Error>> {
     let runtime = runtime.spawn();
 
     // Drain expresses that this finite source should be processed before the
-    // owned runtime scope ends. Today this call returns the explicit Phase 4
-    // error described in the module documentation.
+    // owned runtime scope ends. Live execution remains the Phase 6 boundary.
     let report = runtime.shutdown(Shutdown::Drain).await?;
     assert!(report.is_clean());
     Ok(())
@@ -179,12 +178,9 @@ mod tests {
     /// Specifies the controlled counterpart of `run_live` using the same
     /// Component and `program` factory.
     ///
-    /// Ignoring this test is deliberate and visible: every drive method on the
-    /// current `ControlledRuntime` façade returns a placeholder error. Once the
-    /// runtime exists, removing `ignore` turns this into the canonical
-    /// whole-program onboarding test without changing application logic.
+    /// This is the canonical whole-program controlled onboarding test. It uses
+    /// exactly the same Component and program factory as the live shape.
     #[test]
-    #[ignore = "staged for the controlled-runtime implementation phase"]
     fn controlled_stream_updates_the_same_program() -> Result<(), RuntimeError> {
         let increments = StreamDescriptor::named(INCREMENT_INPUT);
         let (program, counter) = program(increments.clone());

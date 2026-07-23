@@ -9,13 +9,12 @@ Samara is a framework for building asynchronous applications in Rust.
 ## Status
 
 Samara's Phase 2 executable contract, Phase 3 Component kernel, and Phase 4
-declarative-work kernel are accepted. Phase 4 adds owned typed effect
-interception, reusable Source-event mapping,
-Component-local Subscription reconciliation, and the pure framed Source Layer.
-The Phase 5 controlled-execution contract is approved and ready for
-implementation under ADR-0003. No Driver or execution profile runs world work
-yet; controlled and live end-to-end scenarios remain visibly staged for the
-phases that own them.
+declarative-work kernel are accepted. The Phase 5 implementation is ready for
+manual audit: controlled programs now interpret typed Commands, maintain and
+compose Sources, advance logical time, route successful Requests, account for
+semantic obligations, and collect deterministic causal traces under ADR-0003.
+Controlled execution never invokes a live Driver. Live Tokio Drivers and
+structured live shutdown remain the Phase 6 boundary.
 
 The earlier Actor proof of concept remains available in Git history at commit
 `8408509`, but it is not a compatibility target for the new runtime.
@@ -34,6 +33,7 @@ The earlier Actor proof of concept remains available in Git history at commit
 - [Phase 2 audit packet](docs/audits/phase-2-executable-acceptance-contract.md)
 - [Phase 3 audit packet](docs/audits/phase-3-component-kernel.md)
 - [Phase 4 audit packet](docs/audits/phase-4-declarative-work-kernel.md)
+- [Phase 5 audit packet](docs/audits/phase-5-controlled-execution.md)
 
 ## Reference Components
 

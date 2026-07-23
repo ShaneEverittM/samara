@@ -190,7 +190,7 @@ fn registration_transfers_configuration_and_model_ownership_to_program() {
     assert_eq!(configuration_drops.load(Ordering::SeqCst), 0);
     assert_eq!(model_drops.load(Ordering::SeqCst), 0);
 
-    let program = builder.build();
+    let program = builder.build().expect("the ownership graph is valid");
 
     // The contract requires one initial Model and startup Command before the
     // Program can execute; it does not make component-registration versus

@@ -5,14 +5,12 @@
 //!
 //! # Status
 //!
-//! Phase 4 builds on the frozen Component kernel with inert, interceptable
-//! effect invocations, descriptor-only Subscription reconciliation, reusable
-//! Source-event mappers, and the profile-independent framed Source Layer.
-//! Neither live nor controlled terminal behavior executes yet; those runtime
-//! surfaces remain compile-checked candidates and intentionally return
-//! placeholder errors until their implementation phase. The consumers in
-//! `examples` keep ownership, typing, and ergonomics visible while those slices
-//! are activated one at a time.
+//! Phase 5 adds deterministic controlled execution to the frozen Component and
+//! declarative-work kernels. Controlled tests now interpret typed Commands,
+//! reconcile runtime-owned Sources, lower composed SourcePlans, advance logical
+//! time, route successful Requests, account for semantic obligations, and
+//! collect causal structural traces. Live Tokio Drivers and structured live
+//! shutdown remain the Phase 6 implementation boundary.
 //!
 //! # Mental model
 //!
@@ -34,14 +32,22 @@
 //! messages through [`EffectOutcome`], [`SourceEvent`], and [`RequestOutcome`].
 
 use std::{
-    any::Any, error::Error, fmt, future::Future, marker::PhantomData, pin::Pin, sync::Arc,
+    any::{Any, TypeId},
+    error::Error,
+    fmt,
+    future::Future,
+    marker::PhantomData,
+    pin::Pin,
+    sync::Arc,
     time::Duration,
 };
 
 mod component_kernel;
+mod controlled_runtime;
 mod declarative_work;
 
 use component_kernel::{ComponentKernel, ErasedComponentKernel};
+use controlled_runtime::ControlledCore;
 
 /// Convenient imports for writing Components and assembling either runtime
 /// profile.
@@ -49,12 +55,13 @@ pub mod prelude {
     pub use crate::{
         BoxFuture, CancelReason, Command, Component, ComponentHandle, ComponentId, ComponentRef,
         ControlledRuntime, Decoder, DriverStopped, EffectDescriptor, EffectDriver,
-        EffectInvocation, EffectOutcome, Framed, FramedError, FramedLayer, Init, LiveRuntime,
-        Notification, PendingEffect, Port, PortId, Program, ProgramBuilder, Protocol, ReplyTo,
-        Request, RequestError, RequestInvocation, RequestOutcome, RunReport, RuntimeError,
-        RuntimeTask, Shutdown, ShutdownReport, SourceDescriptor, SourceDriver, SourceEvent,
-        SourceSink, StreamDescriptor, Subscription, SubscriptionId, Subscriptions, TraceEvent,
-        protocol,
+        EffectInvocation, EffectOutcome, EffectOutcomeKind, Framed, FramedError, FramedLayer, Init,
+        LiveRuntime, LogicalTime, Notification, PendingEffect, PendingWork, Port, PortId, Program,
+        ProgramBuildError, ProgramBuilder, Protocol, ReplyTo, Request, RequestError,
+        RequestInvocation, RequestOutcome, RunReport, RuntimeError, RuntimeTask, Shutdown,
+        ShutdownReport, SourceDescriptor, SourceDriver, SourceEvent, SourceEventKind, SourceSink,
+        StreamDescriptor, Subscription, SubscriptionAction, SubscriptionId, Subscriptions,
+        TraceCommandKind, TraceEvent, TraceId, TraceRecord, protocol,
     };
 }
 
@@ -67,7 +74,7 @@ pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 /// Stable logical identity of one Component instance in a [`Program`].
 ///
 /// This identifies the application unit, not a Tokio task, mailbox, or thread.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ComponentId(Arc<str>);
 
 impl ComponentId {
@@ -83,7 +90,7 @@ impl ComponentId {
 /// [`Port`] values may therefore use the same [`Protocol`] while naming distinct
 /// dependencies, such as `"inventory/primary"` and `"inventory/fallback"`.
 /// Neither the name nor registration order implies execution order.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PortId(Arc<str>);
 
 impl PortId {
@@ -98,7 +105,7 @@ impl PortId {
 /// Reconciliation combines this key with the owning [`ComponentId`]. An equal
 /// source descriptor keeps the current subscription alive; changed source
 /// configuration replaces or reconfigures it according to its contract.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SubscriptionId(Arc<str>);
 
 impl SubscriptionId {
@@ -120,16 +127,144 @@ pub trait EffectDescriptor: Send + 'static {
     type Error: Send + 'static;
 }
 
+mod source_plan_private {
+    /// Unnameable outside this crate, so the hidden lowering hook can be
+    /// implemented by downstream descriptors but overridden only by Samara.
+    pub struct LowerToken(());
+
+    pub(crate) const LOWER_TOKEN: LowerToken = LowerToken(());
+}
+
 /// A cloneable, comparable description of an ongoing external event source.
 ///
 /// Equality is semantic: the runtime uses it during subscription reconciliation
 /// to decide whether an active source is unchanged. Operational state such as a
 /// socket handle or partial input buffer must not live in this descriptor.
+///
+/// SourcePlan lowering is reserved to Samara. A downstream descriptor supplies
+/// only its event types and inherits terminal behavior; the hidden dispatch
+/// method cannot be overridden without naming crate-private types:
+///
+/// ```compile_fail
+/// use samara::SourceDescriptor;
+///
+/// #[derive(Clone, Debug, PartialEq)]
+/// struct Custom;
+///
+/// impl SourceDescriptor for Custom {
+///     type Item = ();
+///     type Error = ();
+///
+///     fn __samara_source_plan(
+///         &self,
+///         _: samara::source_plan_private::LowerToken,
+///     ) -> samara::SourcePlan {
+///         unreachable!()
+///     }
+/// }
+/// ```
 pub trait SourceDescriptor: Clone + PartialEq + fmt::Debug + Send + Sync + 'static {
     /// Item emitted while the source remains active.
     type Item: Send + 'static;
     /// Typed error explaining a failure that terminates the active Source.
     type Error: Send + 'static;
+
+    /// Internal stable-Rust dispatch for Samara's built-in composed descriptors.
+    ///
+    /// The token and result are crate-private, making this a partially sealed
+    /// implementation hook rather than a downstream Layer extension point.
+    /// Application descriptors inherit the terminal default; only Samara can
+    /// name the token required to override it.
+    #[doc(hidden)]
+    #[allow(private_interfaces)]
+    fn __samara_source_plan(&self, _: source_plan_private::LowerToken) -> SourcePlan {
+        SourcePlan::terminal(self.clone())
+    }
+}
+
+/// Runtime-owned lowering of one composed [`SourceDescriptor`].
+pub(crate) struct SourcePlan {
+    terminal: Box<dyn ErasedTerminalDescriptor>,
+    layers: Vec<Box<dyn ErasedSourceLayer>>,
+    output_event_type: TypeId,
+    valid_event_chain: bool,
+}
+
+trait ErasedTerminalDescriptor: Send + Sync {
+    fn as_any(&self) -> &dyn Any;
+    fn descriptor_type_id(&self) -> TypeId;
+    fn type_name(&self) -> &'static str;
+}
+
+struct TerminalDescriptor<S: SourceDescriptor>(S);
+
+impl<S: SourceDescriptor> ErasedTerminalDescriptor for TerminalDescriptor<S> {
+    fn as_any(&self) -> &dyn Any {
+        &self.0
+    }
+
+    fn descriptor_type_id(&self) -> TypeId {
+        TypeId::of::<S>()
+    }
+
+    fn type_name(&self) -> &'static str {
+        std::any::type_name::<S>()
+    }
+}
+
+trait ErasedSourceLayer: Send {
+    fn map_event(&mut self, event: ErasedSourceEvent) -> Vec<ErasedSourceEvent>;
+}
+
+pub(crate) struct ErasedSourceEvent {
+    value: Box<dyn Any + Send>,
+    kind: SourceEventKind,
+}
+
+impl ErasedSourceEvent {
+    pub(crate) fn typed<S: SourceDescriptor>(event: SourceEvent<S::Item, S::Error>) -> Self {
+        let kind = SourceEventKind::of(&event);
+        Self {
+            value: Box::new(event),
+            kind,
+        }
+    }
+}
+
+impl SourcePlan {
+    fn terminal<S: SourceDescriptor>(descriptor: S) -> Self {
+        Self {
+            terminal: Box::new(TerminalDescriptor(descriptor)),
+            layers: Vec::new(),
+            output_event_type: TypeId::of::<SourceEvent<S::Item, S::Error>>(),
+            valid_event_chain: true,
+        }
+    }
+
+    pub(crate) fn terminal_type_id(&self) -> TypeId {
+        self.terminal.descriptor_type_id()
+    }
+
+    pub(crate) fn terminal_type_name(&self) -> &'static str {
+        self.terminal.type_name()
+    }
+
+    pub(crate) fn terminal_descriptor(&self) -> &dyn Any {
+        self.terminal.as_any()
+    }
+
+    pub(crate) fn accepts_output_event_type(&self, expected: TypeId) -> bool {
+        self.valid_event_chain && self.output_event_type == expected
+    }
+
+    pub(crate) fn map_event(&mut self, event: ErasedSourceEvent) -> Vec<ErasedSourceEvent> {
+        self.layers.iter_mut().fold(vec![event], |events, layer| {
+            events
+                .into_iter()
+                .flat_map(|event| layer.map_event(event))
+                .collect()
+        })
+    }
 }
 
 /// Behaviorally relevant terminal outcome of one finite [`EffectDescriptor`].
@@ -152,6 +287,34 @@ pub enum SourceEvent<Item, SourceError> {
     Failed(SourceError),
     /// The active source ended normally.
     Ended,
+}
+
+/// Structural shape of one [`SourceEvent`] in the controlled trace.
+///
+/// Payloads remain available to typed Component tests and are deliberately not
+/// copied into the generic v0 trace.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceEventKind {
+    /// The Source emitted another item and remains active.
+    Item,
+    /// The Source failed and terminated.
+    Failed,
+    /// The Source ended normally.
+    Ended,
+}
+
+impl SourceEventKind {
+    fn of<Item, SourceError>(event: &SourceEvent<Item, SourceError>) -> Self {
+        match event {
+            SourceEvent::Item(_) => Self::Item,
+            SourceEvent::Failed(_) => Self::Failed,
+            SourceEvent::Ended => Self::Ended,
+        }
+    }
+
+    fn is_terminal(self) -> bool {
+        matches!(self, Self::Failed | Self::Ended)
+    }
 }
 
 /// Runtime-owned reason why finite work did not complete.
@@ -336,6 +499,10 @@ impl<Reply> ReplyTo<Reply> {
             correlation,
             marker: PhantomData,
         }
+    }
+
+    fn runtime(correlation: u64) -> Self {
+        Self::sketch(correlation)
     }
 }
 
@@ -736,7 +903,10 @@ where
 
 trait ErasedSendCommand: Send {
     fn target(&self) -> &ComponentId;
+    fn target_program(&self) -> &Arc<()>;
+    fn message_type_id(&self) -> TypeId;
     fn message_type_name(&self) -> &'static str;
+    fn into_message(self: Box<Self>) -> Box<dyn Any + Send>;
 }
 
 struct SendTo<C: Component> {
@@ -749,16 +919,31 @@ impl<C: Component> ErasedSendCommand for SendTo<C> {
         self.target.id()
     }
 
+    fn target_program(&self) -> &Arc<()> {
+        &self.target.program
+    }
+
     fn message_type_name(&self) -> &'static str {
         std::any::type_name::<C::Message>()
+    }
+
+    fn message_type_id(&self) -> TypeId {
+        TypeId::of::<C::Message>()
+    }
+
+    fn into_message(self: Box<Self>) -> Box<dyn Any + Send> {
+        Box::new(self.message)
     }
 }
 
 trait ErasedNotificationCommand: Send {
     fn port(&self) -> &PortId;
+    fn port_program(&self) -> &Arc<()>;
     fn notification(&self) -> &dyn Any;
     fn notification_type_name(&self) -> &'static str;
+    fn protocol_type_id(&self) -> TypeId;
     fn protocol_type_name(&self) -> &'static str;
+    fn into_message(self: Box<Self>) -> Box<dyn Any + Send>;
 }
 
 struct Notify<P, N>
@@ -779,6 +964,10 @@ where
         self.port.id()
     }
 
+    fn port_program(&self) -> &Arc<()> {
+        &self.port.program
+    }
+
     fn notification(&self) -> &dyn Any {
         &self.notification
     }
@@ -787,19 +976,37 @@ where
         std::any::type_name::<N>()
     }
 
+    fn protocol_type_id(&self) -> TypeId {
+        TypeId::of::<P>()
+    }
+
     fn protocol_type_name(&self) -> &'static str {
         std::any::type_name::<P>()
+    }
+
+    fn into_message(self: Box<Self>) -> Box<dyn Any + Send> {
+        Box::new(self.notification.into_message())
     }
 }
 
 trait ErasedRequestCommand<Message>: Send {
     fn port(&self) -> &PortId;
+    fn port_program(&self) -> &Arc<()>;
     fn request(&self) -> &dyn Any;
     fn request_type_name(&self) -> &'static str;
     fn reply_type_name(&self) -> &'static str;
+    fn reply_type_id(&self) -> TypeId;
+    fn protocol_type_id(&self) -> TypeId;
     fn protocol_type_name(&self) -> &'static str;
     fn mapper_type_name(&self) -> &'static str;
+    fn into_parts(
+        self: Box<Self>,
+        correlation: u64,
+    ) -> (Box<dyn Any + Send>, ErasedRequestMapper<Message>);
 }
+
+type ErasedRequestMapper<Message> =
+    Box<dyn FnOnce(Box<dyn Any + Send>) -> Message + Send + 'static>;
 
 struct RequestCommand<P, R, Map>
 where
@@ -822,6 +1029,10 @@ where
         self.port.id()
     }
 
+    fn port_program(&self) -> &Arc<()> {
+        &self.port.program
+    }
+
     fn request(&self) -> &dyn Any {
         &self.request
     }
@@ -834,6 +1045,14 @@ where
         std::any::type_name::<R::Reply>()
     }
 
+    fn reply_type_id(&self) -> TypeId {
+        TypeId::of::<R::Reply>()
+    }
+
+    fn protocol_type_id(&self) -> TypeId {
+        TypeId::of::<P>()
+    }
+
     fn protocol_type_name(&self) -> &'static str {
         std::any::type_name::<P>()
     }
@@ -841,11 +1060,29 @@ where
     fn mapper_type_name(&self) -> &'static str {
         std::any::type_name::<Map>()
     }
+
+    fn into_parts(
+        self: Box<Self>,
+        correlation: u64,
+    ) -> (Box<dyn Any + Send>, ErasedRequestMapper<Message>) {
+        let Self { request, map, .. } = *self;
+        let message = request.into_message(ReplyTo::runtime(correlation));
+        let mapper = Box::new(move |reply: Box<dyn Any + Send>| {
+            let reply = match reply.downcast::<R::Reply>() {
+                Ok(reply) => *reply,
+                Err(_) => unreachable!("Request couples correlation to its Reply type"),
+            };
+            map(RequestOutcome::Replied(reply))
+        });
+        (Box::new(message), mapper)
+    }
 }
 
 trait ErasedReplyCommand: Send {
     fn reply(&self) -> &dyn Any;
     fn reply_type_name(&self) -> &'static str;
+    fn reply_type_id(&self) -> TypeId;
+    fn into_parts(self: Box<Self>) -> (u64, Box<dyn Any + Send>);
 }
 
 struct Reply<Reply> {
@@ -916,6 +1153,14 @@ where
 
     fn reply_type_name(&self) -> &'static str {
         std::any::type_name::<ReplyValue>()
+    }
+
+    fn reply_type_id(&self) -> TypeId {
+        TypeId::of::<ReplyValue>()
+    }
+
+    fn into_parts(self: Box<Self>) -> (u64, Box<dyn Any + Send>) {
+        (self.reply_to.correlation, Box::new(self.reply))
     }
 }
 
@@ -1021,12 +1266,14 @@ impl<Message> Command<Message> {
 
     /// Sends a correlated request through a named provider-neutral [`Port`].
     ///
-    /// Interpreting the command creates a one-shot [`ReplyTo<R::Reply>`],
-    /// converts the request through [`Request::into_message`], and later invokes
-    /// the request continuation with exactly one terminal [`RequestOutcome`].
-    /// The continuation is synchronous, pure application logic and may capture
-    /// a domain correlation key. The Component never waits for the reply; the
-    /// mapped message arrives through its ordinary transition path.
+    /// Interpreting the command creates a one-shot [`ReplyTo<R::Reply>`] and
+    /// converts the request through [`Request::into_message`]. A successful
+    /// reply invokes the request continuation at most once with
+    /// [`RequestOutcome::Replied`]. The continuation is synchronous, pure
+    /// application logic and may capture a domain correlation key. The
+    /// Component never waits for the reply; the mapped message arrives through
+    /// its ordinary transition path. An unanswered Phase 5 Request remains a
+    /// runtime-owned obligation until controlled cancellation.
     ///
     /// This candidate intentionally does not yet choose a default deadline or
     /// cancellation policy for requests.
@@ -1312,6 +1559,8 @@ impl<Message> Command<Message> {
 trait ErasedSubscription<Message>: Send {
     fn descriptor(&self) -> &dyn Any;
     fn descriptor_snapshot(&self) -> Box<dyn ErasedSourceDescriptor>;
+    fn source_plan(&self) -> SourcePlan;
+    fn source_event_type_id(&self) -> TypeId;
     fn descriptor_type_name(&self) -> &'static str;
     fn mapper_type_name(&self) -> &'static str;
     fn map_event(&self, event: Box<dyn Any + Send>) -> Message;
@@ -1334,6 +1583,15 @@ where
 
     fn descriptor_snapshot(&self) -> Box<dyn ErasedSourceDescriptor> {
         Box::new(SourceDescriptorSnapshot(self.descriptor.clone()))
+    }
+
+    fn source_plan(&self) -> SourcePlan {
+        self.descriptor
+            .__samara_source_plan(source_plan_private::LOWER_TOKEN)
+    }
+
+    fn source_event_type_id(&self) -> TypeId {
+        TypeId::of::<SourceEvent<S::Item, S::Error>>()
     }
 
     fn descriptor_type_name(&self) -> &'static str {
@@ -1439,6 +1697,22 @@ impl<Message> Subscription<Message> {
 
     fn descriptor_snapshot(&self) -> Box<dyn ErasedSourceDescriptor> {
         self.descriptor.descriptor_snapshot()
+    }
+
+    pub(crate) fn source_plan(&self) -> SourcePlan {
+        self.descriptor.source_plan()
+    }
+
+    pub(crate) fn source_event_type_id(&self) -> TypeId {
+        self.descriptor.source_event_type_id()
+    }
+
+    pub(crate) fn descriptor_any(&self) -> &dyn Any {
+        self.descriptor.descriptor()
+    }
+
+    pub(crate) fn map_erased_source_event(&self, event: ErasedSourceEvent) -> Message {
+        self.descriptor.map_event(event.value)
     }
 
     fn has_descriptor(&self, descriptor: &dyn ErasedSourceDescriptor) -> bool {
@@ -1680,6 +1954,43 @@ where
 {
     type Item = D::Frame;
     type Error = FramedError<S::Error, D::Error>;
+
+    #[allow(private_interfaces)]
+    fn __samara_source_plan(&self, _: source_plan_private::LowerToken) -> SourcePlan {
+        let mut plan = self
+            .source
+            .__samara_source_plan(source_plan_private::LOWER_TOKEN);
+        plan.valid_event_chain &=
+            plan.output_event_type == TypeId::of::<SourceEvent<S::Item, S::Error>>();
+        plan.layers.push(Box::new(self.clone().into_layer()));
+        plan.output_event_type =
+            TypeId::of::<SourceEvent<D::Frame, FramedError<S::Error, D::Error>>>();
+        plan
+    }
+}
+
+impl<S, D> ErasedSourceLayer for FramedLayer<S, D>
+where
+    S: SourceDescriptor<Item = D::Chunk>,
+    D: Decoder,
+{
+    fn map_event(&mut self, event: ErasedSourceEvent) -> Vec<ErasedSourceEvent> {
+        let event = match event.value.downcast::<SourceEvent<S::Item, S::Error>>() {
+            Ok(event) => *event,
+            Err(_) => unreachable!("SourcePlan couples every Layer to its input event type"),
+        };
+
+        self.map_event(event)
+            .into_iter()
+            .map(|event| {
+                let kind = SourceEventKind::of(&event);
+                ErasedSourceEvent {
+                    value: Box::new(event),
+                    kind,
+                }
+            })
+            .collect()
+    }
 }
 
 /// Named, immutable logical dependency on a provider-neutral [`Protocol`].
@@ -1691,6 +2002,7 @@ where
 /// real, mock, or controlled providers without changing its transition logic.
 pub struct Port<P: Protocol> {
     id: PortId,
+    program: Arc<()>,
     marker: PhantomData<fn() -> P>,
 }
 
@@ -1705,6 +2017,7 @@ impl<P: Protocol> Clone for Port<P> {
     fn clone(&self) -> Self {
         Self {
             id: self.id.clone(),
+            program: self.program.clone(),
             marker: PhantomData,
         }
     }
@@ -1745,6 +2058,7 @@ impl<P: Protocol> fmt::Debug for Port<P> {
 /// ```
 pub struct ComponentRef<C: Component> {
     id: ComponentId,
+    program: Arc<()>,
     marker: PhantomData<fn() -> C>,
 }
 
@@ -1759,6 +2073,7 @@ impl<C: Component> Clone for ComponentRef<C> {
     fn clone(&self) -> Self {
         Self {
             id: self.id.clone(),
+            program: self.program.clone(),
             marker: PhantomData,
         }
     }
@@ -1779,25 +2094,196 @@ impl<C: Component> fmt::Debug for ComponentRef<C> {
 /// relationships but no live Tokio resources. Call the same program factory for
 /// [`LiveRuntime`] and [`ControlledRuntime`] assembly.
 pub struct Program {
+    program: Arc<()>,
     components: Vec<Box<dyn ErasedComponentKernel>>,
+    bindings: Vec<Box<dyn ErasedPortBinding>>,
 }
 
 impl Program {
     /// Begins assembling a program blueprint.
     pub fn builder() -> ProgramBuilder {
+        let program = Arc::new(());
         ProgramBuilder {
+            program,
             components: Vec::new(),
+            ports: Vec::new(),
+            bindings: Vec::new(),
         }
     }
 }
 
+struct PortDeclaration {
+    protocol_type: TypeId,
+    protocol_type_name: &'static str,
+    id: PortId,
+    program: Arc<()>,
+}
+
+pub(crate) trait ErasedPortBinding: Send {
+    fn protocol_type(&self) -> TypeId;
+    fn protocol_type_name(&self) -> &'static str;
+    fn port_id(&self) -> &PortId;
+    fn port_program(&self) -> &Arc<()>;
+    fn provider_id(&self) -> &ComponentId;
+    fn provider_program(&self) -> &Arc<()>;
+    fn provider_component_type(&self) -> TypeId;
+    fn provider_message_type(&self) -> TypeId;
+    fn provider_message_type_name(&self) -> &'static str;
+    fn convert(&self, message: Box<dyn Any + Send>) -> Box<dyn Any + Send>;
+}
+
+struct PortBinding<P, C>
+where
+    P: Protocol,
+    C: Component,
+{
+    port: Port<P>,
+    provider: ComponentRef<C>,
+}
+
+impl<P, C> ErasedPortBinding for PortBinding<P, C>
+where
+    P: Protocol,
+    C: Component,
+    C::Message: From<P::Message>,
+{
+    fn protocol_type(&self) -> TypeId {
+        TypeId::of::<P>()
+    }
+
+    fn protocol_type_name(&self) -> &'static str {
+        std::any::type_name::<P>()
+    }
+
+    fn port_id(&self) -> &PortId {
+        self.port.id()
+    }
+
+    fn port_program(&self) -> &Arc<()> {
+        &self.port.program
+    }
+
+    fn provider_id(&self) -> &ComponentId {
+        self.provider.id()
+    }
+
+    fn provider_program(&self) -> &Arc<()> {
+        &self.provider.program
+    }
+
+    fn provider_component_type(&self) -> TypeId {
+        TypeId::of::<C>()
+    }
+
+    fn provider_message_type(&self) -> TypeId {
+        TypeId::of::<C::Message>()
+    }
+
+    fn provider_message_type_name(&self) -> &'static str {
+        std::any::type_name::<C::Message>()
+    }
+
+    fn convert(&self, message: Box<dyn Any + Send>) -> Box<dyn Any + Send> {
+        let message = match message.downcast::<P::Message>() {
+            Ok(message) => *message,
+            Err(_) => unreachable!("a Port binding couples one Protocol Message type"),
+        };
+        Box::new(C::Message::from(message))
+    }
+}
+
+/// Explicitly knowable error in topology-neutral program assembly.
+///
+/// The variants deliberately cover only facts represented by
+/// [`ProgramBuilder`]. Port cycles and behavior-dependent direct sends are not
+/// treated as a statically closed dependency graph.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ProgramBuildError {
+    /// Two registered Components claimed the same logical identity.
+    DuplicateComponentId(ComponentId),
+    /// One Protocol and Port name pair was declared more than once.
+    DuplicatePort {
+        /// Diagnostic Rust Protocol type name.
+        protocol_type: &'static str,
+        /// Duplicated logical Port name.
+        port: PortId,
+    },
+    /// A declared Port had zero or more than one provider binding.
+    PortBindingCount {
+        /// Diagnostic Rust Protocol type name.
+        protocol_type: &'static str,
+        /// Logical Port name.
+        port: PortId,
+        /// Number of bindings found.
+        count: usize,
+    },
+    /// A binding used a Port declared by another builder.
+    ForeignPort {
+        /// Diagnostic Rust Protocol type name.
+        protocol_type: &'static str,
+        /// Logical Port name.
+        port: PortId,
+    },
+    /// A binding selected a provider registered by another builder.
+    ForeignProvider {
+        /// Logical provider identity.
+        provider: ComponentId,
+    },
+    /// A provider reference did not name a matching registered Component.
+    ProviderNotRegistered {
+        /// Logical provider identity.
+        provider: ComponentId,
+    },
+}
+
+impl fmt::Display for ProgramBuildError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DuplicateComponentId(id) => {
+                write!(formatter, "duplicate Component identity {id:?}")
+            }
+            Self::DuplicatePort {
+                protocol_type,
+                port,
+            } => write!(formatter, "duplicate Port {port:?} for {protocol_type}"),
+            Self::PortBindingCount {
+                protocol_type,
+                port,
+                count,
+            } => write!(
+                formatter,
+                "Port {port:?} for {protocol_type} has {count} bindings; expected exactly one"
+            ),
+            Self::ForeignPort {
+                protocol_type,
+                port,
+            } => write!(
+                formatter,
+                "Port {port:?} for {protocol_type} belongs to another ProgramBuilder"
+            ),
+            Self::ForeignProvider { provider } => write!(
+                formatter,
+                "provider {provider:?} belongs to another ProgramBuilder"
+            ),
+            Self::ProviderNotRegistered { provider } => {
+                write!(formatter, "provider {provider:?} is not registered")
+            }
+        }
+    }
+}
+
+impl Error for ProgramBuildError {}
+
 /// Mutable builder used to register Components and obtain typed references.
 ///
-/// Duplicate Component, Port, and binding validation is intentionally not
-/// specified by the Phase 2 freeze; the implemented builder must reject ambiguous
-/// program graphs at build time.
+/// [`ProgramBuilder::build`] rejects the explicitly knowable assembly errors in
+/// ADR-0003 without introspecting Component fields or behavior-dependent sends.
 pub struct ProgramBuilder {
+    program: Arc<()>,
     components: Vec<Box<dyn ErasedComponentKernel>>,
+    ports: Vec<PortDeclaration>,
+    bindings: Vec<Box<dyn ErasedPortBinding>>,
 }
 
 impl ProgramBuilder {
@@ -1812,6 +2298,7 @@ impl ProgramBuilder {
     {
         let component_ref = ComponentRef {
             id: id.clone(),
+            program: self.program.clone(),
             marker: PhantomData,
         };
         self.components
@@ -1829,8 +2316,15 @@ impl ProgramBuilder {
     where
         P: Protocol,
     {
+        self.ports.push(PortDeclaration {
+            protocol_type: TypeId::of::<P>(),
+            protocol_type_name: std::any::type_name::<P>(),
+            id: id.clone(),
+            program: self.program.clone(),
+        });
         Port {
             id,
+            program: self.program.clone(),
             marker: PhantomData,
         }
     }
@@ -1843,24 +2337,93 @@ impl ProgramBuilder {
     /// closure repeated at every binding site. Separate named `Port<P>` values
     /// may still bind independently to different provider instances.
     ///
-    /// This compiler-checked façade does not yet choose duplicate, missing, or
-    /// cyclic binding diagnostics. A real [`ProgramBuilder::build`] must validate
-    /// the assembled graph rather than falling back to a global binding by Rust
-    /// `TypeId`.
+    /// [`ProgramBuilder::build`] later requires exactly one binding for every
+    /// declared Port and verifies that this provider belongs to the same
+    /// builder. Port cycles remain legal.
     pub fn bind_port<P, C>(&mut self, port: &Port<P>, provider: &ComponentRef<C>)
     where
         P: Protocol,
         C: Component,
         C::Message: From<P::Message>,
     {
-        let _ = (port, provider);
+        self.bindings.push(Box::new(PortBinding {
+            port: port.clone(),
+            provider: provider.clone(),
+        }));
     }
 
-    /// Finishes the topology-neutral program blueprint.
-    pub fn build(self) -> Program {
-        Program {
-            components: self.components,
+    /// Validates explicit assembly facts and finishes the Program blueprint.
+    pub fn build(self) -> Result<Program, ProgramBuildError> {
+        let mut component_ids = std::collections::HashSet::new();
+        for component in &self.components {
+            if !component_ids.insert(component.id().clone()) {
+                return Err(ProgramBuildError::DuplicateComponentId(
+                    component.id().clone(),
+                ));
+            }
         }
+
+        let mut ports = std::collections::HashSet::new();
+        for port in &self.ports {
+            let key = (port.protocol_type, port.id.clone());
+            if !ports.insert(key) {
+                return Err(ProgramBuildError::DuplicatePort {
+                    protocol_type: port.protocol_type_name,
+                    port: port.id.clone(),
+                });
+            }
+            if !Arc::ptr_eq(&port.program, &self.program) {
+                return Err(ProgramBuildError::ForeignPort {
+                    protocol_type: port.protocol_type_name,
+                    port: port.id.clone(),
+                });
+            }
+        }
+
+        for binding in &self.bindings {
+            if !Arc::ptr_eq(binding.port_program(), &self.program) {
+                return Err(ProgramBuildError::ForeignPort {
+                    protocol_type: binding.protocol_type_name(),
+                    port: binding.port_id().clone(),
+                });
+            }
+            if !Arc::ptr_eq(binding.provider_program(), &self.program) {
+                return Err(ProgramBuildError::ForeignProvider {
+                    provider: binding.provider_id().clone(),
+                });
+            }
+            if !self.components.iter().any(|component| {
+                component.id() == binding.provider_id()
+                    && component.component_type_id() == binding.provider_component_type()
+            }) {
+                return Err(ProgramBuildError::ProviderNotRegistered {
+                    provider: binding.provider_id().clone(),
+                });
+            }
+        }
+
+        for port in &self.ports {
+            let count = self
+                .bindings
+                .iter()
+                .filter(|binding| {
+                    binding.protocol_type() == port.protocol_type && binding.port_id() == &port.id
+                })
+                .count();
+            if count != 1 {
+                return Err(ProgramBuildError::PortBindingCount {
+                    protocol_type: port.protocol_type_name,
+                    port: port.id.clone(),
+                    count,
+                });
+            }
+        }
+
+        Ok(Program {
+            program: self.program,
+            components: self.components,
+            bindings: self.bindings,
+        })
     }
 }
 
@@ -1931,22 +2494,91 @@ impl fmt::Display for DriverStopped {
 
 impl Error for DriverStopped {}
 
-/// Placeholder error returned by runtime methods before their implementation phase.
+/// Topology-neutral runtime or controlled-harness diagnostic.
 ///
-/// It exists only to make consumer control flow compile and is not a proposed
-/// production error taxonomy.
-#[derive(Clone, Debug)]
-pub struct RuntimeError(&'static str);
+/// Phase 5 exposes stable context for a faulting Component, descriptor, and
+/// work occurrence while leaving the broader runtime taxonomy provisional.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuntimeError(Arc<RuntimeErrorKind>);
+
+#[derive(Debug, PartialEq, Eq)]
+enum RuntimeErrorKind {
+    Fault {
+        component: ComponentId,
+        descriptor_type: Option<&'static str>,
+        work: TraceId,
+        reason: Arc<str>,
+    },
+    Harness(Arc<str>),
+}
 
 impl RuntimeError {
     fn sketch() -> Self {
-        Self("this Samara runtime surface is not implemented in Phase 4")
+        Self::harness("this live Samara runtime surface is not implemented in Phase 5")
+    }
+
+    pub(crate) fn fault(
+        component: ComponentId,
+        descriptor_type: Option<&'static str>,
+        work: TraceId,
+        reason: impl Into<Arc<str>>,
+    ) -> Self {
+        Self(Arc::new(RuntimeErrorKind::Fault {
+            component,
+            descriptor_type,
+            work,
+            reason: reason.into(),
+        }))
+    }
+
+    pub(crate) fn harness(reason: impl Into<Arc<str>>) -> Self {
+        Self(Arc::new(RuntimeErrorKind::Harness(reason.into())))
+    }
+
+    /// Component at which execution faulted, if this is a runtime fault.
+    pub fn component(&self) -> Option<&ComponentId> {
+        match self.0.as_ref() {
+            RuntimeErrorKind::Fault { component, .. } => Some(component),
+            RuntimeErrorKind::Harness(_) => None,
+        }
+    }
+
+    /// Concrete terminal descriptor type involved in a runtime fault.
+    pub fn descriptor_type(&self) -> Option<&'static str> {
+        match self.0.as_ref() {
+            RuntimeErrorKind::Fault {
+                descriptor_type, ..
+            } => *descriptor_type,
+            RuntimeErrorKind::Harness(_) => None,
+        }
+    }
+
+    /// Structural trace identity of the work occurrence that faulted.
+    pub fn work_occurrence(&self) -> Option<TraceId> {
+        match self.0.as_ref() {
+            RuntimeErrorKind::Fault { work, .. } => Some(*work),
+            RuntimeErrorKind::Harness(_) => None,
+        }
     }
 }
 
 impl fmt::Display for RuntimeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.0)
+        match self.0.as_ref() {
+            RuntimeErrorKind::Fault {
+                component,
+                descriptor_type,
+                work,
+                reason,
+            } => write!(
+                formatter,
+                "Component {component:?} faulted at work {work:?}{}: {reason}",
+                descriptor_type
+                    .map(|name| format!(" ({name})"))
+                    .unwrap_or_default()
+            ),
+            RuntimeErrorKind::Harness(reason) => formatter.write_str(reason),
+        }
     }
 }
 
@@ -2120,6 +2752,10 @@ pub struct ShutdownReport {
     pub cancelled: usize,
     /// Work units still owned after scope closure returned.
     pub remaining: usize,
+    /// Immediately runnable semantic obligations after scope closure.
+    pub pending_now: usize,
+    /// Deferred semantic obligations after scope closure.
+    pub pending_later: usize,
 }
 
 impl ShutdownReport {
@@ -2135,6 +2771,7 @@ impl ShutdownReport {
 /// behavior must fail explicitly so a test cannot accidentally touch the world.
 pub struct ControlledRuntimeBuilder {
     program: Program,
+    bindings: controlled_runtime::ControlledBindings,
 }
 
 /// Deterministic, synchronously driven execution of a [`Program`].
@@ -2143,13 +2780,16 @@ pub struct ControlledRuntimeBuilder {
 /// are identical to live execution. The difference is runtime decisions: tests
 /// supply external events, effect outcomes, and logical-time progression.
 pub struct ControlledRuntime {
-    program: Program,
+    core: ControlledCore,
 }
 
 impl ControlledRuntime {
     /// Starts controlled assembly for a topology-neutral program blueprint.
     pub fn builder(program: Program) -> ControlledRuntimeBuilder {
-        ControlledRuntimeBuilder { program }
+        ControlledRuntimeBuilder {
+            program,
+            bindings: controlled_runtime::ControlledBindings::new(),
+        }
     }
 
     /// Enqueues a typed message at a Component boundary.
@@ -2161,8 +2801,7 @@ impl ControlledRuntime {
         component: &ComponentRef<C>,
         message: C::Message,
     ) -> Result<(), RuntimeError> {
-        let _ = (component, message);
-        Err(RuntimeError::sketch())
+        self.core.send(component, message)
     }
 
     /// Emits one item through a controlled [`StreamDescriptor`].
@@ -2171,8 +2810,7 @@ impl ControlledRuntime {
         stream: &StreamDescriptor<T>,
         item: T,
     ) -> Result<(), RuntimeError> {
-        let _ = (stream, item);
-        Err(RuntimeError::sketch())
+        self.core.emit_stream(stream, item)
     }
 
     /// Ends a controlled [`StreamDescriptor`] normally.
@@ -2182,16 +2820,15 @@ impl ControlledRuntime {
         &mut self,
         stream: &StreamDescriptor<T>,
     ) -> Result<(), RuntimeError> {
-        let _ = stream;
-        Err(RuntimeError::sketch())
+        self.core.close_stream(stream)
     }
 
-    /// Injects an event at a typed source layer of an active subscription.
+    /// Injects an event at the typed terminal source of an active subscription.
     ///
     /// For `Framed<TcpBytes, Decoder>`, controlled tests select the underlying
-    /// `TcpBytes` layer and inject raw chunks. Samara then runs the same decoder
+    /// terminal `TcpBytes` descriptor and inject raw chunks. Samara then runs the same decoder
     /// used by live execution before invoking the subscription mapper. Injection
-    /// into an inactive identity or absent source layer is an error.
+    /// into an inactive identity or a non-terminal descriptor type is an error.
     pub fn emit_source<C, S>(
         &mut self,
         component: &ComponentRef<C>,
@@ -2202,8 +2839,7 @@ impl ControlledRuntime {
         C: Component,
         S: SourceDescriptor,
     {
-        let _ = (component, id, event);
-        Err(RuntimeError::sketch())
+        self.core.emit_source::<C, S>(component, id, event)
     }
 
     /// Returns a clone of the active source descriptor for inspection.
@@ -2219,16 +2855,18 @@ impl ControlledRuntime {
         C: Component,
         S: SourceDescriptor,
     {
-        let _ = (component, id);
-        Err(RuntimeError::sketch())
+        self.core.source_descriptor(component, id)
     }
 
-    /// Removes and returns the next pending effect of concrete type `E`.
+    /// Claims and returns the next pending effect of concrete type `E`.
     ///
     /// Selection follows the controlled scheduler's stable deterministic order,
     /// which is reproducibility machinery rather than a live ordering promise.
+    /// The occurrence remains a pending semantic obligation until
+    /// [`ControlledRuntime::complete`] or controlled cancellation, but its
+    /// descriptor cannot be claimed a second time.
     pub fn next_effect<E: EffectDescriptor>(&mut self) -> Result<PendingEffect<E>, RuntimeError> {
-        Err(RuntimeError::sketch())
+        self.core.next_effect()
     }
 
     /// Supplies a terminal outcome for a previously intercepted effect.
@@ -2240,8 +2878,7 @@ impl ControlledRuntime {
         pending: PendingEffect<E>,
         outcome: EffectOutcome<E::Output, E::Error>,
     ) -> Result<(), RuntimeError> {
-        let _ = (pending, outcome);
-        Err(RuntimeError::sketch())
+        self.core.complete(pending, outcome)
     }
 
     /// Processes immediately runnable work until the program is quiescent now.
@@ -2249,14 +2886,14 @@ impl ControlledRuntime {
     /// Future timers and open subscriptions remain pending and do not prevent
     /// return. This method does not advance logical time.
     pub fn run_until_idle(&mut self) -> Result<RunReport, RuntimeError> {
-        Err(RuntimeError::sketch())
+        self.core.run_until_idle()
     }
 
-    /// Advances logical time by `duration`, then processes newly runnable work
-    /// until immediate quiescence.
+    /// Drains work due at the current instant, advances logical time by
+    /// `duration`, and processes each newly reachable instant until immediate
+    /// quiescence.
     pub fn advance(&mut self, duration: Duration) -> Result<RunReport, RuntimeError> {
-        let _ = duration;
-        Err(RuntimeError::sketch())
+        self.core.advance(duration)
     }
 
     /// Advances to the next scheduled logical instant and processes work there.
@@ -2264,15 +2901,15 @@ impl ControlledRuntime {
     /// Returns an error when no future scheduled work exists. Repeated calls are
     /// the primitive behind automatic time advancement.
     pub fn advance_to_next(&mut self) -> Result<RunReport, RuntimeError> {
-        Err(RuntimeError::sketch())
+        self.core.advance_to_next()
     }
 
     /// Closes this controlled scope by cancelling all remaining owned work.
     ///
     /// Consuming the runtime prevents the harness from supplying any further
     /// controlled input. Cancellation and accounting proceed in deterministic
-    /// controlled-runtime order, covering commands, subscriptions, timers, and
-    /// any Driver work owned by the scope. Successful return guarantees that
+    /// controlled-runtime order, covering messages, subscriptions, timers,
+    /// effects, and requests owned by the scope. Successful return guarantees that
     /// [`ShutdownReport::remaining`] is zero.
     ///
     /// This is lifecycle and diagnostic behavior only: it does not mean the
@@ -2280,8 +2917,7 @@ impl ControlledRuntime {
     /// a Component to observe cancellation must explicitly supply the
     /// appropriate typed cancellation outcome before calling this method.
     pub fn cancel(self) -> Result<ShutdownReport, RuntimeError> {
-        let _ = self.program;
-        Err(RuntimeError::sketch())
+        self.core.cancel()
     }
 
     /// Borrows the current model while controlled execution is paused.
@@ -2291,28 +2927,34 @@ impl ControlledRuntime {
         &self,
         component: &ComponentRef<C>,
     ) -> Result<&C::Model, RuntimeError> {
-        let _ = component;
-        Err(RuntimeError::sketch())
+        self.core.state(component)
+    }
+
+    /// Returns the currently owned semantic obligations without driving.
+    pub fn pending_work(&self) -> PendingWork {
+        self.core.pending_work()
     }
 
     /// Returns the deterministic structured semantic trace accumulated so far.
     ///
-    /// Trace observation must not feed behavior back into Components. The small
-    /// [`TraceEvent`] enum below is illustrative rather than exhaustive.
-    pub fn trace(&self) -> &[TraceEvent] {
-        &[]
+    /// Trace observation has no callback or feedback path into Components.
+    pub fn trace(&self) -> &[TraceRecord] {
+        self.core.trace()
     }
 }
 
 impl ControlledRuntimeBuilder {
     /// Allows tests to script one logical [`StreamDescriptor`].
-    pub fn control_stream<T: Send + 'static>(self, stream: StreamDescriptor<T>) -> Self {
-        let _ = stream;
+    pub fn control_stream<T: Send + 'static>(mut self, stream: StreamDescriptor<T>) -> Self {
+        self.bindings
+            .exact_sources
+            .push(controlled_runtime::exact_source(stream));
         self
     }
 
     /// Allows tests to intercept and complete effect type `E`.
-    pub fn control_effect<E: EffectDescriptor>(self) -> Self {
+    pub fn control_effect<E: EffectDescriptor>(mut self) -> Self {
+        self.bindings.effects.insert(TypeId::of::<E>());
         self
     }
 
@@ -2320,23 +2962,42 @@ impl ControlledRuntimeBuilder {
     ///
     /// For a composed [`Framed`] source, register and inject the underlying
     /// source type so the decoder remains part of the program under test.
-    pub fn control_source<S: SourceDescriptor>(self) -> Self {
+    pub fn control_source<S: SourceDescriptor>(mut self) -> Self {
+        self.bindings.sources.insert(TypeId::of::<S>());
         self
     }
 
-    /// Validates controlled bindings and creates a paused deterministic runtime.
+    /// Creates a paused deterministic runtime with the declared controls.
+    ///
+    /// Missing terminal behavior faults only when initialization or a later
+    /// transition reaches that boundary, preserving an inspectable runtime and
+    /// trace for diagnosis.
     pub fn build(self) -> Result<ControlledRuntime, RuntimeError> {
         Ok(ControlledRuntime {
-            program: self.program,
+            core: ControlledCore::new(self.program, self.bindings),
         })
     }
 }
 
-/// Typed effect intercepted before any live world interaction occurs.
+/// Typed effect claimed before any live world interaction occurs.
+///
+/// This token must be returned to [`ControlledRuntime::complete`] on the same
+/// runtime or the effect remains pending until controlled cancellation.
+#[must_use = "a PendingEffect remains outstanding until completed or cancelled"]
 pub struct PendingEffect<E: EffectDescriptor> {
     /// Original effect intent emitted by the Component transition.
     pub intent: E,
     id: u64,
+    program: Arc<()>,
+}
+
+/// Snapshot of semantic obligations owned by a controlled runtime.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PendingWork {
+    /// Accepted Component Messages and due timers ready to run.
+    pub pending_now: usize,
+    /// Effects, future timers, active Sources, and outstanding Requests.
+    pub pending_later: usize,
 }
 
 /// Work summary returned by one controlled-runtime drive operation.
@@ -2350,13 +3011,111 @@ pub struct RunReport {
     pub pending_later: usize,
 }
 
-/// Illustrative structured semantic trace emitted out of band by the runtime.
+/// Runtime-controlled logical instant used by controlled scheduling and trace.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct LogicalTime(Duration);
+
+impl LogicalTime {
+    /// Returns the elapsed duration from the controlled runtime's origin.
+    pub fn as_duration(self) -> Duration {
+        self.0
+    }
+}
+
+/// Identity of one in-memory controlled trace record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TraceId(u64);
+
+impl TraceId {
+    /// Returns the deterministic run-local numeric identity.
+    pub fn get(self) -> u64 {
+        self.0
+    }
+}
+
+/// Common envelope for one structural controlled semantic event.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TraceRecord {
+    /// Run-local record identity.
+    pub id: TraceId,
+    /// Logical instant at which the event occurred.
+    pub at: LogicalTime,
+    /// Immediate causal parent; absent only for initialization and harness-input roots.
+    pub cause: Option<TraceId>,
+    /// Structural semantic event.
+    pub event: TraceEvent,
+}
+
+/// Finite-work kind recorded without copying application payloads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TraceCommandKind {
+    /// A terminal EffectDescriptor was requested.
+    Effect,
+    /// A direct Component Message delivery was requested.
+    Send,
+    /// A one-way Protocol notification was requested.
+    Notify,
+    /// A correlated Protocol Request was issued.
+    Request,
+    /// A provider emitted a correlated Reply.
+    Reply,
+    /// A Message was scheduled against logical time.
+    Timer,
+}
+
+/// Source-maintenance decision committed after a Component transition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SubscriptionAction {
+    /// A newly desired Source realization started.
+    Started,
+    /// An equal descriptor retained its Source and adopted the latest mapper.
+    Retained,
+    /// A changed descriptor withdrew one generation and started another.
+    Replaced,
+    /// Removed desire cancelled the active Source.
+    Cancelled,
+}
+
+/// Structural terminal shape of one effect completion.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EffectOutcomeKind {
+    /// The effect succeeded.
+    Succeeded,
+    /// The effect failed with typed Error data.
+    Failed,
+    /// Runtime ownership cancelled the effect.
+    Cancelled,
+}
+
+/// Always-collected structural semantic event from controlled execution.
 ///
-/// Production tracing will need more event kinds and explicit causal identifiers;
-/// this candidate only establishes that trace data is structured and observable in
-/// controlled tests without becoming Component input.
+/// This v0 trace records concrete Rust types, targets, lifecycle, time, and
+/// causation without copying descriptor or Message payloads.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TraceEvent {
+    /// Parentless initialization root for one Component.
+    Initialization {
+        /// Component entering the controlled Program.
+        component: ComponentId,
+    },
+    /// Parentless controlled Message input accepted from the harness.
+    ControlledMessageInput {
+        /// Target Component.
+        component: ComponentId,
+        /// Diagnostic Rust Message type name.
+        message_type: &'static str,
+    },
+    /// Parentless controlled terminal Source input accepted from the harness.
+    ControlledSourceInput {
+        /// Component owning the Source.
+        component: ComponentId,
+        /// Stable Component-local Subscription identity.
+        subscription: SubscriptionId,
+        /// Terminal descriptor type reached after SourcePlan lowering.
+        source_descriptor_type: &'static str,
+        /// Structural input event shape.
+        event: SourceEventKind,
+    },
     /// A Component committed one message transition.
     Transition {
         /// Component that owned the transition.
@@ -2364,28 +3123,85 @@ pub enum TraceEvent {
         /// Diagnostic Rust type name of the delivered message.
         message_type: &'static str,
     },
-    /// A transition emitted an interceptable effect intent.
-    EffectRequested {
+    /// One flattened Command occurrence emitted by a transition or initialization.
+    CommandEmitted {
+        /// Component that owns the Command.
+        component: ComponentId,
+        /// Structural finite-work category.
+        kind: TraceCommandKind,
+        /// Concrete descriptor, operation, reply, or Message type when applicable.
+        detail_type: &'static str,
+        /// Direct target Component, if this Command uses one.
+        target_component: Option<ComponentId>,
+        /// Named target Port, if this Command uses one.
+        target_port: Option<PortId>,
+    },
+    /// Post-transition Subscription reconciliation decision.
+    SubscriptionLifecycle {
+        /// Component owning the Subscription.
+        component: ComponentId,
+        /// Stable Component-local Subscription identity.
+        subscription: SubscriptionId,
+        /// Complete desired SourceDescriptor type.
+        source_descriptor_type: &'static str,
+        /// Lifecycle action selected by reconciliation.
+        action: SubscriptionAction,
+    },
+    /// One event emerged from the ordered SourcePlan Layers.
+    SourceEventMapped {
+        /// Component owning the Source.
+        component: ComponentId,
+        /// Stable Component-local Subscription identity.
+        subscription: SubscriptionId,
+        /// Complete composed descriptor type presented to the mapper.
+        source_descriptor_type: &'static str,
+        /// Structural outer event shape.
+        event: SourceEventKind,
+    },
+    /// Old-generation Source work was rejected before a transition began.
+    StaleSourceWorkDropped {
+        /// Component that would have received the work.
+        component: ComponentId,
+        /// Stable Component-local Subscription identity.
+        subscription: SubscriptionId,
+        /// Whether the stale occurrence was an event or an already-mapped Message.
+        mapped_message: bool,
+    },
+    /// One scripted terminal effect outcome was accepted.
+    EffectOutcome {
+        /// Command occurrence whose pending effect this input resolves.
+        effect: TraceId,
         /// Component that requested the effect.
         component: ComponentId,
-        /// Diagnostic Rust type name of the effect intent.
+        /// Concrete EffectDescriptor type.
         effect_type: &'static str,
+        /// Structural terminal outcome shape.
+        outcome: EffectOutcomeKind,
     },
-    /// Reconciliation started a newly desired subscription.
-    SubscriptionStarted {
-        /// Component that owns the subscription.
+    /// One successful correlated Request resolved to `Replied`.
+    RequestOutcome {
+        /// Requesting Component.
         component: ComponentId,
-        /// Stable subscription identity within that Component.
-        subscription: SubscriptionId,
-        /// Diagnostic Rust type name of its source descriptor.
-        source_descriptor_type: &'static str,
+        /// Concrete Reply type.
+        reply_type: &'static str,
     },
-    /// Reconciliation stopped a removed, replaced, failed, or ended subscription.
-    SubscriptionStopped {
-        /// Component that owned the subscription.
+    /// A due logical timer released its Message.
+    TimerFired {
+        /// Component receiving the scheduled Message.
         component: ComponentId,
-        /// Stable subscription identity within that Component.
-        subscription: SubscriptionId,
+        /// Diagnostic Rust Message type.
+        message_type: &'static str,
+    },
+    /// A terminal boundary or runtime invariant faulted the controlled run.
+    RuntimeFault {
+        /// Component whose work encountered the fault.
+        component: ComponentId,
+        /// Command or lifecycle trace occurrence that faulted.
+        work: TraceId,
+        /// Concrete terminal descriptor type when applicable.
+        descriptor_type: &'static str,
+        /// Topology-neutral diagnostic explanation.
+        reason: Arc<str>,
     },
 }
 
@@ -2491,5 +3307,71 @@ mod protocol_macro_tests {
         }
 
         assert_unit_reply::<Reset>();
+    }
+}
+
+#[cfg(test)]
+mod source_plan_tests {
+    use std::convert::Infallible;
+
+    use super::*;
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct WrongTerminal;
+
+    impl SourceDescriptor for WrongTerminal {
+        type Item = u64;
+        type Error = Infallible;
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct MalformedInternalInner;
+
+    impl SourceDescriptor for MalformedInternalInner {
+        type Item = Vec<u8>;
+        type Error = Infallible;
+
+        fn __samara_source_plan(&self, _: source_plan_private::LowerToken) -> SourcePlan {
+            WrongTerminal.__samara_source_plan(source_plan_private::LOWER_TOKEN)
+        }
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct PassthroughDecoder;
+
+    impl Decoder for PassthroughDecoder {
+        type Chunk = Vec<u8>;
+        type Frame = Vec<u8>;
+        type Error = Infallible;
+        type State = ();
+
+        fn start(&self) -> Self::State {}
+
+        fn push(
+            &self,
+            _state: &mut Self::State,
+            chunk: Self::Chunk,
+        ) -> Result<Vec<Self::Frame>, Self::Error> {
+            Ok(vec![chunk])
+        }
+    }
+
+    #[test]
+    fn internal_plan_validation_rejects_a_mismatched_terminal_event_type() {
+        let plan = MalformedInternalInner.__samara_source_plan(source_plan_private::LOWER_TOKEN);
+
+        assert_eq!(plan.terminal_type_id(), TypeId::of::<WrongTerminal>());
+        assert!(!plan.accepts_output_event_type(TypeId::of::<SourceEvent<Vec<u8>, Infallible>>()));
+    }
+
+    #[test]
+    fn internal_plan_validation_preserves_invalidity_through_a_built_in_layer() {
+        let descriptor = Framed::new(MalformedInternalInner, PassthroughDecoder);
+        let plan = descriptor.__samara_source_plan(source_plan_private::LOWER_TOKEN);
+
+        assert_eq!(plan.terminal_type_id(), TypeId::of::<WrongTerminal>());
+        assert!(!plan.accepts_output_event_type(TypeId::of::<
+            SourceEvent<Vec<u8>, FramedError<Infallible, Infallible>>,
+        >()));
     }
 }

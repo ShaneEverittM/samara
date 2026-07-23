@@ -1,11 +1,14 @@
-use std::any::Any;
+use std::any::{Any, TypeId};
 
 use tokio::sync::Mutex;
 
+use crate::controlled_runtime::{
+    ErasedCommand, ErasedSubscriptionChange, erase_command, erase_subscription_change,
+};
 use crate::declarative_work::{
     DuplicateSubscriptionIdError, SubscriptionChange, SubscriptionReconciler,
 };
-use crate::{Command, Component, ComponentId, Init};
+use crate::{Command, Component, ComponentId, Init, SubscriptionId};
 
 /// Runtime-owned state and transition mechanism for one Component.
 ///
@@ -54,8 +57,8 @@ impl<C: Component> ComponentKernel<C> {
     /// Compares the current committed Model projection with this Component's
     /// descriptor-only active Subscription bookkeeping.
     ///
-    /// The returned changes remain inert: later runtime phases create or stop
-    /// Sources and choose the retained-mapper policy.
+    /// The returned changes remain inert until an execution profile applies
+    /// ADR-0003's Source maintenance and retained-latest-mapper policy.
     pub(crate) fn reconcile_subscriptions(
         &mut self,
     ) -> Result<Vec<SubscriptionChange<C::Message>>, DuplicateSubscriptionIdError> {
@@ -112,9 +115,22 @@ impl<C: Component> SerializedComponent<C> {
 ///
 /// Message delivery remains typed in `ComponentKernel<C>`; erasure here only
 /// permits a Program to retain heterogeneous Component configurations and
-/// Models until a later runtime phase chooses how to route typed Messages.
+/// Models while an execution profile routes typed Messages through the checked
+/// erased methods below.
 pub(crate) trait ErasedComponentKernel: Send {
     fn id(&self) -> &ComponentId;
+    fn component_type_id(&self) -> TypeId;
+    fn message_type_id(&self) -> TypeId;
+    fn message_type_name(&self) -> &'static str;
+    fn model_any(&self) -> &dyn Any;
+    fn take_initial_command_erased(&mut self) -> Option<Box<dyn ErasedCommand>>;
+    fn transition_erased(
+        &mut self,
+        message: Box<dyn Any + Send>,
+    ) -> Result<Box<dyn ErasedCommand>, ()>;
+    fn reconcile_subscriptions_erased(
+        &mut self,
+    ) -> Result<Vec<ErasedSubscriptionChange>, SubscriptionId>;
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
 }
@@ -122,6 +138,42 @@ pub(crate) trait ErasedComponentKernel: Send {
 impl<C: Component> ErasedComponentKernel for ComponentKernel<C> {
     fn id(&self) -> &ComponentId {
         self.id()
+    }
+
+    fn component_type_id(&self) -> TypeId {
+        TypeId::of::<C>()
+    }
+
+    fn message_type_id(&self) -> TypeId {
+        TypeId::of::<C::Message>()
+    }
+
+    fn message_type_name(&self) -> &'static str {
+        std::any::type_name::<C::Message>()
+    }
+
+    fn model_any(&self) -> &dyn Any {
+        self.model()
+    }
+
+    fn take_initial_command_erased(&mut self) -> Option<Box<dyn ErasedCommand>> {
+        self.take_initial_command().map(erase_command)
+    }
+
+    fn transition_erased(
+        &mut self,
+        message: Box<dyn Any + Send>,
+    ) -> Result<Box<dyn ErasedCommand>, ()> {
+        let message = message.downcast::<C::Message>().map_err(|_| ())?;
+        Ok(erase_command(self.transition(*message)))
+    }
+
+    fn reconcile_subscriptions_erased(
+        &mut self,
+    ) -> Result<Vec<ErasedSubscriptionChange>, SubscriptionId> {
+        self.reconcile_subscriptions()
+            .map(|changes| changes.into_iter().map(erase_subscription_change).collect())
+            .map_err(|error| error.id().clone())
     }
 
     fn as_any(&self) -> &dyn Any {

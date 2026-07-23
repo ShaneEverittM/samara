@@ -1,16 +1,14 @@
 //! Profile-independent declarative-work machinery.
 //!
-//! Phase 4 uses this module only to compare desired Subscription declarations
-//! with descriptor snapshots retained per Component. It does not create,
-//! cancel, or deliver events from a Source. In particular, a retained change
-//! carries the newly declared mapper forward without choosing whether that
-//! mapper or the prior declaration's mapper will receive later events; that
-//! observable policy remains a Phase 5 decision gate.
+//! Phase 4 introduced this descriptor comparison independently of a runtime.
+//! Phase 5 consumes its inert changes to maintain controlled Sources: a retained
+//! change installs the newest mapper while preserving SourcePlan state, and a
+//! replacement creates a fresh private generation.
 //!
 //! Reconciliation commits descriptor bookkeeping while returning an unordered
-//! set of lifecycle changes. A later runtime phase must accept those changes as
-//! one reconciliation step (or discard the owning kernel) rather than treating
-//! the Vec traversal order as Source start/stop sequencing.
+//! set of lifecycle changes. Execution profiles accept those changes as one
+//! reconciliation step rather than treating Vec traversal as application Source
+//! ordering.
 
 use std::{collections::HashSet, marker::PhantomData};
 
@@ -46,6 +44,12 @@ pub(crate) enum SubscriptionChange<Message> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DuplicateSubscriptionIdError {
     id: SubscriptionId,
+}
+
+impl DuplicateSubscriptionIdError {
+    pub(crate) fn id(&self) -> &SubscriptionId {
+        &self.id
+    }
 }
 
 impl<Message> SubscriptionReconciler<Message> {

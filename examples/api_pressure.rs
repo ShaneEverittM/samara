@@ -334,7 +334,10 @@ fn program(increments: StreamDescriptor<u64>) -> (Program, AppRefs) {
         },
     );
 
-    (program.build(), AppRefs { counter, quota })
+    (
+        program.build().expect("the example graph is valid"),
+        AppRefs { counter, quota },
+    )
 }
 
 /// Shows production-shaped execution with Tokio-backed world boundaries.
@@ -418,12 +421,19 @@ fn controlled_shape() -> Result<(), RuntimeError> {
 
 /// Keeps the binary intentionally inert while its consumer shape is compiled.
 fn main() {
-    println!("compile-checked Phase 4 reference; see this source and its unit tests");
+    println!("Phase 5 controlled reference; see this source and its unit tests");
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Activates the Phase 5 controlled counterpart of the broad API-pressure
+    /// example without executing a live Driver.
+    #[test]
+    fn controlled_reference_program_runs_end_to_end() -> Result<(), RuntimeError> {
+        controlled_shape()
+    }
 
     /// Proves pure transition intent without constructing either runtime.
     ///
