@@ -1,7 +1,7 @@
 # Samara API Guidance
 
 - Status: Draft
-- Date: July 21, 2026
+- Date: July 23, 2026
 - Scope: Consumer-facing API design rationale
 
 This document is a durable FAQ for people designing and implementing Samara's
@@ -103,10 +103,17 @@ Putting stable identity in the Subscription allows the same descriptor type to
 serve multiple logical roles. Reserving Source for the running realization also
 keeps sockets, tasks, and buffers out of inert API values.
 
-This does not yet settle whether a newly declared message mapper replaces the
-prior mapper while equal identity and SourceDescriptor retain the Source. That
-choice changes observable Messages and must be made explicitly before the API
-is frozen.
+When equal identity and SourceDescriptor retain the Source, reconciliation
+atomically installs the latest mapper returned by `subscriptions()`. Messages
+already created keep their meaning; later events use the latest projection.
+This follows the declarative model: each projection reasserts the Component's
+complete current desire without forcing an unchanged world resource to
+restart.
+
+Changing the descriptor is different: replacement is a hard private-generation
+cutover. Undelivered old work is stale and never crosses through the new mapper.
+Applications that need overlap declare two Subscription identities or carry a
+domain generation explicitly.
 
 ## How Should Concrete Descriptor Types Be Named?
 
@@ -142,6 +149,12 @@ than terminal. For example, `Framed<TcpBytes, D>` is a composed
 SourceDescriptor, while `TcpBytes` is the terminal SourceDescriptor that reaches
 its SourceDriver. An application may give the composed descriptor a domain
 alias, but that alias does not introduce another Samara lifecycle concept.
+
+During reconciliation, Samara automatically lowers the composed descriptor to
+a runtime-owned SourcePlan containing its ordered Layers, terminal descriptor,
+and Subscription mapper. Applications bind live or controlled behavior only
+for `TcpBytes` in this example; requiring them to register `Framed` or its Layer
+again would duplicate intent already expressed in the descriptor.
 
 Controlled execution supplies deterministic behavior for the same descriptor
 contracts and must never silently fall back to a live Driver. Drivers are
@@ -211,16 +224,19 @@ checks:
 - The obligation transfers into `Command::reply`, rather than disappearing when
   that command is constructed, so constructing and then discarding a reply
   command remains detectable.
-- Runtime-owned request bookkeeping is authoritative. At the request
-  lifecycle boundary, an unresolved obligation becomes an explicit terminal
-  outcome such as `RequestError::ReplyAbandoned`; correctness never depends on
-  a destructor running.
+- Runtime-owned request bookkeeping is authoritative. A later lifecycle
+  contract may turn an unresolved obligation into an explicit terminal outcome
+  such as `RequestError::ReplyAbandoned`; correctness must never depend on a
+  destructor running.
 
-The exact lifecycle boundary remains an API decision. A normal request might
-require a reply from the provider's handling transition, while a future
-explicit delegation mechanism might transfer the obligation and relax ordering
-guarantees. That choice changes observable request semantics and should be made
-explicitly; silently losing a `ReplyTo` is invalid under either policy.
+Phase 5 implements only successful `RequestOutcome::Replied`. An unanswered
+Request remains runtime-owned and pending until controlled cancellation; it
+does not yet manufacture failure, timeout, cancellation, or abandonment
+outcomes. The exact lifecycle boundary remains an API decision. A normal
+request might require a reply from the provider's handling transition, while a
+future explicit delegation mechanism might transfer the obligation and relax
+ordering guarantees. That choice changes observable request semantics and
+should be made explicitly.
 
 ## Why Do Request Outcomes Return as Messages Rather Than Futures?
 
@@ -248,6 +264,20 @@ Protocol visible on the provider Message type itself.
 Ports are named rather than globally selected by protocol type. Two dependencies
 may implement the same protocol while representing distinct roles, such as a
 primary and fallback service.
+
+## Why Is Program Assembly Validation Deliberately Narrow?
+
+`ProgramBuilder::build()` can reject facts that assembly directly owns:
+duplicate Component identities, duplicate `(Protocol type, PortId)`
+declarations, Ports not bound exactly once, and providers registered in a
+different builder. Failing there gives both profiles the same valid logical
+Program before runtime startup.
+
+It cannot inspect arbitrary fields inside Component configuration or predict
+behavior-dependent `Command::send` edges. Port cycles are therefore legal and
+not detected, and Samara does not pretend to build a closed static dependency
+graph. A missing direct-send target is diagnosed only if that Command is later
+interpreted.
 
 ## When Is a Direct Component Reference Appropriate?
 
@@ -279,6 +309,7 @@ The Phase 2 API contract freezes the Component-kernel signatures and records
 later compile-checked slices separately. The broader first-party Tokio bridge
 module organization, the Rust shape of Layer and execution-profile bindings,
 Request deadline and cancellation policy, notification delivery failures,
-shutdown policy, semantic trace API, and runtime topology still require
-separate decisions. Those choices should follow the guidance above, but this
-document does not make them implicitly.
+shutdown policy, domain-payload and streaming trace APIs, and runtime topology
+still require separate decisions. Decoder EOF/finalization and `bytes` adoption
+also remain deliberately paired before live TCP framing. Those choices should
+follow the guidance above, but this document does not make them implicitly.

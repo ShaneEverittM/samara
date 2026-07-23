@@ -12,8 +12,10 @@ Samara's Phase 2 executable contract, Phase 3 Component kernel, and Phase 4
 declarative-work kernel are accepted. Phase 4 adds owned typed effect
 interception, reusable Source-event mapping,
 Component-local Subscription reconciliation, and the pure framed Source Layer.
-No Driver or execution profile runs world work yet; controlled and live
-end-to-end scenarios remain visibly staged for the phases that own them.
+The Phase 5 controlled-execution contract is approved and ready for
+implementation under ADR-0003. No Driver or execution profile runs world work
+yet; controlled and live end-to-end scenarios remain visibly staged for the
+phases that own them.
 
 The earlier Actor proof of concept remains available in Git history at commit
 `8408509`, but it is not a compatibility target for the new runtime.
@@ -25,6 +27,7 @@ The earlier Actor proof of concept remains available in Git history at commit
 - [Glossary](docs/glossary.md)
 - [API guidance](docs/api-guidance.md)
 - [Runtime topology and ordering ADR](docs/adr/0002-runtime-topology-and-ordering.md)
+- [Controlled execution semantics ADR](docs/adr/0003-controlled-execution-semantics.md)
 - [Architecture test strategy](docs/testing/architecture-test-strategy.md)
 - [V1-V11 acceptance matrix](docs/testing/v0-acceptance-matrix.md)
 - [Goal-mode implementation checklist](docs/goal-mode-checklist.md)

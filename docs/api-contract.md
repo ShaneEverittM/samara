@@ -1,7 +1,7 @@
 # Samara v0 Milestone API Contract
 
-- Status: Phase 2 accepted; Component-kernel slice frozen
-- Date: July 22, 2026
+- Status: Phase 4 accepted; Phase 5 controlled-execution contract approved
+- Date: July 23, 2026
 - Scope: Change-controlled public API slices for staged implementation
 
 ## Purpose
@@ -75,11 +75,6 @@ applications continue to exercise the intended end state. They are
 change-controlled design candidates, but their implementation phases must
 activate and audit their acceptance tranche before freezing them:
 
-- Phase 4: `Command`, EffectDescriptor and EffectOutcome composition,
-  `Subscription`, SourceDescriptor and SourceEvent composition, Layers,
-  Protocols, Ports, Requests, Replies, and Program assembly.
-- Phase 5: controlled bindings, effect completion, Source maintenance, logical
-  time, pending-work accounting, state inspection, and semantic trace.
 - Phase 6: live Drivers, first-party Tokio bridges, live ingress, runtime scope,
   and structured shutdown.
 
@@ -87,28 +82,81 @@ The reference examples are normative about the application shape they show.
 Their placeholder runtime calls are not evidence that the corresponding
 runtime policy is frozen.
 
+## Frozen for Phase 4: Declarative Work Kernel
+
+The accepted Phase 4 audit freezes the declarative finite-work and ongoing-work
+boundaries implemented by `Command`, `EffectInvocation`, `Subscription`,
+Subscription reconciliation, and the first `Framed` Source Layer. In
+particular:
+
+- EffectDescriptors remain separately interceptable from their pure one-shot
+  message mappers and need not be `Clone` or comparable.
+- Each Command occurrence is distinct even when descriptor values look equal.
+- Subscription reconciliation compares Component-local identity and typed
+  SourceDescriptor equality, never mapper object identity.
+- A reusable SourceEvent mapper and deterministic Layer composition remain
+  inert until a runtime profile supplies terminal behavior.
+- `Framed` Layers are profile-independent and may carry deterministic
+  runtime-scoped decoder state without performing ambient I/O.
+
+The exact Decoder EOF/finalization contract remains provisional with the
+planned `bytes` migration and must be resolved before live TCP framing in Phase
+6, as recorded by the Phase 4 audit.
+
+## Approved for Phase 5: Controlled Execution
+
+[ADR-0003](adr/0003-controlled-execution-semantics.md) governs the observable
+controlled-runtime behavior that Phase 5 may now implement:
+
+- A retained Source realization atomically adopts the latest post-transition
+  Subscription mapper.
+- Replacing a Source is a hard private-generation cutover; stale work that has
+  not begun a transition is dropped and traced.
+- Composed SourceDescriptors automatically lower to a runtime-owned
+  `SourcePlan`; applications bind controlled behavior only for terminal
+  descriptors.
+- Equal-time controlled work follows logical deadline and deterministic causal
+  insertion order.
+- Controlled execution always records an in-memory structural trace with
+  logical time, parentless roots, and exactly one immediate causal parent for
+  every non-root record.
+- `ProgramBuilder::build()` is fallible for explicitly knowable assembly
+  errors, without claiming a closed static dependency graph.
+- Missing controlled terminal behavior faults the run at that boundary and
+  never falls through to a live Driver.
+- Work reports count semantic obligations as `pending_now` and
+  `pending_later`, not tasks, queues, or other runtime mechanics.
+- Phase 5 implements only the successful typed Request/Reply lifecycle through
+  `RequestOutcome::Replied`.
+
+The ADR freezes these observable semantics, not the runtime's container,
+scheduler, type-erasure, or storage implementation. Exact Rust spellings may
+be selected during Phase 5 where the accepted contract does not already name
+them, then reviewed at the phase audit.
+
 ## Deliberately Unfrozen Surfaces
 
-The following decisions remain explicit gates rather than accidental promises
-made by a placeholder type or variant:
+The following decisions remain explicit gates or deferrals rather than
+accidental promises made by a placeholder type or variant:
 
-- Exact RequestOutcome variants and request deadline, cancellation, late-reply,
-  abandoned-reply, and delegation policies.
+- Request failure, deadline, cancellation, late-Reply, abandoned-Reply, and
+  delegation policies beyond Phase 5's successful `Replied` path.
 - Notification delivery-failure semantics.
-- Whether a newly declared Subscription mapper replaces the retained mapper
-  when identity and SourceDescriptor remain equal, and how stale events from a
-  replaced Source are handled.
 - The complete public Command/conformance inspection API, including sends,
   timers, batches, and stored message mappers.
-- Program graph validation errors and whether `ProgramBuilder::build` is the
-  fallible validation boundary.
-- The Rust shape of general Layers and live/controlled profile bindings.
+- The exact `ProgramBuilder::build()` error taxonomy beyond ADR-0003's
+  validation scope.
+- The general Rust shape of Layers, SourcePlan lowering, and live/controlled
+  profile bindings beyond ADR-0003's application-facing behavior.
 - Driver cancellation details and the meaning of a SourceDriver returning
   without explicitly ending or failing its Source.
-- The semantic trace representation, observer attachment API, causal IDs,
-  logical timestamps, and versioning.
-- Runtime error taxonomy, backpressure and overload behavior.
+- Descriptor/message payload tracing, typed trace projections, streaming and
+  live observer APIs, and any durable trace representation.
+- Runtime error taxonomy outside the missing-controlled-behavior contract,
+  plus backpressure and overload behavior.
 - Shutdown drain-versus-cancel policy and final work-accounting units.
+- Decoder EOF/finalization semantics and `bytes` adoption before live TCP
+  framing in Phase 6.
 
 Before an implementation phase reaches one of these surfaces, its acceptance
 contract must either settle the question or explicitly keep the behavior out of
@@ -128,9 +176,10 @@ intent, mapped Messages, causal relationships, logical time, and final state;
 they do not compare closure identity, queue position, task identity, or one
 chosen order for independent events.
 
-The current Command inspection methods are sufficient for the reference
-Component tests they exercise. Phase 4 must finish the inspection story before
-claiming complete L1 command-emission coverage.
+The current Command inspection methods are sufficient for the accepted Phase 4
+reference tests. Inspection of sends, timers, batches, and stored mappers
+remains change-controlled future work; the accepted slice does not claim a
+complete public L1 inspection API.
 
 ## Phase 2 Exit Criteria
 

@@ -1,8 +1,8 @@
 # Architecture Test Strategy (v0)
 
 ## Status
-- Phase: Phase 2 executable acceptance contract.
-- Date: July 21, 2026.
+- Phase: Phase 5 controlled-execution contract approved.
+- Date: July 23, 2026.
 
 ## Purpose
 Define required test layers and acceptance gates for the strict TEA + Tokio
@@ -36,10 +36,16 @@ architecture before each implementation slice begins.
   controlled behavior to realize a runtime-owned Source.
 - Validate a Source may emit zero or more SourceEvents and that its reusable
   mapper can produce a Component Message for each delivered event.
+- Validate retaining an equal SourceDescriptor preserves the Source realization
+  while atomically adopting the latest projected mapper.
+- Validate replacement is a hard private-generation cutover: stale events or
+  mapped Messages cannot begin a transition or cross through the new mapper.
 - Validate Layers compose descriptors and outcomes/events identically in live
   and controlled execution without ambient I/O.
 - Validate a non-terminal descriptor passes through its Layers before only the
   resulting terminal descriptor reaches a Driver or controlled behavior.
+- Validate composed SourceDescriptors automatically lower to SourcePlans and
+  applications bind only terminal descriptors.
 - Validate Drivers remain terminal, selected by live-profile assembly, and
   runtime-owned.
 - Validate mechanism-versus-policy boundaries without requiring a universal
@@ -52,6 +58,11 @@ architecture before each implementation slice begins.
 - Confirm no bypass of message flow.
 - Confirm Protocol Messages are mapped explicitly into provider Component
   Messages rather than treated as the same vocabulary.
+- Confirm successful Requests use opaque runtime correlation, accept at most
+  one Reply, map it to `RequestOutcome::Replied`, and preserve the causal chain.
+- Confirm `ProgramBuilder::build()` rejects exactly the explicitly knowable
+  assembly errors and permits Port cycles without claiming a closed static
+  dependency graph.
 
 ### L4: Cancellation and Shutdown Tests
 - Validate graceful shutdown with in-flight tasks.
@@ -70,13 +81,26 @@ architecture before each implementation slice begins.
 - Validate that runtime scheduling semantics can run in controlled time.
 - Validate faster-than-real-time execution paths for simulation workloads.
 - Confirm determinism across repeated accelerated runs with identical inputs.
-- Confirm controlled behavior never falls back to a live Driver when a binding
-  or scripted outcome/event is missing.
+- Confirm controlled execution never falls back to a live Driver when terminal
+  controlled behavior is unbound. A bound effect, Source, or timer merely
+  awaiting future harness input or logical time remains a `pending_later`
+  obligation rather than being confused with missing behavior.
+- Confirm missing controlled terminal behavior faults at that boundary without
+  invoking a message mapper, leaves state and trace inspectable, permits
+  cancellation, and prevents resumed driving.
+- Confirm equal-time work follows logical deadline plus deterministic insertion
+  ticket, including declaration order, harness order, and Component-identity
+  ordering rather than registration order.
+- Confirm manual and automatic driving report semantic `pending_now` and
+  `pending_later` obligations rather than scheduler machinery.
 
 ### L7: Topology-Independent Conformance Suite
 - Validate per-Component serialization and required causal relationships.
 - Confirm application code and conformance tests do not rely on incidental scheduler topology.
-- Run before and after topology-coupled implementation changes and compare observable traces.
+- Run before and after topology-coupled implementation changes and compare
+  structural semantic traces plus final state. Compare domain descriptor
+  payloads in direct typed-intent tests rather than assuming generic trace
+  capture.
 
 ## Required Scenario Coverage
 - Deterministic transitions for representative domain message sets.
@@ -85,13 +109,15 @@ architecture before each implementation slice begins.
   test double and controlled behavior, including exactly-once message mapping.
 - SourceDescriptor-to-SourceEvent coverage through both a live SourceDriver test
   double and controlled behavior, including zero-event, repeated-event, normal
-  end, failure, replacement, and cancellation paths where applicable.
+  end, failure, retained-latest-mapper, hard-generation replacement, stale
+  drop, and cancellation paths where applicable.
 - Layer composition coverage proving the same descriptor and mapping semantics
   across live and controlled profiles.
 - Runtime fault conversion into explicit Component Messages or typed boundary
   outcomes/events where behaviorally relevant.
 - Component interaction coverage for `Command::notify` (one-way) and
-  `Command::request` (request/reply), including dropped-reply paths.
+  `Command::request` (request/reply). Phase 5 activates only the successful
+  Request/Reply path; dropped-reply policy remains deferred.
 - Typed request coverage for `Request<P>` associated Reply mappings and
   `RequestOutcome` runtime flows.
 - Protocol coverage proving `Protocol::Message` is provider-neutral, concrete
@@ -105,7 +131,8 @@ architecture before each implementation slice begins.
 - Port interaction coverage for the `Notification<P>` / `Command::notify` and
   `Request<P>` / `Command::request` symmetry, opaque correlation, message mapping,
   and runtime-owned reply resolution.
-- Reply-obligation coverage must demonstrate that:
+- When the deferred Request lifecycle tranche is activated, Reply-obligation
+  coverage must demonstrate that:
   - consuming `ReplyTo` into an interpreted `Command::reply` produces exactly one
     typed outcome without a diagnostic violation;
   - dropping an unresolved `ReplyTo` is reported with enough Component and
@@ -120,6 +147,19 @@ architecture before each implementation slice begins.
   expression triggers its `#[must_use]` diagnostic without claiming that the
   lint proves eventual consumption.
 - Runtime drive-loop tests should prefer `run_until(...)` / `run_until_predicate(...)` / `run_until_idle()` over hard-coded sleep durations.
+- Controlled trace tests must verify the common record envelope, one immediate
+  causal parent for every non-root, roots with no parent, logical time, Source
+  stale-drop records, and read-afterward noninterference without requiring a
+  streaming callback.
+- Controlled equivalence tests compare structural trace and final state;
+  direct Component tests separately compare same-typed descriptor payloads.
+- Work-accounting tests count accepted Messages and due timers as
+  `pending_now`; pending effects, future timers, active Sources, and outstanding
+  Requests as `pending_later`; and no internal tasks, queues, locks,
+  interpreter steps, or trace records as separate obligations.
+- Controlled cancellation tests reduce both pending counts to zero. An
+  unanswered Phase 5 Request remains a `pending_later` obligation until then
+  and does not synthesize a deferred failure, timeout, or cancellation outcome.
 - Cancellation behavior for long-running and short-running commands.
 - Backpressure behavior under burst and sustained load.
 - Recovery behavior after Driver and runtime failures without prescribing the

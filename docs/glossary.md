@@ -1,17 +1,17 @@
 # Samara Glossary
 
 - Status: Draft
-- Date: July 21, 2026
+- Date: July 23, 2026
 - Scope: Canonical project vocabulary and important distinctions
 
 This document defines how Samara currently uses its growing vocabulary. It is a
 reference for API design, implementation, testing, and documentation—not a
 substitute for the behavioral contracts in the vision and ADRs.
 
-The concepts below are canonical unless marked historical. The Phase 2
-candidate Rust surface follows these spellings. `api-contract.md` records which
-API slice is frozen for each implementation phase and which policy-bearing
-surfaces remain provisional.
+The concepts below are canonical unless marked historical. Accepted API slices
+and the approved Phase 5 controlled-execution contract follow these spellings.
+`api-contract.md` records which slice is frozen for each implementation phase
+and which policy-bearing surfaces remain provisional.
 
 ## Program and State
 
@@ -22,6 +22,12 @@ not live Tokio resources.
 **Program assembly** — The construction of a Samara program, including
 Component registration, named Port declaration, provider binding, and execution
 profile selection.
+
+`ProgramBuilder::build()` is the fallible boundary for explicitly knowable
+assembly errors: duplicate Component identity, duplicate `(Protocol type,
+PortId)`, a Port not bound exactly once, or a provider from another builder.
+Assembly does not introspect arbitrary Component fields or behavior-dependent
+message edges and therefore does not claim a closed static dependency graph.
 
 **Program boundary** — The scope within which Samara's guarantees apply. Code
 outside this boundary is part of the surrounding world and interacts with the
@@ -118,6 +124,13 @@ or more Layers around another descriptor. Interpretation applies those Layers
 until it reaches a terminal descriptor. `Framed<TcpBytes, D>` is a composed
 SourceDescriptor whose framed event vocabulary is visible to its Subscription.
 
+**SourcePlan** — The runtime-owned compiled mechanism produced by lowering one
+desired composed SourceDescriptor during reconciliation. It contains the
+terminal SourceDescriptor, its ordered profile-independent Layers, and the
+Subscription's message mapper. It is not another application declaration,
+Subscription identity, or running Source. Applications bind live or controlled
+behavior only for the terminal descriptor.
+
 **Subscription / `Subscription<Message>`** — A Component's declarative desire
 to maintain a Source matching a SourceDescriptor under a stable,
 Component-local identity, plus a message mapper from SourceEvents to Component
@@ -127,6 +140,13 @@ Messages. Declaring a Subscription does not itself start work.
 SourceDescriptor. It may contain operational resources such as tasks, sockets,
 and partial framing buffers. A Source can produce zero or more SourceEvents
 until it ends, fails, or is canceled.
+
+**Source generation** — Private runtime identity for one Source realization.
+Replacing a descriptor atomically withdraws the old generation. Its events or
+mapped Messages that have not begun a Component transition are stale, are
+discarded, and are recorded in the structural trace. Components observe a
+generation only when the application deliberately carries its own domain
+generation.
 
 **SourceEvent** — One repeatable occurrence produced by a Source. A reusable
 message mapper transforms each SourceEvent into a Component Message.
@@ -142,6 +162,11 @@ and active Subscriptions. A new stable identity starts a Source; the same
 identity and equal SourceDescriptor retain it; the same identity and a changed
 descriptor replace it; a removed identity cancels it. Removal or replacement
 does not inherently manufacture a SourceEvent.
+
+When a Source is retained, reconciliation atomically installs the latest
+mapper returned by `subscriptions()`. Already-created Messages are unchanged;
+subsequent SourceEvents use the latest mapper. Replacement is instead a hard
+Source-generation cutover.
 
 **Message mapper** — Pure synchronous application logic that converts boundary
 data into a Component Message. EffectOutcome and request-outcome mappers are
@@ -190,7 +215,7 @@ Command + EffectDescriptor
 
 Subscription(identity + SourceDescriptor + message mapper)
     -> reconciliation
-    -> zero or more Layers
+    -> SourcePlan(ordered Layers + terminal descriptor + latest mapper)
     -> terminal SourceDriver in live execution, or controlled behavior
     -> Source
     -> SourceEvent zero or more times
@@ -278,7 +303,9 @@ authority.
 **Request outcome / `RequestOutcome`** — The requester-visible single terminal
 outcome of a Request, provisionally a Reply, a failure carrying runtime Error
 data, timeout, or cancellation. The exact failure and deadline policy is not
-yet settled.
+yet settled. Phase 5 implements only `RequestOutcome::Replied`; an unanswered
+Request remains pending until controlled cancellation cleans up ownership
+without manufacturing the deferred outcome variants.
 
 **`RequestError`** — The current provisional type for a Request's runtime-level
 terminal error data. Domain-level negative replies remain ordinary Reply
@@ -322,13 +349,23 @@ simulation is one use case for it.
 
 **Controlled world** — The scripted or seeded substitute for the surrounding
 world used during controlled execution. Missing controlled behavior fails
-explicitly rather than falling back to live behavior.
+explicitly rather than falling back to live behavior. Reaching an unhandled
+terminal descriptor faults the run without invoking a live Driver or message
+mapper; state and trace remain inspectable and controlled cancellation remains
+available.
 
 **Logical time / controlled time** — Runtime-controlled time that can advance
 manually or automatically without wall-clock sleeping.
 
 **Runtime semantics** — The observable scheduling, lifecycle, and tie-breaking
 rules whose sameness is part of a controlled-determinism claim.
+
+**Deterministic insertion ticket** — The stable secondary key used after
+logical deadline to order equal-time controlled work. One transition's
+Commands follow declaration traversal order, controlled inputs follow harness
+order, initial Component work follows canonical Component identity rather than
+registration order, and causally emitted work follows its cause. Tickets are
+controlled reproducibility machinery, not live domain order.
 
 **Transition determinism** — For a fixed conforming Component implementation
 and configuration, equivalent Model and Component Message inputs produce
@@ -358,14 +395,31 @@ event. Samara explicitly does not promise this for independent live events.
 **Quiescence** — The absence of immediately runnable work. Work may still be
 waiting for logical time, a controlled input, or an external event.
 
+**`pending_now`** — The count of semantic obligations ready during controlled
+execution: accepted Component Messages and due timers.
+
+**`pending_later`** — The count of semantic obligations awaiting an outcome,
+event, or future logical instant: pending effects, future timers, active Sources
+(one each), and outstanding Requests. Runtime tasks, queues, locks,
+interpreter steps, and trace records are not additional work units.
+
 ## Observability and Correctness
 
 **In-band semantic result** — Behaviorally relevant data delivered to a
 Component as a Message. Components can make decisions from it.
 
 **Semantic trace** — An out-of-band structured record of transitions,
-descriptors, lifecycle results, time, and causation. Observing the trace cannot
-feed data back into Components or otherwise alter semantic behavior.
+descriptor types and targets, lifecycle results, time, and causation. Controlled
+execution always collects the v0 trace in memory for tests to read after
+driving. It is structural rather than domain-payload-complete; typed intent
+tests compare descriptor and Message payloads when needed.
+
+**Trace record / `TraceRecord`** — One controlled semantic-trace entry with a
+`TraceId`, `LogicalTime`, optional immediate cause, and one `TraceEvent`.
+Initialization and controlled harness inputs are roots with no parent; every
+other record has exactly one immediate causal parent. The trace includes stale
+Source-generation drops. Its compatibility follows ordinary crate API
+versioning; v0 defines no durable storage schema.
 
 **Runtime diagnostic** — Operational information such as task identity, thread
 placement, queue depth, or incidental sequence number. It is not an application
@@ -381,7 +435,7 @@ to hold.
 | --- | --- |
 | Command and EffectDescriptor | A Command is the broader finite-work envelope; an EffectDescriptor is one typed world-facing intent it may contain. |
 | EffectOutcome and SourceEvent | An EffectOutcome terminates one invocation; a SourceEvent is one of zero or more occurrences from ongoing work. |
-| SourceDescriptor, Subscription, and Source | A SourceDescriptor describes ongoing production, a Subscription adds desire, identity, and mapping, and a Source is the runtime-scoped realization. |
+| SourceDescriptor, Subscription, SourcePlan, and Source | A SourceDescriptor describes ongoing production, a Subscription adds desire, identity, and mapping, a SourcePlan lowers that desire to ordered Layers and a terminal descriptor, and a Source is the runtime-scoped realization. |
 | Layer and Driver | A Layer composes declarations inside the program boundary; a Driver terminates a descriptor into the selected live world. |
 | Adapter and a code abstraction | Adapter is the conceptual category; Layer and Driver are the code-level roles Samara currently names. |
 | Component Message and Protocol Message | A Component Message is private transition input; a Protocol Message is the provider-neutral vocabulary crossing a Port. |
@@ -425,14 +479,16 @@ These questions are intentionally recorded rather than answered by the Phase 2
 Component-kernel freeze:
 
 - The exact RequestOutcome variants and the deadline, cancellation,
-  late-Reply, and abandoned-Reply policies.
+  late-Reply, abandoned-Reply, and delegation policies beyond Phase 5's
+  successful Reply path.
 - Notification delivery-failure semantics.
 - The initial code shape of Layer abstractions. Multiple Layer kinds are
   expected, so this checkpoint does not promise one universal `Layer` trait.
-- Whether a newly declared message mapper replaces the prior mapper while the
-  same Subscription identity and equal SourceDescriptor retain their running
-  Source. Mapper object identity is not semantic, but mapper behavior is.
 - The exact Rust representation of live and controlled execution-profile
   bindings. Controlled execution must preserve the same descriptor contracts,
   but it need not execute the live Driver traits.
+- Descriptor/message payload tracing, typed trace projections, streaming/live
+  observer APIs, and durable trace storage.
+- Decoder EOF/finalization semantics and `bytes` adoption before live TCP
+  framing.
 - Structured shutdown's drain-versus-cancel policy.

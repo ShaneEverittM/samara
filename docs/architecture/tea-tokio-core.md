@@ -1,8 +1,8 @@
 # TEA + Tokio Core Architecture (v0)
 
 ## Status
-- Phase: Phase 4 declarative-work kernel accepted; Phase 5 controlled execution ready.
-- Date: July 22, 2026.
+- Phase: Phase 5 controlled-execution contract approved; implementation ready.
+- Date: July 23, 2026.
 - Library scope: `samara` is library-first.
 
 ## Goals
@@ -105,11 +105,21 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
 - A `Source` is the runtime-owned ongoing realization of a SourceDescriptor. It
   may emit zero or more SourceEvents until it ends, fails, or is canceled.
 - Reconciliation starts a Source for a newly desired Subscription, retains it
-  while identity and descriptor are unchanged, replaces or reconfigures it when
-  the same identity has changed configuration, and cancels it when no longer
+  while identity and descriptor are unchanged, atomically replaces it when the
+  same identity has changed configuration, and cancels it when no longer
   desired.
-- Whether a newly declared message mapper replaces the prior mapper while a
-  Source is retained remains an explicit API decision.
+- A retained Source atomically adopts the latest mapper returned by the
+  post-transition Subscription projection. Messages already created remain
+  unchanged; later events use the new mapper.
+- Each Source realization has a private runtime generation. Descriptor
+  replacement is a hard cutover: old-generation events or mapped Messages that
+  have not begun a Component transition are discarded and traced. An
+  already-running transition completes, and no old event is mapped through the
+  replacement generation.
+- During reconciliation, a composed SourceDescriptor automatically lowers to a
+  runtime-owned `SourcePlan` containing its terminal descriptor, ordered
+  profile-independent Layers, and message mapper. Applications bind or control
+  only the terminal descriptor.
 - Source cancellation does not imply a synthetic SourceEvent unless the
   applicable contract explicitly promises one.
 
@@ -136,6 +146,10 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
     route only terminal descriptors to live Drivers or controlled behavior.
   - Apply message mappers to EffectOutcomes, SourceEvents, and RequestOutcomes.
   - Reconcile desired Subscriptions with runtime-owned Sources.
+  - Compile composed SourceDescriptors into SourcePlans and enforce private
+    Source-generation cutovers.
+  - Record topology-neutral structural trace entries with logical time and
+    causation in controlled execution.
   - Supervise task lifecycle, cancellation, and shutdown.
   - Deliver resulting Messages to their target Components.
 - Only runtime-managed machinery may deliver messages or execute commands;
@@ -164,9 +178,14 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
   future, or runtime handle inside `update`.
 - The requester never awaits inside `update`; the mapped `RequestOutcome` returns
   through normal runtime-managed message delivery.
-- Request delivery, abandonment, timeout, and cancellation must be explicit
-  terminal outcomes where applicable. This contract does not select a default
-  deadline or cancellation policy.
+- Phase 5 implements the successful path only: typed Port delivery, one opaque
+  transport-correlation token, at-most-once Reply, mapping to
+  `RequestOutcome::Replied`, causal tracing, and one outstanding-Request
+  obligation. An unanswered Request remains pending until controlled
+  cancellation cleans up runtime ownership.
+- Request failure, abandonment, timeout, cancellation, late-Reply, and
+  delegation semantics remain deferred; Phase 5 does not manufacture those
+  outcome variants.
 
 ### Component Decoupling Contract (`Port` / protocol binding)
 - Reusable Component collaboration should prefer protocol-level Ports over
@@ -181,6 +200,13 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
   Message implements `From<Protocol::Message>`. This standard conversion is
   pure and reusable rather than supplied repeatedly as a binding closure.
   Multiple named Ports of the same Protocol may be bound independently.
+- `ProgramBuilder::build()` is fallible. It rejects duplicate Component
+  identities, duplicate `(Protocol type, PortId)` declarations, Ports not bound
+  exactly once, and providers not registered in that same builder.
+- Port cycles are legal and are not detected. Assembly does not introspect
+  arbitrary Component fields or behavior-dependent `Command::send` edges and
+  therefore does not claim a closed static dependency graph. A send to an
+  absent Component is diagnosed when interpreted.
 - Swapping a real, mock, or controlled provider does not require consumer
   transition changes.
 - Notification values and Request values use the symmetric `Command::notify` and
@@ -198,6 +224,40 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
 - Timer semantics must be representable as explicit commands so scheduling can be mediated by the runtime boundary.
 - Public runtime APIs must avoid forcing hard wall-clock coupling that would prevent time acceleration.
 - Deterministic controlled runs must be possible with controlled clock progression.
+- The v0 controlled scheduler orders runnable work by `(logical deadline,
+  deterministic insertion ticket)`. Commands from one transition follow
+  declaration traversal order; controlled inputs follow harness order; initial
+  Component work is canonicalized by `ComponentId`, never registration order;
+  and causally emitted work follows its cause.
+- This equal-time rule is controlled-runtime reproducibility machinery, not a
+  live or domain ordering guarantee. Cross-profile ordering requirements must
+  be expressed as explicit causality.
+
+### Controlled Trace and Work-Accounting Contract
+
+- Controlled execution always records an in-memory structural trace that tests
+  read after driving; Phase 5 requires no scheduler callback.
+- Each record has a `TraceId`, `LogicalTime`, and `TraceEvent`. Initialization
+  and controlled harness inputs are roots with no parent; every other record
+  has exactly one immediate causal parent.
+- The trace explains Component transitions; Command kinds, concrete descriptor
+  types, and targets; Subscriptions and Source lifecycle including stale drops;
+  terminal outcome/event shapes; logical time; and causation.
+- The generic trace need not capture domain payloads. Direct typed-intent tests
+  compare descriptor and Message payload values. Typed trace projection,
+  streaming observers, durable storage, and replay are deferred.
+- `pending_now` counts accepted Component Messages and due timers ready to run.
+  `pending_later` counts pending effects, future timers, active Sources (one
+  each), and outstanding Requests. Tasks, queues, locks, interpreter steps, and
+  trace records are not separate obligations.
+- A successful `run_until_idle()` normally returns with `pending_now == 0`;
+  `pending_later` may remain nonzero. Controlled cancellation reduces both to
+  zero.
+- If interpretation reaches a terminal descriptor without controlled
+  behavior, the drive operation fails there without invoking a live Driver or
+  message mapper and records Component, work-occurrence, and descriptor-type
+  context. The run is faulted: state and trace remain inspectable and
+  cancellation remains available, but driving cannot resume.
 
 ## Error Channel Design
 - Error names typed explanatory data, such as `TcpError` or `RequestError`.
@@ -221,9 +281,10 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
    exactly one EffectOutcome through the composed path, and its one-shot
    message mapper produces one Component Message.
 6. A desired SourceDescriptor passes through zero or more Layers. Its terminal
-   descriptor reaches a live SourceDriver or controlled behavior, producing a
-   runtime-owned Source whose SourceEvents return through the same Layers and
-   repeatedly pass through its reusable message mapper.
+   descriptor, ordered Layers, and mapper compile into a SourcePlan. The
+   terminal descriptor reaches a live SourceDriver or controlled behavior,
+   producing a runtime-owned Source whose SourceEvents return through the same
+   Layers and repeatedly pass through the current reusable message mapper.
 7. Resulting Messages return through runtime-managed delivery, and execution
    continues until the applicable lifecycle or shutdown policy triggers.
 
@@ -233,8 +294,12 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
 - Each Component's transitions are serialized; causal and explicitly promised sequencing guarantees are preserved.
 - Independent live events have no implicit program-wide order.
 - Controlled execution selects a deterministic schedule and produces a reproducible program-wide trace.
+- ADR-0003 defines the v0 controlled equal-time schedule, Source cutover,
+  structural trace, validation, and semantic work-accounting rules.
 - Internal topology may change without an ADR when these observable semantics remain unchanged.
-- See `docs/architecture/topology-options.md` and `docs/adr/0002-runtime-topology-and-ordering.md`.
+- See `docs/architecture/topology-options.md`,
+  `docs/adr/0002-runtime-topology-and-ordering.md`, and
+  `docs/adr/0003-controlled-execution-semantics.md`.
 
 ## Related Design Sketches
 - Thin-slice API comparison and PoC shape: `docs/architecture/thin-slice-value.md`.

@@ -2,8 +2,8 @@
 
 ## Status
 
-- Phase: Phase 4 declarative-work kernel implemented; terminal execution staged.
-- Date: July 22, 2026.
+- Phase: Phase 4 accepted; Phase 5 controlled Source planning approved.
+- Date: July 23, 2026.
 - API names are provisional; semantic roles follow `docs/glossary.md`.
 
 ## Purpose
@@ -55,8 +55,7 @@ reusable message mapper. A Source is the runtime-scoped realization.
 ```text
 Subscription(identity + SourceDescriptor + message mapper)
     -> reconciliation
-    -> zero or more Layers
-    -> terminal SourceDescriptor
+    -> SourcePlan(ordered Layers + terminal SourceDescriptor + mapper)
     -> live SourceDriver<D>, or controlled behavior
     -> Source
     -> SourceEvent zero or more times
@@ -65,9 +64,15 @@ Subscription(identity + SourceDescriptor + message mapper)
 ```
 
 Stable identity belongs to the Subscription rather than the SourceDescriptor. The same
-identity with an equal descriptor retains its Source; a changed descriptor replaces or
-reconfigures it; removal cancels it. Cancellation does not inherently manufacture a
-SourceEvent.
+identity with an equal descriptor retains its Source and atomically adopts the latest
+post-transition mapper. A changed descriptor atomically replaces it; removal cancels it.
+Cancellation does not inherently manufacture a SourceEvent.
+
+Each Source realization has a private runtime generation. After replacement commits, an
+old-generation event or mapped Message that has not begun a Component transition is
+discarded and traced. An already-running transition completes, and an old event is never
+mapped through the new generation. Applications model deliberate overlap with separate
+Subscription identities rather than depending on runtime generations.
 
 The Effect and Source paths are intentionally parallel at the descriptor and Driver
 boundaries. Their lifecycles remain asymmetric: an EffectOutcome is one terminal
@@ -78,6 +83,12 @@ descriptor. A **terminal descriptor** is the innermost descriptor directly handl
 live Driver or terminal controlled behavior. These modifiers apply to both EffectDescriptor
 and SourceDescriptor; `TelemetryFeed` is merely an application alias for one composed
 SourceDescriptor in the framed-socket reference example.
+
+A **SourcePlan** is the runtime-owned compiled mechanism produced automatically during
+reconciliation. It contains the terminal SourceDescriptor, its ordered Layers, and the
+Subscription mapper. Applications declare the composed descriptor and bind or control
+only the terminal descriptor; they never register its Layers redundantly. The exact Rust
+representation remains implementation-selectable.
 
 ## Layer and Driver Roles
 
@@ -94,6 +105,10 @@ For example, a length-delimited framing Layer may compose a byte SourceDescripto
 frame SourceDescriptor. The composed `Framed<Bytes, Codec>` value does not need its own
 terminal Driver if the Layer can reduce it to the terminal byte descriptor and map the
 resulting events.
+
+The runtime lowers that composed value into a SourcePlan before profile-specific terminal
+handling. Live and controlled execution use the same ordered Layer sequence and
+state-transition semantics.
 
 Samara expects more than one kind of Layer to emerge. This document names the category
 without promising one universal `Layer` trait.
@@ -159,7 +174,8 @@ Subscription(
 
 `Framed` is a Source Layer. `TcpBytes` is the terminal SourceDescriptor. Live execution
 uses `SourceDriver<TcpBytes>`; controlled execution scripts the same terminal descriptor
-contract. Both profiles run the same framing Layer and message mapper.
+contract. Both profiles automatically run the same framing Layer and message mapper; the
+application binds neither `Framed` nor its Layer separately.
 
 ## Contract Rules
 
@@ -169,9 +185,19 @@ contract. Both profiles run the same framing Layer and message mapper.
 - All world-facing side effects must cross a declared terminal descriptor boundary.
 - Behaviorally relevant EffectOutcomes and SourceEvents return through message mappers.
 - Missing controlled behavior fails explicitly rather than falling through to a live
-  Driver.
+  Driver. Reaching an unhandled terminal descriptor faults the controlled run before a
+  message mapper is invoked; state and trace remain inspectable and cancellation remains
+  available.
+- Retained Sources install the latest projected mapper without restarting.
+- Replaced Source generations cannot deliver stale work into a transition or through the
+  replacement mapper.
+- Composed SourceDescriptors lower automatically to SourcePlans; profile assembly binds
+  terminal descriptors only.
 - Adding a new built-in terminal descriptor or Driver must be justified as reusable
   mechanism rather than hidden application policy.
+
+The current `Decoder` EOF/finalization behavior and migration to `bytes` remain deferred
+and must be resolved before live TCP framing in Phase 6.
 
 ## Historical Note
 

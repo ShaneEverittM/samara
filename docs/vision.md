@@ -1,7 +1,7 @@
 # Samara Vision
 
 - Status: Draft
-- Date: July 21, 2026
+- Date: July 23, 2026
 - Scope: Enduring product direction and observable semantics
 
 ## Headline
@@ -32,7 +32,9 @@ ADRs may select concrete implementation strategies and may narrow the scope of a
 initial release. They must not silently weaken this vision's observable guarantees.
 For example: ADR-0002 superseded ADR-0001's single-mailbox and global-order mandate:
 runtime topology is an implementation choice, while per-Component serialization,
-causality, and controlled determinism are observable contracts.
+causality, and controlled determinism are observable contracts. ADR-0003 defines the
+initial controlled scheduling, Source cutover, structural trace, and work-accounting
+semantics beneath those guarantees.
 
 ## The Samara Program Boundary
 
@@ -188,8 +190,9 @@ and deterministic.
 
 Closure object identity is not part of Command semantics. Where Commands carry pure
 code, conformance compares the EffectDescriptor and the observable Messages produced
-when equivalent controlled outcomes are supplied. A runtime may additionally require a
-stable mapper descriptor for tracing or diagnosis.
+when equivalent controlled outcomes are supplied. A future opt-in tracing facility may
+accept a stable mapper descriptor for richer diagnosis; the v0 structural trace imposes
+no such author requirement.
 
 Whenever an EffectOutcome can influence application behavior, its success, failure,
 timeout, or cancellation must be representable as a Component Message. Runtime
@@ -210,12 +213,24 @@ After a committed transition, the runtime reconciles desired Subscriptions with 
 Subscription bookkeeping and Sources:
 
 - A newly desired identity starts a Source.
-- The same identity with an equal SourceDescriptor retains its Source without restarting.
+- The same identity with an equal SourceDescriptor retains its Source without restarting
+  and atomically adopts the latest message mapper projected after the transition.
 - A removed identity cancels its Source.
-- The same identity with a changed SourceDescriptor replaces or reconfigures its Source
-  according to the contract.
+- The same identity with a changed SourceDescriptor atomically replaces its Source. Work
+  from the withdrawn private runtime generation that has not begun a Component transition
+  is discarded and traced.
 - A Source failure that affects application behavior produces an explicit Component
   Message.
+
+Messages already created for a retained Source keep their original meaning; events mapped
+after reconciliation use the latest mapper. An event from a replaced Source is never
+mapped through the replacement's mapper. Applications requiring overlapping or draining
+lifetimes declare separate Subscription identities or carry their own domain generation.
+
+A composed SourceDescriptor is automatically lowered to a runtime-owned SourcePlan: its
+terminal descriptor, ordered profile-independent Layers, and message mapper. Applications
+bind live or controlled behavior only for terminal descriptors; they do not repeat the
+Layer stack during assembly.
 
 A Source is the runtime-scoped ongoing realization behind the SourceDescriptor and may
 produce zero or more SourceEvents. A live SourceDriver may own world-facing operational
@@ -277,7 +292,9 @@ the Samara program.
 Every terminal EffectDescriptor and SourceDescriptor used by the program must have
 controlled behavior. Time, randomness, identifiers, external inputs, EffectOutcomes, and
 SourceEvents must be controlled or seeded. Missing controlled behavior fails explicitly;
-it must never silently fall back to a live Driver or the live world.
+it must never silently fall back to a live Driver or the live world. Reaching such a
+terminal boundary faults that controlled run while preserving state and trace inspection
+and the ability to cancel runtime-owned work.
 
 For a conforming program using conforming Components, Layers, and controlled bindings,
 identical initial state, Component configuration, controlled inputs, seeds, and runtime
@@ -290,8 +307,9 @@ semantics must produce the same program-wide:
 - Runtime-controlled scheduled future work.
 
 This guarantee is program-wide, not merely per-Component final-state equality. Two
-executions that converge to the same final models after emitting different commands are
-not equivalent controlled executions.
+executions that converge to the same final models after producing different structural
+command traces are not equivalent controlled executions. Same-typed descriptor payloads
+are compared in direct typed-intent tests rather than copied into the generic v0 trace.
 
 ### Controlled Time
 
@@ -303,10 +321,12 @@ Controlled execution uses logical time and supports both:
   advances to the next scheduled event until a condition, deadline, or stopping point is
   reached.
 
-Events at the same logical time use a stable tie-break so a controlled run is
-reproducible. The exact tie-break is a runtime-semantics decision, not a domain ordering
-guarantee. Alternative valid schedules may also be explored by testing tools to expose
-order-sensitive application logic.
+Events at the same logical time use deterministic causal insertion order: commands follow
+declaration traversal order, controlled inputs follow harness order, and initial Component
+work is canonicalized by Component identity rather than registration order. This v0
+runtime-semantics rule is reproducibility machinery, not a live or domain ordering
+guarantee. Testing tools may explore alternative schedules only as explicitly different
+runtime semantics.
 
 ## Ordering Without a Mandated Topology
 
@@ -343,23 +363,26 @@ Message.
 
 ### Out-of-Band Semantic Trace
 
-The runtime exposes a structured semantic trace suitable for tests and diagnosis. It
-should represent, at minimum:
+Controlled execution always collects an in-memory structural semantic trace suitable for
+tests and diagnosis. Tests read it after driving the runtime; Phase 5 requires no callback
+inside the scheduler. Each record has identity, logical time, and an event. Initialization
+and controlled harness inputs are roots with no parent; every other record has exactly one
+immediate causal parent. The events represent, at minimum:
 
 - Component identity.
 - Message receipt and transition commitment.
-- Commands and desired Subscriptions produced by a transition.
-- EffectOutcome and Source lifecycle results.
-- Logical or live timestamps.
-- Causation relationships.
+- Command kinds, concrete descriptor types, targets, and desired Subscriptions produced by
+  a transition.
+- EffectOutcome and Source lifecycle results, including stale-generation drops.
+- Logical time and immediate causation.
 
-Trace observation has no in-band path back into Components, and the runtime must not
-branch on whether an observer is present. In controlled execution, enabling or disabling
-an observer must not change semantic behavior. In live execution, instrumentation may
-perturb timing and therefore the order of independent events, but it must not weaken any
-promised semantics. Structured tracing does not imply durable event sourcing, although
-the architecture should preserve a path for feeding captured live-world inputs and
-outcomes into controlled tests.
+The v0 generic trace is structural rather than domain-payload-complete. Descriptor and
+Message payloads remain directly testable through typed Component tests; copying them into
+the program-wide trace is optional future work. Reading the trace has no in-band path back
+into Components. A future live observer may perturb timing and therefore the order of
+independent events, but it must not weaken any promised semantics. Structured tracing does
+not imply durable event sourcing, although the architecture should preserve a path for
+feeding captured live-world inputs and outcomes into controlled tests.
 
 Incidental runtime mechanics such as thread placement, task identifiers, and queue depth
 remain diagnostics unless deliberately promoted into a public semantic contract.
@@ -513,15 +536,17 @@ message mapper:
 - A Source starts when the identity is first desired.
 - The Source remains active while the same identity has an equal SourceDescriptor.
 - The Source is canceled when the identity is no longer desired.
-- The Source is replaced or reconfigured when the same identity has a changed
-  SourceDescriptor, according to its contract.
+- The Source is replaced when the same identity has a changed
+  SourceDescriptor; stale work from the withdrawn generation is discarded before it can
+  begin another transition.
+- A retained Source atomically adopts the newest post-transition message mapper without
+  restarting.
+- A composed SourceDescriptor automatically lowers through the same ordered Layers to its
+  terminal descriptor in both profiles.
 - Its controlled SourceEvents enter the Component through the message mapper.
 - Its failure enters the Component as a Message.
 
 No automatic restart behavior is asserted.
-This requirement does not yet choose whether a newly declared message mapper
-replaces the prior mapper while equal identity and SourceDescriptor retain the
-Source.
 
 ### V5. Live and Controlled Program Parity
 
@@ -537,8 +562,10 @@ Given the same initial program, controlled world, logical-time inputs, seeds, an
 runtime semantics, two executions produce equivalent semantic traces and equivalent
 final state across all Components.
 
-The trace comparison includes transitions, commands, subscriptions, outcomes, causation,
-and logical time—not only final model values.
+The generic trace comparison includes structural transitions, command kinds and concrete
+descriptor types, subscriptions, outcomes, causation, and logical time—not only final
+model values. Direct typed-intent tests compare descriptor payloads where domain values
+matter; the generic trace need not copy those payloads.
 
 ### V7. Controlled Time Progression
 
@@ -558,13 +585,19 @@ At every observation point, the runtime can account for work created by commands
 subscriptions. Ending the owning scope leaves no detached Samara work. Failure and
 cancellation are visible through the appropriate semantic or diagnostic channel.
 
-### V10. Non-Influential Semantic Trace
+In controlled execution, immediately runnable accepted Messages and due timers count as
+`pending_now`; pending effects, future timers, active Sources, and outstanding Requests
+count as `pending_later`. Runtime tasks, queues, locks, interpreter steps, and trace records
+are not separate semantic obligations. Controlled cancellation reduces both counts to
+zero.
 
-Running a controlled scenario with and without a trace observer produces the same
-application behavior. In live execution, the observer has no semantic feedback path even
-though instrumentation may perturb the timing of independent events. The observed trace
-contains enough structured information to explain transitions, effects, subscriptions,
-time, and causation.
+### V10. Non-Influential Structural Semantic Trace
+
+Reading the always-collected controlled trace after runtime driving has no semantic
+feedback path. In live execution, a future observer likewise has no semantic feedback path
+even though instrumentation may perturb the timing of independent events. The observed
+trace contains enough structural information to explain transitions, effects,
+subscriptions, Source lifecycle, time, and causation.
 
 ### V11. Shallow Tokio Onboarding
 
@@ -603,10 +636,13 @@ The following questions remain intentionally open:
 - The broader first-party Tokio bridge module organization and bindings beyond
   the initial `StreamDescriptor<T>` plus `mpsc` bridge.
 - The initial Rust shape of Layer and execution-profile binding abstractions.
-- The controlled scheduler's exact equal-time tie-break.
 - Subscription restart and retry semantics.
 - Delivery, backpressure, overload, and coalescing policies.
 - Shutdown drain-versus-cancel semantics.
 - The initial first-party Layer and Driver catalog beyond the canonical `mpsc` bridge.
-- The semantic trace representation, versioning, storage, and replay tooling.
+- Domain-payload trace capture, typed trace projections, streaming/live observers, durable
+  trace storage, and replay tooling.
+- Request failure, timeout, abandonment, late-Reply, delegation, and in-band cancellation
+  semantics beyond the Phase 5 successful Reply path.
+- Decoder EOF/finalization semantics and `bytes` adoption before live TCP framing.
 - The shape and release timing of reusable conformance harnesses.

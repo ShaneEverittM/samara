@@ -1,6 +1,6 @@
 # Samara Goal-Mode Checklist
 
-- Status: Phase 4 complete; Phase 5 ready
+- Status: Phase 5 contract approved; implementation ready
 - Purpose: Track bounded implementation phases and their human audit gates.
 
 ## Working Rule
@@ -22,6 +22,7 @@ Governing documents:
 - [API Guidance](api-guidance.md)
 - [v0 Milestone API Contract](api-contract.md)
 - [ADR-0002: Runtime Topology and Ordering Semantics](adr/0002-runtime-topology-and-ordering.md)
+- [ADR-0003: Controlled Execution Semantics](adr/0003-controlled-execution-semantics.md)
 - [Architecture Test Strategy](testing/architecture-test-strategy.md)
 - [v0 Acceptance Matrix](testing/v0-acceptance-matrix.md)
 
@@ -81,6 +82,10 @@ Audit packet: [Phase 4 Declarative Work Kernel](audits/phase-4-declarative-work-
 
 ### 5. Controlled Execution
 
+- [x] Settle retained-Source mapping, hard replacement cutover, SourcePlan
+  lowering, equal-time scheduling, structural tracing, graph validation,
+  missing controlled behavior, semantic work accounting, and successful
+  Request/Reply scope through ADR-0003.
 - [ ] Implement controlled terminal-descriptor behavior, Source maintenance,
   scheduling, and logical time; demonstrate repeatable program-wide traces and
   final state with both reference Components.
@@ -108,7 +113,8 @@ Audit packet: [Phase 4 Declarative Work Kernel](audits/phase-4-declarative-work-
 ```text
 Implement Samara phase <N> only. Conform to docs/vision.md,
 docs/glossary.md, docs/api-guidance.md,
-docs/api-contract.md, docs/adr/0002-runtime-topology-and-ordering.md, and
+docs/api-contract.md, docs/adr/0002-runtime-topology-and-ordering.md,
+docs/adr/0003-controlled-execution-semantics.md, and
 docs/testing/v0-acceptance-matrix.md. Implement only the active contract slice
 and phase acceptance tests. Do not change governing contracts. If they conflict
 or are not implementable as written, stop and present evidence. Complete only
