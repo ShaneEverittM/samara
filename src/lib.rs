@@ -5,14 +5,14 @@
 //!
 //! # Status
 //!
-//! Phase 3 implements the Component-kernel slice frozen in
-//! `docs/api-contract.md`: program assembly retains each Component's immutable
-//! configuration, exclusively owned Model, and startup Command, while a local
-//! serialization boundary prevents overlapping transitions. Later declarative
-//! work and runtime surfaces remain compile-checked candidates and
-//! intentionally return placeholder errors until their implementation phase.
-//! The consumers in `examples` keep ownership, typing, and ergonomics visible
-//! while those slices are activated one at a time.
+//! Phase 4 builds on the frozen Component kernel with inert, interceptable
+//! effect invocations, descriptor-only Subscription reconciliation, reusable
+//! Source-event mappers, and the profile-independent framed Source Layer.
+//! Neither live nor controlled terminal behavior executes yet; those runtime
+//! surfaces remain compile-checked candidates and intentionally return
+//! placeholder errors until their implementation phase. The consumers in
+//! `examples` keep ownership, typing, and ergonomics visible while those slices
+//! are activated one at a time.
 //!
 //! # Mental model
 //!
@@ -39,6 +39,7 @@ use std::{
 };
 
 mod component_kernel;
+mod declarative_work;
 
 use component_kernel::{ComponentKernel, ErasedComponentKernel};
 
@@ -47,12 +48,13 @@ use component_kernel::{ComponentKernel, ErasedComponentKernel};
 pub mod prelude {
     pub use crate::{
         BoxFuture, CancelReason, Command, Component, ComponentHandle, ComponentId, ComponentRef,
-        ControlledRuntime, Decoder, DriverStopped, EffectDescriptor, EffectDriver, EffectOutcome,
-        Framed, FramedError, Init, LiveRuntime, Notification, PendingEffect, Port, PortId, Program,
-        ProgramBuilder, Protocol, ReplyTo, Request, RequestError, RequestInvocation,
-        RequestOutcome, RunReport, RuntimeError, RuntimeTask, Shutdown, ShutdownReport,
-        SourceDescriptor, SourceDriver, SourceEvent, SourceSink, StreamDescriptor, Subscription,
-        SubscriptionId, Subscriptions, TraceEvent, protocol,
+        ControlledRuntime, Decoder, DriverStopped, EffectDescriptor, EffectDriver,
+        EffectInvocation, EffectOutcome, Framed, FramedError, FramedLayer, Init, LiveRuntime,
+        Notification, PendingEffect, Port, PortId, Program, ProgramBuilder, Protocol, ReplyTo,
+        Request, RequestError, RequestInvocation, RequestOutcome, RunReport, RuntimeError,
+        RuntimeTask, Shutdown, ShutdownReport, SourceDescriptor, SourceDriver, SourceEvent,
+        SourceSink, StreamDescriptor, Subscription, SubscriptionId, Subscriptions, TraceEvent,
+        protocol,
     };
 }
 
@@ -680,7 +682,18 @@ trait ErasedEffectCommand<Message>: Send {
     fn intent(&self) -> &dyn Any;
     fn intent_type_name(&self) -> &'static str;
     fn mapper_type_name(&self) -> &'static str;
+    fn into_parts(self: Box<Self>) -> (Box<dyn Any + Send>, ErasedEffectMapper<Message>);
 }
+
+type ErasedEffectMapper<Message> = Box<dyn FnOnce(Box<dyn Any + Send>) -> Message + Send + 'static>;
+
+type EffectMapper<E, Message> = Box<
+    dyn FnOnce(
+            EffectOutcome<<E as EffectDescriptor>::Output, <E as EffectDescriptor>::Error>,
+        ) -> Message
+        + Send
+        + 'static,
+>;
 
 struct Perform<E, Map> {
     effect: E,
@@ -703,6 +716,21 @@ where
 
     fn mapper_type_name(&self) -> &'static str {
         std::any::type_name::<Map>()
+    }
+
+    fn into_parts(self: Box<Self>) -> (Box<dyn Any + Send>, ErasedEffectMapper<Message>) {
+        let Self { effect, map } = *self;
+        let mapper = Box::new(move |outcome: Box<dyn Any + Send>| {
+            let outcome = match outcome.downcast::<EffectOutcome<E::Output, E::Error>>() {
+                Ok(outcome) => *outcome,
+                Err(_) => {
+                    unreachable!("effect type and outcome type are coupled by EffectDescriptor")
+                }
+            };
+            map(outcome)
+        });
+
+        (Box::new(effect), mapper)
     }
 }
 
@@ -825,6 +853,59 @@ struct Reply<Reply> {
     reply: Reply,
 }
 
+/// One typed effect occurrence intercepted from an inert [`Command`].
+///
+/// The invocation owns the concrete descriptor without requiring it to be
+/// cloneable and retains the matching one-shot Message mapper. Creating this
+/// value performs no world interaction. A later execution profile can move the
+/// descriptor to terminal behavior while retaining the mapper under
+/// runtime-owned correlation.
+pub struct EffectInvocation<E, Message>
+where
+    E: EffectDescriptor,
+{
+    descriptor: E,
+    mapper: EffectMapper<E, Message>,
+}
+
+impl<E, Message> EffectInvocation<E, Message>
+where
+    E: EffectDescriptor,
+{
+    /// Borrows the explicit descriptor for inspection before execution.
+    pub fn descriptor(&self) -> &E {
+        &self.descriptor
+    }
+
+    /// Applies the stored pure mapper to the invocation's sole terminal outcome.
+    ///
+    /// Consuming the invocation makes a second mapper call impossible:
+    ///
+    /// ```compile_fail
+    /// use samara::{Command, EffectDescriptor, EffectOutcome};
+    ///
+    /// struct Read;
+    /// impl EffectDescriptor for Read {
+    ///     type Output = ();
+    ///     type Error = ();
+    /// }
+    ///
+    /// let invocation = Command::effect(Read, |_| ())
+    ///     .into_effect::<Read>()
+    ///     .ok()
+    ///     .unwrap();
+    /// invocation.map_outcome(EffectOutcome::Succeeded(()));
+    /// invocation.map_outcome(EffectOutcome::Succeeded(()));
+    /// ```
+    pub fn map_outcome(self, outcome: EffectOutcome<E::Output, E::Error>) -> Message {
+        (self.mapper)(outcome)
+    }
+
+    pub(crate) fn into_parts(self) -> (E, EffectMapper<E, Message>) {
+        (self.descriptor, self.mapper)
+    }
+}
+
 impl<ReplyValue> ErasedReplyCommand for Reply<ReplyValue>
 where
     ReplyValue: Send + 'static,
@@ -847,9 +928,10 @@ where
 ///
 /// Commands intentionally do not implement `Clone`, `Debug`, or `PartialEq`:
 /// they may contain one-shot message mappers. Transition tests inspect concrete
-/// intent through [`Command::effect_intent`],
-/// [`Command::notification_intents`], and [`Command::request_intents`], then
-/// test pure mappers with equivalent outcomes.
+/// intent through [`Command::effect_intents`],
+/// [`Command::notification_intents`], and [`Command::request_intents`].
+/// [`Command::into_effect`] then exposes the owned descriptor and its mapper for
+/// direct conformance tests.
 pub struct Command<Message>(CommandKind<Message>);
 
 enum CommandKind<Message> {
@@ -1003,15 +1085,86 @@ impl<Message> Command<Message> {
     /// This inspection hook is intended for direct transition tests; it does not
     /// execute the effect or compare mapper identity.
     pub fn effect_intent<E: EffectDescriptor>(&self) -> Option<&E> {
+        self.effect_intents::<E>().into_iter().next()
+    }
+
+    /// Collects every concrete effect intent of type `E`, including inside a
+    /// batch and preserving declaration traversal order.
+    ///
+    /// Equal-looking descriptors remain separate entries because each Command
+    /// occurrence represents a distinct effect invocation. The returned order
+    /// is an inspection property of this inert value; it does not promise
+    /// effect completion order.
+    pub fn effect_intents<E: EffectDescriptor>(&self) -> Vec<&E> {
+        let mut intents = Vec::new();
+        self.collect_effect_intents(&mut intents);
+        intents
+    }
+
+    fn collect_effect_intents<'a, E: EffectDescriptor>(&'a self, intents: &mut Vec<&'a E>) {
         match &self.0 {
-            CommandKind::Effect(command) => command.intent().downcast_ref(),
-            CommandKind::Batch(commands) => commands.iter().find_map(Self::effect_intent::<E>),
+            CommandKind::Effect(command) => {
+                if let Some(intent) = command.intent().downcast_ref() {
+                    intents.push(intent);
+                }
+            }
+            CommandKind::Batch(commands) => {
+                for command in commands {
+                    command.collect_effect_intents(intents);
+                }
+            }
             CommandKind::None
             | CommandKind::Send(_)
             | CommandKind::Notify(_)
             | CommandKind::Request(_)
             | CommandKind::Reply(_)
-            | CommandKind::After { .. } => None,
+            | CommandKind::After { .. } => {}
+        }
+    }
+
+    /// Applies the stored one-shot mapper when this is a top-level effect
+    /// Command with concrete descriptor type `E`.
+    ///
+    /// This is a pure inspection and conformance hook: it supplies typed data
+    /// directly and never invokes a Driver or either execution profile. The
+    /// Command is consumed so its `FnOnce` mapper cannot be called twice. A
+    /// non-effect Command or mismatched descriptor type is returned unchanged.
+    pub fn map_effect_outcome<E>(
+        self,
+        outcome: EffectOutcome<E::Output, E::Error>,
+    ) -> Result<Message, Self>
+    where
+        Message: Send + 'static,
+        E: EffectDescriptor,
+    {
+        match self.into_effect::<E>() {
+            Ok(invocation) => Ok(invocation.map_outcome(outcome)),
+            Err(command) => Err(command),
+        }
+    }
+
+    /// Intercepts a top-level typed effect occurrence without executing it.
+    ///
+    /// The returned [`EffectInvocation`] owns both the non-`Clone` descriptor
+    /// and its one-shot mapper. A non-effect Command or mismatched descriptor
+    /// type is returned unchanged. Use [`Command::into_declarations`] first to
+    /// inspect or intercept effect occurrences nested in a batch.
+    pub fn into_effect<E>(self) -> Result<EffectInvocation<E, Message>, Self>
+    where
+        Message: Send + 'static,
+        E: EffectDescriptor,
+    {
+        match self.0 {
+            CommandKind::Effect(command) if command.intent().is::<E>() => {
+                let (descriptor, mapper) = command.into_parts();
+                let descriptor = match descriptor.downcast::<E>() {
+                    Ok(descriptor) => *descriptor,
+                    Err(_) => unreachable!("the descriptor type was checked before interception"),
+                };
+                let mapper = Box::new(move |outcome| mapper(Box::new(outcome)));
+                Ok(EffectInvocation { descriptor, mapper })
+            }
+            command => Err(Self(command)),
         }
     }
 
@@ -1130,12 +1283,38 @@ impl<Message> Command<Message> {
             | CommandKind::Batch(_) => None,
         }
     }
+
+    /// Consumes a composable Command into its non-batch declarations.
+    ///
+    /// Direct tests and runtime interpretation use this to handle one declared
+    /// operation at a time. Traversal order preserves how declarations were
+    /// nested for inspectability, but does not promise execution or completion
+    /// order for independent work.
+    pub fn into_declarations(self) -> Vec<Self> {
+        fn append<Message>(command: Command<Message>, declarations: &mut Vec<Command<Message>>) {
+            match command.0 {
+                CommandKind::None => {}
+                CommandKind::Batch(commands) => {
+                    for command in commands {
+                        append(command, declarations);
+                    }
+                }
+                declaration => declarations.push(Command(declaration)),
+            }
+        }
+
+        let mut declarations = Vec::new();
+        append(self, &mut declarations);
+        declarations
+    }
 }
 
 trait ErasedSubscription<Message>: Send {
     fn descriptor(&self) -> &dyn Any;
+    fn descriptor_snapshot(&self) -> Box<dyn ErasedSourceDescriptor>;
     fn descriptor_type_name(&self) -> &'static str;
     fn mapper_type_name(&self) -> &'static str;
+    fn map_event(&self, event: Box<dyn Any + Send>) -> Message;
 }
 
 struct MappedSourceDescriptor<S, Map> {
@@ -1153,12 +1332,37 @@ where
         &self.descriptor
     }
 
+    fn descriptor_snapshot(&self) -> Box<dyn ErasedSourceDescriptor> {
+        Box::new(SourceDescriptorSnapshot(self.descriptor.clone()))
+    }
+
     fn descriptor_type_name(&self) -> &'static str {
         std::any::type_name::<S>()
     }
 
     fn mapper_type_name(&self) -> &'static str {
         std::any::type_name::<Map>()
+    }
+
+    fn map_event(&self, event: Box<dyn Any + Send>) -> Message {
+        let event = match event.downcast::<SourceEvent<S::Item, S::Error>>() {
+            Ok(event) => *event,
+            Err(_) => unreachable!("source type and event type are coupled by SourceDescriptor"),
+        };
+
+        (self.map)(event)
+    }
+}
+
+trait ErasedSourceDescriptor: Send {
+    fn equals(&self, other: &dyn Any) -> bool;
+}
+
+struct SourceDescriptorSnapshot<S: SourceDescriptor>(S);
+
+impl<S: SourceDescriptor> ErasedSourceDescriptor for SourceDescriptorSnapshot<S> {
+    fn equals(&self, other: &dyn Any) -> bool {
+        other.downcast_ref::<S>() == Some(&self.0)
     }
 }
 
@@ -1206,11 +1410,39 @@ impl<Message> Subscription<Message> {
         self.descriptor.descriptor().downcast_ref()
     }
 
+    /// Applies this subscription's reusable mapper to one typed Source event.
+    ///
+    /// This pure inspection and conformance hook does not create a Source,
+    /// select an execution profile, or deliver the resulting Message. The
+    /// mapper is borrowed and can therefore be applied to every event from one
+    /// active Source. A mismatched descriptor type returns the event unchanged.
+    pub fn map_source_event<S>(
+        &self,
+        event: SourceEvent<S::Item, S::Error>,
+    ) -> Result<Message, SourceEvent<S::Item, S::Error>>
+    where
+        S: SourceDescriptor,
+    {
+        if self.descriptor.descriptor().is::<S>() {
+            Ok(self.descriptor.map_event(Box::new(event)))
+        } else {
+            Err(event)
+        }
+    }
+
     /// Returns diagnostic Rust type metadata for the source descriptor.
     ///
     /// The returned name is not a stable protocol or serialization identifier.
     pub fn descriptor_type_name(&self) -> &'static str {
         self.descriptor.descriptor_type_name()
+    }
+
+    fn descriptor_snapshot(&self) -> Box<dyn ErasedSourceDescriptor> {
+        self.descriptor.descriptor_snapshot()
+    }
+
+    fn has_descriptor(&self, descriptor: &dyn ErasedSourceDescriptor) -> bool {
+        descriptor.equals(self.descriptor.descriptor())
     }
 }
 
@@ -1352,6 +1584,83 @@ impl<S, D> Framed<S, D> {
     /// Composes an underlying source with a decoder configuration.
     pub fn new(source: S, decoder: D) -> Self {
         Self { source, decoder }
+    }
+}
+
+impl<S, D> Framed<S, D>
+where
+    S: SourceDescriptor<Item = D::Chunk>,
+    D: Decoder,
+{
+    /// Creates the pure runtime-scoped Layer state for one descriptor instance.
+    ///
+    /// This does not create a Source, invoke a Driver, or choose live versus
+    /// controlled execution. Both profiles use the same Layer to transform
+    /// events from the inner descriptor vocabulary.
+    pub fn into_layer(self) -> FramedLayer<S, D> {
+        let state = self.decoder.start();
+        FramedLayer {
+            descriptor: self,
+            state,
+        }
+    }
+}
+
+/// Profile-independent state for one active [`Framed`] composition.
+///
+/// The runtime creates one value per active composed Source. Its decoder state
+/// is deterministic mechanism state rather than Component Model state or a
+/// world-facing resource. Mapping an event produces only outer [`SourceEvent`]
+/// values; delivery and terminal Source behavior remain runtime concerns.
+pub struct FramedLayer<S, D>
+where
+    S: SourceDescriptor<Item = D::Chunk>,
+    D: Decoder,
+{
+    descriptor: Framed<S, D>,
+    state: D::State,
+}
+
+type FramedLayerEvent<S, D> = SourceEvent<
+    <D as Decoder>::Frame,
+    FramedError<<S as SourceDescriptor>::Error, <D as Decoder>::Error>,
+>;
+
+impl<S, D> FramedLayer<S, D>
+where
+    S: SourceDescriptor<Item = D::Chunk>,
+    D: Decoder,
+{
+    /// Returns the next descriptor inside this composed Layer.
+    ///
+    /// The returned descriptor may itself be composed; this method does not
+    /// claim that it is the terminal Driver boundary.
+    pub fn inner_descriptor(&self) -> &S {
+        &self.descriptor.source
+    }
+
+    /// Purely transforms one inner Source event into zero or more outer events.
+    ///
+    /// A chunk may yield several frames or no frame while decoder state retains
+    /// an incomplete suffix. Inner and decoder failures remain distinguished as
+    /// typed data. Producing a terminal event does not itself cancel a Source or
+    /// deliver a Component Message.
+    pub fn map_event(
+        &mut self,
+        event: SourceEvent<S::Item, S::Error>,
+    ) -> Vec<FramedLayerEvent<S, D>> {
+        match event {
+            SourceEvent::Item(chunk) => {
+                match self.descriptor.decoder.push(&mut self.state, chunk) {
+                    Ok(frames) => frames.into_iter().map(SourceEvent::Item).collect(),
+                    Err(error) => vec![SourceEvent::Failed(FramedError::Decode(error))],
+                }
+            }
+            SourceEvent::Failed(error) => {
+                vec![SourceEvent::Failed(FramedError::Source(error))]
+            }
+            SourceEvent::Ended => vec![SourceEvent::Ended],
+        }
     }
 }
 
@@ -1631,7 +1940,7 @@ pub struct RuntimeError(&'static str);
 
 impl RuntimeError {
     fn sketch() -> Self {
-        Self("this Samara runtime surface is not implemented in Phase 3")
+        Self("this Samara runtime surface is not implemented in Phase 4")
     }
 }
 

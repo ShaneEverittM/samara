@@ -1,8 +1,8 @@
 # TEA + Tokio Core Architecture (v0)
 
 ## Status
-- Phase: Phase 2 candidate contract; implementation not started.
-- Date: July 21, 2026.
+- Phase: Phase 4 declarative-work kernel accepted; Phase 5 controlled execution ready.
+- Date: July 22, 2026.
 - Library scope: `samara` is library-first.
 
 ## Goals

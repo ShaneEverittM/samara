@@ -2,8 +2,8 @@
 
 ## Status
 
-- Phase: Phase 2 candidate contract; implementation not started.
-- Date: July 21, 2026.
+- Phase: Phase 4 declarative-work kernel implemented; terminal execution staged.
+- Date: July 22, 2026.
 - API names are provisional; semantic roles follow `docs/glossary.md`.
 
 ## Purpose

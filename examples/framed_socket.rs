@@ -690,7 +690,7 @@ fn controlled_shape() -> Result<(), RuntimeError> {
 
 /// Keeps the binary intentionally inert while its consumer shape is compiled.
 fn main() {
-    println!("compile-checked Phase 3 reference; see this source and its unit tests");
+    println!("compile-checked Phase 4 reference; see this source and its unit tests");
 }
 
 #[cfg(test)]
@@ -713,6 +713,38 @@ mod tests {
                 .push(&mut state, vec![b'b', b'c', 0, 1, b'x'])
                 .unwrap(),
             vec![Frame(b"abc".to_vec()), Frame(b"x".to_vec())]
+        );
+    }
+
+    /// Exercises the actual composed descriptor used by `Telemetry` without
+    /// selecting a live Driver or controlled terminal binding.
+    #[test]
+    fn framed_layer_maps_reference_transport_events() {
+        let descriptor = Framed::new(
+            TcpBytes {
+                endpoint: Endpoint::new("reference:7000"),
+                generation: 1,
+            },
+            U16LengthDelimited { max_frame_len: 8 },
+        );
+        let mut layer = descriptor.into_layer();
+
+        assert_eq!(
+            layer.map_event(SourceEvent::Item(vec![0, 3, b'a'])),
+            Vec::<SourceEvent<Frame, TelemetryError>>::new()
+        );
+        assert_eq!(
+            layer.map_event(SourceEvent::Item(vec![b'b', b'c', 0, 1, b'x'])),
+            vec![
+                SourceEvent::Item(Frame(b"abc".to_vec())),
+                SourceEvent::Item(Frame(b"x".to_vec())),
+            ]
+        );
+        assert_eq!(
+            layer.map_event(SourceEvent::Failed(TcpError::Read("reset".to_owned()))),
+            vec![SourceEvent::Failed(FramedError::Source(TcpError::Read(
+                "reset".to_owned()
+            )))]
         );
     }
 

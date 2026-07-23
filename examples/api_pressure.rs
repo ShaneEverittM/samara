@@ -418,7 +418,7 @@ fn controlled_shape() -> Result<(), RuntimeError> {
 
 /// Keeps the binary intentionally inert while its consumer shape is compiled.
 fn main() {
-    println!("compile-checked Phase 3 reference; see this source and its unit tests");
+    println!("compile-checked Phase 4 reference; see this source and its unit tests");
 }
 
 #[cfg(test)]
@@ -458,10 +458,17 @@ mod tests {
             CounterMessage::Reserved(RequestOutcome::Replied(Reservation::Granted { amount: 3 })),
         );
         assert_eq!(model.count, 3);
-        assert_eq!(
-            command.effect_intent::<PersistCount>(),
-            Some(&PersistCount { value: 3 })
-        );
+        let effect = command
+            .into_effect::<PersistCount>()
+            .unwrap_or_else(|_| panic!("the granted reservation should request persistence"));
+        assert_eq!(effect.descriptor(), &PersistCount { value: 3 });
+
+        // Phase 4 can exercise the exact stored one-shot mapper without
+        // pretending a Driver or controlled terminal behavior ran.
+        let persisted = effect.map_outcome(EffectOutcome::Succeeded(()));
+        let command = component.update(&mut model, persisted);
+        assert!(command.is_none());
+        assert_eq!(model.last_save, Some(EffectOutcome::Succeeded(())));
 
         // Subscription configuration is declared and testable without running
         // the receiver or depending on a particular task/mailbox topology.

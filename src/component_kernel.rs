@@ -2,6 +2,9 @@ use std::any::Any;
 
 use tokio::sync::Mutex;
 
+use crate::declarative_work::{
+    DuplicateSubscriptionIdError, SubscriptionChange, SubscriptionReconciler,
+};
 use crate::{Command, Component, ComponentId, Init};
 
 /// Runtime-owned state and transition mechanism for one Component.
@@ -15,17 +18,20 @@ pub(crate) struct ComponentKernel<C: Component> {
     component: C,
     model: C::Model,
     initial_command: Option<Command<C::Message>>,
+    subscriptions: SubscriptionReconciler<C::Message>,
 }
 
 impl<C: Component> ComponentKernel<C> {
     pub(crate) fn new(id: ComponentId, component: C) -> Self {
         let Init { model, command } = component.init();
+        let subscriptions = SubscriptionReconciler::new(id.clone());
 
         Self {
             id,
             component,
             model,
             initial_command: Some(command),
+            subscriptions,
         }
     }
 
@@ -43,6 +49,18 @@ impl<C: Component> ComponentKernel<C> {
 
     pub(crate) fn take_initial_command(&mut self) -> Option<Command<C::Message>> {
         self.initial_command.take()
+    }
+
+    /// Compares the current committed Model projection with this Component's
+    /// descriptor-only active Subscription bookkeeping.
+    ///
+    /// The returned changes remain inert: later runtime phases create or stop
+    /// Sources and choose the retained-mapper policy.
+    pub(crate) fn reconcile_subscriptions(
+        &mut self,
+    ) -> Result<Vec<SubscriptionChange<C::Message>>, DuplicateSubscriptionIdError> {
+        let desired = self.component.subscriptions(&self.model);
+        self.subscriptions.reconcile(desired)
     }
 }
 

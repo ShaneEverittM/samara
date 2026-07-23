@@ -1,6 +1,6 @@
 # Samara Goal-Mode Checklist
 
-- Status: Phase 3 complete; Phase 4 ready
+- Status: Phase 4 complete; Phase 5 ready
 - Purpose: Track bounded implementation phases and their human audit gates.
 
 ## Working Rule
@@ -67,14 +67,17 @@ Audit packet: [Phase 3 Component Kernel](audits/phase-3-component-kernel.md).
 
 ### 4. Declarative Work Kernel
 
-- [ ] Implement interceptable `Command` values carrying typed
+- [x] Implement interceptable `Command` values carrying typed
   `EffectDescriptor` values and one-shot message mappers, plus `Subscription`
   reconciliation over identity, `SourceDescriptor`, and reusable message
   mappers.
-- [ ] Implement the first compositional Layers, including the framed-socket
+- [x] Implement the first compositional Layers, including the framed-socket
   Layer, without selecting live or controlled terminal behavior.
-- [ ] Audit `EffectOutcome` and `SourceEvent` mapping into `Message`, Source
+- [x] Audit `EffectOutcome` and `SourceEvent` mapping into `Message`, Source
   retention and replacement, and the separation between Layers and Drivers.
+- [x] Shane accepts the Phase 4 audit and authorizes Phase 5.
+
+Audit packet: [Phase 4 Declarative Work Kernel](audits/phase-4-declarative-work-kernel.md).
 
 ### 5. Controlled Execution
 

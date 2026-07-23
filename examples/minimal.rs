@@ -10,14 +10,14 @@
 //! Only the runtime binding changes from a real Tokio receiver to scripted
 //! input.
 //!
-//! # Current Phase 3 limitation
+//! # Current Phase 4 limitation
 //!
-//! The crate now owns and serializes Component state but does not interpret
-//! declarative work or run either execution profile. This example therefore
-//! has a real `#[tokio::main]` entry point and honest live assembly, but running
-//! it ends with the façade's explicit Phase 3 error. The end-to-end controlled
-//! test is retained as a visibly staged executable requirement; the direct
-//! Component test runs now.
+//! The crate now owns and serializes Component state and implements the inert
+//! declarative-work kernel, but it does not run either execution profile. This
+//! example therefore has a real `#[tokio::main]` entry point and honest live
+//! assembly, but running it ends with the façade's explicit Phase 4 error. The
+//! end-to-end controlled test is retained as a visibly staged executable
+//! requirement; the direct Component test runs now.
 
 use std::error::Error;
 
@@ -134,7 +134,7 @@ async fn run_live() -> Result<(), Box<dyn Error>> {
     let runtime = runtime.spawn();
 
     // Drain expresses that this finite source should be processed before the
-    // owned runtime scope ends. Today this call returns the explicit Phase 3
+    // owned runtime scope ends. Today this call returns the explicit Phase 4
     // error described in the module documentation.
     let report = runtime.shutdown(Shutdown::Drain).await?;
     assert!(report.is_clean());
