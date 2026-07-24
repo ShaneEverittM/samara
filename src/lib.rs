@@ -5,12 +5,12 @@
 //!
 //! # Status
 //!
-//! Phase 5 adds deterministic controlled execution to the frozen Component and
-//! declarative-work kernels. Controlled tests now interpret typed Commands,
-//! reconcile runtime-owned Sources, lower composed SourcePlans, advance logical
-//! time, route successful Requests, account for semantic obligations, and
-//! collect causal structural traces. Live Tokio Drivers and structured live
-//! shutdown remain the Phase 6 implementation boundary.
+//! Phase 6 adds structured live Tokio execution alongside deterministic
+//! controlled execution. Live tests now interpret typed Commands, reconcile
+//! runtime-owned Sources, supervise terminal Drivers and timers, preserve
+//! Component serialization and causal delivery, and close the owned scope by
+//! explicit Drain or Cancel semantics. Controlled execution continues to own
+//! logical time and repeatable program-wide traces.
 //!
 //! # Mental model
 //!
@@ -37,6 +37,7 @@ use std::{
     fmt,
     future::Future,
     marker::PhantomData,
+    net::SocketAddr,
     pin::Pin,
     sync::Arc,
     time::Duration,
@@ -45,6 +46,7 @@ use std::{
 mod component_kernel;
 mod controlled_runtime;
 mod declarative_work;
+mod live_runtime;
 
 use component_kernel::{ComponentKernel, ErasedComponentKernel};
 use controlled_runtime::ControlledCore;
@@ -61,7 +63,8 @@ pub mod prelude {
         RequestInvocation, RequestOutcome, RunReport, RuntimeError, RuntimeTask, Shutdown,
         ShutdownReport, SourceDescriptor, SourceDriver, SourceEvent, SourceEventKind, SourceSink,
         StreamDescriptor, Subscription, SubscriptionAction, SubscriptionId, Subscriptions,
-        TraceCommandKind, TraceEvent, TraceId, TraceRecord, protocol,
+        TcpBytes, TcpError, TcpErrorKind, TraceCommandKind, TraceEvent, TraceId, TraceRecord,
+        protocol,
     };
 }
 
@@ -1813,6 +1816,89 @@ impl<T: Send + 'static> SourceDescriptor for StreamDescriptor<T> {
     type Error = std::convert::Infallible;
 }
 
+/// Inert description of one TCP byte-stream connection.
+///
+/// Each live Source realization makes exactly one connection attempt to the
+/// supplied numeric socket address. DNS, reconnect, retry, framing, TLS, and
+/// domain interpretation are deliberately outside this terminal descriptor.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TcpBytes {
+    endpoint: SocketAddr,
+}
+
+impl TcpBytes {
+    /// Describes one connection to `endpoint`.
+    pub fn connect(endpoint: SocketAddr) -> Self {
+        Self { endpoint }
+    }
+
+    /// Returns the numeric endpoint used for the one connection attempt.
+    pub fn endpoint(&self) -> SocketAddr {
+        self.endpoint
+    }
+}
+
+impl SourceDescriptor for TcpBytes {
+    type Item = bytes::Bytes;
+    type Error = TcpError;
+}
+
+/// Stage at which the first-party TCP Source failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TcpErrorKind {
+    /// Establishing the single connection failed.
+    Connect,
+    /// Reading the established byte stream failed.
+    Read,
+}
+
+/// Typed explanatory data for a first-party TCP Source failure.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TcpError {
+    kind: TcpErrorKind,
+    message: Arc<str>,
+}
+
+impl TcpError {
+    /// Creates a typed TCP failure for controlled execution and test fixtures.
+    ///
+    /// Live execution constructs this value from Tokio I/O errors. Controlled
+    /// execution has no live error to wrap, so tests use this constructor to
+    /// supply the same explanatory boundary value explicitly.
+    pub fn new(kind: TcpErrorKind, message: impl Into<Arc<str>>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+
+    fn connect(error: std::io::Error) -> Self {
+        Self::new(TcpErrorKind::Connect, error.to_string())
+    }
+
+    fn read(error: std::io::Error) -> Self {
+        Self::new(TcpErrorKind::Read, error.to_string())
+    }
+
+    /// Returns whether connection or established-stream reading failed.
+    pub fn kind(&self) -> TcpErrorKind {
+        self.kind
+    }
+
+    /// Returns the operating-system diagnostic without exposing it as policy.
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+}
+
+impl fmt::Display for TcpError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "TCP {:?} error: {}", self.kind, self.message)
+    }
+}
+
+impl Error for TcpError {}
+
 /// Pure streaming decoder used by [`Framed`].
 ///
 /// The decoder value is comparable configuration. Mutable operational state,
@@ -1837,6 +1923,15 @@ pub trait Decoder: Clone + PartialEq + fmt::Debug + Send + Sync + 'static {
         state: &mut Self::State,
         chunk: Self::Chunk,
     ) -> Result<Vec<Self::Frame>, Self::Error>;
+
+    /// Purely finalizes decoder state after normal end of the byte stream.
+    ///
+    /// This method is called exactly once for a normally ending underlying
+    /// Source. It must either return every final frame in order or reject the
+    /// remaining state with a typed Error. Source failure, replacement,
+    /// cancellation, shutdown, runtime fault, and an earlier decode failure do
+    /// not call `finish`.
+    fn finish(&self, state: &mut Self::State) -> Result<Vec<Self::Frame>, Self::Error>;
 }
 
 /// Source Description Layer that applies a pure stateful [`Decoder`] to another
@@ -1933,7 +2028,14 @@ where
             SourceEvent::Failed(error) => {
                 vec![SourceEvent::Failed(FramedError::Source(error))]
             }
-            SourceEvent::Ended => vec![SourceEvent::Ended],
+            SourceEvent::Ended => match self.descriptor.decoder.finish(&mut self.state) {
+                Ok(frames) => frames
+                    .into_iter()
+                    .map(SourceEvent::Item)
+                    .chain(std::iter::once(SourceEvent::Ended))
+                    .collect(),
+                Err(error) => vec![SourceEvent::Failed(FramedError::Decode(error))],
+            },
         }
     }
 }
@@ -2445,8 +2547,8 @@ pub trait EffectDriver<D: EffectDescriptor>: Send + Sync + 'static {
 /// It may emit many items through [`SourceSink::emit`], then should terminate
 /// explicitly with [`SourceSink::fail`] or [`SourceSink::end`]. If the sink
 /// returns [`DriverStopped`], the Driver should promptly release its resources
-/// and return. The meaning of returning without a terminal sink call remains an
-/// open API question in the current contract.
+/// and return. Returning normally without an accepted terminal call is one
+/// implicit normal end for the active Source generation.
 pub trait SourceDriver<D: SourceDescriptor>: Send + Sync + 'static {
     /// Runs one active instance of the source descriptor.
     fn run(&self, descriptor: D, sink: SourceSink<D>) -> BoxFuture<()>;
@@ -2457,33 +2559,46 @@ pub trait SourceDriver<D: SourceDescriptor>: Send + Sync + 'static {
 /// The sink translates Driver activity into [`SourceEvent`] values for the
 /// subscription mapper. It offers no path to Component state.
 pub struct SourceSink<D: SourceDescriptor> {
+    inner: Arc<live_runtime::SourceSinkCore>,
     marker: PhantomData<fn() -> D>,
 }
 
 impl<D: SourceDescriptor> SourceSink<D> {
+    pub(crate) fn runtime(inner: Arc<live_runtime::SourceSinkCore>) -> Self {
+        Self {
+            inner,
+            marker: PhantomData,
+        }
+    }
+
     /// Emits one item while leaving the source active.
     ///
     /// `DriverStopped` means the owning subscription or runtime scope no longer
     /// accepts events.
     pub async fn emit(&self, item: D::Item) -> Result<(), DriverStopped> {
-        let _ = item;
-        Err(DriverStopped)
+        self.inner.send(
+            ErasedSourceEvent::typed::<D>(SourceEvent::Item(item)),
+            false,
+        )
     }
 
     /// Emits a terminal source failure.
     pub async fn fail(&self, error: D::Error) -> Result<(), DriverStopped> {
-        let _ = error;
-        Err(DriverStopped)
+        self.inner.send(
+            ErasedSourceEvent::typed::<D>(SourceEvent::Failed(error)),
+            true,
+        )
     }
 
     /// Emits normal terminal completion.
     pub async fn end(&self) -> Result<(), DriverStopped> {
-        Err(DriverStopped)
+        self.inner
+            .send(ErasedSourceEvent::typed::<D>(SourceEvent::Ended), true)
     }
 }
 
 /// Signal that runtime ownership of a live Driver has ended.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DriverStopped;
 
 impl fmt::Display for DriverStopped {
@@ -2496,8 +2611,8 @@ impl Error for DriverStopped {}
 
 /// Topology-neutral runtime or controlled-harness diagnostic.
 ///
-/// Phase 5 exposes stable context for a faulting Component, descriptor, and
-/// work occurrence while leaving the broader runtime taxonomy provisional.
+/// Samara exposes stable context for a faulting Component, descriptor, and work
+/// occurrence while leaving the broader runtime taxonomy provisional.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RuntimeError(Arc<RuntimeErrorKind>);
 
@@ -2513,10 +2628,6 @@ enum RuntimeErrorKind {
 }
 
 impl RuntimeError {
-    fn sketch() -> Self {
-        Self::harness("this live Samara runtime surface is not implemented in Phase 5")
-    }
-
     pub(crate) fn fault(
         component: ComponentId,
         descriptor_type: Option<&'static str>,
@@ -2587,11 +2698,12 @@ impl Error for RuntimeError {}
 /// Binds a topology-neutral [`Program`] to live Tokio world Drivers.
 ///
 /// Binding is assembly-time work: Components still see only typed effect and
-/// source descriptors. Missing or duplicate bindings should make
-/// [`LiveRuntimeBuilder::build`] fail in a real implementation; the exact error
-/// policy is a later phase's explicit decision gate.
+/// source descriptors. Missing initial bindings and duplicate or ambiguous
+/// bindings make [`LiveRuntimeBuilder::build`] fail. A missing binding first
+/// reached through dynamic work faults the running scope.
 pub struct LiveRuntimeBuilder {
     program: Program,
+    bindings: live_runtime::LiveBindings,
 }
 
 /// Fully assembled live program that will use real Tokio scheduling, time, and
@@ -2601,12 +2713,18 @@ pub struct LiveRuntimeBuilder {
 /// not promise deterministic order between independent events.
 pub struct LiveRuntime {
     program: Program,
+    bindings: live_runtime::LiveBindings,
+    scope: Arc<live_runtime::LiveScope>,
+    receiver: tokio::sync::mpsc::UnboundedReceiver<live_runtime::LiveEvent>,
 }
 
 impl LiveRuntime {
     /// Starts live assembly for a topology-neutral program blueprint.
     pub fn builder(program: Program) -> LiveRuntimeBuilder {
-        LiveRuntimeBuilder { program }
+        LiveRuntimeBuilder {
+            program,
+            bindings: live_runtime::LiveBindings::new(),
+        }
     }
 
     /// Creates external ingress for one typed Component.
@@ -2617,8 +2735,18 @@ impl LiveRuntime {
         &self,
         component: &ComponentRef<C>,
     ) -> Result<ComponentHandle<C>, RuntimeError> {
+        if !Arc::ptr_eq(&component.program, &self.program.program)
+            || !self.program.components.iter().any(|kernel| {
+                kernel.id() == component.id() && kernel.component_type_id() == TypeId::of::<C>()
+            })
+        {
+            return Err(RuntimeError::harness(
+                "live Component handle target is not part of this Program",
+            ));
+        }
         Ok(ComponentHandle {
             component: component.clone(),
+            scope: self.scope.clone(),
         })
     }
 
@@ -2627,8 +2755,12 @@ impl LiveRuntime {
     /// The returned [`RuntimeTask`] is the ownership handle used to shut down and
     /// account for all Samara-authorized work.
     pub fn spawn(self) -> RuntimeTask {
+        let scope = self.scope.clone();
+        let core =
+            live_runtime::LiveCore::new(self.program, self.bindings, self.scope, self.receiver);
         RuntimeTask {
-            program: self.program,
+            scope,
+            join: Some(tokio::spawn(core.run())),
         }
     }
 }
@@ -2639,21 +2771,21 @@ impl LiveRuntimeBuilder {
     /// The receiver is unique live-world state and therefore stays out of the
     /// Component and [`Program`]. Closing it produces [`SourceEvent::Ended`].
     pub fn bind_mpsc<T: Send + 'static>(
-        self,
+        mut self,
         stream: StreamDescriptor<T>,
         receiver: tokio::sync::mpsc::Receiver<T>,
     ) -> Self {
-        let _ = (stream, receiver);
+        live_runtime::bind_mpsc(&mut self.bindings, stream, receiver);
         self
     }
 
     /// Registers the live Driver for effect descriptor type `D`.
-    pub fn bind_effect<D, Driver>(self, driver: Driver) -> Self
+    pub fn bind_effect<D, Driver>(mut self, driver: Driver) -> Self
     where
         D: EffectDescriptor,
         Driver: EffectDriver<D>,
     {
-        let _ = driver;
+        self.bindings.bind_effect::<D, Driver>(driver);
         self
     }
 
@@ -2662,19 +2794,38 @@ impl LiveRuntimeBuilder {
     /// Pure source composition such as [`Framed`] is evaluated above this
     /// binding, so Drivers operate on raw world events rather than application
     /// messages.
-    pub fn bind_source<D, Driver>(self, driver: Driver) -> Self
+    pub fn bind_source<D, Driver>(mut self, driver: Driver) -> Self
     where
         D: SourceDescriptor,
         Driver: SourceDriver<D>,
     {
-        let _ = driver;
+        self.bindings.bind_source::<D, Driver>(driver);
+        self
+    }
+
+    /// Registers Samara's first-party one-connection Tokio TCP Driver.
+    ///
+    /// Components declare [`TcpBytes`] values and controlled execution binds
+    /// that same terminal descriptor type with `control_source::<TcpBytes>()`.
+    /// The live Driver performs no DNS, retry, reconnect, or framing.
+    pub fn bind_tcp(mut self) -> Self {
+        live_runtime::bind_tcp(&mut self.bindings);
         self
     }
 
     /// Validates bindings and finishes live assembly.
     pub fn build(self) -> Result<LiveRuntime, RuntimeError> {
+        self.bindings.validate()?;
+        for component in &self.program.components {
+            component.validate_initial_live_bindings(&self.bindings)?;
+        }
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let scope = Arc::new(live_runtime::LiveScope::new(sender));
         Ok(LiveRuntime {
             program: self.program,
+            bindings: self.bindings,
+            scope,
+            receiver,
         })
     }
 }
@@ -2697,16 +2848,32 @@ impl LiveRuntimeBuilder {
 /// ```
 pub struct ComponentHandle<C: Component> {
     component: ComponentRef<C>,
+    scope: Arc<live_runtime::LiveScope>,
+}
+
+impl<C: Component> Clone for ComponentHandle<C> {
+    fn clone(&self) -> Self {
+        Self {
+            component: self.component.clone(),
+            scope: self.scope.clone(),
+        }
+    }
 }
 
 impl<C: Component> ComponentHandle<C> {
     /// Submits a message to the live runtime.
     ///
-    /// In this provisional shape, successful return means accepted for delivery,
-    /// not that the target transition has completed.
+    /// Successful return means accepted for runtime-managed delivery, not that
+    /// the target transition has completed.
     pub async fn send(&self, message: C::Message) -> Result<(), RuntimeError> {
-        let _ = (&self.component, message);
-        Err(RuntimeError::sketch())
+        self.scope.accept_ingress(live_runtime::LiveEvent::ingress(
+            live_runtime::LiveIngress {
+                target: self.component.id().clone(),
+                target_message_type: TypeId::of::<C::Message>(),
+                message_type_name: std::any::type_name::<C::Message>(),
+                message: Box::new(message),
+            },
+        ))
     }
 }
 
@@ -2715,27 +2882,57 @@ impl<C: Component> ComponentHandle<C> {
 /// Dropping or shutting down this scope must not leave detached commands,
 /// subscriptions, or Driver work.
 pub struct RuntimeTask {
-    program: Program,
+    scope: Arc<live_runtime::LiveScope>,
+    join: Option<tokio::task::JoinHandle<Result<ShutdownReport, RuntimeError>>>,
 }
 
 impl RuntimeTask {
-    /// Ends the program using the requested provisional shutdown policy and
-    /// returns work-accounting evidence.
-    pub async fn shutdown(self, mode: Shutdown) -> Result<ShutdownReport, RuntimeError> {
-        let _ = (self.program, mode);
-        Err(RuntimeError::sketch())
+    /// Ends the program using the requested shutdown policy and returns
+    /// work-accounting evidence.
+    pub async fn shutdown(mut self, mode: Shutdown) -> Result<ShutdownReport, RuntimeError> {
+        let cutoff = self.scope.begin_shutdown(mode);
+        let result = self
+            .join
+            .as_mut()
+            .expect("a RuntimeTask owns one live runtime task")
+            .await
+            .map_err(|_| RuntimeError::harness("live runtime owner task panicked"));
+        // Keep the JoinHandle inside `self` across the await. If a host timeout
+        // drops this shutdown future, `RuntimeTask::drop` can still abort the
+        // owner instead of detaching it. A completed owner no longer needs that
+        // guard.
+        self.join.take();
+        let result = result?;
+        match result {
+            Ok(report) => {
+                cutoff?;
+                Ok(report)
+            }
+            Err(error) => Err(error),
+        }
     }
 }
 
-/// Provisional policy for runtime-owned work during shutdown.
-///
-/// Exact drain-versus-cancel behavior for ongoing subscriptions, recurring
-/// timers, and newly emitted messages remains a deferred design decision.
+impl Drop for RuntimeTask {
+    fn drop(&mut self) {
+        if let Some(join) = self.join.take() {
+            // Drop cannot asynchronously join the owner, but it can atomically
+            // close admission before aborting it. Dropping `LiveCore` then
+            // drops its `JoinSet`, which aborts every owned child task.
+            let _ = self.scope.begin_shutdown(Shutdown::Cancel);
+            join.abort();
+        }
+    }
+}
+
+/// Policy for runtime-owned work during live shutdown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Shutdown {
-    /// Attempt to finish eligible in-flight work before ending the scope.
+    /// Stop Sources and recursively finish accepted and causally emitted finite
+    /// work. Drain has no implicit deadline and may wait forever.
     Drain,
-    /// Cancel runtime-owned work and end the scope promptly.
+    /// Stop application driving, cancel owned work, and emit no synthetic
+    /// application outcomes solely because the scope ended.
     Cancel,
 }
 
@@ -3353,6 +3550,10 @@ mod source_plan_tests {
             chunk: Self::Chunk,
         ) -> Result<Vec<Self::Frame>, Self::Error> {
             Ok(vec![chunk])
+        }
+
+        fn finish(&self, _state: &mut Self::State) -> Result<Vec<Self::Frame>, Self::Error> {
+            Ok(Vec::new())
         }
     }
 

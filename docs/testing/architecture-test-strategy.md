@@ -1,7 +1,7 @@
 # Architecture Test Strategy (v0)
 
 ## Status
-- Phase: Phase 6 live-runtime contract accepted; implementation active.
+- Phase: Phase 6 live-runtime implementation complete; audit ready.
 - Date: July 23, 2026.
 
 ## Purpose

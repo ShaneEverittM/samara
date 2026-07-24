@@ -1,6 +1,6 @@
 # Samara v0 Milestone API Contract
 
-- Status: Phase 6 live-runtime contract accepted; implementation active
+- Status: Phase 6 live-runtime implementation complete; audit ready
 - Date: July 23, 2026
 - Scope: Change-controlled public API slices for staged implementation
 
@@ -76,11 +76,11 @@ change-controlled design candidates, but their implementation phases must
 activate and audit their acceptance tranche before freezing them:
 
 - Phase 6: live Drivers, first-party Tokio bridges, live ingress, runtime scope,
-  and structured shutdown.
+  and structured shutdown (implemented, pending phase-audit acceptance).
 
 The reference examples are normative about the application shape they show.
-Their placeholder runtime calls are not evidence that the corresponding
-runtime policy is frozen.
+Their live and controlled tests are implementation evidence, but the Phase 6
+slice becomes frozen only when Shane accepts its audit.
 
 ## Frozen for Phase 4: Declarative Work Kernel
 
@@ -99,12 +99,14 @@ particular:
 - `Framed` Layers are profile-independent and may carry deterministic
   runtime-scoped decoder state without performing ambient I/O.
 
-The accepted Phase 4 implementation still has no Decoder EOF/finalization hook.
-[ADR-0004](adr/0004-initial-live-runtime-semantics.md) resolves that Phase 6
+The accepted Phase 4 implementation had no Decoder EOF/finalization hook.
+[ADR-0004](adr/0004-initial-live-runtime-semantics.md) resolved that Phase 6
 contract gate by adopting `bytes::Bytes` for first-party TCP chunks and
 requiring explicit pure Decoder finalization before a Framed Source reports
-normal ending. The existing behavior remains only a documented limitation
-until Phase 6 implements the accepted contract.
+normal ending. The Phase 6 implementation now spells that operation
+`Decoder::finish` and exercises the profile-independent Layer behavior directly;
+the same Layer is retained by both runtime profiles. The spelling remains
+pending phase-audit acceptance.
 
 ## Accepted for Phase 5: Controlled Execution
 
@@ -140,7 +142,7 @@ at its audit.
 ## Accepted for Phase 6: Initial Live Runtime
 
 [ADR-0004](adr/0004-initial-live-runtime-semantics.md) governs the accepted,
-bounded live-runtime slice now active for Phase 6 implementation.
+bounded live-runtime slice now implemented and ready for Phase 6 audit.
 
 The ADR specifies:
 

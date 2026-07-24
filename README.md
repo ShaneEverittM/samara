@@ -9,13 +9,12 @@ Samara is a framework for building asynchronous applications in Rust.
 ## Status
 
 Samara's Phase 2 executable contract, Phase 3 Component kernel, Phase 4
-declarative-work kernel, and Phase 5 controlled runtime are accepted.
-Controlled programs interpret typed Commands, maintain and compose Sources,
-advance logical time, route successful Requests, account for semantic
-obligations, and collect deterministic causal traces under ADR-0003. Controlled
-execution never invokes a live Driver. ADR-0004 now defines the accepted,
-deliberately simple live Driver, bridge, pressure, fault, and
-structured-shutdown semantics active for Phase 6 implementation.
+declarative-work kernel, and Phase 5 controlled runtime are accepted. The
+bounded Phase 6 live Tokio runtime is implemented and ready for its manual
+audit. Controlled programs retain deterministic causal traces and logical time;
+live programs now interpret the same typed Commands and Sources through
+structured Drivers, one-shot Tokio `mpsc` bindings, and a narrow TCP byte
+Source under ADR-0004. Phase 6 is not closed until its audit is accepted.
 
 The earlier Actor proof of concept remains available in Git history at commit
 `8408509`, but it is not a compatibility target for the new runtime.
@@ -36,6 +35,7 @@ The earlier Actor proof of concept remains available in Git history at commit
 - [Phase 3 audit packet](docs/audits/phase-3-component-kernel.md)
 - [Phase 4 audit packet](docs/audits/phase-4-declarative-work-kernel.md)
 - [Phase 5 audit packet](docs/audits/phase-5-controlled-execution.md)
+- [Phase 6 audit packet](docs/audits/phase-6-live-tokio-runtime.md)
 
 ## Reference Components
 
@@ -53,6 +53,6 @@ The earlier Actor proof of concept remains available in Git history at commit
 cargo fmt --all -- --check
 cargo test --all-targets
 cargo test --doc
-cargo clippy --all-targets -- -D warnings
-RUSTDOCFLAGS='-D warnings' cargo doc --no-deps
+cargo clippy --all-targets --all-features -- -D warnings
+RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --all-features
 ```

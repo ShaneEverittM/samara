@@ -10,11 +10,11 @@
 //! Only the runtime binding changes from a real Tokio receiver to scripted
 //! input.
 //!
-//! # Current Phase 5 boundary
+//! # Live and controlled profiles
 //!
-//! The end-to-end controlled test runs this program with scripted stream input.
-//! The real `#[tokio::main]` entry point and live assembly remain compile-checked,
-//! but live Tokio Driver execution is the next implementation phase.
+//! End-to-end tests run this exact program with both scripted controlled input
+//! and a real Tokio channel. The Component and logical assembly are unchanged;
+//! only the boundary binding differs.
 
 use std::error::Error;
 
@@ -117,14 +117,12 @@ fn program(increments: StreamDescriptor<u64>) -> (Program, ComponentRef<Counter>
 /// bridge; the application does not write a polling task or Driver.
 async fn run_live() -> Result<(), Box<dyn Error>> {
     let increments = StreamDescriptor::named(INCREMENT_INPUT);
-    let (input, receiver) = tokio::sync::mpsc::channel(8);
+    let (input, receiver) = tokio::sync::mpsc::channel(1);
     let (program, _counter) = program(increments.clone());
 
-    // Queue finite demonstration input while the receiver is still ordinary
-    // Tokio state. This remains valid when the runtime façade is implemented.
+    // Fill the one-slot upstream channel before spawning. This is ordinary
+    // Tokio pressure; Samara has not accepted the value yet.
     input.send(2).await?;
-    input.send(3).await?;
-    drop(input);
 
     // Binding transfers the unique receiver into Samara's structured runtime
     // scope. The Component still contains only `StreamDescriptor`.
@@ -133,8 +131,17 @@ async fn run_live() -> Result<(), Box<dyn Error>> {
         .build()?;
     let runtime = runtime.spawn();
 
-    // Drain expresses that this finite source should be processed before the
-    // owned runtime scope ends. Live execution remains the Phase 6 boundary.
+    // With capacity one, each later send can finish only after the bridge has
+    // received the prior value. The bridge calls `SourceSink::emit` before its
+    // next receive, so the two harmless zero-valued sentinels prove that 2 and
+    // 3 crossed Samara's acceptance boundary before shutdown begins.
+    input.send(3).await?;
+    input.send(0).await?;
+    input.send(0).await?;
+    drop(input);
+
+    // Drain stops the ongoing Source, but retains the already accepted values
+    // and all finite work they causally emit.
     let report = runtime.shutdown(Shutdown::Drain).await?;
     assert!(report.is_clean());
     Ok(())
@@ -206,5 +213,12 @@ mod tests {
         let report = runtime.cancel()?;
         assert!(report.is_clean());
         Ok(())
+    }
+
+    /// Runs the canonical onboarding Component through the first-party Tokio
+    /// `mpsc` bridge and structured live shutdown.
+    #[tokio::test]
+    async fn v11_minimal_component_runs_with_live_mpsc() -> Result<(), Box<dyn Error>> {
+        run_live().await
     }
 }

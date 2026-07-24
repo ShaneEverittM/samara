@@ -419,20 +419,28 @@ fn controlled_shape() -> Result<(), RuntimeError> {
     Ok(())
 }
 
-/// Keeps the binary intentionally inert while its consumer shape is compiled.
+/// Keeps the binary intentionally inert; the tests exercise both profiles.
 fn main() {
-    println!("Phase 5 controlled reference; see this source and its unit tests");
+    println!("Samara live and controlled reference; see this source and its tests");
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Activates the Phase 5 controlled counterpart of the broad API-pressure
-    /// example without executing a live Driver.
+    /// Activates the controlled counterpart of the broad API-pressure example
+    /// without executing a live Driver.
     #[test]
     fn controlled_reference_program_runs_end_to_end() -> Result<(), RuntimeError> {
         controlled_shape()
+    }
+
+    /// Runs the unchanged Components and Program through real Tokio scheduling,
+    /// Ports, a first-party channel bridge, a terminal Effect Driver, and
+    /// structured cancellation.
+    #[tokio::test]
+    async fn live_reference_program_runs_end_to_end() -> Result<(), RuntimeError> {
+        live_shape().await
     }
 
     /// Proves pure transition intent without constructing either runtime.

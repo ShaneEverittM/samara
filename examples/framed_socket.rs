@@ -97,6 +97,9 @@ struct DecoderState {
 enum DecodeError {
     /// A length prefix exceeded the configured resource bound.
     FrameTooLarge { length: usize, maximum: usize },
+
+    /// The peer ended while a length prefix or frame payload was incomplete.
+    UnexpectedEof,
 }
 
 impl Decoder for U16LengthDelimited {
@@ -146,6 +149,14 @@ impl Decoder for U16LengthDelimited {
         }
 
         Ok(frames)
+    }
+
+    fn finish(&self, state: &mut Self::State) -> Result<Vec<Self::Frame>, Self::Error> {
+        if state.buffered.is_empty() {
+            Ok(Vec::new())
+        } else {
+            Err(DecodeError::UnexpectedEof)
+        }
     }
 }
 
@@ -688,20 +699,29 @@ fn controlled_shape() -> Result<(), RuntimeError> {
     Ok(())
 }
 
-/// Keeps the binary intentionally inert while its consumer shape is compiled.
+/// Keeps the binary intentionally inert; the tests exercise both profiles.
 fn main() {
-    println!("Phase 5 controlled reference; see this source and its unit tests");
+    println!("Samara live and controlled reference; see this source and its tests");
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Activates the Phase 5 controlled path through Port notification,
-    /// composed Source Layers, typed effects, replacement, and failure input.
+    /// Activates the controlled path through Port notification, composed Source
+    /// Layers, typed effects, replacement, and failure input.
     #[test]
     fn controlled_reference_program_runs_end_to_end() -> Result<(), RuntimeError> {
         controlled_shape()
+    }
+
+    /// Runs the unchanged Components and composed `Framed` descriptor through
+    /// real Tokio scheduling and structured Source cancellation. The example's
+    /// deliberately pending transport Driver makes Cancel the appropriate host
+    /// boundary for this smoke scenario.
+    #[tokio::test]
+    async fn live_reference_program_runs_end_to_end() -> Result<(), RuntimeError> {
+        live_shape().await
     }
 
     /// Proves the pure decoder handles both transport fragmentation and several

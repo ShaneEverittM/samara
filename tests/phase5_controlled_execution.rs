@@ -621,6 +621,13 @@ impl Decoder for LengthPrefix {
         }
         Ok(frames)
     }
+
+    fn finish(&self, state: &mut Self::State) -> Result<Vec<Self::Frame>, Self::Error> {
+        Ok((!state.0.is_empty())
+            .then(|| std::mem::take(&mut state.0))
+            .into_iter()
+            .collect())
+    }
 }
 
 type TwiceFramed = Framed<Framed<RawBytes, LengthPrefix>, LengthPrefix>;

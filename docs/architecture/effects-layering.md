@@ -2,7 +2,7 @@
 
 ## Status
 
-- Phase: Phase 6 live Driver contract accepted; implementation active.
+- Phase: Phase 6 live Driver implementation complete; audit ready.
 - Date: July 23, 2026.
 - API names are provisional; semantic roles follow `docs/glossary.md`.
 

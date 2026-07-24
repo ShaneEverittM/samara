@@ -230,6 +230,14 @@ impl Decoder for LengthDelimited {
 
         Ok(frames)
     }
+
+    fn finish(&self, state: &mut Self::State) -> Result<Vec<Self::Frame>, Self::Error> {
+        if state.buffered.is_empty() {
+            Ok(Vec::new())
+        } else {
+            Err(DecodeError)
+        }
+    }
 }
 
 type FramedChunks = Framed<RawChunks, LengthDelimited>;
@@ -362,4 +370,151 @@ fn v4_framed_source_events_map_into_component_messages() {
             "reset"
         ))))
     );
+}
+
+#[derive(Clone)]
+struct EofDecoder {
+    finish_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    fail_push: bool,
+    fail_finish: bool,
+}
+
+impl std::fmt::Debug for EofDecoder {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("EofDecoder")
+            .field("fail_push", &self.fail_push)
+            .field("fail_finish", &self.fail_finish)
+            .finish()
+    }
+}
+
+impl PartialEq for EofDecoder {
+    fn eq(&self, other: &Self) -> bool {
+        self.fail_push == other.fail_push && self.fail_finish == other.fail_finish
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct EofError;
+
+impl Decoder for EofDecoder {
+    type Chunk = Vec<u8>;
+    type Frame = u8;
+    type Error = EofError;
+    type State = Vec<u8>;
+
+    fn start(&self) -> Self::State {
+        Vec::new()
+    }
+
+    fn push(
+        &self,
+        state: &mut Self::State,
+        chunk: Self::Chunk,
+    ) -> Result<Vec<Self::Frame>, Self::Error> {
+        if self.fail_push {
+            return Err(EofError);
+        }
+        state.extend(chunk);
+        Ok(Vec::new())
+    }
+
+    fn finish(&self, state: &mut Self::State) -> Result<Vec<Self::Frame>, Self::Error> {
+        self.finish_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.fail_finish {
+            Err(EofError)
+        } else {
+            Ok(std::mem::take(state))
+        }
+    }
+}
+
+fn eof_decoder(
+    fail_push: bool,
+    fail_finish: bool,
+) -> (EofDecoder, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    let finish_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    (
+        EofDecoder {
+            finish_calls: finish_calls.clone(),
+            fail_push,
+            fail_finish,
+        },
+        finish_calls,
+    )
+}
+
+#[test]
+fn phase6_framed_eof_emits_final_frames_before_ended() {
+    let (decoder, finish_calls) = eof_decoder(false, false);
+    let mut layer = Framed::new(
+        RawChunks {
+            endpoint: "telemetry:7000",
+        },
+        decoder,
+    )
+    .into_layer();
+    assert!(layer.map_event(SourceEvent::Item(vec![1, 2])).is_empty());
+    assert_eq!(
+        layer.map_event(SourceEvent::Ended),
+        vec![
+            SourceEvent::Item(1),
+            SourceEvent::Item(2),
+            SourceEvent::Ended,
+        ]
+    );
+    assert_eq!(finish_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[test]
+fn phase6_framed_finish_failure_emits_failed_without_ended() {
+    let (decoder, finish_calls) = eof_decoder(false, true);
+    let mut layer = Framed::new(
+        RawChunks {
+            endpoint: "telemetry:7000",
+        },
+        decoder,
+    )
+    .into_layer();
+    assert!(layer.map_event(SourceEvent::Item(vec![1])).is_empty());
+    assert_eq!(
+        layer.map_event(SourceEvent::Ended),
+        vec![SourceEvent::Failed(FramedError::Decode(EofError))]
+    );
+    assert_eq!(finish_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[test]
+fn phase6_framed_source_failure_does_not_run_finish() {
+    let (decoder, finish_calls) = eof_decoder(false, false);
+    let mut layer = Framed::new(
+        RawChunks {
+            endpoint: "telemetry:7000",
+        },
+        decoder,
+    )
+    .into_layer();
+    assert_eq!(
+        layer.map_event(SourceEvent::Failed(TransportError("reset"))),
+        vec![SourceEvent::Failed(FramedError::Source(TransportError(
+            "reset"
+        )))]
+    );
+    assert_eq!(finish_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+    let (decoder, finish_calls) = eof_decoder(true, false);
+    let mut layer = Framed::new(
+        RawChunks {
+            endpoint: "telemetry:7000",
+        },
+        decoder,
+    )
+    .into_layer();
+    assert_eq!(
+        layer.map_event(SourceEvent::Item(vec![1])),
+        vec![SourceEvent::Failed(FramedError::Decode(EofError))]
+    );
+    assert_eq!(finish_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
 }

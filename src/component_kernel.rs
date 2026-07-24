@@ -131,6 +131,10 @@ pub(crate) trait ErasedComponentKernel: Send {
     fn reconcile_subscriptions_erased(
         &mut self,
     ) -> Result<Vec<ErasedSubscriptionChange>, SubscriptionId>;
+    fn validate_initial_live_bindings(
+        &self,
+        bindings: &crate::live_runtime::LiveBindings,
+    ) -> Result<(), crate::RuntimeError>;
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
 }
@@ -174,6 +178,14 @@ impl<C: Component> ErasedComponentKernel for ComponentKernel<C> {
         self.reconcile_subscriptions()
             .map(|changes| changes.into_iter().map(erase_subscription_change).collect())
             .map_err(|error| error.id().clone())
+    }
+
+    fn validate_initial_live_bindings(
+        &self,
+        bindings: &crate::live_runtime::LiveBindings,
+    ) -> Result<(), crate::RuntimeError> {
+        let subscriptions = self.component.subscriptions(&self.model);
+        bindings.validate_initial(&self.id, self.initial_command.as_ref(), &subscriptions)
     }
 
     fn as_any(&self) -> &dyn Any {

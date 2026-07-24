@@ -33,6 +33,13 @@ pub(crate) trait ErasedCommand: Send {
         component: &ComponentId,
         cause: TraceId,
     ) -> Result<(), RuntimeError>;
+
+    fn interpret_live(
+        self: Box<Self>,
+        runtime: &mut crate::live_runtime::LiveCore,
+        component: &ComponentId,
+        cause: TraceId,
+    ) -> Result<(), RuntimeError>;
 }
 
 struct TypedCommand<Message>(Command<Message>);
@@ -51,6 +58,15 @@ where
     fn interpret(
         self: Box<Self>,
         runtime: &mut ControlledCore,
+        component: &ComponentId,
+        cause: TraceId,
+    ) -> Result<(), RuntimeError> {
+        runtime.interpret_command(self.0, component, cause)
+    }
+
+    fn interpret_live(
+        self: Box<Self>,
+        runtime: &mut crate::live_runtime::LiveCore,
         component: &ComponentId,
         cause: TraceId,
     ) -> Result<(), RuntimeError> {
@@ -126,7 +142,7 @@ pub(crate) enum ErasedSubscriptionChange {
 }
 
 impl ErasedSubscriptionChange {
-    fn id(&self) -> &SubscriptionId {
+    pub(crate) fn id(&self) -> &SubscriptionId {
         match self {
             Self::Start(subscription)
             | Self::Retain(subscription)
