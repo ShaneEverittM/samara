@@ -1,7 +1,7 @@
 # Architecture Test Strategy (v0)
 
 ## Status
-- Phase: Phase 5 controlled-execution contract approved.
+- Phase: Phase 6 live-runtime contract accepted; implementation active.
 - Date: July 23, 2026.
 
 ## Purpose
@@ -28,14 +28,23 @@ architecture before each implementation slice begins.
 - Validate the public descriptor and Command boundary cannot substitute an
   opaque async closure for an identifiable EffectDescriptor.
 - Validate each terminal EffectDescriptor reaches the matching live
-  EffectDriver or controlled behavior and produces exactly one EffectOutcome.
-- Validate the one-shot EffectOutcome message mapper is invoked exactly once and
-  emits the expected Component Message.
+  EffectDriver or controlled behavior. Every EffectOutcome actually accepted
+  by the running scope invokes its one-shot mapper exactly once and emits the
+  expected Component Message.
+- Validate normal EffectDriver success and failure produce one outcome, while
+  whole-scope Cancel or runtime-fault cleanup aborts the live future
+  without manufacturing an outcome or invoking its mapper. Preserve
+  exactly-once mapping for explicitly accepted cancellation outcomes.
 - Validate SourceDescriptor equality has the promised reconciliation meaning
   and each terminal SourceDescriptor reaches the matching live SourceDriver or
   controlled behavior to realize a runtime-owned Source.
 - Validate a Source may emit zero or more SourceEvents and that its reusable
   mapper can produce a Component Message for each delivered event.
+- Validate successful calls from one Source preserve acceptance order. The
+  first accepted fail/end or active silent Driver return produces exactly one
+  terminal event; cancellation, replacement, shutdown, or runtime fault
+  winning first suppresses terminal mapping and later calls return
+  `DriverStopped`.
 - Validate retaining an equal SourceDescriptor preserves the Source realization
   while atomically adopting the latest projected mapper.
 - Validate replacement is a hard private-generation cutover: stale events or
@@ -48,6 +57,9 @@ architecture before each implementation slice begins.
   applications bind only terminal descriptors.
 - Validate Drivers remain terminal, selected by live-profile assembly, and
   runtime-owned.
+- Validate normal EOF alone invokes pure Decoder finalization exactly once,
+  final frames precede `Ended`, a finalization Error produces failure without
+  `Ended`, and no failure/cancellation/replacement path pretends to be EOF.
 - Validate mechanism-versus-policy boundaries without requiring a universal
   Layer trait or a particular profile-binding API.
 
@@ -65,17 +77,36 @@ architecture before each implementation slice begins.
   dependency graph.
 
 ### L4: Cancellation and Shutdown Tests
-- Validate graceful shutdown with in-flight tasks.
-- Confirm expected message delivery guarantees during shutdown policy enforcement.
+- Validate Drain atomically closes ingress and Source admission, stops
+  active Sources, and recursively handles pre-cutoff accepted Messages and
+  Source deliveries plus causally emitted finite work.
+- Confirm Drain does not cancel finite effects to complete and document that a
+  hung Driver, unanswered Request, far-future or recurring timer, or
+  self-sustaining application may keep it pending indefinitely.
+- Validate Cancel closes ingress, stops application driving, cancels
+  obligations and owned Driver tasks, invokes no mapper solely because the
+  scope ended, and joins or aborts every owned task.
+- Validate fault cleanup follows the same ownership closure and surfaces
+  `RuntimeError` without fabricated typed application data.
+- Confirm successful shutdown reports zero remaining, pending-now, and
+  pending-later obligations without depending on exact completed/cancelled
+  diagnostic counts.
 - Confirm an issued EffectDescriptor still resolves through exactly one
-  EffectOutcome when its contract exposes cancellation.
+  EffectOutcome when its own contract exposes cancellation and that outcome is
+  actually accepted.
 - Confirm canceling a Source does not manufacture a SourceEvent unless that
   Source contract explicitly promises one.
 
 ### L5: Backpressure and Load Tests
-- Validate ingress and work pressure behavior without assuming a particular
-  internal queue topology.
-- Produce throughput, tail-latency, isolation, and overload evidence for the selected implementation.
+- Validate live admission and work pressure behavior without assuming a
+  particular internal queue topology.
+- For v0 unbounded internal delivery, prove a healthy running scope
+  does not intentionally drop successfully accepted work in a bounded test.
+- Record workload, throughput, tail latency, memory trend, and isolation as
+  characterization only. Do not turn capacity or performance values into
+  stable conformance thresholds or imply support for memory exhaustion.
+- Confirm the first-party `mpsc` bridge adds no pressure promise beyond the
+  upstream Tokio channel selected by the application.
 
 ### L6: Controlled-Time and Acceleration Tests
 - Validate that runtime scheduling semantics can run in controlled time.
@@ -111,10 +142,22 @@ architecture before each implementation slice begins.
   double and controlled behavior, including zero-event, repeated-event, normal
   end, failure, retained-latest-mapper, hard-generation replacement, stale
   drop, and cancellation paths where applicable.
+- Live Source terminal-arbitration coverage including explicit end/fail,
+  active silent return, terminal-versus-cancellation races, per-Source FIFO,
+  later `DriverStopped`, and no hidden restart of a terminal still-desired
+  Source.
+- Framed EOF coverage including final frames before end, finalization failure
+  without end, and no finalization after upstream failure, decoder failure,
+  replacement, cancellation, shutdown, or runtime fault.
 - Layer composition coverage proving the same descriptor and mapping semantics
   across live and controlled profiles.
-- Runtime fault conversion into explicit Component Messages or typed boundary
-  outcomes/events where behaviorally relevant.
+- Expected effect, Source, Request, and domain failures whose contracts define
+  typed Error data must enter through explicit Component Messages or typed
+  boundary outcomes/events where behaviorally relevant.
+- Live mechanism faults that cannot truthfully construct typed application
+  data, including Driver panic, unavailable dynamic binding, and exhausted
+  one-shot `mpsc`, must instead close admission, cancel/join owned work, and
+  surface `RuntimeError` through the host boundary.
 - Component interaction coverage for `Command::notify` (one-way) and
   `Command::request` (request/reply). Phase 5 activates only the successful
   Request/Reply path; dropped-reply policy remains deferred.
@@ -161,9 +204,15 @@ architecture before each implementation slice begins.
   unanswered Phase 5 Request remains a `pending_later` obligation until then
   and does not synthesize a deferred failure, timeout, or cancellation outcome.
 - Cancellation behavior for long-running and short-running commands.
-- Backpressure behavior under burst and sustained load.
+- First-party bridge coverage for one-shot `mpsc` normal closure and explicit
+  duplicate/reactivation fault, plus one-connection TCP Bytes, connect/read
+  failure, peer EOF, cancellation closure, and absence of hidden
+  retry/reconnect/framing.
+- Pressure characterization under burst and sustained load without a stable
+  threshold promise.
 - Recovery behavior after Driver and runtime failures without prescribing the
-  final boundary variant taxonomy.
+  final boundary variant taxonomy. Phase 6 requires scope cleanup and
+  host-visible fault, not restart or continued application driving.
 - Controlled-time progression behavior (including faster-than-real-time runs)
   for timer-driven flows.
 

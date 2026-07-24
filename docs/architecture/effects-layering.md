@@ -2,7 +2,7 @@
 
 ## Status
 
-- Phase: Phase 4 accepted; Phase 5 controlled Source planning approved.
+- Phase: Phase 6 live Driver contract accepted; implementation active.
 - Date: July 23, 2026.
 - API names are provisional; semantic roles follow `docs/glossary.md`.
 
@@ -38,7 +38,8 @@ Command + EffectDescriptor
     -> zero or more Layers
     -> terminal EffectDescriptor
     -> live EffectDriver<D>, or controlled behavior
-    -> EffectOutcome exactly once
+    -> EffectOutcome exactly once on normal completion
+       (whole-scope abort may produce none)
     -> one-shot message mapper
     -> Component Message
 ```
@@ -129,6 +130,18 @@ wiring into the descriptor or Component types.
 Controlled execution need not implement or call those live Driver traits. The exact Rust
 shape of live and controlled profile bindings remains open.
 
+Under ADR-0004, a normally returning EffectDriver result becomes exactly one
+Succeeded or Failed EffectOutcome and invokes its mapper once. Whole-scope Cancel or
+runtime-fault cleanup is an abort instead: it cancels the Driver future without
+manufacturing an outcome for an application that is ending. Explicitly accepted
+per-effect cancellation outcomes remain ordinary exactly-once typed outcomes.
+
+For a live Source, successful sink calls preserve acceptance order. The first accepted
+`end`, accepted `fail`, or active silent SourceDriver return wins one terminal event.
+Cancellation, replacement, shutdown, or runtime fault winning first withdraws the
+generation without an event; later sink calls receive `DriverStopped`. Normal Source
+ending does not imply automatic restart while the same Subscription desire remains.
+
 ## Mechanism and Policy
 
 Mechanism examples:
@@ -195,9 +208,18 @@ application binds neither `Framed` nor its Layer separately.
   terminal descriptors only.
 - Adding a new built-in terminal descriptor or Driver must be justified as reusable
   mechanism rather than hidden application policy.
+- A Driver panic or unavailable terminal live mechanism faults and closes the live scope;
+  it does not invent typed application Error data.
+- v0 internal live delivery is unbounded after successful admission and does not
+  intentionally drop accepted work due to capacity. This is a documented memory-growth
+  limitation, not an overload or backpressure promise.
 
-The current `Decoder` EOF/finalization behavior and migration to `bytes` remain deferred
-and must be resolved before live TCP framing in Phase 6.
+ADR-0004 resolves the Phase 6 framing gate by using `bytes::Bytes` for
+first-party TCP chunks and requiring pure Decoder finalization. On normal inner `Ended`,
+Framed finalizes exactly once, emits any final frames in order, then emits `Ended`; a
+finalization Error emits one decode failure and no `Ended`. Underlying failure, earlier
+decode failure, replacement, cancellation, shutdown, and runtime fault do not invoke
+finalization. The exact method spelling remains implementation-reviewable.
 
 ## Historical Note
 

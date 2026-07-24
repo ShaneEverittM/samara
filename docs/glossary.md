@@ -9,9 +9,10 @@ reference for API design, implementation, testing, and documentation—not a
 substitute for the behavioral contracts in the vision and ADRs.
 
 The concepts below are canonical unless marked historical. Accepted API slices
-and the approved Phase 5 controlled-execution contract follow these spellings.
-`api-contract.md` records which slice is frozen for each implementation phase
-and which policy-bearing surfaces remain provisional.
+and the Phase 5 controlled-execution contract follow these spellings. Accepted
+ADR-0004 uses them for the active initial live-runtime contract.
+`api-contract.md` records which slice is frozen for each
+implementation phase and which policy-bearing surfaces remain provisional.
 
 ## Program and State
 
@@ -99,7 +100,10 @@ not be comparable or cloneable.
 **EffectOutcome** — The single terminal completion of an effect invocation: a
 typed success, a failure carrying typed Error data, or cancellation as defined
 by that effect's contract. A one-shot message mapper transforms it into a
-Component Message.
+Component Message. Aborting the entire live runtime scope under
+ADR-0004 is ownership cleanup rather than an effect-contract cancellation: the
+live future is dropped or cancelled and no EffectOutcome or mapped Message is
+manufactured for an application that is ending.
 
 **Error** — Typed data explaining why an operation could not complete as
 intended, such as `TcpError`, `DecodeError`, or `RequestError`. Concrete payload
@@ -151,6 +155,13 @@ generation.
 **SourceEvent** — One repeatable occurrence produced by a Source. A reusable
 message mapper transforms each SourceEvent into a Component Message.
 
+**Source terminal arbitration** — The accepted Phase 6 rule that exactly one
+terminal condition wins while a live Source generation is active. An accepted
+`SourceSink::end`, accepted `SourceSink::fail`, or active SourceDriver return
+produces one terminal event; a cancellation, replacement, shutdown, or runtime
+fault cutover winning first suppresses later terminal events. Sink calls after
+termination return `DriverStopped`.
+
 **Desired Subscription** — A Subscription returned from the Component's
 current Model during reconciliation.
 
@@ -198,6 +209,11 @@ EffectDescriptor type `D` and its live-world Driver.
 **`SourceDriver<D>`** — The provisional static relationship between a terminal
 SourceDescriptor type `D` and its live-world Driver.
 
+Under ADR-0004, normal EffectDriver return maps success or failure
+exactly once. A SourceDriver that returns without an accepted terminal sink
+call normally ends its still-active Source exactly once. Driver panic instead
+faults the runtime and produces no fabricated typed application result.
+
 Controlled execution provides deterministic behavior for the same terminal
 descriptor contracts without silently invoking live Drivers. The exact Rust
 shape of profile bindings remains open.
@@ -209,7 +225,8 @@ semantics are actually similar:
 Command + EffectDescriptor
     -> zero or more Layers
     -> terminal EffectDriver in live execution, or controlled behavior
-    -> EffectOutcome exactly once
+    -> EffectOutcome exactly once on normal completion
+       (whole-scope abort may produce none)
     -> one-shot message mapper
     -> Component Message
 
@@ -235,6 +252,13 @@ hidden in runtime-owned mechanism.
 Samara-authorized asynchronous activity remains owned, cancellable, and
 accountable through a runtime scope. Detached work is non-conforming.
 
+**Decoder finalization** — The pure EOF operation required for Phase 6. Normal
+ending of the underlying Source asks the Decoder to emit zero or more final
+frames or one typed decode Error. Final frames precede `Ended`; finalization
+failure emits `Failed` without `Ended`. Underlying failure, an earlier decoder
+failure, replacement, cancellation, shutdown, and runtime fault are not decoder
+EOF and do not invoke finalization.
+
 ## Descriptor Naming
 
 The `EffectDescriptor` and `SourceDescriptor` traits name the architectural
@@ -248,6 +272,11 @@ because `Source` is reserved for the runtime-scoped realization.
 `StreamDescriptor<T>` uses the otherwise optional `Descriptor` suffix to avoid
 confusion with a running stream. It names logical event production independently
 of the live adapter; `bind_mpsc` names one concrete Tokio realization.
+
+The accepted first-party `mpsc` realization is one-shot because a Tokio
+receiver is a unique live resource. Channel closure ends its Source normally;
+duplicate activation or reactivation after consumption or cancellation faults
+explicitly rather than implying a recreated receiver.
 
 Application aliases for composed descriptors should use intrinsic domain
 language when it exists. Names such as `TelemetryFeed` in examples are domain
@@ -334,7 +363,9 @@ is deliberate.
 **`ComponentHandle`** — The current provisional name for a live
 external-ingress capability available at the Samara program boundary. Unlike a
 `ComponentRef`, it is a runtime capability and must not be available inside
-Components.
+Components. Under ADR-0004, successful `send` means accepted for
+runtime-managed delivery, not transition completion; shutdown or a runtime
+fault closes admission and later sends fail explicitly.
 
 ## Execution and Ordering
 
@@ -392,6 +423,30 @@ delivery or work contract rather than inferred from runtime topology.
 **Global total order** — One comparable sequence containing every program
 event. Samara explicitly does not promise this for independent live events.
 
+**Admission** — The point at which live boundary input becomes
+runtime-owned work. ADR-0004 gives a successful
+`ComponentHandle::send` or `SourceSink` operation this meaning. A call racing
+shutdown is either accepted under the selected shutdown policy or rejected;
+accepted work is not silently dropped because an internal capacity was
+reached.
+
+**Unbounded internal delivery** — The accepted v0 live mechanism after
+admission. It has no configurable capacity or silent overload drop and can
+therefore grow memory without bound under sustained pressure. This is a
+documented first-cut limitation, not a stable throughput, fairness, or
+backpressure promise.
+
+**Drain shutdown / `Shutdown::Drain`** — Structured closure that
+closes external ingress, stops Sources, realizes no new Sources, and recursively
+processes accepted and causally emitted finite work. It has no implicit
+deadline and may wait forever for Drivers, Requests, timers, or self-sustaining
+application work.
+
+**Cancel shutdown / `Shutdown::Cancel`** — Structured closure that
+closes ingress, stops application driving, cancels semantic obligations and
+runtime-owned tasks, and joins or aborts all owned work without manufacturing
+application outcomes merely because the scope ended.
+
 **Quiescence** — The absence of immediately runnable work. Work may still be
 waiting for logical time, a controlled input, or an external event.
 
@@ -424,6 +479,12 @@ versioning; v0 defines no durable storage schema.
 **Runtime diagnostic** — Operational information such as task identity, thread
 placement, queue depth, or incidental sequence number. It is not an application
 semantic contract unless explicitly promoted into one.
+
+**Runtime fault** — An execution failure that cannot truthfully be represented
+as typed application data, such as a Driver panic or exhausted one-shot bridge.
+Under ADR-0004, a live runtime fault closes ingress, stops application
+driving, triggers structured cancellation, and surfaces `RuntimeError` to the
+host after owned work is closed.
 
 **Conformance** — The combined obligations of the runtime and of Component,
 Layer, Driver, and controlled-behavior authors required for Samara's guarantees
@@ -458,7 +519,7 @@ to hold.
 | `Msg` | Message / `Component::Message` | Use *Component Message* when it must be distinguished from a Protocol Message. |
 | `Cmd` | Command | Use the full word in type and method names. |
 | Effect value / Effect intent | EffectDescriptor | Use *effect* generically for the interaction, not as a second ambiguous type noun. |
-| `EffectEvent` | EffectOutcome | An effect has one terminal outcome; repeatable occurrences are SourceEvents. |
+| `EffectEvent` | EffectOutcome | An accepted EffectOutcome is terminal and occurs once; whole-scope abort may close ownership without one, while repeatable occurrences are SourceEvents. |
 | Error payload types named `*Failure`, such as `TcpFailure` | `*Error`, such as `TcpError` | Error names explanatory data; failure names the semantic occurrence carrying it. |
 | Result mapper | Message mapper | Name what the pure function produces. A request's one-shot mapper is its request continuation. |
 | Source meaning a descriptor | SourceDescriptor | Reserve *Source* for the runtime-scoped ongoing realization. |
@@ -488,7 +549,11 @@ Component-kernel freeze:
   bindings. Controlled execution must preserve the same descriptor contracts,
   but it need not execute the live Driver traits.
 - Descriptor/message payload tracing, typed trace projections, streaming/live
-  observer APIs, and durable trace storage.
-- Decoder EOF/finalization semantics and `bytes` adoption before live TCP
-  framing.
-- Structured shutdown's drain-versus-cancel policy.
+  observer APIs, and durable trace storage. ADR-0004 explicitly leaves
+  a public live observer outside v0.
+- Bounded internal delivery, overload control, shutdown deadlines and
+  escalation, exact shutdown diagnostic counts, Driver recovery, and
+  restartable or shared bridges beyond ADR-0004's simple first cut.
+- Exact public bridge module/type names and the exact Rust spelling of Decoder
+  finalization, provided ADR-0004's accepted observable semantics are
+  preserved.

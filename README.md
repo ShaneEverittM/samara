@@ -8,13 +8,14 @@ Samara is a framework for building asynchronous applications in Rust.
 
 ## Status
 
-Samara's Phase 2 executable contract, Phase 3 Component kernel, and Phase 4
-declarative-work kernel are accepted. The Phase 5 implementation is ready for
-manual audit: controlled programs now interpret typed Commands, maintain and
-compose Sources, advance logical time, route successful Requests, account for
-semantic obligations, and collect deterministic causal traces under ADR-0003.
-Controlled execution never invokes a live Driver. Live Tokio Drivers and
-structured live shutdown remain the Phase 6 boundary.
+Samara's Phase 2 executable contract, Phase 3 Component kernel, Phase 4
+declarative-work kernel, and Phase 5 controlled runtime are accepted.
+Controlled programs interpret typed Commands, maintain and compose Sources,
+advance logical time, route successful Requests, account for semantic
+obligations, and collect deterministic causal traces under ADR-0003. Controlled
+execution never invokes a live Driver. ADR-0004 now defines the accepted,
+deliberately simple live Driver, bridge, pressure, fault, and
+structured-shutdown semantics active for Phase 6 implementation.
 
 The earlier Actor proof of concept remains available in Git history at commit
 `8408509`, but it is not a compatibility target for the new runtime.
@@ -27,6 +28,7 @@ The earlier Actor proof of concept remains available in Git history at commit
 - [API guidance](docs/api-guidance.md)
 - [Runtime topology and ordering ADR](docs/adr/0002-runtime-topology-and-ordering.md)
 - [Controlled execution semantics ADR](docs/adr/0003-controlled-execution-semantics.md)
+- [Initial live runtime semantics ADR](docs/adr/0004-initial-live-runtime-semantics.md)
 - [Architecture test strategy](docs/testing/architecture-test-strategy.md)
 - [V1-V11 acceptance matrix](docs/testing/v0-acceptance-matrix.md)
 - [Goal-mode implementation checklist](docs/goal-mode-checklist.md)

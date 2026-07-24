@@ -1,6 +1,6 @@
 # Phase 5 Audit: Controlled Execution
 
-- Status: Ready for Shane review
+- Status: Accepted by Shane
 - Date: July 23, 2026
 - Governing phase: `docs/goal-mode-checklist.md`, Phase 5
 - Baseline: commit `8158f1b`
@@ -248,5 +248,5 @@ Review these in order:
 9. The preserved Decoder behavior — confirm Phase 5 did not select EOF or
    `bytes` semantics ahead of Phase 6.
 
-Shane's acceptance checkbox remains open in `docs/goal-mode-checklist.md`.
-Phase 6 is not authorized by this packet alone.
+Shane accepted this audit on July 23, 2026. Phase 5 is closed. Shane subsequently
+accepted ADR-0004 and authorized Phase 6 implementation.

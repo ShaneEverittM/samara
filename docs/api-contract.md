@@ -1,6 +1,6 @@
 # Samara v0 Milestone API Contract
 
-- Status: Phase 4 accepted; Phase 5 controlled-execution contract approved
+- Status: Phase 6 live-runtime contract accepted; implementation active
 - Date: July 23, 2026
 - Scope: Change-controlled public API slices for staged implementation
 
@@ -99,14 +99,17 @@ particular:
 - `Framed` Layers are profile-independent and may carry deterministic
   runtime-scoped decoder state without performing ambient I/O.
 
-The exact Decoder EOF/finalization contract remains provisional with the
-planned `bytes` migration and must be resolved before live TCP framing in Phase
-6, as recorded by the Phase 4 audit.
+The accepted Phase 4 implementation still has no Decoder EOF/finalization hook.
+[ADR-0004](adr/0004-initial-live-runtime-semantics.md) resolves that Phase 6
+contract gate by adopting `bytes::Bytes` for first-party TCP chunks and
+requiring explicit pure Decoder finalization before a Framed Source reports
+normal ending. The existing behavior remains only a documented limitation
+until Phase 6 implements the accepted contract.
 
-## Approved for Phase 5: Controlled Execution
+## Accepted for Phase 5: Controlled Execution
 
 [ADR-0003](adr/0003-controlled-execution-semantics.md) governs the observable
-controlled-runtime behavior that Phase 5 may now implement:
+controlled-runtime behavior implemented and accepted in Phase 5:
 
 - A retained Source realization atomically adopts the latest post-transition
   Subscription mapper.
@@ -130,9 +133,56 @@ controlled-runtime behavior that Phase 5 may now implement:
   `RequestOutcome::Replied`.
 
 The ADR freezes these observable semantics, not the runtime's container,
-scheduler, type-erasure, or storage implementation. Exact Rust spellings may
-be selected during Phase 5 where the accepted contract does not already name
-them, then reviewed at the phase audit.
+scheduler, type-erasure, or storage implementation. Exact Rust spellings that
+the accepted contract did not name were selected during Phase 5 and reviewed
+at its audit.
+
+## Accepted for Phase 6: Initial Live Runtime
+
+[ADR-0004](adr/0004-initial-live-runtime-semantics.md) governs the accepted,
+bounded live-runtime slice now active for Phase 6 implementation.
+
+The ADR specifies:
+
+- successful `ComponentHandle::send` and `SourceSink` operations mean accepted
+  for runtime-managed delivery, while closed or faulted runtimes reject new
+  work explicitly;
+- runtime-internal delivery in a healthy running scope is unbounded and does
+  not intentionally drop accepted work because capacity was reached;
+  configurable capacity and mature overload behavior are not v0 promises, and
+  documented Cancel/fault cutovers may discard queued application work;
+- Drain closes ingress, stops Sources, realizes no new Sources, and recursively
+  processes accepted and causally emitted finite work, even when that means it
+  waits indefinitely;
+- Cancel closes ingress, stops application driving, cancels semantic
+  obligations and Driver tasks, and manufactures no application outcome or
+  event solely because the runtime scope ended;
+- successful shutdown closes every runtime-owned task and reports zero
+  `remaining`, `pending_now`, and `pending_later`; completed and cancelled refer
+  to semantic obligations rather than runtime mechanics, while their exact
+  diagnostic counts remain non-normative;
+- normal EffectDriver success and failure map exactly once, while whole-scope
+  abort maps no outcome; the first accepted Source terminal call or active
+  SourceDriver return terminates a live generation exactly once while
+  cancellation, removal, replacement, shutdown, and runtime fault winning first
+  emit no unpromised SourceEvent;
+- Driver panic and other live mechanism violations fault the runtime, close
+  ingress, initiate structured cancellation, and surface `RuntimeError` rather
+  than fabricated typed application data;
+- first-party TCP is a single connection per Source realization, emits
+  `bytes::Bytes`, and contains no retry, reconnect, or framing policy;
+- Decoder finalization runs exactly once on normal underlying EOF, emitting
+  final frames before `Ended` or one typed decode failure without `Ended`;
+- the first-party `mpsc` receiver binding is a one-shot, single-consumer live
+  resource whose closure ends normally and whose duplicate or later
+  reactivation faults the runtime explicitly; and
+- Phase 6 ships no public live observer API and tests independent live
+  completions by causal partial order rather than controlled trace-vector
+  order.
+
+The ADR freezes observable first-cut behavior, not task topology, queue
+representation, exact public module naming, or a mature product policy for
+overload, shutdown deadlines, Driver recovery, or bridge restartability.
 
 ## Deliberately Unfrozen Surfaces
 
@@ -148,15 +198,23 @@ accidental promises made by a placeholder type or variant:
   validation scope.
 - The general Rust shape of Layers, SourcePlan lowering, and live/controlled
   profile bindings beyond ADR-0003's application-facing behavior.
-- Driver cancellation details and the meaning of a SourceDriver returning
-  without explicitly ending or failing its Source.
 - Descriptor/message payload tracing, typed trace projections, streaming and
-  live observer APIs, and any durable trace representation.
-- Runtime error taxonomy outside the missing-controlled-behavior contract,
-  plus backpressure and overload behavior.
-- Shutdown drain-versus-cancel policy and final work-accounting units.
-- Decoder EOF/finalization semantics and `bytes` adoption before live TCP
-  framing in Phase 6.
+  public live observer APIs, and any durable trace representation. A public
+  live observer is explicitly outside v0 under ADR-0004.
+- Runtime error taxonomy beyond the observable missing-controlled-behavior and
+  accepted live runtime-fault boundaries.
+- Bounded queues, admission quotas, load shedding, coalescing, fairness,
+  priorities, and a stable overload/backpressure API beyond v0
+  unbounded internal delivery.
+- Shutdown deadlines, grace periods, escalation, host-signal policy, and exact
+  completed/cancelled diagnostic accounting beyond accepted Drain and Cancel.
+- Per-effect deadlines, supersession, abandonment, and in-band cancellation
+  beyond whole-scope termination.
+- Automatic Source restart, retry, restartable or shared channel bridges, and
+  Driver fault isolation or recovery.
+- Exact `Decoder` finalization method spelling and first-party bridge
+  module/type names, provided implementation preserves ADR-0004's accepted
+  observable EOF and bridge semantics.
 
 Before an implementation phase reaches one of these surfaces, its acceptance
 contract must either settle the question or explicitly keep the behavior out of

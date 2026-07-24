@@ -78,16 +78,19 @@ automatically a failure.
 ## Why Are Commands and Subscriptions Different?
 
 A Command describes finite work requested by one transition. An
-EffectDescriptor inside that Command produces one terminal EffectOutcome. A
-Subscription declaratively describes an ongoing Source the current Model wants
-maintained: it combines stable identity, a comparable SourceDescriptor, and a
-reusable message mapper for SourceEvents.
+EffectDescriptor inside that Command normally produces one terminal
+EffectOutcome; every outcome accepted by a running scope maps exactly once.
+Whole-scope live abort may instead cancel the Driver without
+manufacturing an outcome for an application that is ending. A Subscription
+declaratively describes an ongoing Source the current Model wants maintained:
+it combines stable identity, a comparable SourceDescriptor, and a reusable
+message mapper for SourceEvents.
 
 Keeping them distinct makes lifecycle, cancellation, and reconciliation
 explicit instead of disguising long-lived work as a one-shot effect. The
-surface symmetry stops where the semantics stop: an EffectOutcome occurs once;
-a Source may emit zero or more SourceEvents, and canceling a Subscription does
-not inherently manufacture one final event.
+surface symmetry stops where the semantics stop: an accepted EffectOutcome
+occurs once; a Source may emit zero or more SourceEvents, and canceling a
+Subscription does not inherently manufacture one final event.
 
 ## Why Distinguish SourceDescriptor, Subscription, and Source?
 
@@ -303,13 +306,105 @@ decisions and terminal world-facing bindings differ. Convenience APIs must
 preserve that shared path rather than creating a second testing-only
 application model.
 
+## What Does Successful Live Ingress Mean?
+
+Under ADR-0004, a successful `ComponentHandle::send` means the Message
+has crossed the admission boundary and is owned for runtime-managed delivery.
+It does not mean the Component transition has completed. A send racing shutdown
+or a runtime fault is either accepted under the applicable closure policy or
+rejected explicitly; there is no ambiguous successful-but-never-admitted
+result.
+
+`SourceSink` uses the same acceptance idea. Success means an event was accepted
+from that active Source generation, and successful calls from one Source retain
+their acceptance order. It still does not mean the mapped Component transition
+has run.
+
+## Why Does the Initial Live Runtime Use Unbounded Internal Delivery?
+
+It is the smallest mechanism that makes successful admission honest without
+prematurely choosing queue capacities, shedding, fairness, or async-pressure
+APIs. While a healthy runtime scope is running, accepted work is not silently
+dropped because an internal queue filled.
+
+This simplicity has a real cost: sustained overload may grow memory without
+bound, and memory exhaustion is not a supported recovery mode. The first-party
+`mpsc` bridge retains only the pressure supplied by the application's upstream
+Tokio channel until Samara receives an item. Phase 6 load evidence is
+characterization, not a capacity or throughput guarantee. A future bounded
+policy is change-controlled because it changes what acceptance means.
+
+## What Is the Difference Between Drain and Cancel?
+
+`Shutdown::Drain` atomically closes external ingress, disables new or
+restarted Sources, stops current Sources, then recursively processes Messages
+and Source deliveries accepted before that cutoff plus finite work causally
+emitted while draining. Timers, effects, and Requests remain eligible, so Drain
+may wait forever for a hung Driver, unanswered Request, distant or recurring
+timer, or self-sustaining application.
+
+`Shutdown::Cancel` is a scope abort. It closes ingress, stops application
+driving, cancels queued and deferred obligations and Driver tasks, and closes
+all runtime ownership. Because the application is ending, it does not fabricate
+EffectOutcomes, SourceEvents, RequestOutcomes, or Messages solely to announce
+that abort. This differs from an explicit effect-contract cancellation outcome,
+which is typed data and still maps exactly once when accepted.
+
+Successful shutdown always means no runtime-owned task or semantic obligation
+remains. `completed` and `cancelled` describe semantic obligations rather than
+task mechanics, but their exact diagnostic counts are deliberately not a v0
+conformance promise.
+
+## How Does a Live Source End?
+
+An active Source generation accepts at most one terminal condition. The first
+accepted `SourceSink::end`, accepted `SourceSink::fail`, or SourceDriver return
+wins and produces one terminal event. If cancellation, replacement, shutdown,
+or runtime fault withdraws the generation first, it produces no terminal event
+and later sink calls return `DriverStopped`.
+
+A SourceDriver may therefore return normally without spelling `sink.end()`;
+Samara treats active silent return as `Ended`. Successful calls from one Source
+preserve acceptance order, so chunks cannot be overtaken by EOF finalization.
+An ended Source remains inactive even if the same Subscription desire remains;
+there is no hidden automatic restart.
+
+## Why Must a Decoder Finalize Explicitly?
+
+One raw chunk is not the same thing as the end of a byte stream. ADR-0004
+therefore requires a pure Decoder EOF operation. On normal underlying
+`Ended`, the Framed Layer invokes it exactly once, emits any final frames in
+order, then emits `Ended`. A finalization Error emits one decode failure and no
+`Ended`.
+
+Underlying Source failure, an earlier decode failure, replacement,
+cancellation, shutdown, and runtime fault are not normal EOF and do not invoke
+finalization. This prevents the Layer from silently discarding partial state or
+pretending a transport failure was a complete stream.
+
+## Why Are the Initial `mpsc` and TCP Bridges Narrow?
+
+A Tokio `mpsc::Receiver` is a unique, single-consumer resource. The accepted
+first-party binding consumes it on first activation; a competing claimant or
+later activation after end or cancellation faults explicitly. Fabricating
+another `Ended` would hide that no new receiver exists, and
+`StreamDescriptor<T>` deliberately has `Infallible` Source Error data.
+
+The accepted TCP Driver likewise owns one connection per Source realization,
+emits `bytes::Bytes`, maps connection/read errors and peer EOF, and closes on
+cancellation. It does not retry, reconnect, frame, or interpret domain data.
+Those choices belong in Layers or Component logic where they remain visible
+and controllable.
+
 ## What Does This Document Deliberately Not Settle?
 
 The Phase 2 API contract freezes the Component-kernel signatures and records
-later compile-checked slices separately. The broader first-party Tokio bridge
-module organization, the Rust shape of Layer and execution-profile bindings,
-Request deadline and cancellation policy, notification delivery failures,
-shutdown policy, domain-payload and streaming trace APIs, and runtime topology
-still require separate decisions. Decoder EOF/finalization and `bytes` adoption
-also remain deliberately paired before live TCP framing. Those choices should
-follow the guidance above, but this document does not make them implicitly.
+later slices separately. ADR-0004 selects only the simplest v0 live
+mechanisms. Bounded pressure and overload controls, shutdown deadlines and
+escalation, exact shutdown diagnostic counts, per-effect cancellation,
+Driver recovery, restartable or shared bridges, the broader first-party Tokio
+module organization, the Rust shape of general Layer/profile bindings, Request
+lifecycle policy, notification delivery failures, public live and
+domain-payload trace APIs, and runtime topology remain separate decisions.
+Those choices should follow the guidance above rather than being inferred from
+the first implementation.

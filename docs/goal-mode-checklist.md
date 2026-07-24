@@ -1,6 +1,6 @@
 # Samara Goal-Mode Checklist
 
-- Status: Phase 5 accepted; Phase 6 not started
+- Status: Phase 6 contract accepted; implementation ready
 - Purpose: Track bounded implementation phases and their human audit gates.
 
 ## Working Rule
@@ -23,6 +23,7 @@ Governing documents:
 - [v0 Milestone API Contract](api-contract.md)
 - [ADR-0002: Runtime Topology and Ordering Semantics](adr/0002-runtime-topology-and-ordering.md)
 - [ADR-0003: Controlled Execution Semantics](adr/0003-controlled-execution-semantics.md)
+- [ADR-0004: Initial Live Runtime Semantics](adr/0004-initial-live-runtime-semantics.md)
 - [Architecture Test Strategy](testing/architecture-test-strategy.md)
 - [v0 Acceptance Matrix](testing/v0-acceptance-matrix.md)
 
@@ -97,6 +98,9 @@ Audit packet: [Phase 5 Controlled Execution](audits/phase-5-controlled-execution
 
 ### 6. Live Tokio Runtime
 
+- [x] Shane accepts ADR-0004's provisional admission, shutdown, Driver,
+  pressure, decoder-finalization, first-party bridge, fault, and observation
+  contract and authorizes Phase 6 implementation.
 - [ ] Implement live execution, terminal EffectDrivers and SourceDrivers,
   first-party `mpsc` and TCP Source Drivers, and structured shutdown;
   characterize load, backpressure, cancellation, and faults through
@@ -117,8 +121,11 @@ Implement Samara phase <N> only. Conform to docs/vision.md,
 docs/glossary.md, docs/api-guidance.md,
 docs/api-contract.md, docs/adr/0002-runtime-topology-and-ordering.md,
 docs/adr/0003-controlled-execution-semantics.md, and
+docs/adr/0004-initial-live-runtime-semantics.md (for Phase 6 and later), and
 docs/testing/v0-acceptance-matrix.md. Implement only the active contract slice
 and phase acceptance tests. Do not change governing contracts. If they conflict
 or are not implementable as written, stop and present evidence. Complete only
 when the phase checks pass and an audit summary is ready for review.
 ```
+
+Shane accepted ADR-0004 and authorized Phase 6 implementation.

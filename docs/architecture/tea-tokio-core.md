@@ -1,7 +1,7 @@
 # TEA + Tokio Core Architecture (v0)
 
 ## Status
-- Phase: Phase 5 controlled-execution contract approved; implementation ready.
+- Phase: Phase 6 live-runtime contract accepted; implementation active.
 - Date: July 23, 2026.
 - Library scope: `samara` is library-first.
 
@@ -85,9 +85,13 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
   Layers.
 - Controlled execution supplies deterministic behavior for the same descriptor
   without invoking a live Driver or silently falling back to the live world.
-- Each issued descriptor reaches exactly one `EffectOutcome`. The runtime invokes
-  its one-shot message mapper exactly once and returns the resulting Message
-  through runtime-managed delivery.
+- Each EffectOutcome actually accepted by a running scope invokes its one-shot
+  message mapper exactly once and returns the resulting Message through
+  runtime-managed delivery. A normally returning EffectDriver produces exactly
+  one `Succeeded` or `Failed` outcome. ADR-0004 classifies whole-scope
+  Cancel or runtime-fault cleanup as an abort instead: the future is cancelled,
+  no EffectOutcome is manufactured, and no mapper is invoked. Drain never
+  cancels an eligible finite effect merely to finish sooner.
 - The exact Rust shape used to bind profile-specific Drivers and controlled
   behavior remains an API decision.
 
@@ -122,6 +126,14 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
   only the terminal descriptor.
 - Source cancellation does not imply a synthetic SourceEvent unless the
   applicable contract explicitly promises one.
+- Under ADR-0004, successful sink calls from one live Source preserve
+  acceptance order. The first accepted `end`, accepted `fail`, or active
+  SourceDriver return wins exactly one terminal event. Cancellation,
+  replacement, shutdown, or runtime fault winning first suppresses terminal
+  mapping; later sink calls return `DriverStopped`.
+- Normal Source termination does not automatically restart a still-desired
+  Subscription. The Source remains inactive until application desire changes
+  in a way an explicit future restart policy recognizes.
 
 ### Adapter, Layer, and Driver Contract
 - `Adapter` is the conceptual umbrella for code that connects declared
@@ -152,6 +164,10 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
     causation in controlled execution.
   - Supervise task lifecycle, cancellation, and shutdown.
   - Deliver resulting Messages to their target Components.
+- In the Phase 6 live profile, own one admission boundary, close it on
+  shutdown or runtime fault, avoid intentional capacity drops after successful
+  acceptance while the scope is healthy, and ensure fault or shutdown joins or
+  aborts every owned task.
 - Only runtime-managed machinery may deliver messages or execute commands;
   application Components express coordination through messages.
 - Runtime driving APIs should support condition-based execution (`run_until(...)` / `run_until_predicate(...)`) and quiescence execution (`run_until_idle()`), so tests/simulations do not depend on hard-coded wall-clock sleeps.
@@ -216,6 +232,21 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
   causality, and failure semantics promised by the interaction contract without
   exposing runtime topology.
 
+### Live Admission and Internal Pressure Contract
+
+- Under ADR-0004, successful `ComponentHandle::send` means accepted
+  for runtime-managed delivery, not that the target transition completed.
+- Shutdown or runtime fault closes external admission. A racing send is either
+  accepted under the chosen closure policy or rejected explicitly.
+- The v0 live runtime uses unbounded internal delivery while the scope is
+  healthy and running. Accepted work is not intentionally dropped because an
+  internal queue filled.
+- This supplies no stable capacity, fairness, throughput, latency, or
+  backpressure guarantee. Sustained overload may grow memory without bound;
+  memory exhaustion is unsupported.
+- An upstream bounded Tokio `mpsc` channel retains its own pressure only until
+  Samara receives an item. Samara adds no second bounded-pressure contract.
+
 ### Time and Controlled-Execution Contract
 - The runtime must provide a clock/scheduling abstraction boundary that can support:
   - Real-time execution.
@@ -259,13 +290,76 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
   context. The run is faulted: state and trace remain inspectable and
   cancellation remains available, but driving cannot resume.
 
+### Initial Live Shutdown Contract
+
+- Drain atomically closes external ingress, disables Source start and
+  restart, stops active Sources, and recursively processes Component Messages
+  and Source deliveries accepted before the cutoff plus finite work and timers
+  causally emitted while draining.
+- Future timers, finite effects, and Requests remain eligible. A hung Driver,
+  unanswered Request, distant or recurring timer, or self-sustaining
+  application may keep Drain pending forever.
+- Cancel closes ingress, stops application driving, cancels queued and
+  deferred semantic obligations and runtime-owned Driver tasks, then joins or
+  aborts all owned tasks. It does not invoke application mappers solely because
+  the scope ended.
+- Successful shutdown reports
+  `remaining == pending_now == pending_later == 0`. Completed and cancelled
+  diagnostics count semantic obligations rather than tasks or queues, but
+  their exact values remain non-normative in v0.
+
+### Initial Live Fault Contract
+
+- Duplicate or ambiguous live bindings fail `LiveRuntimeBuilder::build()` when
+  assembly can know them.
+- An unavailable terminal binding discovered only while interpreting work, an
+  exhausted one-shot `mpsc` binding, a Driver panic, or an equivalent live
+  mechanism violation faults the running scope.
+- A live fault closes ingress, stops application driving, cancels and joins or
+  aborts all runtime-owned tasks, suppresses application mappers for aborted
+  work, and surfaces `RuntimeError` through subsequent ingress and the owning
+  `RuntimeTask::shutdown` boundary.
+- Fault cleanup does not invent typed application Error payloads. Exact fault
+  taxonomy, isolation, restart, and recovery remain provisional.
+
+### First-Party Phase 6 Bridge Contract
+
+- First-party TCP owns one connection per Source realization, emits
+  `bytes::Bytes`, maps connect/read errors to typed Source failure, maps peer
+  EOF to normal ending, closes on cancellation, and contains no retry,
+  reconnect, framing, or domain policy.
+- One `tokio::sync::mpsc::Receiver<T>` is consumed by the first activation of
+  its exact `StreamDescriptor<T>` binding. Channel closure ends normally.
+  Another concurrent claimant or any later activation after end or cancellation
+  faults the runtime; it does not fabricate another `Ended`.
+- The `mpsc` rule is necessarily diagnostic because
+  `StreamDescriptor<T>::Error` is `Infallible` and no new receiver exists to
+  realize the repeated desire.
+- Exact first-party public module/type names remain implementation-review
+  details where the accepted API has not already frozen them.
+
+### Decoder EOF Contract
+
+- ADR-0004 adds one required pure Decoder finalization operation.
+- Only normal underlying `Ended` invokes finalization, exactly once and after
+  all earlier accepted chunks from that Source.
+- Final frames are emitted in order before outer `Ended`. A finalization Error
+  emits one `FramedError::Decode` failure and no `Ended`.
+- Underlying Source failure, an earlier decoder failure, cancellation,
+  replacement, shutdown, and runtime fault do not invoke finalization.
+- First-party TCP chunks use `bytes::Bytes`; decoder state may use
+  `bytes::BytesMut`.
+
 ## Error Channel Design
 - Error names typed explanatory data, such as `TcpError` or `RequestError`.
   Failure names the semantic occurrence carrying Error data. Normal Source
   ending and cancellation are distinct terminal conditions, not failures.
-- Behaviorally relevant domain and runtime failures must be representable as
-  typed Component Messages, EffectOutcomes, SourceEvents, or RequestOutcomes at
-  the boundary where they occur.
+- Expected behaviorally relevant failures for which a boundary contract defines
+  typed Error data must be representable as Component Messages,
+  EffectOutcomes, SourceEvents, or RequestOutcomes where they occur.
+- Driver panics and live mechanism faults cannot truthfully construct arbitrary
+  typed application Error data. ADR-0004 surfaces them as
+  `RuntimeError` after initiating structured scope cleanup.
 - The exact boundary variant taxonomy remains a focused API decision.
 - No panic-based control flow for expected errors.
 
@@ -277,16 +371,18 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
    configuration, current Model, and Message, then commits the resulting Model.
 4. The runtime interprets emitted Commands and reconciles desired Subscriptions.
 5. An EffectDescriptor passes through zero or more Layers. Its terminal
-   descriptor reaches a live EffectDriver or controlled behavior, produces
-   exactly one EffectOutcome through the composed path, and its one-shot
-   message mapper produces one Component Message.
+   descriptor reaches a live EffectDriver or controlled behavior. Every
+   accepted EffectOutcome passes through the composed path exactly once and its
+   one-shot mapper produces one Component Message. Whole-scope live abort may
+   instead cancel the Driver without manufacturing an outcome.
 6. A desired SourceDescriptor passes through zero or more Layers. Its terminal
    descriptor, ordered Layers, and mapper compile into a SourcePlan. The
    terminal descriptor reaches a live SourceDriver or controlled behavior,
    producing a runtime-owned Source whose SourceEvents return through the same
    Layers and repeatedly pass through the current reusable message mapper.
 7. Resulting Messages return through runtime-managed delivery, and execution
-   continues until the applicable lifecycle or shutdown policy triggers.
+   continues until the applicable lifecycle, fault, or shutdown policy
+   triggers.
 
 ## Topology Status
 - Runtime topology is not prescribed for v0.
@@ -296,10 +392,15 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
 - Controlled execution selects a deterministic schedule and produces a reproducible program-wide trace.
 - ADR-0003 defines the v0 controlled equal-time schedule, Source cutover,
   structural trace, validation, and semantic work-accounting rules.
+- ADR-0004 defines no extra global live order. Phase 6 evidence accepts
+  either order for independent completions and compares causal partial order,
+  not controlled trace-vector order.
 - Internal topology may change without an ADR when these observable semantics remain unchanged.
 - See `docs/architecture/topology-options.md`,
   `docs/adr/0002-runtime-topology-and-ordering.md`, and
-  `docs/adr/0003-controlled-execution-semantics.md`.
+  `docs/adr/0003-controlled-execution-semantics.md`. Accepted live behavior is
+  in
+  `docs/adr/0004-initial-live-runtime-semantics.md`.
 
 ## Related Design Sketches
 - Thin-slice API comparison and PoC shape: `docs/architecture/thin-slice-value.md`.

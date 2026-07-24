@@ -34,7 +34,10 @@ For example: ADR-0002 superseded ADR-0001's single-mailbox and global-order mand
 runtime topology is an implementation choice, while per-Component serialization,
 causality, and controlled determinism are observable contracts. ADR-0003 defines the
 initial controlled scheduling, Source cutover, structural trace, and work-accounting
-semantics beneath those guarantees.
+semantics beneath those guarantees. ADR-0004 selects a deliberately simple
+first live-runtime contract for admission, Driver completion, shutdown, framing EOF,
+pressure, faults, and the initial Tokio bridges; it does not claim to settle their mature
+product policies.
 
 ## The Samara Program Boundary
 
@@ -253,8 +256,12 @@ Samara owns the lifetime of the asynchronous work it authorizes.
 - Controlled execution can account for pending work and distinguish immediately runnable
   work from work awaiting logical time or controlled input.
 
-The exact drain-versus-cancel policy for shutdown is deferred, but ownership is not
-optional.
+Ownership is not optional. ADR-0004 gives the first live runtime two bounded
+meanings: Drain stops Sources and recursively processes accepted and causally emitted
+finite work, while Cancel aborts application driving and closes all owned work without
+manufacturing application results solely because the runtime is ending. Drain is
+deliberately unbounded in time; shutdown deadlines, escalation, and richer operational
+policy remain deferred.
 
 ## Execution Profiles
 
@@ -384,6 +391,9 @@ independent events, but it must not weaken any promised semantics. Structured tr
 not imply durable event sourcing, although the architecture should preserve a path for
 feeding captured live-world inputs and outcomes into controlled tests.
 
+The initial v0 live runtime is not required to expose that future observer. Internal test
+instrumentation is not a public semantic surface.
+
 Incidental runtime mechanics such as thread placement, task identifiers, and queue depth
 remain diagnostics unless deliberately promoted into a public semantic contract.
 
@@ -463,6 +473,11 @@ Samara intends to provide a small first-party set of Layers and Drivers. The exa
 catalog belongs to the roadmap; it is not promised here. The canonical initial proof is
 a Tokio `mpsc` receiver translated into Component Messages through a first-party Source
 boundary.
+
+ADR-0004 additionally keeps one narrow TCP byte Source in Phase 6: one
+connection per Source realization, `bytes::Bytes` chunks, typed connect/read failure,
+peer EOF, and cancellation closure, with framing, retry, and reconnect left outside the
+terminal Driver.
 
 Conceptually:
 
@@ -591,11 +606,19 @@ count as `pending_later`. Runtime tasks, queues, locks, interpreter steps, and t
 are not separate semantic obligations. Controlled cancellation reduces both counts to
 zero.
 
+For the initial live profile, successful shutdown likewise reports zero
+remaining and pending obligations. Drain closes ingress, stops Sources, and processes
+work accepted before the cutoff or causally emitted while draining. Cancel and runtime
+fault may discard queued application work as part of aborting the scope, but they still
+join or abort every runtime-owned task and do not synthesize application outcomes merely
+to announce scope termination.
+
 ### V10. Non-Influential Structural Semantic Trace
 
 Reading the always-collected controlled trace after runtime driving has no semantic
-feedback path. In live execution, a future observer likewise has no semantic feedback path
-even though instrumentation may perturb the timing of independent events. The observed
+feedback path. In live execution, any future public observer likewise has no semantic
+feedback path even though instrumentation may perturb the timing of independent events.
+The v0 conformance requirement does not require that future live API. The controlled
 trace contains enough structural information to explain transitions, effects,
 subscriptions, Source lifecycle, time, and causation.
 
@@ -616,8 +639,8 @@ This vision deliberately does not promise:
 - Proof that arbitrary Rust Components, closures, Layers, Drivers, or controlled-world
   code conforms.
 - Transparent distribution of Components across processes.
-- A prescribed backpressure, delivery, retry, or shutdown policy beyond observability
-  and structured ownership.
+- A mature bounded-pressure, overload, retry, or operational shutdown policy beyond the
+  simple first live contract accepted in ADR-0004.
 - Durable persistence, event sourcing, or a durable replay system.
 - A comprehensive Tokio Layer and Driver catalog in the initial product.
 - A complete Component, Layer, Driver, controlled-world, and runtime conformance
@@ -637,12 +660,16 @@ The following questions remain intentionally open:
   the initial `StreamDescriptor<T>` plus `mpsc` bridge.
 - The initial Rust shape of Layer and execution-profile binding abstractions.
 - Subscription restart and retry semantics.
-- Delivery, backpressure, overload, and coalescing policies.
-- Shutdown drain-versus-cancel semantics.
-- The initial first-party Layer and Driver catalog beyond the canonical `mpsc` bridge.
-- Domain-payload trace capture, typed trace projections, streaming/live observers, durable
+- Bounded delivery, backpressure, overload, coalescing, fairness, and shedding policies
+  beyond v0 unbounded internal delivery.
+- Shutdown deadlines, grace periods, escalation, host-signal behavior, and exact
+  diagnostic accounting beyond accepted Drain and Cancel.
+- The initial first-party Layer and Driver catalog beyond the canonical `mpsc`
+  bridge and accepted narrow TCP byte Source.
+- Domain-payload trace capture, typed trace projections, a public live observer, durable
   trace storage, and replay tooling.
 - Request failure, timeout, abandonment, late-Reply, delegation, and in-band cancellation
   semantics beyond the Phase 5 successful Reply path.
-- Decoder EOF/finalization semantics and `bytes` adoption before live TCP framing.
+- Exact Decoder-finalization method spelling and first-party module/type naming, provided
+  ADR-0004's accepted observable EOF and `bytes` semantics are preserved.
 - The shape and release timing of reusable conformance harnesses.
