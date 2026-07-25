@@ -1,7 +1,7 @@
 # TEA + Tokio Core Architecture (v0)
 
 ## Status
-- Phase: Phase 6 live-runtime implementation complete; audit ready.
+- Phase: Phase 6 live-runtime implementation complete; ADR-0006 live Port-ingress contract implemented, conformance audit pending.
 - Date: July 25, 2026.
 - Library scope: `samara` is library-first.
 
@@ -220,6 +220,19 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
 - Request failure, abandonment, timeout, cancellation, late-Reply, and
   delegation semantics remain deferred; Phase 5 does not manufacture those
   outcome variants.
+- [ADR-0006](../adr/0006-live-port-ingress.md) adds a live-only host boundary.
+  `LiveRuntime::port_handle` validates one exact built `Port<P>` binding and
+  returns a cloneable `PortHandle<P>` with `notify` and `request` operations.
+- PortHandle uses the same Protocol conversion, provider Message delivery,
+  RequestInvocation, opaque transport correlation, and `Command::reply` path as
+  Component-issued Port work. It cannot access the provider or Model and never
+  invokes a transition directly.
+- A host Request awaits `Result<R::Reply, RuntimeError>` directly. It has no
+  Component Message continuation and does not construct RequestOutcome. This is
+  an external Tokio completion boundary, not a future available inside
+  `update`.
+- PortHandle is live-only. ControlledRuntime continues to expose deterministic
+  input and drive operations rather than a live host handle.
 
 ### Component Decoupling Contract (`Port` / protocol binding)
 - Reusable Component collaboration should prefer protocol-level Ports over
@@ -230,6 +243,9 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
   `HealthProtocolMessage`.
 - A `Port<P>` is an inert, named logical dependency. It contains no provider
   reference, channel, runtime handle, or lookup capability.
+- A `PortHandle<P>` is a distinct live capability obtained from an assembled
+  LiveRuntime for one validated Port binding. It must not be stored in Component
+  configuration or treated as logical wiring.
 - Program assembly binds each exact named Port to a provider Component whose
   Message implements `From<Protocol::Message>`. This standard conversion is
   pure and reusable rather than supplied repeatedly as a binding closure.
@@ -255,8 +271,14 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
 
 - Under ADR-0004, successful `ComponentHandle::send` means accepted
   for runtime-managed delivery, not that the target transition completed.
-- Shutdown or runtime fault closes external admission. A racing send is either
-  accepted under the chosen closure policy or rejected explicitly.
+- Under ADR-0006, ComponentHandle and PortHandle share one atomic external
+  admission cutoff. A PortHandle future attempts admission when first polled.
+  Successful notify means accepted, not provider transition completion; a
+  request that is waiting for Reply has already been admitted and is
+  runtime-owned.
+- Shutdown or runtime fault closes external admission. A racing Component send,
+  Port Notification, or Port Request is either accepted under the chosen closure
+  policy or rejected explicitly.
 - The v0 live runtime uses unbounded internal delivery while the scope is
   healthy and running. Accepted work is not intentionally dropped because an
   internal queue filled.
@@ -318,10 +340,17 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
 - Future timers, finite effects, and Requests remain eligible. A hung Driver,
   unanswered Request, distant or recurring timer, or self-sustaining
   application may keep Drain pending forever.
+- Drain retains Port Notifications and host Requests admitted before its shared
+  cutoff. It cannot report clean completion while a host Request remains
+  outstanding, even if the host waiter was dropped.
 - Cancel closes ingress, stops application driving, cancels queued and
   deferred semantic obligations and runtime-owned Driver tasks, then joins or
   aborts all owned tasks. It does not invoke application mappers solely because
   the scope ended.
+- Cancel or non-fault closure before a host Reply wakes the external waiter with
+  `RuntimeError`, not RequestOutcome. Dropping an unpolled host request admits
+  nothing; dropping an admitted waiter relinquishes observation but does not
+  cancel or remove runtime-owned work.
 - Successful shutdown reports
   `remaining == pending_now == pending_later == 0`. Completed and cancelled
   diagnostics count semantic obligations rather than tasks or queues, but
@@ -338,6 +367,9 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
   aborts all runtime-owned tasks, suppresses application mappers for aborted
   work, and surfaces `RuntimeError` through subsequent ingress and the owning
   `RuntimeTask::shutdown` boundary.
+- A fault that wins before a host Port Reply wakes that waiter with the same
+  preserved RuntimeError and causes later PortHandle operations to return that
+  fault rather than a generic closure error.
 - Fault cleanup does not invent typed application Error payloads. Exact fault
   taxonomy, isolation, restart, and recovery remain provisional.
 
@@ -436,6 +468,10 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
 - Expected behaviorally relevant failures for which a boundary contract defines
   typed Error data must be representable as Component Messages,
   EffectOutcomes, SourceEvents, or RequestOutcomes where they occur.
+- A live host Port Request is outside Component application logic. Its successful
+  terminal value is `R::Reply`; whole-scope closure or fault is reported through
+  `RuntimeError`. That host diagnostic does not manufacture an in-band
+  RequestOutcome or weaken Message-only Component state transitions.
 - Driver panics and live mechanism faults cannot truthfully construct arbitrary
   typed application Error data. ADR-0004 surfaces them as
   `RuntimeError` after initiating structured scope cleanup.

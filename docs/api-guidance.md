@@ -249,6 +249,12 @@ associated Reply type defines the successful result, and uses the requester's
 canonical `From<RequestOutcome<...>>` conversion. `Command::request_with`
 accepts an explicit continuation instead.
 
+At the live host boundary, `PortHandle::notify` accepts the same Notification
+value and `PortHandle::request` accepts the same Request value. The successful
+host Request result is the associated Reply directly because ordinary Tokio host
+code can await; that convenience does not change the provider's Protocol Message
+or `ReplyTo` path.
+
 This naming states the relevant intent in the same vocabulary at both layers:
 notification values are notified, and request values are requested. An
 explicit continuation on `Command::request_with` is meaningful request/reply
@@ -256,12 +262,14 @@ information, not incidental transport ceremony.
 
 ## Which Parts of Request Correlation Belong to Whom?
 
-The request continuation is a one-shot message mapper: it says what Component
-Message should be produced when the Request terminates. Each dynamic occurrence
-is a `RequestInvocation` containing the Request value and a `ReplyTo` for the
-provider. Opaque runtime bookkeeping distinguishes that invocation from every
-other invocation. Captured values, such as a domain request ID, preserve the
-application's reason for making the Request.
+For a Component-issued Request, the request continuation is a one-shot message
+mapper: it says what Component Message should be produced when the Request
+terminates. For a live host Request, the awaiting host future is the completion
+destination and successful completion returns `R::Reply` directly. Each dynamic
+occurrence is still a `RequestInvocation` containing the Request value and a
+`ReplyTo` for the provider. Opaque runtime bookkeeping distinguishes that
+invocation from every other invocation. Captured values, such as a domain
+request ID, preserve a Component's reason for making the Request.
 
 The runtime owns transport correlation, delivery, timeout, cancellation, and
 late-reply bookkeeping. Components should never allocate or compare transport
@@ -294,15 +302,16 @@ checks:
   destructor running.
 
 Phase 5 implements only successful `RequestOutcome::Replied`. An unanswered
-Request remains runtime-owned and pending until controlled cancellation; it
-does not yet manufacture failure, timeout, cancellation, or abandonment
-outcomes. The exact lifecycle boundary remains an API decision. A normal
-request might require a reply from the provider's handling transition, while a
-future explicit delegation mechanism might transfer the obligation and relax
-ordering guarantees. That choice changes observable request semantics and
-should be made explicitly.
+Component Request remains runtime-owned and pending until controlled
+cancellation; it does not yet manufacture failure, timeout, cancellation, or
+abandonment outcomes. ADR-0006 separately defines only the live host boundary:
+whole-scope closure wakes an external waiter with `RuntimeError`, not a
+RequestOutcome. A normal Component request might require a reply from the
+provider's handling transition, while a future explicit delegation mechanism
+might transfer the obligation and relax ordering guarantees. That choice
+changes observable request semantics and should be made explicitly.
 
-## Why Do Request Outcomes Return as Messages Rather Than Futures?
+## Why Do Component Request Outcomes Return as Messages Rather Than Futures?
 
 Components do not suspend inside `update` and do not retain runtime-owned
 futures. A Request is declared through `Command::request` now; its typed
@@ -311,6 +320,19 @@ transition path. This keeps request/reply compatible with pure transitions,
 controlled execution, and per-Component serialization. `RequestError` carries
 runtime-visible failures other than timeout and cancellation; the exact outcome
 and error variants remain subject to the lifecycle policy.
+
+Surrounding Tokio code is outside the Component transition boundary, so
+ADR-0006 deliberately gives `PortHandle::request` an awaitable
+`Result<R::Reply, RuntimeError>`. This is not an escape hatch for Components:
+`PortHandle` is live-only, cannot access Model state, and must not be placed in a
+Component or passed to `update`. If the host wants a Reply to affect application
+state, it must submit another admitted Component Message or Protocol operation.
+
+Dropping an unpolled host request future admits nothing. Dropping it after
+admission relinquishes only the host task's interest in the result; it does not
+cancel the runtime-owned Request or let Drain forget it. That cancellation-safe
+ownership rule avoids silently inventing provider-visible cancellation and
+late-Reply policy.
 
 ## Why Are Ports the Normal Component Dependency Boundary?
 
@@ -328,6 +350,24 @@ Protocol visible on the provider Message type itself.
 Ports are named rather than globally selected by protocol type. Two dependencies
 may implement the same protocol while representing distinct roles, such as a
 primary and fallback service.
+
+## Why Is `PortHandle` Distinct From `Port`?
+
+`Port<P>` is immutable logical wiring shared by live and controlled Programs. It
+contains no live capability and is safe to retain in Component configuration.
+`PortHandle<P>` belongs to one assembled LiveRuntime and lets surrounding Tokio
+code cross that runtime's external admission boundary. Keeping the types
+separate makes that live capability visible in APIs and review. Rust cannot
+forbid a Component author from placing an arbitrary `Send` field in its
+configuration, so keeping PortHandle out of Components remains a conformance
+rule as well as a type-level design signal.
+
+`LiveRuntime::port_handle` validates the supplied Port against the exact built
+Program and binding before spawn. The handle still does not reveal the selected
+provider; Notifications and Requests follow the ordinary Protocol conversion,
+binding, Message delivery, and provider transition path. ControlledRuntime does
+not mimic this live host handle. Controlled tests continue to drive explicit
+deterministic inputs and inspect the same downstream Program behavior.
 
 ## Why Is Program Assembly Validation Deliberately Narrow?
 
@@ -367,14 +407,28 @@ decisions and terminal world-facing bindings differ. Convenience APIs must
 preserve that shared path rather than creating a second testing-only
 application model.
 
+Live host capabilities such as ComponentHandle and PortHandle are profile
+boundaries, not part of the Program stored in Component configuration. PortHandle
+therefore need not have a ControlledRuntime twin, but work admitted through it
+must enter the same Port binding, Protocol Message, RequestInvocation, and
+provider transition used by the shared Program.
+
 ## What Does Successful Live Ingress Mean?
 
-Under ADR-0004, a successful `ComponentHandle::send` means the Message
-has crossed the admission boundary and is owned for runtime-managed delivery.
-It does not mean the Component transition has completed. A send racing shutdown
-or a runtime fault is either accepted under the applicable closure policy or
-rejected explicitly; there is no ambiguous successful-but-never-admitted
-result.
+Under ADR-0004, a successful `ComponentHandle::send` means the Message has
+crossed the admission boundary and is owned for runtime-managed delivery.
+ADR-0006 gives `PortHandle` the same cutoff. A successful notify means accepted,
+not transition completion. A request future attempts admission when first
+polled; once it is waiting for a Reply, the Request is runtime-owned even if the
+host drops the waiter. An operation racing shutdown or a runtime fault is either
+accepted under the applicable closure policy or rejected explicitly; there is
+no ambiguous successful-but-never-admitted result.
+
+Drain retains admitted Port work and may wait forever for a Reply. Cancel or
+clean scope closure wakes a pending host waiter with `RuntimeError` without
+creating a RequestOutcome. A runtime fault instead preserves and returns that
+scope fault. These are host diagnostics, not Component Messages or newly
+activated in-band Request cancellation semantics.
 
 `SourceSink` uses the same acceptance idea. Success means an event was accepted
 from that active Source generation, and successful calls from one Source retain

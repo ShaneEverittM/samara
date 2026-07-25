@@ -340,14 +340,16 @@ names should make the association explicit, such as `HealthProtocolMessage`;
 directional names such as `HealthInbound` are avoided.
 
 **Port** — A named, inert logical dependency on a Protocol. A Port contains no
-provider reference, channel, runtime handle, or lookup capability.
+provider reference, channel, runtime handle, or lookup capability. It remains
+distinct from the live-only `PortHandle` obtained from an assembled runtime.
 
 **Provider** — The concrete Component selected during program assembly to
 receive Protocol Messages sent through a Port.
 
-**Requester** — A Component that issues a Request through a Port. It owns the
-request continuation and any domain correlation while the runtime owns
-transport correlation.
+**Requester** — The origin of a Request through a Port. A Component requester
+owns a Message continuation and any domain correlation. A live host requester
+awaits its Reply through `PortHandle`. In both cases the runtime owns transport
+correlation.
 
 **Port binding** — The assembly-time mapping from one exact named Port to a
 provider and its private Component Message vocabulary. The provider's Message
@@ -356,8 +358,9 @@ standard type relationship rather than a closure repeated at each binding.
 Multiple named Ports of the same Protocol may still be bound independently.
 
 **Notification** — A one-way Protocol value implementing `Notification<P>` and
-sent through `Command::notify`. It has no correlated terminal outcome for the
-sender. Notification delivery-failure policy remains unresolved.
+sent through `Command::notify` or live `PortHandle::notify`. It has no correlated
+terminal outcome for the sender. Notification delivery-failure policy beyond
+accepted live admission and whole-scope cutovers remains unresolved.
 
 **Request** — A Protocol operation/value implementing `Request<P>` with a
 statically associated `Reply` type. `Command::request(port, request)` issues it
@@ -365,7 +368,8 @@ as finite correlated work using
 `Message: From<RequestOutcome<Reply>>`; `Command::request_with` accepts an
 explicit continuation. Its eventual typed RequestOutcome is transformed into
 an ordinary requester Component Message; the requester does not await inside
-`update`.
+`update`. A live host may instead issue the same value through
+`PortHandle::request` and await `Result<Reply, RuntimeError>` directly.
 
 **RequestInvocation** — One dynamic Request occurrence delivered to the
 provider. It contains the Request value and a one-shot `ReplyTo` authority. The
@@ -376,27 +380,30 @@ outcome.
 A provider emits a value of that type using the invocation's `ReplyTo`
 authority.
 
-**Request outcome / `RequestOutcome`** — The requester-visible single terminal
-outcome of a Request, provisionally a Reply, a failure carrying runtime Error
-data, timeout, or cancellation. The exact failure and deadline policy is not
-yet settled. Phase 5 implements only `RequestOutcome::Replied`; an unanswered
-Request remains pending until controlled cancellation cleans up ownership
-without manufacturing the deferred outcome variants.
+**Request outcome / `RequestOutcome`** — The Component-requester-visible single
+terminal outcome of a Request, provisionally a Reply, a failure carrying runtime
+Error data, timeout, or cancellation. The exact in-band failure and deadline
+policy is not yet settled. Phase 5 implements only `RequestOutcome::Replied`; an
+unanswered Request remains pending until controlled cancellation cleans up
+ownership without manufacturing the deferred outcome variants. ADR-0006's live
+host request returns `Reply` directly or a host-boundary `RuntimeError`; it does
+not manufacture a RequestOutcome.
 
 **`RequestError`** — The current provisional type for a Request's runtime-level
 terminal error data. Domain-level negative replies remain ordinary Reply
 values.
 
-**Request continuation** — The one-shot message mapper attached to a Request
-invocation. The default `Command::request` form obtains it through the
-requester's canonical `From<RequestOutcome<Reply>>` conversion. The explicit
+**Request continuation** — The one-shot Message mapper attached to a
+Component-issued Request. The default `Command::request` form obtains it through
+the requester's canonical `From<RequestOutcome<Reply>>` conversion. The explicit
 `Command::request_with` form may capture domain context or assign
 call-site-specific meaning. Both produce the requester's Component Message
-through the same runtime lifecycle.
+through the same runtime lifecycle. A live host Request has a waiter rather than
+a Message continuation.
 
 **Transport correlation** — Opaque runtime bookkeeping that distinguishes one
-dynamic RequestInvocation from every other invocation. Components neither
-create nor compare transport-correlation identifiers.
+dynamic RequestInvocation from every other invocation. Components and live host
+callers neither create nor compare transport-correlation identifiers.
 
 **Domain correlation** — Application-owned identity that explains the business
 meaning of a Request or Reply. It is commonly captured by the request
@@ -416,6 +423,15 @@ external-ingress capability available at the Samara program boundary. Unlike a
 Components. Under ADR-0004, successful `send` means accepted for
 runtime-managed delivery, not transition completion; shutdown or a runtime
 fault closes admission and later sends fail explicitly.
+
+**`PortHandle`** — A cloneable live external-ingress capability for one exact
+bound `Port<P>`. `LiveRuntime::port_handle` validates the Port against its built
+Program. The handle admits Notifications and typed Requests through the normal
+Protocol binding without exposing the provider. A host Request awaits `Reply`
+directly; Drain retains it, Cancel or clean closure wakes it with `RuntimeError`,
+and a runtime fault preserves that fault. Dropping an admitted waiter does not
+cancel runtime-owned work. PortHandle is not inert Component wiring and has no
+ControlledRuntime counterpart under ADR-0006.
 
 ## Execution and Ordering
 
@@ -474,11 +490,12 @@ delivery or work contract rather than inferred from runtime topology.
 event. Samara explicitly does not promise this for independent live events.
 
 **Admission** — The point at which live boundary input becomes
-runtime-owned work. ADR-0004 gives a successful
-`ComponentHandle::send` or `SourceSink` operation this meaning. A call racing
-shutdown is either accepted under the selected shutdown policy or rejected;
-accepted work is not silently dropped because an internal capacity was
-reached.
+runtime-owned work. ADR-0004 gives `ComponentHandle::send` and `SourceSink` this
+meaning; ADR-0006 extends the same external cutoff to PortHandle Notifications
+and Requests. A PortHandle future attempts admission when first polled. A call
+racing shutdown is either accepted under the selected shutdown policy or
+rejected; accepted work is not silently dropped because an internal capacity
+was reached.
 
 **Unbounded internal delivery** — The accepted v0 live mechanism after
 admission. It has no configurable capacity or silent overload drop and can
@@ -495,7 +512,9 @@ application work.
 **Cancel shutdown / `Shutdown::Cancel`** — Structured closure that
 closes ingress, stops application driving, cancels semantic obligations and
 runtime-owned tasks, and joins or aborts all owned work without manufacturing
-application outcomes merely because the scope ended.
+application outcomes merely because the scope ended. Pending live host Request
+waiters are woken through the out-of-band `RuntimeError` channel rather than a
+fabricated RequestOutcome.
 
 **Quiescence** — The absence of immediately runnable work. Work may still be
 waiting for logical time, a controlled input, or an external event.
@@ -552,13 +571,14 @@ to hold.
 | Component Message and Protocol Message | A Component Message is private transition input; a Protocol Message is the provider-neutral vocabulary crossing a Port. |
 | Request and RequestInvocation | A Request is the typed operation/value; a RequestInvocation is one dynamic occurrence carrying Request and `ReplyTo`. |
 | Port and provider | A Port is an inert dependency; the provider is the Component selected during assembly. |
-| Notification and Request | `Notification<P>` is one-way input issued by `Command::notify`; `Request<P>` has an associated Reply and is issued by `Command::request` with a canonical continuation or `Command::request_with` with an explicit one. |
+| Notification and Request | `Notification<P>` is one-way input issued by `Command::notify` or live `PortHandle::notify`; `Request<P>` has an associated Reply and is issued by `Command::request` with a canonical continuation, `Command::request_with` with an explicit one, or live `PortHandle::request` with a direct host waiter. |
 | Protocol and wire protocol | A Samara Protocol is a typed Component boundary; a wire protocol defines external data exchange. |
 | Message and event | Boundary events and outcomes are mapped into Component Messages; trace events remain out of band. |
 | Per-Component serialization and ordering | Non-overlapping transitions do not create a global order or imply unspecified FIFO behavior. |
 | Controlled execution and simulation | Controlled execution names the semantic profile; simulation is one workload that uses it. |
 | Domain and transport correlation | Applications own meaning; the runtime owns delivery bookkeeping. |
-| `ComponentRef` and `ComponentHandle` | A reference is inert logical wiring; a handle is a live ingress capability. |
+| `ComponentRef` and `ComponentHandle` | A reference is inert logical wiring; a handle is a live private-Message ingress capability. |
+| `Port` and `PortHandle` | A Port is inert provider-neutral logical wiring shared by runtime profiles; a PortHandle is a live-only external-ingress capability for that exact binding. |
 
 ## Historical or Avoided Vocabulary
 
@@ -576,9 +596,9 @@ to hold.
 | `MpscSource<T>`, `MpscInput<T>` | `StreamDescriptor<T>` | Name the inert logical stream independently of its live adapter; reserve Source for its runtime realization. |
 | `Incoming<P, R>` | `RequestInvocation<P, R>` | Name the dynamic Request occurrence, not merely its direction. |
 | `Protocol::Inbound`, `HealthInbound` | `Protocol::Message`, `HealthProtocolMessage` | Name what the enum contains and associate concrete names with their Protocol. |
-| `ActorRef`, `Addr`, `PortRef`, `RuntimeRef` | `ComponentRef`, `ComponentHandle`, or `Port` | Choose the term that distinguishes logical address, live ingress capability, or dependency. |
-| `ask` | `request` | Use `Command::request` for command-now, Message-later request/reply; *ask* can misleadingly suggest an awaitable future. |
-| `tell` | `notify` or `send` | Use *notify* for provider-neutral one-way Protocol interaction and *send* for deliberate direct delivery to a Component Message API. |
+| `ActorRef`, `Addr`, `PortRef`, `RuntimeRef` | `ComponentRef`, `ComponentHandle`, `Port`, or `PortHandle` | Choose the term that distinguishes logical address, live private-Message ingress, inert Protocol dependency, or live Protocol ingress. |
+| `ask` | `request` | Use `Command::request` for command-now, Message-later Component request/reply and `PortHandle::request` for the deliberately awaitable live host boundary. |
+| `tell` | `notify` or `send` | Use *notify* for provider-neutral one-way Protocol interaction through `Command` or `PortHandle`, and *send* for deliberate direct delivery to a Component Message API. |
 | `ReplyToken` | `ReplyTo` | `ReplyTo` is the current provisional spelling; do not canonize both. |
 | Simulated execution | Controlled execution | Use *controlled* for the semantic profile; use *simulation* for the workload or product use case. |
 | Mailbox loop | Runtime topology | A mailbox or event loop may be an implementation technique, not the definition of a Component. |
@@ -591,8 +611,10 @@ Component-kernel freeze:
 
 - The exact RequestOutcome variants and the deadline, cancellation,
   late-Reply, abandoned-Reply, and delegation policies beyond Phase 5's
-  successful Reply path.
-- Notification delivery-failure semantics.
+  successful Component Reply path and ADR-0006's live-host whole-scope closure
+  diagnostic.
+- Notification delivery-failure semantics beyond accepted live admission and
+  whole-scope Cancel/fault cutovers.
 - The initial code shape of Layer abstractions. Multiple Layer kinds are
   expected, so this checkpoint does not promise one universal `Layer` trait.
 - The exact Rust representation of live and controlled execution-profile

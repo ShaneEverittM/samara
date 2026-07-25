@@ -60,12 +60,12 @@ pub mod prelude {
         EffectInvocation, EffectOutcome, EffectOutcomeKind, Framed, FramedError, FramedLayer,
         HttpError, HttpErrorKind, HttpJsonError, HttpRequest, HttpResponse, HttpResponseError,
         HttpStatusError, Init, LiveRuntime, LogicalTime, Notification, PendingEffect, PendingWork,
-        Port, PortId, PrintStderr, PrintStdout, Program, ProgramBuildError, ProgramBuilder,
-        Protocol, ReplyTo, Request, RequestError, RequestInvocation, RequestOutcome, RunReport,
-        RuntimeError, RuntimeTask, Shutdown, ShutdownReport, SourceDescriptor, SourceDriver,
-        SourceEvent, SourceEventKind, SourceSink, StreamDescriptor, Subscription,
-        SubscriptionAction, SubscriptionId, Subscriptions, TcpBytes, TcpError, TcpErrorKind,
-        TraceCommandKind, TraceEvent, TraceId, TraceRecord, protocol,
+        Port, PortHandle, PortId, PrintStderr, PrintStdout, Program, ProgramBuildError,
+        ProgramBuilder, Protocol, ReplyTo, Request, RequestError, RequestInvocation,
+        RequestOutcome, RunReport, RuntimeError, RuntimeTask, Shutdown, ShutdownReport,
+        SourceDescriptor, SourceDriver, SourceEvent, SourceEventKind, SourceSink, StreamDescriptor,
+        Subscription, SubscriptionAction, SubscriptionId, Subscriptions, TcpBytes, TcpError,
+        TcpErrorKind, TraceCommandKind, TraceEvent, TraceId, TraceRecord, protocol,
     };
 }
 
@@ -437,6 +437,15 @@ impl<Model, Message> Init<Model, Message> {
     pub fn with_command(mut self, command: Command<Message>) -> Self {
         self.command = command;
         self
+    }
+}
+
+impl<Model, Message> Default for Init<Model, Message>
+where
+    Model: Default,
+{
+    fn default() -> Self {
+        Self::new(Model::default())
     }
 }
 
@@ -3490,6 +3499,29 @@ impl LiveRuntime {
         })
     }
 
+    /// Creates live external ingress for one provider-neutral Port.
+    ///
+    /// The Port must have been declared and bound in this runtime's Program.
+    /// Unlike [`Port`], the returned handle is a live capability and must never
+    /// be stored in a Component or used from a transition.
+    pub fn port_handle<P: Protocol>(&self, port: &Port<P>) -> Result<PortHandle<P>, RuntimeError> {
+        if !Arc::ptr_eq(&port.program, &self.program.program)
+            || !self.program.bindings.iter().any(|binding| {
+                binding.protocol_type() == TypeId::of::<P>()
+                    && binding.port_id() == port.id()
+                    && Arc::ptr_eq(binding.port_program(), &port.program)
+            })
+        {
+            return Err(RuntimeError::harness(
+                "live Port handle target is not part of this Program",
+            ));
+        }
+        Ok(PortHandle {
+            port: port.clone(),
+            scope: self.scope.clone(),
+        })
+    }
+
     /// Starts the assembled program in a runtime-owned structured scope.
     ///
     /// The returned [`RuntimeTask`] is the ownership handle used to shut down and
@@ -3643,6 +3675,105 @@ impl<C: Component> ComponentHandle<C> {
                 message: Box::new(message),
             },
         ))
+    }
+}
+
+/// Live external ingress through one provider-neutral [`Port`].
+///
+/// Surrounding Tokio code can submit protocol notifications and await typed
+/// request replies without depending on the bound provider Component's private
+/// message type. Successful admission still routes through runtime-owned
+/// serialized Component transitions.
+///
+/// A Port handle exposes no provider Model access:
+///
+/// ```compile_fail
+/// use samara::{PortHandle, Protocol};
+///
+/// fn mutate_provider<P: Protocol>(handle: &mut PortHandle<P>) {
+///     handle.model_mut();
+/// }
+/// ```
+///
+/// It is also not interchangeable with the inert [`Port`] accepted by
+/// Component Commands:
+///
+/// ```compile_fail
+/// use samara::{Command, Notification, PortHandle, Protocol};
+///
+/// struct ExampleProtocol;
+/// enum ExampleProtocolMessage { Notified }
+/// struct Notify;
+///
+/// impl Protocol for ExampleProtocol {
+///     type Message = ExampleProtocolMessage;
+/// }
+///
+/// impl Notification<ExampleProtocol> for Notify {
+///     fn into_message(self) -> ExampleProtocolMessage {
+///         ExampleProtocolMessage::Notified
+///     }
+/// }
+///
+/// fn misuse(handle: PortHandle<ExampleProtocol>) -> Command<()> {
+///     Command::notify(handle, Notify)
+/// }
+/// ```
+pub struct PortHandle<P: Protocol> {
+    port: Port<P>,
+    scope: Arc<live_runtime::LiveScope>,
+}
+
+impl<P: Protocol> Clone for PortHandle<P> {
+    fn clone(&self) -> Self {
+        Self {
+            port: self.port.clone(),
+            scope: self.scope.clone(),
+        }
+    }
+}
+
+impl<P: Protocol> fmt::Debug for PortHandle<P> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("PortHandle")
+            .field(self.port.id())
+            .finish()
+    }
+}
+
+impl<P: Protocol> PortHandle<P> {
+    /// Submits one protocol notification to the live runtime.
+    ///
+    /// Successful return means the notification crossed the runtime admission
+    /// boundary; it does not mean the provider transition has completed.
+    pub async fn notify<N>(&self, notification: N) -> Result<(), RuntimeError>
+    where
+        N: Notification<P>,
+    {
+        self.scope
+            .accept_ingress(live_runtime::LiveEvent::port_notification(
+                self.port.clone(),
+                notification,
+            ))
+    }
+
+    /// Submits one protocol request and awaits its correlated typed reply.
+    ///
+    /// Dropping this future stops only the host from waiting. Once admitted,
+    /// the request remains runtime-owned until it replies or the runtime ends.
+    pub async fn request<R>(&self, request: R) -> Result<R::Reply, RuntimeError>
+    where
+        R: Request<P>,
+    {
+        let (completion, reply) = tokio::sync::oneshot::channel();
+        self.scope
+            .accept_ingress(live_runtime::LiveEvent::port_request(
+                self.port.clone(),
+                request,
+                completion,
+            ))?;
+        reply.await.map_err(|_| self.scope.request_ended_error())
     }
 }
 

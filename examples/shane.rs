@@ -1,24 +1,40 @@
+use std::time::Duration;
+
 use anyhow::Result;
 use samara::prelude::*;
 use serde::Deserialize;
-use std::time::Duration;
 
 type Time = chrono::DateTime<chrono::Utc>;
 
 enum Message {
-    GetTime,
+    // A tick to drive our model.
+    Tick,
+
+    // Received when we are asked for our current time.
+    GetTime(RequestInvocation<TimeServerProtocol, GetCurrentTime>),
+
+    // Received when our time requests finish.
     TimeRetrieved(Time),
+
+    // Received when our time requests fail.
     FailedToGetTime(GetTimeError),
 }
 
 impl From<EffectOutcome<TimeResponse, HttpResponseError>> for Message {
     fn from(outcome: EffectOutcome<TimeResponse, HttpResponseError>) -> Self {
+        use self::{EffectOutcome::*, Message::*};
         match outcome {
-            EffectOutcome::Succeeded(response) => Message::TimeRetrieved(response.data.iso),
-            EffectOutcome::Failed(error) => Message::FailedToGetTime(error.into()),
-            EffectOutcome::Cancelled(reason) => {
-                Message::FailedToGetTime(GetTimeError::Cancelled(reason))
-            }
+            Succeeded(response) => TimeRetrieved(response.data.iso),
+            Failed(error) => FailedToGetTime(GetTimeError::Response(error)),
+            Cancelled(reason) => FailedToGetTime(GetTimeError::Cancelled(reason)),
+        }
+    }
+}
+
+impl From<TimeServerProtocolMessage> for Message {
+    fn from(value: TimeServerProtocolMessage) -> Self {
+        match value {
+            TimeServerProtocolMessage::GetCurrentTime(request) => Self::GetTime(request),
         }
     }
 }
@@ -35,30 +51,35 @@ impl Component for CliTimeServer {
     type Message = Message;
 
     fn init(&self) -> Init<Self::Model, Self::Message> {
-        // Note: perhaps `Init::default`?
-        Init::new(CliTimeModel::default())
-            .with_command(Command::after(Duration::from_secs(1), Message::GetTime))
+        Init::default().with_command(Command::after(Duration::from_secs(1), Message::Tick))
     }
 
     fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
         match message {
-            Message::GetTime => {
-                let get_time = HttpRequest::get("https://api.coinbase.com/v2/time")
+            // Got a tick, get the time and schedule the next tick.
+            Message::Tick => {
+                let get = HttpRequest::get("https://api.coinbase.com/v2/time")
                     .on_response()
                     .require_success()
                     .json::<TimeResponse>()
                     .into_command();
-                let tick = Command::after(Duration::from_secs(1), Message::GetTime);
-                Command::batch([get_time, tick])
+                let tick = Command::after(Duration::from_secs(1), Message::Tick);
+
+                Command::batch([get, tick])
             }
 
+            // Someone wants to know our conception of time.
+            Message::GetTime(request) => Command::reply(request.reply_to, model.current_time),
+
+            // Got the time, save it and request a message be printed.
             Message::TimeRetrieved(time) => {
                 model.current_time = Some(time);
+
                 samara::println!("Got time: {time}")
             }
-            Message::FailedToGetTime(error) => {
-                samara::eprintln!("Failed to get time from server: {error}")
-            }
+
+            // Couldn't get the time, request an error be printed.
+            Message::FailedToGetTime(error) => samara::eprintln!("Failed to get time: {error}"),
         }
     }
 }
@@ -67,6 +88,7 @@ impl Component for CliTimeServer {
 enum GetTimeError {
     #[error(transparent)]
     Response(#[from] HttpResponseError),
+
     #[error("request was cancelled: {0:?}")]
     Cancelled(CancelReason),
 }
@@ -81,21 +103,55 @@ struct TimeResponse {
     data: TimeResponseData,
 }
 
+protocol! {
+    type TimeServerProtocol => enum TimeServerProtocolMessage {
+        GetCurrentTime -> Option<Time>,
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Start building a Samara program, which is a declaration of the topology.
     let mut builder = Program::builder();
-    builder.component(ComponentId::new("TimeServer"), CliTimeServer);
+
+    // Create a time-server component.
+    let time_server = builder.component(ComponentId::new("TimeServer"), CliTimeServer);
+
+    // Declare the existence of a Port on the runtime, which exposes the TimeServerProtocol.
+    let port = builder.port::<TimeServerProtocol>(PortId::new("TimeServer"));
+
+    // Bind the CliTimeServer as the implementation of the Port's protocol.
+    builder.bind_port(&port, &time_server);
+
+    // Build the program, this catches errors like unbound ports, etc.
     let program = builder.build()?;
 
+    // Configure a runtime for real usage...
     let runtime = LiveRuntime::builder(program)
+        // ...binding a built-in HTTP effect driver...
         .bind_http()
+        // ...and a built-in stdio effect driver...
         .bind_stdio()
+        // ...and build it, similar to program finding configuration errors.
         .build()?;
-    let handle = runtime.spawn();
 
-    // Note: should have a run_forever capability.
-    tokio::time::sleep(Duration::from_secs(10)).await;
-    handle.shutdown(Shutdown::Cancel).await?;
+    // We are now "outside" Samara-land, so we can ask for a "handle" as a point
+    // of ingress. This allows normal tokio tasks to interact with Components.
+    let time_server = runtime.port_handle(&port)?;
+
+    // We've now set up the program, runtime, and ingress points, so start the runtime.
+    let runtime_task = runtime.spawn();
+
+    // Wait a bit...
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // ...then ask the time-server for the current time, note the normal `await` syntax.
+    let current_time = time_server.request(GetCurrentTime).await?;
+    println!("Time reported through the Port: {current_time:?}");
+
+    // Wait a bit more, then close down the runtime cancelling in-flight work.
+    tokio::time::sleep(Duration::from_secs(8)).await;
+    runtime_task.shutdown(Shutdown::Cancel).await?;
 
     Ok(())
 }

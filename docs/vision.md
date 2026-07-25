@@ -37,7 +37,9 @@ initial controlled scheduling, Source cutover, structural trace, and work-accoun
 semantics beneath those guarantees. ADR-0004 selects a deliberately simple
 first live-runtime contract for admission, Driver completion, shutdown, framing EOF,
 pressure, faults, and the initial Tokio bridges; it does not claim to settle their mature
-product policies.
+product policies. ADR-0006 extends that same live admission and ownership boundary to
+provider-neutral host Port operations without changing Component purity or controlled
+execution.
 
 ## The Samara Program Boundary
 
@@ -50,6 +52,10 @@ A Samara program may be embedded in a larger Tokio process. Code outside the pro
 boundary is part of the surrounding world and interacts with the program through
 explicit boundary adapters or ingress APIs. Samara does not claim control over arbitrary
 code elsewhere in the process.
+
+That surrounding host may await a typed result from a live ingress API, but the result
+does not grant access to Component state. Any host decision that should change Samara
+application state must re-enter through the program's typed Message or Protocol boundary.
 
 This boundary makes incremental adoption possible without diluting the meaning of a
 conforming Samara program.
@@ -692,7 +698,8 @@ The following questions remain intentionally open:
 - Domain-payload trace capture, typed trace projections, a public live observer, durable
   trace storage, and replay tooling.
 - Request failure, timeout, abandonment, late-Reply, delegation, and in-band cancellation
-  semantics beyond the Phase 5 successful Reply path.
+  semantics beyond the Phase 5 successful Component Reply path and ADR-0006's narrow
+  live-host whole-scope closure diagnostic.
 - Exact Decoder-finalization method spelling and first-party module/type naming, provided
   ADR-0004's accepted observable EOF and `bytes` semantics are preserved.
 - The shape and release timing of reusable conformance harnesses.

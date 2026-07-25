@@ -1,6 +1,6 @@
 # Samara v0 Milestone API Contract
 
-- Status: Phase 6 live-runtime implementation complete; audit ready
+- Status: Phase 6 live-runtime implementation complete; live Port-ingress contract implemented, conformance audit pending
 - Date: July 25, 2026
 - Scope: Change-controlled public API slices for staged implementation
 
@@ -209,6 +209,45 @@ The ADR freezes observable first-cut behavior, not task topology, queue
 representation, exact public module naming, or a mature product policy for
 overload, shutdown deadlines, Driver recovery, or bridge restartability.
 
+## Accepted and Implemented Contract: Live Port Ingress
+
+[ADR-0006](adr/0006-live-port-ingress.md) extends the existing live ingress
+boundary to provider-neutral Ports:
+
+- `LiveRuntime::port_handle(&Port<P>)` returns a cloneable `PortHandle<P>` only
+  when the Port belongs to that runtime's exact Program and has its exact built
+  Protocol-and-name binding. Foreign or absent exact bindings fail synchronously
+  with `RuntimeError`.
+- `Port<P>` remains inert logical wiring suitable for Component configuration.
+  `PortHandle<P>` is a live capability for surrounding Tokio code and exposes no
+  provider, Model, transition, channel, or runtime topology.
+- `PortHandle::notify` and `PortHandle::request` attempt admission when their
+  futures are first polled. They share the same atomic cutoff as
+  `ComponentHandle` and the owning `RuntimeTask`.
+- Successful notify means accepted for runtime-managed conversion and delivery,
+  not that the provider transition completed.
+- An admitted host Request uses the same Port binding, `RequestInvocation`,
+  opaque correlation, and `ReplyTo` path as `Command::request`, but its awaited
+  success is `R::Reply` directly. It creates neither a requester Component
+  Message nor `RequestOutcome::Replied`.
+- Drain closes new Port ingress and retains admitted Notifications, Requests,
+  Replies, and their causal finite work. An unanswered host Request may keep
+  Drain pending forever.
+- Cancel or non-fault scope closure before Reply wakes the external waiter with
+  `RuntimeError` without manufacturing a RequestOutcome. A runtime fault wakes
+  it with the preserved scope fault and rejects later Port ingress with that
+  same error.
+- Dropping an unpolled Request future admits nothing. Dropping or timing out an
+  already admitted waiter does not cancel provider delivery, release the
+  outstanding Request, or relax Drain; it relinquishes only host observation.
+- `PortHandle` is live-only. ControlledRuntime gains no corresponding handle;
+  deterministic tests continue to use the existing controlled drive and
+  inspection surfaces.
+
+This contract freezes host-boundary completion only. It does not activate
+`RequestOutcome::Failed`, `TimedOut`, or `Cancelled`, define per-Request
+cancellation, or settle late-Reply and abandonment policy for Components.
+
 ## Example-Driven Extension: Standard Output Effects
 
 The first real-application experiment adds two narrow, high-level first-party
@@ -324,9 +363,11 @@ tracing remain deferred.
 The following decisions remain explicit gates or deferrals rather than
 accidental promises made by a placeholder type or variant:
 
-- Request failure, deadline, cancellation, late-Reply, abandoned-Reply, and
-  delegation policies beyond Phase 5's successful `Replied` path.
-- Notification delivery-failure semantics.
+- Request failure, deadline, per-Request cancellation, late-Reply,
+  abandoned-Reply, and delegation policies beyond Phase 5's successful
+  Component `Replied` path and ADR-0006's narrow live-host closure error.
+- Notification delivery-failure semantics beyond accepted live admission and
+  whole-scope Cancel/fault cutovers.
 - The complete public Command/conformance inspection API, including sends,
   timers, batches, and stored message mappers.
 - The exact `ProgramBuilder::build()` error taxonomy beyond ADR-0003's

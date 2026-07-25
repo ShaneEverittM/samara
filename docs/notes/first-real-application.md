@@ -3,7 +3,7 @@
 - Status: Exploratory notes
 - Date: July 24, 2026
 - Evidence: [`examples/shane.rs`](../../examples/shane.rs)
-- Contract impact: Follow-through accepted by ADR-0005; remaining notes are exploratory
+- Contract impact: Follow-through accepted by ADR-0005 and ADR-0006; remaining notes are exploratory
 
 ## Purpose
 
@@ -282,3 +282,27 @@ per-request client construction are gone. Loopback conformance evidence
 verifies raw status handling, owned request data, controlled interception,
 duplicate-binding rejection, and reuse of one HTTP/1.1 connection by
 sequential effects.
+
+## Third Follow-Through: External Port Ingress
+
+The example now exposes its current-time query as a provider-neutral
+`TimeServerProtocol` Request. Surrounding Tokio code obtains a live handle from
+the same assembled Port before spawning the runtime:
+
+```rust,ignore
+let time_server = runtime.port_handle(&port)?;
+let runtime_task = runtime.spawn();
+let current_time = time_server.request(GetCurrentTime).await?;
+```
+
+[ADR-0006](../adr/0006-live-port-ingress.md) defines this as a live host
+boundary, not a capability available inside Component transitions. The host can
+await `R::Reply` directly because it already has an ordinary async stack frame;
+a Component-issued Request still returns through its Message continuation.
+Both paths use the same Port binding, provider Message conversion,
+`RequestInvocation`, opaque correlation, and `Command::reply` mechanism.
+
+This makes the small application useful from both directions: its Component
+continues to perform explicit HTTP and standard-output effects, while its host
+can query application state without depending on the Component's private
+Message enum or bypassing its serialized transition path.

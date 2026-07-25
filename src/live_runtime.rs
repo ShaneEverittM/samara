@@ -19,7 +19,7 @@ use futures_util::FutureExt;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::TcpStream,
-    sync::mpsc,
+    sync::{mpsc, oneshot},
     task::{AbortHandle, JoinSet},
 };
 
@@ -29,13 +29,15 @@ use crate::controlled_runtime::{
 use crate::{
     BoxFuture, Command, CommandKind, ComponentId, DriverStopped, EffectDescriptor, EffectDriver,
     EffectOutcome, ErasedRequestMapper, ErasedSourceEvent, HttpError, HttpRequest, HttpResponse,
-    PortId, PrintStderr, PrintStdout, Program, RuntimeError, Shutdown, ShutdownReport,
-    SourceDescriptor, SourceDriver, SourceEvent, SourcePlan, SourceSink, StreamDescriptor,
-    SubscriptionId, TcpBytes, TcpError, TraceId,
+    Notification, Port, PortId, PrintStderr, PrintStdout, Program, Protocol, ReplyTo, Request,
+    RuntimeError, Shutdown, ShutdownReport, SourceDescriptor, SourceDriver, SourceEvent,
+    SourcePlan, SourceSink, StreamDescriptor, SubscriptionId, TcpBytes, TcpError, TraceId,
 };
 
 type ErasedValue = Box<dyn Any + Send>;
 type ErasedMessageMapper = Box<dyn FnOnce(ErasedValue) -> ErasedValue + Send + 'static>;
+type HostReplyCompletion = Box<dyn FnOnce(ErasedValue) + Send + 'static>;
+type ProtocolRequestConversion = Box<dyn FnOnce(u64) -> ErasedValue + Send + 'static>;
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
@@ -678,6 +680,16 @@ impl LiveScope {
         }
     }
 
+    pub(crate) fn request_ended_error(&self) -> RuntimeError {
+        match &lock(&self.state).phase {
+            ScopePhase::Faulted(error) => error.clone(),
+            ScopePhase::Running
+            | ScopePhase::Draining
+            | ScopePhase::Cancelling
+            | ScopePhase::Closed => RuntimeError::harness("live runtime ended before a reply"),
+        }
+    }
+
     fn accept_source(&self, event: LiveEvent) -> Result<(), DriverStopped> {
         let state = lock(&self.state);
         if !matches!(state.phase, ScopePhase::Running) {
@@ -733,8 +745,110 @@ pub(crate) struct LiveIngress {
     pub(crate) message: ErasedValue,
 }
 
+pub(crate) enum LivePortIngress {
+    Notification(Box<dyn ErasedLivePortNotification>),
+    Request(Box<dyn ErasedLivePortRequest>),
+}
+
+pub(crate) trait ErasedLivePortNotification: Send {
+    fn port(&self) -> &PortId;
+    fn port_program(&self) -> &Arc<()>;
+    fn protocol_type(&self) -> TypeId;
+    fn into_message(self: Box<Self>) -> ErasedValue;
+}
+
+pub(crate) trait ErasedLivePortRequest: Send {
+    fn port(&self) -> &PortId;
+    fn port_program(&self) -> &Arc<()>;
+    fn protocol_type(&self) -> TypeId;
+    fn reply_type(&self) -> TypeId;
+    fn into_conversion(self: Box<Self>) -> (ProtocolRequestConversion, HostReplyCompletion);
+}
+
+struct TypedLivePortNotification<P, N>
+where
+    P: Protocol,
+    N: Notification<P>,
+{
+    port: Port<P>,
+    notification: N,
+}
+
+impl<P, N> ErasedLivePortNotification for TypedLivePortNotification<P, N>
+where
+    P: Protocol,
+    N: Notification<P>,
+{
+    fn port(&self) -> &PortId {
+        self.port.id()
+    }
+
+    fn port_program(&self) -> &Arc<()> {
+        &self.port.program
+    }
+
+    fn protocol_type(&self) -> TypeId {
+        TypeId::of::<P>()
+    }
+
+    fn into_message(self: Box<Self>) -> ErasedValue {
+        Box::new(self.notification.into_message())
+    }
+}
+
+struct TypedLivePortRequest<P, R>
+where
+    P: Protocol,
+    R: Request<P>,
+{
+    port: Port<P>,
+    request: R,
+    completion: oneshot::Sender<R::Reply>,
+}
+
+impl<P, R> ErasedLivePortRequest for TypedLivePortRequest<P, R>
+where
+    P: Protocol,
+    R: Request<P>,
+{
+    fn port(&self) -> &PortId {
+        self.port.id()
+    }
+
+    fn port_program(&self) -> &Arc<()> {
+        &self.port.program
+    }
+
+    fn protocol_type(&self) -> TypeId {
+        TypeId::of::<P>()
+    }
+
+    fn reply_type(&self) -> TypeId {
+        TypeId::of::<R::Reply>()
+    }
+
+    fn into_conversion(self: Box<Self>) -> (ProtocolRequestConversion, HostReplyCompletion) {
+        let Self {
+            request,
+            completion,
+            ..
+        } = *self;
+        let conversion: ProtocolRequestConversion = Box::new(move |correlation| {
+            Box::new(request.into_message(ReplyTo::runtime(correlation)))
+        });
+        let completion: HostReplyCompletion = Box::new(move |reply: ErasedValue| {
+            let reply = *reply
+                .downcast::<R::Reply>()
+                .expect("a host Request completion is selected by reply TypeId");
+            let _ = completion.send(reply);
+        });
+        (conversion, completion)
+    }
+}
+
 pub(crate) enum LiveEvent {
     Message(QueuedMessage),
+    PortIngress(LivePortIngress),
     SourceEvent {
         stamp: SourceStamp,
         terminal_type: TypeId,
@@ -760,6 +874,32 @@ impl LiveEvent {
             message: ingress.message,
             source: None,
         })
+    }
+
+    pub(crate) fn port_notification<P, N>(port: Port<P>, notification: N) -> Self
+    where
+        P: Protocol,
+        N: Notification<P>,
+    {
+        Self::PortIngress(LivePortIngress::Notification(Box::new(
+            TypedLivePortNotification { port, notification },
+        )))
+    }
+
+    pub(crate) fn port_request<P, R>(
+        port: Port<P>,
+        request: R,
+        completion: oneshot::Sender<R::Reply>,
+    ) -> Self
+    where
+        P: Protocol,
+        R: Request<P>,
+    {
+        Self::PortIngress(LivePortIngress::Request(Box::new(TypedLivePortRequest {
+            port,
+            request,
+            completion,
+        })))
     }
 }
 
@@ -792,13 +932,20 @@ struct PendingEffect {
     task: AbortHandle,
 }
 
+enum RequestContinuation {
+    Component {
+        requester: ComponentId,
+        mapper: ErasedMessageMapper,
+        message_type: TypeId,
+        message_type_name: &'static str,
+    },
+    Host(HostReplyCompletion),
+}
+
 struct OutstandingRequest {
     correlation: u64,
-    requester: ComponentId,
     reply_type: TypeId,
-    mapper: Option<ErasedMessageMapper>,
-    message_type: TypeId,
-    message_type_name: &'static str,
+    continuation: RequestContinuation,
 }
 
 struct PendingTimer {
@@ -1256,11 +1403,13 @@ impl LiveCore {
                     };
                     self.requests.push(OutstandingRequest {
                         correlation,
-                        requester: component.clone(),
                         reply_type,
-                        mapper: Some(mapper),
-                        message_type: TypeId::of::<Message>(),
-                        message_type_name: std::any::type_name::<Message>(),
+                        continuation: RequestContinuation::Component {
+                            requester: component.clone(),
+                            mapper,
+                            message_type: TypeId::of::<Message>(),
+                            message_type_name: std::any::type_name::<Message>(),
+                        },
                     });
                     let _ = self.scope.accept_finite(LiveEvent::Message(message));
                 }
@@ -1279,7 +1428,7 @@ impl LiveCore {
                             "ReplyTo no longer names an outstanding Request",
                         ));
                     };
-                    let mut request = self.requests.remove(index);
+                    let request = self.requests.remove(index);
                     if request.reply_type != reply_type {
                         return Err(self.runtime_fault(
                             component.clone(),
@@ -1288,26 +1437,41 @@ impl LiveCore {
                             "Reply type does not match its Request correlation",
                         ));
                     }
-                    let mapper = request
-                        .mapper
-                        .take()
-                        .expect("an outstanding Request owns one mapper");
-                    let mapped =
-                        catch_unwind(AssertUnwindSafe(|| mapper(reply))).map_err(|_| {
-                            self.runtime_fault(
-                                component.clone(),
-                                None,
-                                work,
-                                "Request continuation panicked",
-                            )
-                        })?;
-                    let _ = self.scope.accept_finite(LiveEvent::Message(QueuedMessage {
-                        target: request.requester,
-                        target_message_type: request.message_type,
-                        message_type_name: request.message_type_name,
-                        message: mapped,
-                        source: None,
-                    }));
+                    match request.continuation {
+                        RequestContinuation::Component {
+                            requester,
+                            mapper,
+                            message_type,
+                            message_type_name,
+                        } => {
+                            let mapped =
+                                catch_unwind(AssertUnwindSafe(|| mapper(reply))).map_err(|_| {
+                                    self.runtime_fault(
+                                        component.clone(),
+                                        None,
+                                        work,
+                                        "Request continuation panicked",
+                                    )
+                                })?;
+                            let _ = self.scope.accept_finite(LiveEvent::Message(QueuedMessage {
+                                target: requester,
+                                target_message_type: message_type,
+                                message_type_name,
+                                message: mapped,
+                                source: None,
+                            }));
+                        }
+                        RequestContinuation::Host(completion) => {
+                            catch_unwind(AssertUnwindSafe(|| completion(reply))).map_err(|_| {
+                                self.runtime_fault(
+                                    component.clone(),
+                                    None,
+                                    work,
+                                    "host Request continuation panicked",
+                                )
+                            })?;
+                        }
+                    }
                 }
                 CommandKind::After { delay, message } => {
                     let id = self.next_timer;
@@ -1500,6 +1664,150 @@ impl LiveCore {
             message,
             source: None,
         }));
+        Ok(())
+    }
+
+    fn process_port_ingress(&mut self, ingress: LivePortIngress) -> Result<(), RuntimeError> {
+        let work = self.work();
+        match ingress {
+            LivePortIngress::Notification(notification) => {
+                let port = notification.port().clone();
+                let protocol_type = notification.protocol_type();
+                if !Arc::ptr_eq(notification.port_program(), &self.program.program) {
+                    return Err(self.runtime_fault(
+                        ComponentId::new("<external-port>"),
+                        None,
+                        work,
+                        "notification Port belongs to another Program",
+                    ));
+                }
+                let Some(binding_index) = self.binding_index(protocol_type, &port) else {
+                    return Err(self.runtime_fault(
+                        ComponentId::new("<external-port>"),
+                        None,
+                        work,
+                        "notification Port has no runtime binding",
+                    ));
+                };
+                let (provider, target_message_type, message_type_name) = {
+                    let binding = &self.program.bindings[binding_index];
+                    (
+                        binding.provider_id().clone(),
+                        binding.provider_message_type(),
+                        binding.provider_message_type_name(),
+                    )
+                };
+                let protocol_message =
+                    match catch_unwind(AssertUnwindSafe(|| notification.into_message())) {
+                        Ok(message) => message,
+                        Err(_) => {
+                            return Err(self.runtime_fault(
+                                provider,
+                                None,
+                                work,
+                                "external Notification protocol conversion panicked",
+                            ));
+                        }
+                    };
+                let provider_message = {
+                    let binding = &self.program.bindings[binding_index];
+                    catch_unwind(AssertUnwindSafe(|| binding.convert(protocol_message)))
+                };
+                let provider_message = match provider_message {
+                    Ok(message) => message,
+                    Err(_) => {
+                        return Err(self.runtime_fault(
+                            provider.clone(),
+                            None,
+                            work,
+                            "external Notification binding conversion panicked",
+                        ));
+                    }
+                };
+                let message = QueuedMessage {
+                    target: provider,
+                    target_message_type,
+                    message_type_name,
+                    message: provider_message,
+                    source: None,
+                };
+                let _ = self.scope.accept_finite(LiveEvent::Message(message));
+            }
+            LivePortIngress::Request(request) => {
+                let port = request.port().clone();
+                let protocol_type = request.protocol_type();
+                if !Arc::ptr_eq(request.port_program(), &self.program.program) {
+                    return Err(self.runtime_fault(
+                        ComponentId::new("<external-port>"),
+                        None,
+                        work,
+                        "request Port belongs to another Program",
+                    ));
+                }
+                let Some(binding_index) = self.binding_index(protocol_type, &port) else {
+                    return Err(self.runtime_fault(
+                        ComponentId::new("<external-port>"),
+                        None,
+                        work,
+                        "request Port has no runtime binding",
+                    ));
+                };
+                let (provider, target_message_type, message_type_name) = {
+                    let binding = &self.program.bindings[binding_index];
+                    (
+                        binding.provider_id().clone(),
+                        binding.provider_message_type(),
+                        binding.provider_message_type_name(),
+                    )
+                };
+                let correlation = self.next_request;
+                self.next_request += 1;
+                let reply_type = request.reply_type();
+                let (conversion, completion) = request.into_conversion();
+                self.requests.push(OutstandingRequest {
+                    correlation,
+                    reply_type,
+                    continuation: RequestContinuation::Host(completion),
+                });
+                let protocol_message =
+                    match catch_unwind(AssertUnwindSafe(|| conversion(correlation))) {
+                        Ok(message) => message,
+                        Err(_) => {
+                            return Err(self.runtime_fault(
+                                provider,
+                                None,
+                                work,
+                                "external Request protocol conversion panicked",
+                            ));
+                        }
+                    };
+                let provider_message = {
+                    let binding = &self.program.bindings[binding_index];
+                    catch_unwind(AssertUnwindSafe(|| binding.convert(protocol_message)))
+                };
+                let provider_message = match provider_message {
+                    Ok(message) => message,
+                    Err(_) => {
+                        return Err(self.runtime_fault(
+                            provider.clone(),
+                            None,
+                            work,
+                            "external Request binding conversion panicked",
+                        ));
+                    }
+                };
+                let message = QueuedMessage {
+                    target: provider,
+                    target_message_type,
+                    message_type_name,
+                    message: provider_message,
+                    source: None,
+                };
+                if !self.scope.accept_finite(LiveEvent::Message(message)) {
+                    self.requests.pop();
+                }
+            }
+        }
         Ok(())
     }
 
@@ -1735,6 +2043,7 @@ impl LiveCore {
                     }
                     let result = match event {
                         LiveEvent::Message(message) => self.process_message(message),
+                        LiveEvent::PortIngress(ingress) => self.process_port_ingress(ingress),
                         LiveEvent::SourceEvent { stamp, terminal_type, event } => {
                             self.process_source_event(stamp, terminal_type, event)
                         }

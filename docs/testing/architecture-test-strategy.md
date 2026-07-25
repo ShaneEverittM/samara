@@ -1,7 +1,7 @@
 # Architecture Test Strategy (v0)
 
 ## Status
-- Phase: Phase 6 live-runtime implementation complete; audit ready.
+- Phase: Phase 6 live-runtime implementation complete; ADR-0006 live Port-ingress evidence active.
 - Date: July 25, 2026.
 
 ## Purpose
@@ -74,6 +74,13 @@ architecture before each implementation slice begins.
   Messages rather than treated as the same vocabulary.
 - Confirm successful Requests use opaque runtime correlation, accept at most
   one Reply, map it to `RequestOutcome::Replied`, and preserve the causal chain.
+- Confirm live PortHandle Notifications and Requests enter through the exact
+  built Port binding and ordinary provider Message path without directly
+  invoking a Component or exposing its Model.
+- Confirm a host Request uses opaque runtime correlation and `ReplyTo` but
+  resolves its waiter to `R::Reply` directly, without a requester Component
+  Message or RequestOutcome. Concurrent same-typed requests must remain distinct
+  when Replies complete in a different order.
 - Confirm `ProgramBuilder::build()` rejects exactly the explicitly knowable
   assembly errors and permits Port cycles without claiming a closed static
   dependency graph.
@@ -98,6 +105,18 @@ architecture before each implementation slice begins.
   actually accepted.
 - Confirm canceling a Source does not manufacture a SourceEvent unless that
   Source contract explicitly promises one.
+- Validate ComponentHandle and PortHandle use one atomic external-ingress
+  cutoff. Every shutdown race must classify a Port operation as accepted and
+  owned or rejected without delivery.
+- Confirm Drain retains admitted Port Notifications and host Requests, including
+  their Replies and causal finite work, and cannot report clean completion while
+  a host Request remains outstanding.
+- Confirm Cancel or non-fault closure wakes a pending host Request with
+  `RuntimeError` and no RequestOutcome, while a runtime fault returns the same
+  preserved fault surfaced through the owning RuntimeTask.
+- Confirm dropping an unpolled host request admits nothing and dropping an
+  admitted waiter does not cancel provider delivery, remove the Request
+  obligation, or release Drain.
 
 ### L5: Backpressure and Load Tests
 - Validate live admission and work pressure behavior without assuming a
@@ -109,6 +128,8 @@ architecture before each implementation slice begins.
   stable conformance thresholds or imply support for memory exhaustion.
 - Confirm the first-party `mpsc` bridge adds no pressure promise beyond the
   upstream Tokio channel selected by the application.
+- Include admitted PortHandle traffic in the same bounded no-silent-drop
+  characterization without promising FIFO among independent handle clones.
 
 ### L6: Controlled-Time and Acceleration Tests
 - Validate that runtime scheduling semantics can run in controlled time.
@@ -177,6 +198,17 @@ architecture before each implementation slice begins.
 - Port interaction coverage for the `Notification<P>` / `Command::notify` and
   `Request<P>` / `Command::request` symmetry, canonical and explicit message
   mapping, opaque correlation, and runtime-owned reply resolution.
+- Live PortHandle coverage must prove:
+  - exact-Program and exact-binding validation, including rejection of a foreign
+    or same-named lookalike Port before spawn;
+  - cloned-handle Notification admission, provider conversion, serialized
+    delivery, post-cutoff rejection, and cutoff-race ownership;
+  - direct typed host Reply with no RequestOutcome or requester Component
+    Message, plus correlation across reverse-order concurrent Replies;
+  - Drain retention and possible indefinite wait for an unanswered Request;
+  - Cancel and clean-closure wakeup through RuntimeError, fault identity
+    preservation, and later-ingress rejection with that fault; and
+  - unpolled-future no-op and admitted-waiter drop without Request cancellation.
 - When the deferred Request lifecycle tranche is activated, Reply-obligation
   coverage must demonstrate that:
   - consuming `ReplyTo` into an interpreted `Command::reply` produces exactly one
@@ -195,6 +227,11 @@ architecture before each implementation slice begins.
 - Public API lint checks must likewise verify that discarding a `Command`
   triggers its `#[must_use]` diagnostic; a discarded-outcome effect means no
   completion Message, not that the inert Command value itself may be dropped.
+- Compile-contract checks must keep `PortHandle` distinct from inert `Port`,
+  expose no Model access, and prove it cannot substitute for `Port` in Command
+  or ControlledRuntime APIs. Because Rust cannot reject arbitrary fields in a
+  `Send` Component configuration, keeping live handles out of Components also
+  remains an explicit conformance rule.
 - Discarded-outcome effect tests must cover typed controlled interception,
   terminal-outcome tracing without a resulting Message transition, ordinary
   missing-binding faults, live Drain retention, and live Cancel cleanup.
@@ -209,6 +246,9 @@ architecture before each implementation slice begins.
   `pending_now`; pending effects, future timers, active Sources, and outstanding
   Requests as `pending_later`; and no internal tasks, queues, locks,
   interpreter steps, or trace records as separate obligations.
+- An admitted host Port Request is one outstanding Request obligation; its Tokio
+  waiter is not a second work unit. Dropping that waiter does not change the
+  count or ownership lifecycle.
 - Controlled cancellation tests reduce both pending counts to zero. An
   unanswered Phase 5 Request remains a `pending_later` obligation until then
   and does not synthesize a deferred failure, timeout, or cancellation outcome.
