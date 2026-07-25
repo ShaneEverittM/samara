@@ -1,7 +1,7 @@
 # TEA + Tokio Core Architecture (v0)
 
 ## Status
-- Phase: Phase 6 live-runtime implementation complete; ADR-0006 live Port-ingress contract implemented, conformance audit pending.
+- Phase: Phase 6 live-runtime implementation complete; ADR-0006 live Port-ingress and ADR-0007 host-lifecycle contracts implemented, conformance audit pending.
 - Date: July 25, 2026.
 - Library scope: `samara` is library-first.
 
@@ -366,12 +366,27 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
 - A live fault closes ingress, stops application driving, cancels and joins or
   aborts all runtime-owned tasks, suppresses application mappers for aborted
   work, and surfaces `RuntimeError` through subsequent ingress and the owning
-  `RuntimeTask::shutdown` boundary.
+  `RuntimeTask::run_forever` or `RuntimeTask::shutdown` boundary.
 - A fault that wins before a host Port Reply wakes that waiter with the same
   preserved RuntimeError and causes later PortHandle operations to return that
   fault rather than a generic closure error.
 - Fault cleanup does not invent typed application Error payloads. Exact fault
   taxonomy, isolation, restart, and recovery remain provisional.
+
+### Live Host Lifecycle Contract
+
+- `RuntimeTask::run_forever(&mut self)` observes terminal owner completion
+  without initiating shutdown or choosing a policy. A runtime fault becomes
+  visible as soon as structured fault cleanup completes.
+- Cancelling that observation leaves `RuntimeTask` owning the live scope. This
+  permits ordinary `tokio::select!` composition followed by explicit Drain or
+  Cancel; observation cancellation itself closes no ingress and detaches no
+  work.
+- Samara installs no OS signal and accepts no host shutdown future. Signal
+  errors, supervisor protocol, deadlines, and escalation remain host concerns.
+- A fault racing a host condition is preserved through either the observation
+  result or subsequent shutdown. This terminal race adds no global or domain
+  order guarantee.
 
 ### First-Party Phase 6 Bridge Contract
 

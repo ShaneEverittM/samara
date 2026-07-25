@@ -1,6 +1,6 @@
 # Samara v0 Milestone API Contract
 
-- Status: Phase 6 live-runtime implementation complete; live Port-ingress contract implemented, conformance audit pending
+- Status: Phase 6 live-runtime implementation complete; live Port-ingress and host-lifecycle contracts implemented, conformance audit pending
 - Date: July 25, 2026
 - Scope: Change-controlled public API slices for staged implementation
 
@@ -201,9 +201,10 @@ The ADR specifies:
 - the first-party `mpsc` receiver binding is a one-shot, single-consumer live
   resource whose closure ends normally and whose duplicate or later
   reactivation faults the runtime explicitly; and
-- Phase 6 ships no public live observer API and tests independent live
-  completions by causal partial order rather than controlled trace-vector
-  order.
+- Phase 6 ships no public live trace or event observer API and tests independent
+  live completions by causal partial order rather than controlled trace-vector
+  order. ADR-0007's terminal owner observation is a lifecycle boundary, not a
+  stream of application or runtime events.
 
 The ADR freezes observable first-cut behavior, not task topology, queue
 representation, exact public module naming, or a mature product policy for
@@ -247,6 +248,32 @@ boundary to provider-neutral Ports:
 This contract freezes host-boundary completion only. It does not activate
 `RequestOutcome::Failed`, `TimedOut`, or `Cancelled`, define per-Request
 cancellation, or settle late-Reply and abandonment policy for Components.
+
+## Accepted and Implemented Contract: Live Host Lifecycle
+
+[ADR-0007](adr/0007-live-host-lifecycle.md) adds one terminal observation
+method to the existing structured owner:
+
+- `RuntimeTask::run_forever(&mut self)` waits for owner termination and returns
+  its `ShutdownReport` or preserved `RuntimeError` after structured cleanup.
+- It initiates no shutdown, closes no ingress, and chooses neither Drain nor
+  Cancel. A healthy long-running program leaves the observation pending.
+- The mutable borrow makes a losing `tokio::select!` observation
+  cancellation-safe with respect to ownership. The same `RuntimeTask` remains
+  available for an explicit `shutdown(Shutdown::Drain)` or
+  `shutdown(Shutdown::Cancel)` call.
+- Runtime completion can be selected directly against any host-owned future,
+  so faults do not wait for an arbitrary sleep or later shutdown attempt.
+- Samara accepts no host shutdown future and therefore cannot hide its result.
+  Ctrl-C installation, supervisor errors, deadlines, and escalation remain
+  host policy.
+- A runtime fault racing a host shutdown condition remains visible either from
+  `run_forever` or the subsequent shutdown boundary; selection adds no order
+  between otherwise independent host events.
+
+This contract freezes terminal observation and its ownership-cancellation
+behavior. It does not add a live trace observer, default signal, default
+shutdown mode, deadline, or automatic Drain-to-Cancel policy.
 
 ## Example-Driven Extension: Standard Output Effects
 

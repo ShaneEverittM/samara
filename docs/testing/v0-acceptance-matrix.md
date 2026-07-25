@@ -1,6 +1,6 @@
 # Samara v0 Acceptance Matrix
 
-- Status: Phase 6 live-runtime implementation complete; ADR-0006 live Port-ingress scenarios active
+- Status: Phase 6 live-runtime implementation complete; ADR-0006 live Port-ingress and ADR-0007 host-lifecycle scenarios active
 - Date: July 25, 2026
 - Scope: Traceability from vision requirements to topology-neutral evidence
 
@@ -26,7 +26,9 @@ first needs them where the accepted contract does not freeze their spelling.
 Accepted [ADR-0006](../adr/0006-live-port-ingress.md) specifies the active live
 Port-ingress tranche. Its first executable slice was written red before the
 implementation and now exercises the central routing, correlation, and
-lifecycle contract.
+lifecycle contract. Accepted
+[ADR-0007](../adr/0007-live-host-lifecycle.md) specifies cancellation-safe
+terminal owner observation and its composition with host shutdown futures.
 
 ## Vision Traceability
 
@@ -40,7 +42,7 @@ lifecycle contract.
 | V6 Program-Wide Controlled Determinism | `v6_identical_controlled_runs_have_equal_structural_trace_and_final_state`; `v6_equal_final_state_with_different_structural_trace_is_not_equivalent`; `v6_typed_descriptor_payload_is_compared_by_direct_intent_test` | ADR-0003 defines structural trace equivalence and keeps typed domain-payload comparison in direct intent tests rather than requiring generic trace payload capture. | Phase 5 |
 | V7 Controlled Time Progression | `v7_manual_advance_uses_no_wall_sleep`; `v7_automatic_advance_reaches_next_instant`; `v7_equal_time_uses_deterministic_causal_insertion_order`; `v7_equivalent_schedules_are_repeatable`; `v7_initial_work_uses_component_id_not_registration_order` | ADR-0003 fixes the v0 scheduler key as logical deadline plus deterministic insertion ticket, and the active Phase 5 runtime exercises every listed scenario. | Phase 5 |
 | V8 Causal Semantics Without Global Order | `v8_causal_edges_are_preserved`; `v8_component_transitions_do_not_overlap`; `v8_independent_live_events_accept_either_order`; `v8_live_port_request_preserves_request_reply_causality`; `v8_conformance_compares_partial_order_not_scheduler_sequence` | Controlled causal edges and Component serialization are active. Phase 6 tests exercise both valid independent live orders and reverse-completion Port request correlation without ordering independent handle calls. | Phase 3 serialization, Phase 5 controlled causality, implemented Phase 6 live independence and Port ingress, final audit Phase 7 |
-| V9 Structured Work Ownership | `v9_drive_reports_semantic_pending_work`; `v9_pending_now_counts_ready_messages_and_due_timers`; `v9_pending_later_counts_effects_future_timers_sources_and_requests`; `v9_controlled_cancel_leaves_zero_work`; `v9_live_shutdown_leaves_zero_work`; `v9_effect_cancellation_has_one_outcome`; `v9_scope_cancel_maps_no_application_outcome`; `v9_source_cancellation_emits_no_unpromised_event`; `v9_dropped_host_waiter_does_not_cancel_request` | ADR-0003 defines controlled obligations and explicit controlled effect cancellation. Phase 6 distinguishes whole-scope abort from application outcomes and proves that dropping a host waiter cannot abandon admitted runtime work. | Phase 5 controlled; implemented Phase 6 live and Port ingress; final audit Phase 7 |
+| V9 Structured Work Ownership | `v9_drive_reports_semantic_pending_work`; `v9_pending_now_counts_ready_messages_and_due_timers`; `v9_pending_later_counts_effects_future_timers_sources_and_requests`; `v9_controlled_cancel_leaves_zero_work`; `v9_live_shutdown_leaves_zero_work`; `v9_effect_cancellation_has_one_outcome`; `v9_scope_cancel_maps_no_application_outcome`; `v9_source_cancellation_emits_no_unpromised_event`; `v9_dropped_host_waiter_does_not_cancel_request`; `run_forever_surfaces_runtime_fault_without_shutdown`; `cancelled_run_forever_observation_preserves_owner_for_explicit_shutdown` | ADR-0003 defines controlled obligations and explicit controlled effect cancellation. Phase 6 distinguishes whole-scope abort from application outcomes, proves that dropping a host waiter cannot abandon admitted runtime work, and exposes owner termination without making observation cancellation an ownership cutoff. | Phase 5 controlled; implemented Phase 6 live, Port ingress, and host lifecycle; final audit Phase 7 |
 | V10 Non-Influential Semantic Trace | `v10_reading_controlled_trace_after_drive_has_no_feedback_path`; `v10_trace_explains_transitions_work_time_and_causation`; `v10_trace_records_stale_source_drops` | ADR-0003 requires always-collected, read-afterward controlled records with logical time, parentless roots, and exactly one immediate parent for every non-root. ADR-0004 explicitly defers a public live observer beyond v0. | Phase 5 controlled; public live observer deferred beyond v0 |
 | V11 Shallow Tokio Onboarding | `v11_minimal_tokio_mpsc_application_compiles`; `v11_minimal_component_runs_with_controlled_stream`; `v11_minimal_component_runs_with_live_mpsc` | The minimal example runs unchanged through controlled stream input and the live one-shot `mpsc` bridge. | Phase 5 controlled; implemented Phase 6 live pending audit |
 
@@ -110,6 +112,7 @@ V9's phrase “at every observation point” means these bounded public points:
    accepted.
 4. When controlled cancellation returns.
 5. When live structured shutdown returns.
+6. When live terminal owner observation returns after structured cleanup.
 
 The runtime may maintain finer internal accounting, but the conformance suite
 does not require arbitrary inspection during an in-progress transition.
@@ -231,6 +234,22 @@ without turning queue capacity, throughput, tail latency, or fairness into a
 stable conformance threshold. Tests of explicit controlled
 `EffectOutcome::Cancelled` remain valid: ADR-0004's no-mapper rule
 applies specifically to aborting the whole live runtime scope.
+
+## Active ADR-0007 Live Host-Lifecycle Scenarios
+
+The `live_host_lifecycle` suite was written red before implementation and now
+exercises the complete narrow contract:
+
+- `run_forever_surfaces_runtime_fault_without_shutdown`
+- `cancelled_run_forever_observation_preserves_owner_for_explicit_shutdown`
+
+The first scenario reaches a dynamic binding fault, observes the preserved
+error without initiating shutdown, and proves later ingress and ownership
+operations return that identical fault. The second first polls `run_forever`,
+lets a fallible host future win an ordinary `tokio::select!`, verifies ingress
+remains open, and then exercises both explicitly selected shutdown modes.
+Existing Phase 6 and ADR-0006 suites continue to own detailed fault-race,
+Drain, Cancel, Port waiter, and zero-work evidence.
 
 ## Active ADR-0006 Live Port-Ingress Scenarios
 

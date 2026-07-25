@@ -117,6 +117,11 @@ architecture before each implementation slice begins.
 - Confirm dropping an unpolled host request admits nothing and dropping an
   admitted waiter does not cancel provider delivery, remove the Request
   obligation, or release Drain.
+- Confirm `RuntimeTask::run_forever` surfaces terminal runtime faults without a
+  prior shutdown request or arbitrary host delay.
+- Cancel a pending `run_forever` observation through an ordinary
+  `tokio::select!`, then prove the same RuntimeTask still owns usable ingress
+  and can perform explicitly selected Drain or Cancel cleanup.
 
 ### L5: Backpressure and Load Tests
 - Validate live admission and work pressure behavior without assuming a

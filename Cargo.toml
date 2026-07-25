@@ -18,3 +18,6 @@ tokio = { version = "1.45.1", features = ["io-std", "io-util", "macros", "net", 
 anyhow = "1.0.104"
 serde = { version = "1.0.229", features = ["derive"] }
 chrono = { version = "0.4.45", features = ["serde"] }
+# Compile-check the host-owned Ctrl-C policy in `examples/shane.rs` without
+# making Tokio signal handling part of Samara's library dependency surface.
+tokio = { version = "1.45.1", features = ["signal"] }

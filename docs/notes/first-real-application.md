@@ -1,9 +1,9 @@
 # First Real Application Learnings
 
 - Status: Exploratory notes
-- Date: July 24, 2026
+- Date: July 25, 2026
 - Evidence: [`examples/shane.rs`](../../examples/shane.rs)
-- Contract impact: Follow-through accepted by ADR-0005 and ADR-0006; remaining notes are exploratory
+- Contract impact: Follow-through accepted by ADR-0005, ADR-0006, and ADR-0007; remaining notes are exploratory
 
 ## Purpose
 
@@ -51,26 +51,31 @@ The first-party HTTP binding also removes the first draft's confusing reuse of
 `CliTimeServer` as both Component and separately constructed `GetTime` Driver.
 The Component now owns only its application behavior and request intent.
 
-## 1. Host Lifecycle and `run_forever`
+## 1. Host Lifecycle and `run_forever` (Implemented)
 
-The host currently spawns the runtime, sleeps for an arbitrary duration, and
-then requests shutdown. A runtime fault can therefore sit unobserved until the
-host eventually calls `shutdown`; dropping the task first can make that fault
-appear silent.
+The first host draft spawned the runtime, slept for an arbitrary duration, and
+then requested shutdown. A runtime fault could therefore sit unobserved until
+the host eventually called `shutdown`; dropping the task first could make that
+fault appear silent.
 
-We need a natural long-running host API, provisionally described as
-`Runtime::run_forever`. It should:
+The natural long-running host API is now
+`RuntimeTask::run_forever(&mut self)`. It:
 
-- surface runtime termination and faults immediately;
-- integrate cleanly with Ctrl-C or another host shutdown future;
-- preserve structured ownership of every runtime task;
-- make the selected Drain or Cancel policy explicit; and
-- avoid requiring applications to invent a sleep loop merely to keep Samara
+- surfaces runtime termination and faults immediately;
+- integrates cleanly with Ctrl-C or another host shutdown future;
+- preserves structured ownership of every runtime task;
+- leaves the selected Drain or Cancel policy explicit at the later
+  `RuntimeTask::shutdown` call; and
+- avoids requiring applications to invent a sleep loop merely to keep Samara
   alive.
 
-The exact split among `spawn`, `wait`, `run_forever`, and signal integration is
-unresolved. Fatal runtime completion is a host-lifecycle concern, not the
-public live observer previously deferred beyond v0.
+The mutable borrow is deliberate: cancelling a pending observation in
+`tokio::select!` leaves the `RuntimeTask` owning the live scope, after which the
+host can consume it with explicit Drain or Cancel. The method accepts no signal
+future and hides no host-future result; Ctrl-C errors, supervisors, deadlines,
+and escalation remain ordinary host policy. ADR-0007 specifies the terminal
+lifecycle boundary. It is not the public live trace observer deferred beyond
+v0.
 
 ## 2. Validate Effect Bindings During `LiveRuntimeBuilder::build`
 
@@ -244,14 +249,12 @@ misuse of Component communication.
 
 ## Follow-Up Questions
 
-1. What host API makes runtime completion, Ctrl-C, and shutdown policy read most
-   directly?
-2. What typed declaration makes every effect and source dependency knowable at
+1. What typed declaration makes every effect and source dependency knowable at
    live build without duplicating intent?
-3. Is persistent state on the Driver instance sufficient, and how should
+2. Is persistent state on the Driver instance sufficient, and how should
    concurrent invocation be expressed?
-4. Which interval semantics deserve the first-party name `Interval`?
-5. Does another real custom Effect reveal enough repeated declaration ceremony
+3. Which interval semantics deserve the first-party name `Interval`?
+4. Does another real custom Effect reveal enough repeated declaration ceremony
    to justify a derive or macro?
 
 ## First Follow-Through: Standard Output
@@ -306,3 +309,17 @@ This makes the small application useful from both directions: its Component
 continues to perform explicit HTTP and standard-output effects, while its host
 can query application state without depending on the Component's private
 Message enum or bypassing its serialized transition path.
+
+## Fourth Follow-Through: Live Host Lifecycle
+
+[ADR-0007](../adr/0007-live-host-lifecycle.md) adds
+`RuntimeTask::run_forever(&mut self)` as a cancellation-safe terminal owner
+observation. The example now selects it against the host's Ctrl-C future, so a
+runtime fault surfaces as soon as structured cleanup completes and no arbitrary
+sleep keeps the process alive.
+
+When Ctrl-C wins, cancelling only the observation leaves `RuntimeTask` owning
+the scope. The following call still names `Shutdown::Cancel` explicitly. The
+library installs no signal handler and consumes no signal result; changing the
+example to a service supervisor, test future, or deadline needs no Samara API
+change.

@@ -433,6 +433,12 @@ and a runtime fault preserves that fault. Dropping an admitted waiter does not
 cancel runtime-owned work. PortHandle is not inert Component wiring and has no
 ControlledRuntime counterpart under ADR-0006.
 
+**`RuntimeTask`** — The unique live structured-ownership handle returned by
+`LiveRuntime::spawn`. `shutdown` consumes it and explicitly selects Drain or
+Cancel. Under ADR-0007, `run_forever(&mut self)` observes owner termination
+without initiating shutdown; cancelling that observation leaves the task
+owning the scope so a host can select it against its own shutdown future.
+
 ## Execution and Ordering
 
 **Live execution** — Execution using real Tokio scheduling, time, I/O, and

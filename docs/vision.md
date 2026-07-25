@@ -39,7 +39,9 @@ first live-runtime contract for admission, Driver completion, shutdown, framing 
 pressure, faults, and the initial Tokio bridges; it does not claim to settle their mature
 product policies. ADR-0006 extends that same live admission and ownership boundary to
 provider-neutral host Port operations without changing Component purity or controlled
-execution.
+execution. ADR-0007 adds cancellation-safe observation of the live owner so a host can
+compose immediate runtime-fault reporting with its own shutdown future while continuing
+to choose Drain or Cancel explicitly.
 
 ## The Samara Program Boundary
 

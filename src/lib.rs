@@ -9,8 +9,10 @@
 //! controlled execution. Live tests now interpret typed Commands, reconcile
 //! runtime-owned Sources, supervise terminal Drivers and timers, preserve
 //! Component serialization and causal delivery, and close the owned scope by
-//! explicit Drain or Cancel semantics. Controlled execution continues to own
-//! logical time and repeatable program-wide traces.
+//! explicit Drain or Cancel semantics. [`RuntimeTask::run_forever`] lets a live
+//! host observe owner termination without surrendering ownership or hiding its
+//! own shutdown future. Controlled execution continues to own logical time and
+//! repeatable program-wide traces.
 //!
 //! # Mental model
 //!
@@ -3533,6 +3535,7 @@ impl LiveRuntime {
         RuntimeTask {
             scope,
             join: Some(tokio::spawn(core.run())),
+            completion: None,
         }
     }
 }
@@ -3784,32 +3787,60 @@ impl<P: Protocol> PortHandle<P> {
 pub struct RuntimeTask {
     scope: Arc<live_runtime::LiveScope>,
     join: Option<tokio::task::JoinHandle<Result<ShutdownReport, RuntimeError>>>,
+    completion: Option<Result<ShutdownReport, RuntimeError>>,
 }
 
 impl RuntimeTask {
+    /// Observes the running program until its owner terminates.
+    ///
+    /// This method does not initiate shutdown or choose between [`Shutdown::Drain`]
+    /// and [`Shutdown::Cancel`]. A healthy long-running program therefore leaves
+    /// this future pending, while a runtime fault is returned after Samara has
+    /// cleaned up the structured scope.
+    ///
+    /// The mutable borrow is cancellation safe with respect to ownership. A host
+    /// can select this future against Ctrl-C or another shutdown future; when the
+    /// host future wins, cancelling this observation leaves the [`RuntimeTask`]
+    /// owning the live scope so the host can call [`RuntimeTask::shutdown`] with
+    /// an explicit policy.
+    pub async fn run_forever(&mut self) -> Result<ShutdownReport, RuntimeError> {
+        self.await_completion().await
+    }
+
     /// Ends the program using the requested shutdown policy and returns
     /// work-accounting evidence.
     pub async fn shutdown(mut self, mode: Shutdown) -> Result<ShutdownReport, RuntimeError> {
         let cutoff = self.scope.begin_shutdown(mode);
-        let result = self
-            .join
-            .as_mut()
-            .expect("a RuntimeTask owns one live runtime task")
-            .await
-            .map_err(|_| RuntimeError::harness("live runtime owner task panicked"));
-        // Keep the JoinHandle inside `self` across the await. If a host timeout
-        // drops this shutdown future, `RuntimeTask::drop` can still abort the
-        // owner instead of detaching it. A completed owner no longer needs that
-        // guard.
-        self.join.take();
-        let result = result?;
-        match result {
+        match self.await_completion().await {
             Ok(report) => {
                 cutoff?;
                 Ok(report)
             }
             Err(error) => Err(error),
         }
+    }
+
+    async fn await_completion(&mut self) -> Result<ShutdownReport, RuntimeError> {
+        if let Some(completion) = &self.completion {
+            return completion.clone();
+        }
+
+        let completion = self
+            .join
+            .as_mut()
+            .expect("an unobserved RuntimeTask owns one live runtime task")
+            .await
+            .map_err(|_| RuntimeError::harness("live runtime owner task panicked"))
+            .and_then(|result| result);
+
+        // Keep the JoinHandle inside `self` across the await. If a host select,
+        // timeout, or cancelled shutdown future drops this observation,
+        // `RuntimeTask::drop` can still abort the owner instead of detaching it.
+        // Cache a completed result so later observation preserves the original
+        // diagnostic without polling a completed JoinHandle again.
+        self.join.take();
+        self.completion = Some(completion.clone());
+        completion
     }
 }
 

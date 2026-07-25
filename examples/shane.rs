@@ -1,10 +1,10 @@
 use std::time::Duration;
 
 use anyhow::Result;
+use chrono::{DateTime, Utc};
+use futures_util::FutureExt;
 use samara::prelude::*;
 use serde::Deserialize;
-
-type Time = chrono::DateTime<chrono::Utc>;
 
 enum Message {
     // A tick to drive our model.
@@ -14,7 +14,7 @@ enum Message {
     GetTime(RequestInvocation<TimeServerProtocol, GetCurrentTime>),
 
     // Received when our time requests finish.
-    TimeRetrieved(Time),
+    TimeRetrieved(DateTime<Utc>),
 
     // Received when our time requests fail.
     FailedToGetTime(GetTimeError),
@@ -23,6 +23,7 @@ enum Message {
 impl From<EffectOutcome<TimeResponse, HttpResponseError>> for Message {
     fn from(outcome: EffectOutcome<TimeResponse, HttpResponseError>) -> Self {
         use self::{EffectOutcome::*, Message::*};
+
         match outcome {
             Succeeded(response) => TimeRetrieved(response.data.iso),
             Failed(error) => FailedToGetTime(GetTimeError::Response(error)),
@@ -41,7 +42,7 @@ impl From<TimeServerProtocolMessage> for Message {
 
 #[derive(Default)]
 struct CliTimeModel {
-    current_time: Option<Time>,
+    current_time: Option<DateTime<Utc>>,
 }
 
 struct CliTimeServer;
@@ -95,7 +96,7 @@ enum GetTimeError {
 
 #[derive(Deserialize)]
 struct TimeResponseData {
-    iso: Time,
+    iso: DateTime<Utc>,
 }
 
 #[derive(Deserialize)]
@@ -105,7 +106,7 @@ struct TimeResponse {
 
 protocol! {
     type TimeServerProtocol => enum TimeServerProtocolMessage {
-        GetCurrentTime -> Option<Time>,
+        GetCurrentTime -> Option<DateTime<Utc>>,
     }
 }
 
@@ -140,17 +141,29 @@ async fn main() -> Result<()> {
     let time_server = runtime.port_handle(&port)?;
 
     // We've now set up the program, runtime, and ingress points, so start the runtime.
-    let runtime_task = runtime.spawn();
+    let mut runtime_task = runtime.spawn();
 
-    // Wait a bit...
-    tokio::time::sleep(Duration::from_secs(2)).await;
-
-    // ...then ask the time-server for the current time, note the normal `await` syntax.
-    let current_time = time_server.request(GetCurrentTime).await?;
+    // Ask the time-server for its current state, while keeping an immediately
+    // faulting runtime visible instead of waiting for a later shutdown call.
+    let current_time = tokio::select! {
+        result = runtime_task.run_forever() => {
+            result?;
+            return Ok(());
+        }
+        result = tokio::time::sleep(Duration::from_secs(2)).then(|_| time_server.request(GetCurrentTime)) => result?,
+    };
     println!("Time reported through the Port: {current_time:?}");
 
-    // Wait a bit more, then close down the runtime cancelling in-flight work.
-    tokio::time::sleep(Duration::from_secs(8)).await;
+    // Signal handling remains ordinary host policy. Cancelling the
+    // run_forever observation leaves runtime_task owning every Samara task, so
+    // the host can still select Drain or Cancel explicitly afterward.
+    tokio::select! {
+        result = runtime_task.run_forever() => {
+            result?;
+            return Ok(());
+        }
+        signal = tokio::signal::ctrl_c() => signal?,
+    }
     runtime_task.shutdown(Shutdown::Cancel).await?;
 
     Ok(())
