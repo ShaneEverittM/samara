@@ -1,10 +1,9 @@
-//! Runtime-owned asynchronous execution for the live Tokio profile.
+//! Runtime-owned asynchronous execution on Tokio.
 //!
-//! The first implementation uses one dispatcher that owns every Component
-//! kernel and a supervised `JoinSet` for Drivers and timers. The dispatcher is
-//! an implementation detail: the observable contract is per-Component
-//! serialization, explicit causality, and no order promise for independent
-//! Driver completions.
+//! One owner drives Component kernels while a supervised `JoinSet` runs Drivers
+//! and timers. This topology is private: the observable contract is
+//! per-Component serialization, explicit causality, and no order promise for
+//! independent Driver completions.
 
 use std::{
     any::{Any, TypeId},

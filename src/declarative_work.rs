@@ -1,9 +1,8 @@
 //! Profile-independent declarative-work machinery.
 //!
-//! Phase 4 introduced this descriptor comparison independently of a runtime.
-//! Phase 5 consumes its inert changes to maintain controlled Sources: a retained
-//! change installs the newest mapper while preserving SourcePlan state, and a
-//! replacement creates a fresh private generation.
+//! Descriptor comparison produces inert lifecycle changes independently of an
+//! execution profile. Retention installs the newest mapper while preserving
+//! SourcePlan state; replacement creates a fresh private generation.
 //!
 //! Reconciliation commits descriptor bookkeeping while returning an unordered
 //! set of lifecycle changes. Execution profiles accept those changes as one

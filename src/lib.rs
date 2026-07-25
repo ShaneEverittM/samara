@@ -1,18 +1,13 @@
 #![allow(dead_code)]
 #![warn(missing_docs)]
 
-//! The compiler-checked candidate for Samara's staged v0 public API.
+//! Samara enables application programming on Tokio that is as side-effect-free
+//! as practical.
 //!
-//! # Status
-//!
-//! Phase 6 adds structured live Tokio execution alongside deterministic
-//! controlled execution. Live tests now interpret typed Commands, reconcile
-//! runtime-owned Sources, supervise terminal Drivers and timers, preserve
-//! Component serialization and causal delivery, and close the owned scope by
-//! explicit Drain or Cancel semantics. [`RuntimeTask::run_forever`] lets a live
-//! host observe owner termination without surrendering ownership or hiding its
-//! own shutdown future. Controlled execution continues to own logical time and
-//! repeatable program-wide traces.
+//! Samara keeps application state in [`Component`] models, routes every state
+//! change through a typed message, and represents asynchronous work as inert
+//! [`Command`] and [`Subscription`] values. The runtime—not a Component
+//! transition—owns Tokio tasks, time, I/O, and world-facing Drivers.
 //!
 //! # Mental model
 //!
@@ -22,16 +17,37 @@
 //! 3. [`Component::subscriptions`] declares the ongoing [`SourceDescriptor`]
 //!    values the current model wants active. Declaring a subscription does not
 //!    start work.
-//! 4. A [`Program`] assembles Components, typed references, and named [`Port`]
-//!    dependencies. Ports expose provider-neutral protocols rather than a
-//!    provider Component's private message enum.
-//! 5. [`LiveRuntime`] binds effect and source descriptors to Tokio Drivers.
-//!    [`ControlledRuntime`] exposes the same boundaries as scripted inputs for
-//!    deterministic tests.
+//! 4. A [`Program`] assembles Components and issues their logical
+//!    [`EffectCapability`], [`SourceCapability`], [`ComponentRef`], and [`Port`]
+//!    dependencies. Its declaration set closes when the Program is built.
+//! 5. [`LiveRuntime`] binds every declared terminal boundary to Tokio Drivers or
+//!    an exact resource adapter. [`ControlledRuntime`] exposes the same
+//!    boundaries as scripted inputs for deterministic tests.
 //!
 //! Commands and subscriptions contain explicit, typed intent. The runtime owns
 //! their asynchronous execution and returns behaviorally relevant outcomes as
 //! messages through [`EffectOutcome`], [`SourceEvent`], and [`RequestOutcome`].
+//!
+//! # Execution profiles
+//!
+//! [`LiveRuntime`] executes the program on Tokio. It serializes transitions for
+//! each Component, preserves causal relationships, supervises runtime-owned
+//! work, and supports explicit [`Shutdown::Drain`] and [`Shutdown::Cancel`]
+//! policies. Independent live events have no implicit global order.
+//!
+//! [`ControlledRuntime`] runs the same Components and descriptors against a
+//! deterministic world supplied by a test. It owns logical time, never falls
+//! back to a live Driver, and records a structural causal trace that can be
+//! inspected after driving the program.
+//!
+//! # Conforming application code
+//!
+//! Rust cannot prevent application code from reading globals, performing I/O,
+//! or spawning tasks. To preserve Samara's guarantees, [`Component::init`],
+//! [`Component::update`], [`Component::subscriptions`], message mappers,
+//! protocol conversions, and decoders must be pure and deterministic. Live
+//! world interaction belongs in [`EffectDriver`] and [`SourceDriver`]
+//! implementations owned by the runtime.
 
 use std::{
     any::{Any, TypeId},
@@ -53,8 +69,8 @@ mod live_runtime;
 use component_kernel::{ComponentKernel, ErasedComponentKernel};
 use controlled_runtime::ControlledCore;
 
-/// Convenient imports for writing Components and assembling either runtime
-/// profile.
+/// Common imports for defining Components and assembling live or controlled
+/// runtimes.
 pub mod prelude {
     pub use crate::{
         BoxFuture, CancelReason, Command, Component, ComponentHandle, ComponentId, ComponentRef,
@@ -215,7 +231,7 @@ impl PortId {
 ///
 /// Reconciliation combines this key with the owning [`ComponentId`]. The same
 /// [`SourceCapability`] and an equal source descriptor keep the current Source
-/// alive; changing either replaces its generation.
+/// alive; changing either starts a new private generation.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SubscriptionId(Arc<str>);
 
@@ -253,8 +269,14 @@ mod source_plan_private {
 /// Source is unchanged. Operational state such as a socket handle or partial
 /// input buffer must not live in this descriptor.
 ///
+/// A custom implementation is a terminal Source boundary and can be bound with
+/// [`LiveRuntimeBuilder::bind_source`] or
+/// [`ControlledRuntimeBuilder::control_source`]. Samara-provided composed
+/// descriptors such as [`Framed`] lower to their terminal descriptor
+/// automatically.
+///
 /// SourcePlan lowering is reserved to Samara. A downstream descriptor supplies
-/// only its event types and inherits terminal behavior; the hidden lowering and
+/// its event types and inherits terminal behavior; the hidden lowering and
 /// terminal-metadata methods cannot be overridden without naming crate-private
 /// types:
 ///
@@ -458,11 +480,17 @@ pub enum EffectOutcome<Output, EffectError> {
     Succeeded(Output),
     /// The effect completed with its typed failure.
     Failed(EffectError),
-    /// Runtime ownership ended the effect before completion.
+    /// An explicit effect policy ended the effect before completion.
+    ///
+    /// Whole-runtime [`Shutdown::Cancel`] does not synthesize this outcome or
+    /// invoke the effect's message mapper; it aborts the owned work instead.
     Cancelled(CancelReason),
 }
 
 /// Event delivered by an active Source realization.
+///
+/// Removing or replacing a Subscription, or cancelling its runtime scope, does
+/// not synthesize an `Ended` or `Failed` event.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SourceEvent<Item, SourceError> {
     /// The source emitted another typed item and remains active.
@@ -470,13 +498,16 @@ pub enum SourceEvent<Item, SourceError> {
     /// The active source instance failed and terminated.
     Failed(SourceError),
     /// The active source ended normally.
+    ///
+    /// Normal ending does not automatically restart the Source while its
+    /// Subscription remains desired.
     Ended,
 }
 
-/// Structural shape of one [`SourceEvent`] in the controlled trace.
+/// Structural shape of one [`SourceEvent`] in a controlled trace.
 ///
-/// Payloads remain available to typed Component tests and are deliberately not
-/// copied into the generic v0 trace.
+/// The trace records event shape without copying application payloads. Tests
+/// can inspect payloads through typed Component and descriptor APIs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SourceEventKind {
     /// The Source emitted another item and remains active.
@@ -501,10 +532,13 @@ impl SourceEventKind {
     }
 }
 
-/// Runtime-owned reason why finite work did not complete.
+/// Reason carried by an explicit [`EffectOutcome::Cancelled`] value.
+///
+/// These values are supplied by an effect-specific policy or controlled test.
+/// Whole-runtime [`Shutdown::Cancel`] does not invoke an effect mapper.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CancelReason {
-    /// The owning runtime or Component scope shut down.
+    /// An effect-specific policy associated cancellation with scope shutdown.
     Shutdown,
     /// Newer intent made the pending work obsolete.
     Superseded,
@@ -631,9 +665,12 @@ pub trait Request<P: Protocol>: Send + 'static {
 
 /// Requester-visible terminal outcome of a correlated [`Command::request`].
 ///
-/// The variants establish that request liveness is explicit Component input. The
-/// default timeout policy, cancellation taxonomy, and exact point at which a
-/// delivery becomes failed remain deliberately unresolved for this API slice.
+/// Samara's request path produces [`RequestOutcome::Replied`] when the provider
+/// replies. It applies no default deadline and does not emit the other variants.
+/// An unanswered Component request remains pending until its runtime scope is
+/// cancelled and can keep [`Shutdown::Drain`] from completing. A domain timer
+/// may change application state, but it does not cancel the runtime-owned
+/// request obligation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RequestOutcome<Reply> {
     /// The provider emitted a correctly typed reply.
@@ -646,11 +683,11 @@ pub enum RequestOutcome<Reply> {
     Cancelled,
 }
 
-/// Provisional topology-neutral error reported through [`RequestOutcome`].
+/// Topology-neutral request failure data carried by [`RequestOutcome::Failed`].
 ///
-/// These variants distinguish delivery from abandoned-reply failures without
-/// committing to mailboxes, channels, tasks, or a particular provider failure
-/// detector. The production taxonomy is still an API design question.
+/// These variants describe whether delivery failed or an accepted request lost
+/// its ability to reply without exposing channels, tasks, or runtime topology.
+/// The built-in request path does not synthesize these failures.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum RequestError {
@@ -669,9 +706,10 @@ pub enum RequestError {
 /// interpreting [`Command::request`].
 ///
 /// Discarding the authority is a diagnostic violation when `unused_must_use`
-/// is denied. This lint catches immediate accidental discards; runtime-owned
-/// lifecycle diagnostics must still detect obligations abandoned after being
-/// stored or deliberately forgotten.
+/// is denied. The lint catches an immediately unused expression, but Rust
+/// cannot require a bound value to be consumed later. Dropping, storing, or
+/// forgetting a token without replying leaves the request unresolved; in
+/// particular, [`Shutdown::Drain`] may then wait indefinitely.
 ///
 /// ```compile_fail
 /// #![deny(unused_must_use)]
@@ -766,17 +804,17 @@ where
 /// [`Notification`] and [`Request`] conversions. Provider Components still
 /// match the generated protocol-message enum themselves.
 ///
-/// This is deliberately a small `macro_rules!` experiment. An entry with no
-/// reply type is a notification; an entry followed by `-> Reply` is a request.
+/// An entry with no reply type is a notification; an entry followed by
+/// `-> Reply` is a request.
 /// Entries may be unit operations or carry one tuple field. Notification
 /// variants are flattened to that field, while request variants carry a typed
 /// [`RequestInvocation`]. A request with a unit reply must therefore spell
-/// `-> ()`. Generated operation types and the protocol-message enum currently derive
+/// `-> ()`. Generated operation types and the protocol-message enum derive
 /// [`Debug`](fmt::Debug).
 ///
-/// The prototype does not yet accept per-operation attributes, multiple
-/// fields, generics, or configurable derives. Those remain API questions; the
-/// narrow grammar is not intended to settle them.
+/// The macro accepts neither per-operation attributes nor operations with
+/// multiple fields or generics. Generated derives are not configurable. Define
+/// the protocol types manually when that grammar is too narrow.
 ///
 /// ```
 /// use samara::prelude::*;
@@ -1324,7 +1362,7 @@ struct Reply<Reply> {
 ///
 /// The invocation owns the concrete descriptor without requiring it to be
 /// cloneable and retains the matching one-shot Message mapper. Creating this
-/// value performs no world interaction. A later execution profile can move the
+/// value performs no world interaction. An execution profile can move the
 /// descriptor to terminal behavior while retaining the mapper under
 /// runtime-owned correlation. Effects created by
 /// [`Command::effect_discarding_outcome`] have no mapper and are inspected
@@ -1410,7 +1448,7 @@ where
 /// intent through [`Command::effect_intents`],
 /// [`Command::notification_intents`], and [`Command::request_intents`].
 /// [`Command::into_effect`] then exposes the owned descriptor and its mapper for
-/// direct conformance tests.
+/// direct tests.
 ///
 /// Discarding a Command is a diagnostic violation when `unused_must_use` is
 /// denied because constructing inert intent does not submit it to a runtime:
@@ -1542,9 +1580,10 @@ impl<Message> Command<Message> {
     ///
     /// This is cross-Component effect intent, not a direct method call. The
     /// target's transition occurs later through normal message delivery.
-    /// Delivery failure is diagnostic-only in this provisional lower-level
-    /// shape. Prefer [`Command::notify`] for a provider-neutral one-way protocol
-    /// and [`Command::request`] when the sender needs a typed terminal outcome.
+    /// This operation has no sender-visible delivery outcome; routing failure is
+    /// a runtime fault. Prefer [`Command::notify`] for a provider-neutral one-way
+    /// protocol and [`Command::request`] when the sender needs a typed terminal
+    /// outcome.
     pub fn send<C>(target: ComponentRef<C>, message: C::Message) -> Self
     where
         C: Component,
@@ -1590,11 +1629,11 @@ impl<Message> Command<Message> {
     /// [`RequestOutcome::Replied`]. The continuation is synchronous, pure
     /// application logic and may capture a domain correlation key. The
     /// Component never waits for the reply; the mapped message arrives through
-    /// its ordinary transition path. An unanswered Phase 5 Request remains a
-    /// runtime-owned obligation until controlled cancellation.
+    /// its ordinary transition path.
     ///
-    /// This candidate intentionally does not yet choose a default deadline or
-    /// cancellation policy for requests.
+    /// Requests have no implicit deadline or per-request cancellation. An
+    /// unanswered request remains a runtime-owned obligation until the scope is
+    /// cancelled and can keep [`Shutdown::Drain`] pending indefinitely.
     pub fn request_with<P, R, Map>(port: Port<P>, request: R, map: Map) -> Self
     where
         Message: Send + 'static,
@@ -1690,7 +1729,7 @@ impl<Message> Command<Message> {
     /// Applies the stored one-shot mapper when this is a top-level effect
     /// Command with concrete descriptor type `E`.
     ///
-    /// This is a pure inspection and conformance hook: it supplies typed data
+    /// This is a pure testing hook: it supplies typed data
     /// directly and never invokes a Driver or either execution profile. The
     /// Command is consumed so its `FnOnce` mapper cannot be called twice. A
     /// non-effect Command, mismatched descriptor type, or effect that explicitly
@@ -1968,8 +2007,10 @@ impl<S: SourceDescriptor> ErasedSourceDescriptor for SourceDescriptorSnapshot<S>
 /// [`SubscriptionId`]. Retention additionally requires the same
 /// [`SourceCapability`] and an equal [`SourceDescriptor`] value; changing either
 /// replaces the Source generation. The message mapper converts repeated
-/// [`SourceEvent`] values to Component messages and is deliberately excluded
-/// from reconciliation identity.
+/// [`SourceEvent`] values to Component messages and is excluded from
+/// reconciliation identity. Re-declaring an equal descriptor keeps the active
+/// Source and installs the newest mapper for subsequent events, provided the
+/// capability is also unchanged.
 pub struct Subscription<Message> {
     id: SubscriptionId,
     descriptor: Box<dyn ErasedSubscription<Message>>,
@@ -2039,7 +2080,7 @@ impl<Message> Subscription<Message> {
 
     /// Applies this subscription's reusable mapper to one typed Source event.
     ///
-    /// This pure inspection and conformance hook does not create a Source,
+    /// This pure testing hook does not create a Source,
     /// select an execution profile, or deliver the resulting Message. The
     /// mapper is borrowed and can therefore be applied to every event from one
     /// active Source. A mismatched descriptor type returns the event unchanged.
@@ -2136,6 +2177,10 @@ impl<Message> From<Vec<Subscription<Message>>> for Subscriptions<Message> {
 /// controlled tests script the same logical stream through
 /// [`ControlledRuntimeBuilder::control_stream`]. Normal stream closure is
 /// delivered as [`SourceEvent::Ended`].
+///
+/// The bound receiver is a one-shot, single-consumer resource. Its first Source
+/// realization consumes it; competing activation or reactivation after the
+/// Source ends faults the live runtime rather than fabricating another stream.
 pub struct StreamDescriptor<T> {
     binding: Arc<str>,
     marker: PhantomData<fn() -> T>,
@@ -2873,13 +2918,12 @@ pub trait Decoder: Clone + PartialEq + fmt::Debug + Send + Sync + 'static {
     fn finish(&self, state: &mut Self::State) -> Result<Vec<Self::Frame>, Self::Error>;
 }
 
-/// Source Description Layer that applies a pure stateful [`Decoder`] to another
+/// Source Layer that applies a pure stateful [`Decoder`] to another
 /// [`SourceDescriptor`].
 ///
 /// Live execution binds the underlying source descriptor to a world-facing
-/// Driver.
-/// Controlled execution injects underlying chunks, ensuring the identical
-/// decoder and partial-frame behavior run in both profiles.
+/// Driver. Controlled execution injects underlying chunks, ensuring the
+/// identical decoder and partial-frame behavior run in both profiles.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Framed<S, D> {
     /// Underlying source of raw decoder chunks.
@@ -3657,7 +3701,8 @@ impl Error for ProgramBuildError {}
 /// [`ProgramBuilder::build`] validates Component and Port structure, then
 /// preserves every Effect and Source declaration for complete live or
 /// controlled profile validation. It does not introspect arbitrary Component
-/// fields; conforming Components use only capabilities issued by this builder.
+/// fields or behavior-dependent sends; conforming Components use only
+/// capabilities issued by this builder.
 pub struct ProgramBuilder {
     program: Arc<()>,
     components: Vec<Box<dyn ErasedComponentKernel>>,
@@ -3731,7 +3776,9 @@ impl ProgramBuilder {
     ///
     /// Registration order is assembly detail, not an application execution
     /// order. The Component configuration may hold only logical wiring and typed
-    /// references—not live runtime resources.
+    /// references—not live runtime resources. Registration calls
+    /// [`Component::init`] immediately and stores its model and startup Command
+    /// in the Program blueprint.
     pub fn component<C>(&mut self, id: ComponentId, component: C) -> ComponentRef<C>
     where
         C: Component,
@@ -3881,6 +3928,14 @@ impl ProgramBuilder {
 /// originating [`Command`]. Controlled execution does not call this Driver.
 pub trait EffectDriver<D: EffectDescriptor>: Send + Sync + 'static {
     /// Executes one typed intent and returns its typed success or failure.
+    ///
+    /// Multiple invocations may be in flight at once, so implementations must
+    /// not rely on runtime-provided serialization. Panicking while creating or
+    /// polling the returned future faults the live runtime and cancels its
+    /// structured scope. A normal `Ok` or `Err` return produces exactly one
+    /// terminal [`EffectOutcome`] and invokes the Command mapper once when one
+    /// exists. Whole-scope cancellation that wins first drops the future and
+    /// mapper without producing an outcome.
     fn execute(&self, descriptor: D) -> BoxFuture<Result<D::Output, D::Error>>;
 }
 
@@ -3895,6 +3950,12 @@ pub trait EffectDriver<D: EffectDescriptor>: Send + Sync + 'static {
 /// implicit normal end for the active Source generation.
 pub trait SourceDriver<D: SourceDescriptor>: Send + Sync + 'static {
     /// Runs one active instance of the source descriptor.
+    ///
+    /// The runtime may drop this future when the Subscription is removed or
+    /// replaced, or when the runtime shuts down. Drivers should release owned
+    /// resources promptly when dropped or after the sink returns
+    /// [`DriverStopped`]. Multiple Source realizations may run concurrently;
+    /// panicking while creating or polling the future faults the live runtime.
     fn run(&self, descriptor: D, sink: SourceSink<D>) -> BoxFuture<()>;
 }
 
@@ -3927,6 +3988,10 @@ impl<D: SourceDescriptor> SourceSink<D> {
     }
 
     /// Emits a terminal source failure.
+    ///
+    /// The first accepted terminal operation wins and returns `Ok(())`. If the
+    /// Source has already terminated, this and all later sink operations return
+    /// [`DriverStopped`].
     pub async fn fail(&self, error: D::Error) -> Result<(), DriverStopped> {
         self.inner.send(
             ErasedSourceEvent::typed::<D>(SourceEvent::Failed(error)),
@@ -3935,6 +4000,10 @@ impl<D: SourceDescriptor> SourceSink<D> {
     }
 
     /// Emits normal terminal completion.
+    ///
+    /// The first accepted terminal operation wins and returns `Ok(())`. If the
+    /// Source has already terminated, this and all later sink operations return
+    /// [`DriverStopped`].
     pub async fn end(&self) -> Result<(), DriverStopped> {
         self.inner
             .send(ErasedSourceEvent::typed::<D>(SourceEvent::Ended), true)
@@ -3955,8 +4024,10 @@ impl Error for DriverStopped {}
 
 /// Topology-neutral runtime or controlled-harness diagnostic.
 ///
-/// Samara exposes stable context for a faulting Component, descriptor, and work
-/// occurrence while leaving the broader runtime taxonomy provisional.
+/// Component faults expose the Component, terminal descriptor type when
+/// applicable, and structural work occurrence. Assembly and controlled-harness
+/// errors may not have that context, in which case the corresponding accessors
+/// return `None`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RuntimeError(Arc<RuntimeErrorKind>);
 
@@ -4053,7 +4124,10 @@ pub struct LiveRuntimeBuilder {
 /// world Drivers.
 ///
 /// Live execution preserves per-Component serialization and causality, but does
-/// not promise deterministic order between independent events.
+/// not promise deterministic order between independent events. Internal
+/// delivery is unbounded: a healthy runtime does not drop accepted work because
+/// a queue reached capacity, but sustained overload can grow memory use. Cancel
+/// and runtime-fault cutovers may discard queued application work.
 pub struct LiveRuntime {
     program: Program,
     bindings: live_runtime::LiveBindings,
@@ -4120,6 +4194,10 @@ impl LiveRuntime {
     ///
     /// The returned [`RuntimeTask`] is the ownership handle used to shut down and
     /// account for all Samara-authorized work.
+    ///
+    /// # Panics
+    ///
+    /// Panics when called outside an active Tokio runtime.
     pub fn spawn(self) -> RuntimeTask {
         let scope = self.scope.clone();
         let core =
@@ -4153,6 +4231,9 @@ impl LiveRuntimeBuilder {
     }
 
     /// Registers the live Driver for effect descriptor type `D`.
+    ///
+    /// A runtime has at most one Effect Driver for each descriptor type.
+    /// Registering the same type more than once makes [`Self::build`] fail.
     pub fn bind_effect<D, Driver>(mut self, driver: Driver) -> Self
     where
         D: EffectDescriptor,
@@ -4166,7 +4247,8 @@ impl LiveRuntimeBuilder {
     ///
     /// Pure source composition such as [`Framed`] is evaluated above this
     /// binding, so Drivers operate on raw world events rather than application
-    /// messages.
+    /// messages. Duplicate or ambiguous terminal Source bindings make
+    /// [`Self::build`] fail.
     pub fn bind_source<D, Driver>(mut self, driver: Driver) -> Self
     where
         D: SourceDescriptor,
@@ -4193,12 +4275,13 @@ impl LiveRuntimeBuilder {
     /// Components use a declared [`EffectCapability<HttpRequest>`] to issue raw
     /// [`HttpRequest`] descriptors and receive complete [`HttpResponse`] values
     /// or typed [`HttpError`] data. One reusable client and connection pool are
-    /// retained by this binding. The v0 Driver follows
+    /// retained by this binding. The Driver follows
     /// no redirects, performs no retries, uses no system proxy, performs no
     /// automatic content decompression, and applies no status or body-decoding
-    /// policy. It supplies `Accept: */*` only when the descriptor omits
-    /// `Accept`. Controlled execution uses the same descriptor through
-    /// `control_effect::<HttpRequest>()` without network access.
+    /// policy. Responses are fully buffered, with no Samara-configured body
+    /// limit or request timeout. It supplies `Accept: */*` only when the
+    /// descriptor omits `Accept`. Controlled execution uses the same descriptor
+    /// through `control_effect::<HttpRequest>()` without network access.
     pub fn bind_http(mut self) -> Self {
         live_runtime::bind_http(&mut self.bindings);
         self
@@ -4220,6 +4303,13 @@ impl LiveRuntimeBuilder {
     }
 
     /// Validates bindings and finishes live assembly.
+    ///
+    /// Every Effect and Source capability declared by the Program must have
+    /// exactly one applicable terminal binding, even when a dependency is not
+    /// visible in the initial Commands or Subscriptions. Missing, duplicate,
+    /// ambiguous, foreign, or type-incompatible bindings return an error before
+    /// the runtime is created. Initial work carrying a foreign Program
+    /// capability is rejected at the same boundary.
     pub fn build(self) -> Result<LiveRuntime, RuntimeError> {
         self.bindings.validate(&self.program)?;
         for component in &self.program.components {
@@ -4270,7 +4360,8 @@ impl<C: Component> ComponentHandle<C> {
     /// Submits a message to the live runtime.
     ///
     /// Successful return means accepted for runtime-managed delivery, not that
-    /// the target transition has completed.
+    /// the target transition has completed. Sending after Drain, Cancel, clean
+    /// closure, or a runtime fault returns an error.
     pub async fn send(&self, message: C::Message) -> Result<(), RuntimeError> {
         self.scope.accept_ingress(live_runtime::LiveEvent::ingress(
             live_runtime::LiveIngress {
@@ -4352,6 +4443,8 @@ impl<P: Protocol> PortHandle<P> {
     ///
     /// Successful return means the notification crossed the runtime admission
     /// boundary; it does not mean the provider transition has completed.
+    /// Notification after Drain, Cancel, clean closure, or a runtime fault
+    /// returns an error.
     pub async fn notify<N>(&self, notification: N) -> Result<(), RuntimeError>
     where
         N: Notification<P>,
@@ -4366,7 +4459,10 @@ impl<P: Protocol> PortHandle<P> {
     /// Submits one protocol request and awaits its correlated typed reply.
     ///
     /// Dropping this future stops only the host from waiting. Once admitted,
-    /// the request remains runtime-owned until it replies or the runtime ends.
+    /// the request remains runtime-owned until it replies or the runtime ends;
+    /// dropping the future does not cancel it or allow Drain to forget it. An
+    /// unanswered request can keep Drain pending indefinitely. Cancel, clean
+    /// closure, or a runtime fault before the reply returns [`RuntimeError`].
     pub async fn request<R>(&self, request: R) -> Result<R::Reply, RuntimeError>
     where
         R: Request<P>,
@@ -4384,8 +4480,10 @@ impl<P: Protocol> PortHandle<P> {
 
 /// Ownership handle for a running live Samara program.
 ///
-/// Dropping or shutting down this scope must not leave detached commands,
-/// subscriptions, or Driver work.
+/// [`RuntimeTask::shutdown`] closes and waits for the structured scope. Dropping
+/// the handle instead closes admission with Cancel semantics and aborts the
+/// owner; use `shutdown` when the host needs to await cleanup or inspect its
+/// [`ShutdownReport`]. Neither path leaves detached Samara-owned Driver work.
 pub struct RuntimeTask {
     scope: Arc<live_runtime::LiveScope>,
     join: Option<tokio::task::JoinHandle<Result<ShutdownReport, RuntimeError>>>,
@@ -4471,9 +4569,10 @@ pub enum Shutdown {
 
 /// Structured-concurrency accounting returned after a runtime scope closes.
 ///
-/// The exact unit counted as one piece of work remains provisional; the key
-/// invariant is that `remaining` must be zero after successful live shutdown or
-/// controlled cancellation.
+/// `completed` and `cancelled` are diagnostic counters and their exact values
+/// are not a compatibility guarantee. A successful live shutdown or controlled
+/// cancellation guarantees that `remaining`, `pending_now`, and
+/// `pending_later` are all zero.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ShutdownReport {
     /// Runtime-owned work units that completed while the scope was closing.
@@ -4715,8 +4814,12 @@ impl ControlledRuntimeBuilder {
 
     /// Creates a paused deterministic runtime with the declared controls.
     ///
-    /// Every Program-declared terminal boundary must have controlled behavior;
-    /// missing or foreign bindings fail before the runtime is created.
+    /// Every Effect and Source capability declared by the Program must have
+    /// exactly one applicable controlled behavior, including dependencies not
+    /// visible in the initial Commands or Subscriptions. Missing, ambiguous,
+    /// foreign, or type-incompatible controls return an error before the
+    /// runtime is created. Initial work carrying a foreign Program capability
+    /// is rejected at the same boundary.
     pub fn build(self) -> Result<ControlledRuntime, RuntimeError> {
         self.bindings.validate(&self.program)?;
         for component in &self.program.components {
@@ -4840,7 +4943,7 @@ pub enum EffectOutcomeKind {
 
 /// Always-collected structural semantic event from controlled execution.
 ///
-/// This v0 trace records concrete Rust types, targets, lifecycle, time, and
+/// The trace records concrete Rust types, targets, lifecycle, time, and
 /// causation without copying descriptor or Message payloads.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TraceEvent {

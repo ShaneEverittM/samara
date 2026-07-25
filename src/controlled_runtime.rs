@@ -1,9 +1,8 @@
-//! Synchronous deterministic execution for the Phase 5 controlled profile.
+//! Synchronous deterministic execution for the controlled profile.
 //!
-//! The implementation deliberately uses one owned scheduler because that is a
-//! small conforming mechanism, not because Samara promises a global live loop.
-//! Its observable order is the ADR-0003 key `(logical deadline, insertion
-//! ticket)` and all queued work retains explicit causation.
+//! One owned scheduler orders work by logical deadline and deterministic
+//! insertion ticket. That private mechanism does not imply a global live order;
+//! queued work retains explicit causation.
 
 use std::{
     any::{Any, TypeId},

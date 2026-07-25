@@ -58,7 +58,7 @@ impl<C: Component> ComponentKernel<C> {
     /// descriptor-only active Subscription bookkeeping.
     ///
     /// The returned changes remain inert until an execution profile applies
-    /// ADR-0003's Source maintenance and retained-latest-mapper policy.
+    /// Source maintenance and retained-latest-mapper policy.
     pub(crate) fn reconcile_subscriptions(
         &mut self,
     ) -> Result<Vec<SubscriptionChange<C::Message>>, DuplicateSubscriptionIdError> {
