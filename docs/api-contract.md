@@ -186,6 +186,40 @@ The ADR freezes observable first-cut behavior, not task topology, queue
 representation, exact public module naming, or a mature product policy for
 overload, shutdown deadlines, Driver recovery, or bridge restartability.
 
+## Example-Driven Extension: Standard Output Effects
+
+The first real-application experiment adds two narrow, high-level first-party
+terminal EffectDescriptors:
+
+- `PrintStdout` describes one finite, best-effort UTF-8 print to process
+  standard output.
+- `PrintStderr` describes one finite, best-effort UTF-8 print to process
+  standard error.
+
+Both descriptors own text, provide `text` for exact UTF-8 and `line` for UTF-8
+followed by `\n`, produce `()`, and use `Infallible` as their Error type. The
+values contain no handles and perform no work when constructed.
+
+`LiveRuntimeBuilder::bind_stdio()` installs both Tokio-backed terminal Drivers.
+Each Driver serializes its own Samara-issued print attempts within one live
+binding, writes the complete text, and flushes the selected stream. An
+operating-system I/O error is intentionally discarded rather than becoming an
+application Message; `Succeeded(())` means the best-effort print attempt
+finished, not that external observation is guaranteed. Direct process writes,
+other runtime instances, independently issued effects, and stdout versus
+stderr gain no ordering guarantee. Failure at the external stream or
+whole-scope cancellation may leave partial output.
+
+Controlled execution uses the ordinary `control_effect::<PrintStdout>()` and
+`control_effect::<PrintStderr>()` boundaries and never touches the host process
+streams. These descriptors add no formatting, logging, buffering, routing, or
+retry policy to the runtime.
+
+A future lower-level exact-byte API may use names such as `WriteStdout` and
+`WriteStderr`, expose `std::io::Error`, and make partial-write behavior part of
+its contract. That fallible boundary is not implied by the high-level print
+effects.
+
 ## Deliberately Unfrozen Surfaces
 
 The following decisions remain explicit gates or deferrals rather than

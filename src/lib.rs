@@ -58,13 +58,13 @@ pub mod prelude {
         BoxFuture, CancelReason, Command, Component, ComponentHandle, ComponentId, ComponentRef,
         ControlledRuntime, Decoder, DriverStopped, EffectDescriptor, EffectDriver,
         EffectInvocation, EffectOutcome, EffectOutcomeKind, Framed, FramedError, FramedLayer, Init,
-        LiveRuntime, LogicalTime, Notification, PendingEffect, PendingWork, Port, PortId, Program,
-        ProgramBuildError, ProgramBuilder, Protocol, ReplyTo, Request, RequestError,
-        RequestInvocation, RequestOutcome, RunReport, RuntimeError, RuntimeTask, Shutdown,
-        ShutdownReport, SourceDescriptor, SourceDriver, SourceEvent, SourceEventKind, SourceSink,
-        StreamDescriptor, Subscription, SubscriptionAction, SubscriptionId, Subscriptions,
-        TcpBytes, TcpError, TcpErrorKind, TraceCommandKind, TraceEvent, TraceId, TraceRecord,
-        protocol,
+        LiveRuntime, LogicalTime, Notification, PendingEffect, PendingWork, Port, PortId,
+        PrintStderr, PrintStdout, Program, ProgramBuildError, ProgramBuilder, Protocol, ReplyTo,
+        Request, RequestError, RequestInvocation, RequestOutcome, RunReport, RuntimeError,
+        RuntimeTask, Shutdown, ShutdownReport, SourceDescriptor, SourceDriver, SourceEvent,
+        SourceEventKind, SourceSink, StreamDescriptor, Subscription, SubscriptionAction,
+        SubscriptionId, Subscriptions, TcpBytes, TcpError, TcpErrorKind, TraceCommandKind,
+        TraceEvent, TraceId, TraceRecord, protocol,
     };
 }
 
@@ -1816,6 +1816,88 @@ impl<T: Send + 'static> SourceDescriptor for StreamDescriptor<T> {
     type Error = std::convert::Infallible;
 }
 
+/// Inert description of one finite best-effort print to process standard output.
+///
+/// Constructing this value performs no I/O. Live execution realizes it through
+/// [`LiveRuntimeBuilder::bind_stdio`], while controlled execution can intercept
+/// it through [`ControlledRuntimeBuilder::control_effect`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PrintStdout {
+    text: String,
+}
+
+impl PrintStdout {
+    /// Describes an exact UTF-8 text write with no implicit terminator.
+    pub fn text(text: impl Into<String>) -> Self {
+        Self { text: text.into() }
+    }
+
+    /// Describes a UTF-8 text write followed by one `\n` byte.
+    ///
+    /// The newline is unconditional; text already ending in `\n` therefore
+    /// produces one additional blank line, matching `println!` behavior.
+    pub fn line(text: impl Into<String>) -> Self {
+        let mut text = text.into();
+        text.push('\n');
+        Self::text(text)
+    }
+
+    /// Returns the exact text this effect asks the Driver to print.
+    pub fn as_str(&self) -> &str {
+        &self.text
+    }
+
+    pub(crate) fn into_text(self) -> String {
+        self.text
+    }
+}
+
+impl EffectDescriptor for PrintStdout {
+    type Output = ();
+    type Error = std::convert::Infallible;
+}
+
+/// Inert description of one finite best-effort print to process standard error.
+///
+/// Constructing this value performs no I/O. Live execution realizes it through
+/// [`LiveRuntimeBuilder::bind_stdio`], while controlled execution can intercept
+/// it through [`ControlledRuntimeBuilder::control_effect`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PrintStderr {
+    text: String,
+}
+
+impl PrintStderr {
+    /// Describes an exact UTF-8 text write with no implicit terminator.
+    pub fn text(text: impl Into<String>) -> Self {
+        Self { text: text.into() }
+    }
+
+    /// Describes a UTF-8 text write followed by one `\n` byte.
+    ///
+    /// The newline is unconditional; text already ending in `\n` therefore
+    /// produces one additional blank line, matching `eprintln!` behavior.
+    pub fn line(text: impl Into<String>) -> Self {
+        let mut text = text.into();
+        text.push('\n');
+        Self::text(text)
+    }
+
+    /// Returns the exact text this effect asks the Driver to print.
+    pub fn as_str(&self) -> &str {
+        &self.text
+    }
+
+    pub(crate) fn into_text(self) -> String {
+        self.text
+    }
+}
+
+impl EffectDescriptor for PrintStderr {
+    type Output = ();
+    type Error = std::convert::Infallible;
+}
+
 /// Inert description of one TCP byte-stream connection.
 ///
 /// Each live Source realization makes exactly one connection attempt to the
@@ -2810,6 +2892,20 @@ impl LiveRuntimeBuilder {
     /// The live Driver performs no DNS, retry, reconnect, or framing.
     pub fn bind_tcp(mut self) -> Self {
         live_runtime::bind_tcp(&mut self.bindings);
+        self
+    }
+
+    /// Registers Samara's first-party Tokio standard-output Drivers.
+    ///
+    /// [`PrintStdout`] and [`PrintStderr`] each attempt to write their complete
+    /// text and flush the selected stream. Host I/O errors are deliberately
+    /// discarded, so these high-level effects are infallible from the
+    /// Component's perspective. Within this binding, each stream is serialized
+    /// independently; this method adds no ordering guarantee among otherwise
+    /// independent effects, between stdout and stderr, or relative to direct
+    /// process writes.
+    pub fn bind_stdio(mut self) -> Self {
+        live_runtime::bind_stdio(&mut self.bindings);
         self
     }
 

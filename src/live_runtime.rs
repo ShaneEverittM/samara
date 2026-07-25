@@ -17,7 +17,7 @@ use std::{
 use bytes::{Bytes, BytesMut};
 use futures_util::FutureExt;
 use tokio::{
-    io::{AsyncRead, AsyncReadExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::TcpStream,
     sync::mpsc,
     task::{AbortHandle, JoinSet},
@@ -28,9 +28,9 @@ use crate::controlled_runtime::{
 };
 use crate::{
     BoxFuture, Command, CommandKind, ComponentId, DriverStopped, EffectDescriptor, EffectDriver,
-    EffectOutcome, ErasedRequestMapper, ErasedSourceEvent, PortId, Program, RuntimeError, Shutdown,
-    ShutdownReport, SourceDescriptor, SourceDriver, SourceEvent, SourcePlan, SourceSink,
-    StreamDescriptor, SubscriptionId, TcpBytes, TcpError, TraceId,
+    EffectOutcome, ErasedRequestMapper, ErasedSourceEvent, PortId, PrintStderr, PrintStdout,
+    Program, RuntimeError, Shutdown, ShutdownReport, SourceDescriptor, SourceDriver, SourceEvent,
+    SourcePlan, SourceSink, StreamDescriptor, SubscriptionId, TcpBytes, TcpError, TraceId,
 };
 
 type ErasedValue = Box<dyn Any + Send>;
@@ -239,6 +239,69 @@ impl<T: Send + 'static> ErasedSourceBinding for MpscBinding<T> {
 
 struct TokioTcpDriver;
 
+struct TokioPrintStdoutDriver {
+    output: Arc<tokio::sync::Mutex<tokio::io::Stdout>>,
+}
+
+impl TokioPrintStdoutDriver {
+    fn new() -> Self {
+        Self {
+            output: Arc::new(tokio::sync::Mutex::new(tokio::io::stdout())),
+        }
+    }
+}
+
+impl EffectDriver<PrintStdout> for TokioPrintStdoutDriver {
+    fn execute(&self, descriptor: PrintStdout) -> BoxFuture<Result<(), Infallible>> {
+        let output = self.output.clone();
+        let text = descriptor.into_text();
+        Box::pin(print_best_effort(output, Bytes::from(text)))
+    }
+}
+
+struct TokioPrintStderrDriver {
+    output: Arc<tokio::sync::Mutex<tokio::io::Stderr>>,
+}
+
+impl TokioPrintStderrDriver {
+    fn new() -> Self {
+        Self {
+            output: Arc::new(tokio::sync::Mutex::new(tokio::io::stderr())),
+        }
+    }
+}
+
+impl EffectDriver<PrintStderr> for TokioPrintStderrDriver {
+    fn execute(&self, descriptor: PrintStderr) -> BoxFuture<Result<(), Infallible>> {
+        let output = self.output.clone();
+        let text = descriptor.into_text();
+        Box::pin(print_best_effort(output, Bytes::from(text)))
+    }
+}
+
+async fn print_best_effort<Writer>(
+    output: Arc<tokio::sync::Mutex<Writer>>,
+    bytes: Bytes,
+) -> Result<(), Infallible>
+where
+    Writer: AsyncWrite + Unpin,
+{
+    let _ = write_and_flush(output, bytes).await;
+    Ok(())
+}
+
+async fn write_and_flush<Writer>(
+    output: Arc<tokio::sync::Mutex<Writer>>,
+    bytes: Bytes,
+) -> Result<(), std::io::Error>
+where
+    Writer: AsyncWrite + Unpin,
+{
+    let mut output = output.lock().await;
+    output.write_all(&bytes).await?;
+    output.flush().await
+}
+
 async fn drive_tcp_reader<Reader>(reader: &mut Reader, sink: SourceSink<TcpBytes>)
 where
     Reader: AsyncRead + Unpin,
@@ -328,6 +391,11 @@ impl LiveBindings {
 
     pub(crate) fn bind_tcp(&mut self) {
         self.bind_source::<TcpBytes, _>(TokioTcpDriver);
+    }
+
+    pub(crate) fn bind_stdio(&mut self) {
+        self.bind_effect::<PrintStdout, _>(TokioPrintStdoutDriver::new());
+        self.bind_effect::<PrintStderr, _>(TokioPrintStderrDriver::new());
     }
 
     pub(crate) fn validate(&self) -> Result<(), RuntimeError> {
@@ -1650,6 +1718,11 @@ pub(crate) fn bind_tcp(bindings: &mut LiveBindings) {
     bindings.bind_tcp();
 }
 
+/// Registers the first-party Tokio standard-output terminal Drivers.
+pub(crate) fn bind_stdio(bindings: &mut LiveBindings) {
+    bindings.bind_stdio();
+}
+
 /// Proves the first-party descriptor's item type without exposing machinery.
 fn _tcp_item_is_bytes(_: SourceEvent<Bytes, TcpError>) {}
 
@@ -1670,7 +1743,7 @@ mod tests {
         task::{Context, Poll},
     };
 
-    use tokio::io::{AsyncRead, ReadBuf};
+    use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
 
     use super::*;
     use crate::{
@@ -1920,6 +1993,29 @@ mod tests {
                 io::ErrorKind::ConnectionReset,
                 "deterministic read failure",
             )))
+        }
+    }
+
+    struct FailingWriter;
+
+    impl AsyncWrite for FailingWriter {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+            _buffer: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "deterministic output failure",
+            )))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
         }
     }
 
@@ -2182,6 +2278,33 @@ mod tests {
         assert_eq!(error.work_occurrence(), Some(work));
         assert!(error.to_string().contains("timer task panicked"));
         core.cleanup_abort().await;
+    }
+
+    #[tokio::test]
+    async fn standard_output_driver_writes_the_exact_payload() {
+        let expected = Bytes::from_static(b"one complete record\n");
+        let (writer, mut reader) = tokio::io::duplex(expected.len());
+
+        write_and_flush(Arc::new(tokio::sync::Mutex::new(writer)), expected.clone())
+            .await
+            .expect("write and flush succeed");
+
+        let mut actual = vec![0; expected.len()];
+        reader
+            .read_exact(&mut actual)
+            .await
+            .expect("complete payload available");
+        assert_eq!(actual, expected);
+    }
+
+    #[tokio::test]
+    async fn standard_output_driver_discards_host_io_errors() {
+        print_best_effort(
+            Arc::new(tokio::sync::Mutex::new(FailingWriter)),
+            Bytes::from_static(b"best effort"),
+        )
+        .await
+        .expect("high-level print has no application error");
     }
 
     #[tokio::test]

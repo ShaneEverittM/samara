@@ -338,6 +338,21 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
 - Exact first-party public module/type names remain implementation-review
   details where the accepted API has not already frozen them.
 
+### First-Party Standard Output Effects
+
+- `PrintStdout` and `PrintStderr` are finite terminal EffectDescriptors, not
+  ambient capabilities available to `update`.
+- Live assembly opts into their Tokio Drivers through `bind_stdio`; controlled
+  execution intercepts the same descriptors through the normal typed effect
+  boundary.
+- They are best-effort text effects with `Infallible` application Error data.
+  The Driver attempts the complete write and flush but deliberately discards
+  host I/O errors; cancellation may leave partial external output.
+- The Drivers contain no formatting, logging, retry, or application routing
+  policy and create no ordering guarantee between otherwise independent
+  effects.
+- A future fallible exact-byte write boundary is a separate, lower-level API.
+
 ### Decoder EOF Contract
 
 - ADR-0004 adds one required pure Decoder finalization operation.
