@@ -41,14 +41,31 @@ product policies. ADR-0006 extends that same live admission and ownership bounda
 provider-neutral host Port operations without changing Component purity or controlled
 execution. ADR-0007 adds cancellation-safe observation of the live owner so a host can
 compose immediate runtime-fault reporting with its own shutdown future while continuing
-to choose Drain or Cancel explicitly.
+to choose Drain or Cancel explicitly. ADR-0008 closes Program assembly around
+Program-issued capabilities: Components must receive every Component, Protocol, Effect,
+and Source dependency during assembly, and both execution profiles validate the complete
+declared world boundary before execution begins.
 
 ## The Samara Program Boundary
 
-A **Samara program** is a declared collection of Components and their Protocol,
-EffectDescriptor, and Subscription contracts. A concrete execution binds terminal
-descriptors to live Drivers or controlled behavior, plus a runtime configuration and a
-surrounding world. Samara's guarantees apply within that assembled boundary.
+A **Samara program** is a closed, declared collection of Components and the capabilities
+through which they may communicate or interact with the world. `ProgramBuilder` issues
+Component references, Ports, Effect capabilities, and Source capabilities during
+assembly. Those inert values are threaded into immutable Component configuration; after
+the Program is built, execution cannot add another dependency.
+
+EffectDescriptors and SourceDescriptors still carry the concrete, Model-derived intent
+for each occurrence. Capabilities declare which descriptor kinds the Program is allowed
+to issue. A concrete execution binds their terminal descriptor requirements to live
+Drivers or controlled behavior, plus a runtime configuration and a surrounding world.
+Both execution profiles validate every declared requirement synchronously before
+execution begins. Samara's guarantees apply within that assembled boundary.
+
+This is a closed logical capability inventory, not field introspection or static analysis
+of every behavior-dependent message edge. Rust cannot prevent deliberately
+non-conforming code from hiding a capability issued by another Program. Samara rejects
+such a value when it becomes observable, before it reaches a Driver or controlled
+behavior; it does not treat that fault as legitimate dynamic dependency discovery.
 
 A Samara program may be embedded in a larger Tokio process. Code outside the program
 boundary is part of the surrounding world and interacts with the program through
@@ -91,7 +108,8 @@ equivalent to producing a new model value.
 
 The Rust type and `impl Component` form the Component implementation. A particular
 immutable value of that type is its Component configuration and may contain logical
-wiring such as Ports and SourceDescriptors. Receiving `&self` signals observational
+wiring such as Ports, EffectCapabilities, SourceCapabilities, and declarative descriptor
+configuration. Receiving `&self` signals observational
 immutability; because Rust permits interior mutability, conformance still requires that
 behaviorally relevant mutable state belong in the Model.
 
@@ -163,8 +181,8 @@ Samara should make the conforming path the natural path:
 
 - Runtime and Driver handles are not available to transitions.
 - Component state is not exposed through mutable runtime handles.
-- All application-observable interaction with the world crosses declared Command or
-  Subscription boundaries.
+- All application-observable interaction with the world crosses a Program-declared
+  capability and its Command or Subscription boundary.
 - Outcomes that can affect application decisions return as Component Messages.
 
 Rust cannot prevent deliberately non-conforming code from reading globals, performing
@@ -178,14 +196,15 @@ guarantees it forfeits are deferred.
 ## Commands and Effects
 
 A `Command<Message>` is an inert typed description of finite work. For a world-facing
-interaction, it composes an explicit `EffectDescriptor` with a deterministic one-shot
-message mapper.
+interaction, it composes a Program-issued `EffectCapability<D>`, an explicit descriptor
+`D`, and a deterministic one-shot message mapper. The capability is inert authorization
+to describe work, not a handle that performs I/O.
 
 When an EffectOutcome type has one canonical meaning for the Component,
-`Command::effect(effect)` obtains that mapper through the standard
+`Command::effect(&capability, effect)` obtains that mapper through the standard
 `Message: From<EffectOutcome<Output, Error>>` relationship. When meaning is
 specific to the call site or captures domain context,
-`Command::effect_with(effect, mapper)` supplies it explicitly. This paired API
+`Command::effect_with(&capability, effect, mapper)` supplies it explicitly. This paired API
 is only a Rust spelling choice; both forms declare the same finite work and
 runtime-owned continuation.
 
@@ -197,6 +216,7 @@ Component Messages. For example:
 
 ```text
 Command::effect_with(
+    &self.socket_read,
     SocketRead { socket },
     bytes -> SocketMessage::Frames(decode(bytes)),
 )
@@ -224,9 +244,9 @@ Component's desire to maintain ongoing event production. It combines a stable
 Component-local identity, a comparable SourceDescriptor, and a reusable message mapper
 from SourceEvents to Component Messages.
 
-`Subscription::source(id, descriptor)` obtains the canonical mapper through
+`Subscription::source(&capability, id, descriptor)` obtains the canonical mapper through
 `Message: From<SourceEvent<Item, Error>>`;
-`Subscription::source_with(id, descriptor, mapper)` supplies an explicit
+`Subscription::source_with(&capability, id, descriptor, mapper)` supplies an explicit
 reusable mapper. The choice does not affect reconciliation identity or Source
 lifecycle.
 
@@ -238,12 +258,13 @@ After a committed transition, the runtime reconciles desired Subscriptions with 
 Subscription bookkeeping and Sources:
 
 - A newly desired identity starts a Source.
-- The same identity with an equal SourceDescriptor retains its Source without restarting
-  and atomically adopts the latest message mapper projected after the transition.
+- The same identity with the same Source capability and an equal SourceDescriptor retains
+  its Source without restarting and atomically adopts the latest message mapper projected
+  after the transition.
 - A removed identity cancels its Source.
-- The same identity with a changed SourceDescriptor atomically replaces its Source. Work
-  from the withdrawn private runtime generation that has not begun a Component transition
-  is discarded and traced.
+- The same identity with a changed Source capability or SourceDescriptor atomically
+  replaces its Source. Work from the withdrawn private runtime generation that has not
+  begun a Component transition is discarded and traced.
 - A Source failure that affects application behavior produces an explicit Component
   Message.
 
@@ -253,9 +274,10 @@ mapped through the replacement's mapper. Applications requiring overlapping or d
 lifetimes declare separate Subscription identities or carry their own domain generation.
 
 A composed SourceDescriptor is automatically lowered to a runtime-owned SourcePlan: its
-terminal descriptor, ordered profile-independent Layers, and message mapper. Applications
-bind live or controlled behavior only for terminal descriptors; they do not repeat the
-Layer stack during assembly.
+terminal descriptor, ordered profile-independent Layers, capability identity, and message
+mapper. One `SourceCapability<Composed>` declaration records the lowered terminal
+requirement; applications neither declare the inner descriptor nor repeat the Layer stack.
+Live and controlled profiles bind only terminal descriptors.
 
 A Source is the runtime-scoped ongoing realization behind the SourceDescriptor and may
 produce zero or more SourceEvents. A live SourceDriver may own world-facing operational
@@ -320,10 +342,11 @@ the Samara program.
 
 Every terminal EffectDescriptor and SourceDescriptor used by the program must have
 controlled behavior. Time, randomness, identifiers, external inputs, EffectOutcomes, and
-SourceEvents must be controlled or seeded. Missing controlled behavior fails explicitly;
-it must never silently fall back to a live Driver or the live world. Reaching such a
-terminal boundary faults that controlled run while preserving state and trace inspection
-and the ability to cancel runtime-owned work.
+SourceEvents must be controlled or seeded. The controlled builder validates the complete
+closed capability declaration set before creating a run; missing behavior never silently
+falls back to a live Driver or the live world. Deliberately non-conforming code that later
+reveals a foreign or inconsistent capability faults before terminal behavior while
+preserving state and trace inspection and the ability to cancel runtime-owned work.
 
 For a conforming program using conforming Components, Layers, and controlled bindings,
 identical initial state, Component configuration, controlled inputs, seeds, and runtime
@@ -512,16 +535,17 @@ Conceptually:
 ```text
 Component:
     Subscription::source_with(
+        &packet_source,
         "packets",
         packet_input,
         PacketMessage::Received,
     )
 
 Live profile:
-    bind packet_input to a first-party Tokio mpsc SourceDriver
+    bind packet_source to a first-party Tokio mpsc Source
 
 Controlled profile:
-    bind packet_input to scripted SourceEvents
+    control packet_source and supply scripted SourceEvents
 ```
 
 This is schematic rather than a commitment to the concrete descriptor or binding API.
@@ -566,8 +590,9 @@ only through declared messages and protocols.
 
 ### V3. Interceptable Effect Descriptor
 
-Given a Command containing a typed EffectDescriptor and either a pure one-shot
-message mapper or an explicit declaration that its outcome is discarded,
+Given a Command containing a Program-issued EffectCapability, typed
+EffectDescriptor, and either a pure one-shot message mapper or an explicit declaration
+that its outcome is discarded,
 controlled execution can observe the descriptor, apply the same declarative
 Layers, and provide an EffectOutcome without invoking a live terminal
 EffectDriver. A mapped outcome enters the target Component as a Message; a
@@ -576,19 +601,21 @@ runtime-owned finite work.
 
 ### V4. Declarative Subscription Lifecycle
 
-Given a Model-derived Subscription containing a stable identity, SourceDescriptor, and
-message mapper:
+Given a Model-derived Subscription containing a Program-issued SourceCapability, stable
+identity, SourceDescriptor, and message mapper:
 
 - A Source starts when the identity is first desired.
-- The Source remains active while the same identity has an equal SourceDescriptor.
+- The Source remains active while the same identity has the same SourceCapability and an
+  equal SourceDescriptor.
 - The Source is canceled when the identity is no longer desired.
-- The Source is replaced when the same identity has a changed
+- The Source is replaced when the same identity has a changed SourceCapability or
   SourceDescriptor; stale work from the withdrawn generation is discarded before it can
   begin another transition.
 - A retained Source atomically adopts the newest post-transition message mapper without
   restarting.
 - A composed SourceDescriptor automatically lowers through the same ordered Layers to its
-  terminal descriptor in both profiles.
+  terminal descriptor in both profiles; its one outer SourceCapability declares that
+  terminal requirement.
 - Its controlled SourceEvents enter the Component through the message mapper.
 - Its failure enters the Component as a Message.
 
@@ -660,6 +687,21 @@ receiver into Messages using first-party interop, and reuses the same Component 
 controlled test without custom runtime, Layer, Driver, or controlled-world
 infrastructure.
 
+### V12. Closed Program Capability Assembly
+
+Program assembly issues every Component reference, Port, EffectCapability, and
+SourceCapability before closing the Program. A raw EffectDescriptor cannot construct an
+Effect Command and a raw SourceDescriptor cannot construct a Subscription. Live and
+controlled profile builders reject every missing, duplicate, ambiguous, foreign, or
+type-incompatible declared terminal binding before execution begins, including a
+dependency first used only after a later Message.
+
+One capability for a composed Source declares only its lowered terminal binding
+requirement. Exact resource bridges select Source capability identity rather than future
+descriptor equality. A deliberately hidden foreign capability is a Component-conformance
+violation and faults before terminal behavior if it first becomes visible during
+execution; it does not extend the closed Program.
+
 ## Not Promised Here
 
 This vision deliberately does not promise:
@@ -669,6 +711,8 @@ This vision deliberately does not promise:
 - Deterministic ordering of independent events during live execution.
 - Proof that arbitrary Rust Components, closures, Layers, Drivers, or controlled-world
   code conforms.
+- Dynamically adding Components, Ports, Effect capabilities, or Source capabilities to a
+  running Program.
 - Transparent distribution of Components across processes.
 - A mature bounded-pressure, overload, retry, or operational shutdown policy beyond the
   simple first live contract accepted in ADR-0004.
@@ -686,10 +730,11 @@ and leave later choices to focused ADRs and roadmaps.
 The following questions remain intentionally open:
 
 - Whether to provide a blessed escape hatch and how it advertises weakened guarantees.
-- API slices beyond the Phase 2 Component-kernel contract.
+- Named capability bundles and user-facing capability identity inspection.
 - The broader first-party Tokio bridge module organization and bindings beyond
   the initial `StreamDescriptor<T>` plus `mpsc` bridge.
-- The initial Rust shape of Layer and execution-profile binding abstractions.
+- General Layer and execution-profile binding abstractions beyond the accepted
+  type-wide Driver and exact Source-capability forms.
 - Subscription restart and retry semantics.
 - Bounded delivery, backpressure, overload, coalescing, fairness, and shedding policies
   beyond v0 unbounded internal delivery.

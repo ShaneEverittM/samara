@@ -44,13 +44,17 @@ struct SaveError;
 /// kernel contract does not require scheduler-driven shared access to a
 /// Component configuration.
 struct ContractComponent {
+    source: SourceCapability<StreamDescriptor<u64>>,
+    save: EffectCapability<SaveTotal>,
     input: StreamDescriptor<u64>,
     not_sync: PhantomData<Cell<()>>,
 }
 
 impl ContractComponent {
-    fn new() -> Self {
+    fn new(program: &mut ProgramBuilder) -> Self {
         Self {
+            source: program.source::<StreamDescriptor<u64>>(),
+            save: program.effect::<SaveTotal>(),
             input: StreamDescriptor::named(INPUT_BINDING),
             not_sync: PhantomData,
         }
@@ -69,7 +73,11 @@ impl Component for ContractComponent {
         match message {
             ContractMessage::Add(amount) => {
                 model.total += amount;
-                Command::effect_with(SaveTotal { value: model.total }, ContractMessage::Saved)
+                Command::effect_with(
+                    &self.save,
+                    SaveTotal { value: model.total },
+                    ContractMessage::Saved,
+                )
             }
             ContractMessage::Input(SourceEvent::Item(amount)) => {
                 model.total += amount;
@@ -93,6 +101,7 @@ impl Component for ContractComponent {
         }
 
         Subscriptions::one(Subscription::source_with(
+            &self.source,
             SubscriptionId::new(INPUT_SUBSCRIPTION),
             self.input.clone(),
             ContractMessage::Input,
@@ -102,7 +111,8 @@ impl Component for ContractComponent {
 
 #[test]
 fn v1_same_input_produces_equivalent_model_and_command_intent() {
-    let component = ContractComponent::new();
+    let mut program = Program::builder();
+    let component = ContractComponent::new(&mut program);
     let mut left = component.init().model;
     let mut right = component.init().model;
 
@@ -118,7 +128,8 @@ fn v1_same_input_produces_equivalent_model_and_command_intent() {
 
 #[test]
 fn v3_effect_command_exposes_typed_descriptor() {
-    let component = ContractComponent::new();
+    let mut program = Program::builder();
+    let component = ContractComponent::new(&mut program);
     let mut model = component.init().model;
 
     let command = component.update(&mut model, ContractMessage::Add(11));
@@ -135,7 +146,8 @@ fn v3_effect_command_exposes_typed_descriptor() {
 
 #[test]
 fn v4_subscription_separates_component_identity_from_source_descriptor() {
-    let component = ContractComponent::new();
+    let mut program = Program::builder();
+    let component = ContractComponent::new(&mut program);
     let model = component.init().model;
 
     let subscriptions = component.subscriptions(&model);
@@ -154,7 +166,8 @@ fn component_kernel_accepts_non_sync_configuration() {
     assert_component::<ContractComponent>();
 
     let mut program = Program::builder();
-    let component = program.component(ComponentId::new("contract"), ContractComponent::new());
+    let contract = ContractComponent::new(&mut program);
+    let component = program.component(ComponentId::new("contract"), contract);
 
     assert_eq!(component.id(), &ComponentId::new("contract"));
 }

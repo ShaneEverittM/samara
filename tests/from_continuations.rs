@@ -36,7 +36,9 @@ impl From<EffectOutcome<u64, Infallible>> for EffectMessage {
 
 #[test]
 fn effect_default_uses_from_and_effect_with_preserves_context() {
-    let default: Command<EffectMessage> = Command::effect(ProbeEffect);
+    let mut program = Program::builder();
+    let probe = program.effect::<ProbeEffect>();
+    let default: Command<EffectMessage> = Command::effect(&probe, ProbeEffect);
     assert_eq!(
         default
             .map_effect_outcome::<ProbeEffect>(EffectOutcome::Succeeded(7))
@@ -45,7 +47,7 @@ fn effect_default_uses_from_and_effect_with_preserves_context() {
         EffectMessage::Canonical(EffectOutcome::Succeeded(7))
     );
 
-    let cancelled: Command<EffectMessage> = Command::effect(ProbeEffect);
+    let cancelled: Command<EffectMessage> = Command::effect(&probe, ProbeEffect);
     assert_eq!(
         cancelled
             .map_effect_outcome::<ProbeEffect>(EffectOutcome::Cancelled(CancelReason::Deadline))
@@ -55,9 +57,10 @@ fn effect_default_uses_from_and_effect_with_preserves_context() {
     );
 
     let context = "secondary read";
-    let explicit: Command<EffectMessage> = Command::effect_with(ProbeEffect, move |outcome| {
-        EffectMessage::Explicit { context, outcome }
-    });
+    let explicit: Command<EffectMessage> =
+        Command::effect_with(&probe, ProbeEffect, move |outcome| {
+            EffectMessage::Explicit { context, outcome }
+        });
     assert_eq!(
         explicit
             .map_effect_outcome::<ProbeEffect>(EffectOutcome::Succeeded(8))
@@ -69,7 +72,7 @@ fn effect_default_uses_from_and_effect_with_preserves_context() {
         }
     );
 
-    let identity: Command<EffectOutcome<u64, Infallible>> = Command::effect(ProbeEffect);
+    let identity: Command<EffectOutcome<u64, Infallible>> = Command::effect(&probe, ProbeEffect);
     assert_eq!(
         identity
             .map_effect_outcome::<ProbeEffect>(EffectOutcome::Succeeded(9))
@@ -96,9 +99,11 @@ impl From<SourceEvent<u64, Infallible>> for SourceMessage {
 
 #[test]
 fn source_default_is_reusable_and_source_with_preserves_context() {
+    let mut program = Program::builder();
+    let source = program.source::<StreamDescriptor<u64>>();
     let descriptor = StreamDescriptor::<u64>::named("from/default");
     let default: Subscription<SourceMessage> =
-        Subscription::source(SubscriptionId::new("default"), descriptor);
+        Subscription::source(&source, SubscriptionId::new("default"), descriptor);
     assert_eq!(
         default
             .map_source_event::<StreamDescriptor<u64>>(SourceEvent::Item(1))
@@ -114,6 +119,7 @@ fn source_default_is_reusable_and_source_with_preserves_context() {
 
     let context = "telemetry";
     let explicit = Subscription::source_with(
+        &source,
         SubscriptionId::new("explicit"),
         StreamDescriptor::<u64>::named("from/explicit"),
         move |event| SourceMessage::Explicit { context, event },
@@ -156,10 +162,12 @@ fn http_response(body: &'static [u8]) -> HttpResponse {
 
 #[test]
 fn http_pipeline_default_uses_from_and_into_command_with_is_explicit() {
+    let mut program = Program::builder();
+    let http = program.effect::<HttpRequest>();
     let default: Command<HttpMessage> = HttpRequest::get("https://example.test/default")
         .on_response()
         .json::<Payload>()
-        .into_command();
+        .into_command(&http);
     let invocation = default.into_effect::<HttpRequest>().ok().unwrap();
     let message =
         invocation.map_outcome(EffectOutcome::Succeeded(http_response(br#"{"value": 41}"#)));
@@ -172,7 +180,7 @@ fn http_pipeline_default_uses_from_and_into_command_with_is_explicit() {
     let explicit: Command<HttpMessage> = HttpRequest::get("https://example.test/explicit")
         .on_response()
         .json::<Payload>()
-        .into_command_with(move |_| HttpMessage::Explicit(context));
+        .into_command_with(&http, move |_| HttpMessage::Explicit(context));
     let invocation = explicit.into_effect::<HttpRequest>().ok().unwrap();
     assert!(matches!(
         invocation.map_outcome(EffectOutcome::Succeeded(http_response(br#"{"value": 42}"#))),

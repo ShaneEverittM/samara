@@ -24,6 +24,7 @@ Governing documents:
 - [ADR-0002: Runtime Topology and Ordering Semantics](adr/0002-runtime-topology-and-ordering.md)
 - [ADR-0003: Controlled Execution Semantics](adr/0003-controlled-execution-semantics.md)
 - [ADR-0004: Initial Live Runtime Semantics](adr/0004-initial-live-runtime-semantics.md)
+- [ADR-0008: Closed Program Capabilities](adr/0008-closed-program-capabilities.md)
 - [Architecture Test Strategy](testing/architecture-test-strategy.md)
 - [v0 Acceptance Matrix](testing/v0-acceptance-matrix.md)
 
@@ -31,7 +32,7 @@ Governing documents:
 
 ### 0. Direction and Runtime Semantics
 
-- [x] Establish the vision and executable requirements V1-V11.
+- [x] Establish the vision and executable requirements V1-V12.
 - [x] Remove the single-mailbox and global-order mandate through ADR-0002.
 - [x] Align existing architecture and testing guidance.
 

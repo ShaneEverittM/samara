@@ -58,35 +58,39 @@ use controlled_runtime::ControlledCore;
 pub mod prelude {
     pub use crate::{
         BoxFuture, CancelReason, Command, Component, ComponentHandle, ComponentId, ComponentRef,
-        ControlledRuntime, Decoder, DriverStopped, EffectDescriptor, EffectDriver,
-        EffectInvocation, EffectOutcome, EffectOutcomeKind, Framed, FramedError, FramedLayer,
-        HttpError, HttpErrorKind, HttpJsonError, HttpRequest, HttpResponse, HttpResponseError,
-        HttpStatusError, Init, LiveRuntime, LogicalTime, Notification, PendingEffect, PendingWork,
-        Port, PortHandle, PortId, PrintStderr, PrintStdout, Program, ProgramBuildError,
-        ProgramBuilder, Protocol, ReplyTo, Request, RequestError, RequestInvocation,
-        RequestOutcome, RunReport, RuntimeError, RuntimeTask, Shutdown, ShutdownReport,
-        SourceDescriptor, SourceDriver, SourceEvent, SourceEventKind, SourceSink, StreamDescriptor,
-        Subscription, SubscriptionAction, SubscriptionId, Subscriptions, TcpBytes, TcpError,
-        TcpErrorKind, TraceCommandKind, TraceEvent, TraceId, TraceRecord, protocol,
+        ControlledRuntime, Decoder, DriverStopped, EffectCapability, EffectDescriptor,
+        EffectDriver, EffectInvocation, EffectOutcome, EffectOutcomeKind, Framed, FramedError,
+        FramedLayer, HttpError, HttpErrorKind, HttpJsonError, HttpRequest, HttpResponse,
+        HttpResponseError, HttpStatusError, Init, LiveRuntime, LogicalTime, Notification,
+        PendingEffect, PendingWork, Port, PortHandle, PortId, PrintStderr, PrintStdout, Program,
+        ProgramBuildError, ProgramBuilder, Protocol, ReplyTo, Request, RequestError,
+        RequestInvocation, RequestOutcome, RunReport, RuntimeError, RuntimeTask, Shutdown,
+        ShutdownReport, SourceCapability, SourceDescriptor, SourceDriver, SourceEvent,
+        SourceEventKind, SourceSink, StreamDescriptor, Subscription, SubscriptionAction,
+        SubscriptionId, Subscriptions, TcpBytes, TcpError, TcpErrorKind, TraceCommandKind,
+        TraceEvent, TraceId, TraceRecord, protocol,
     };
 }
 
 /// Returns a deferred best-effort standard-output [`Command`] using familiar
 /// Rust formatting syntax.
 ///
-/// The returned Command owns the formatted text and deliberately discards the
-/// print outcome. It must still be returned from the transition or included in
-/// [`Command::batch`]. This macro performs no immediate I/O and is intentionally
-/// not re-exported by [`prelude`].
+/// The first argument is the Component's declared
+/// [`EffectCapability<PrintStdout>`]. The returned Command owns the formatted
+/// text and deliberately discards the print outcome. It must still be returned
+/// from the transition or included in [`Command::batch`]. This macro performs
+/// no immediate I/O and is intentionally not re-exported by [`prelude`].
 #[macro_export]
 macro_rules! print {
-    () => {
-        $crate::Command::effect_discarding_outcome($crate::PrintStdout::text(
-            ::std::string::String::new(),
-        ))
-    };
-    ($($argument:tt)+) => {
+    ($capability:expr) => {
         $crate::Command::effect_discarding_outcome(
+            $capability,
+            $crate::PrintStdout::text(::std::string::String::new()),
+        )
+    };
+    ($capability:expr, $($argument:tt)+) => {
+        $crate::Command::effect_discarding_outcome(
+            $capability,
             $crate::PrintStdout::text(::std::format!($($argument)+))
         )
     };
@@ -95,19 +99,30 @@ macro_rules! print {
 /// Returns a deferred best-effort standard-output-line [`Command`] using
 /// familiar Rust formatting syntax.
 ///
-/// Exactly one newline is appended after the formatted text. The returned
-/// Command owns that text, schedules no completion Message, and must still be
-/// returned or batched. This macro is distinct from Rust's ambient,
-/// unqualified `println!`.
+/// The first argument is the Component's declared
+/// [`EffectCapability<PrintStdout>`]. Exactly one newline is appended after the
+/// formatted text. The returned Command owns that text, schedules no completion
+/// Message, and must still be returned or batched. This macro is distinct from
+/// Rust's ambient, unqualified `println!`.
+///
+/// ```
+/// use samara::{Command, PrintStdout, Program};
+///
+/// let mut program = Program::builder();
+/// let stdout = program.effect::<PrintStdout>();
+/// let _: Command<()> = samara::println!(&stdout, "ready: {}", 7);
+/// ```
 #[macro_export]
 macro_rules! println {
-    () => {
-        $crate::Command::effect_discarding_outcome($crate::PrintStdout::line(
-            ::std::string::String::new(),
-        ))
-    };
-    ($($argument:tt)+) => {
+    ($capability:expr) => {
         $crate::Command::effect_discarding_outcome(
+            $capability,
+            $crate::PrintStdout::line(::std::string::String::new()),
+        )
+    };
+    ($capability:expr, $($argument:tt)+) => {
+        $crate::Command::effect_discarding_outcome(
+            $capability,
             $crate::PrintStdout::line(::std::format!($($argument)+))
         )
     };
@@ -116,19 +131,22 @@ macro_rules! println {
 /// Returns a deferred best-effort standard-error [`Command`] using familiar
 /// Rust formatting syntax.
 ///
-/// The returned Command owns the formatted text and deliberately discards the
-/// print outcome. It must still be returned from the transition or included in
-/// [`Command::batch`]. This macro performs no immediate I/O and is intentionally
-/// not re-exported by [`prelude`].
+/// The first argument is the Component's declared
+/// [`EffectCapability<PrintStderr>`]. The returned Command owns the formatted
+/// text and deliberately discards the print outcome. It must still be returned
+/// from the transition or included in [`Command::batch`]. This macro performs
+/// no immediate I/O and is intentionally not re-exported by [`prelude`].
 #[macro_export]
 macro_rules! eprint {
-    () => {
-        $crate::Command::effect_discarding_outcome($crate::PrintStderr::text(
-            ::std::string::String::new(),
-        ))
-    };
-    ($($argument:tt)+) => {
+    ($capability:expr) => {
         $crate::Command::effect_discarding_outcome(
+            $capability,
+            $crate::PrintStderr::text(::std::string::String::new()),
+        )
+    };
+    ($capability:expr, $($argument:tt)+) => {
+        $crate::Command::effect_discarding_outcome(
+            $capability,
             $crate::PrintStderr::text(::std::format!($($argument)+))
         )
     };
@@ -137,19 +155,22 @@ macro_rules! eprint {
 /// Returns a deferred best-effort standard-error-line [`Command`] using
 /// familiar Rust formatting syntax.
 ///
-/// Exactly one newline is appended after the formatted text. The returned
-/// Command owns that text, schedules no completion Message, and must still be
-/// returned or batched. This macro is distinct from Rust's ambient,
-/// unqualified `eprintln!`.
+/// The first argument is the Component's declared
+/// [`EffectCapability<PrintStderr>`]. Exactly one newline is appended after the
+/// formatted text. The returned Command owns that text, schedules no completion
+/// Message, and must still be returned or batched. This macro is distinct from
+/// Rust's ambient, unqualified `eprintln!`.
 #[macro_export]
 macro_rules! eprintln {
-    () => {
-        $crate::Command::effect_discarding_outcome($crate::PrintStderr::line(
-            ::std::string::String::new(),
-        ))
-    };
-    ($($argument:tt)+) => {
+    ($capability:expr) => {
         $crate::Command::effect_discarding_outcome(
+            $capability,
+            $crate::PrintStderr::line(::std::string::String::new()),
+        )
+    };
+    ($capability:expr, $($argument:tt)+) => {
+        $crate::Command::effect_discarding_outcome(
+            $capability,
             $crate::PrintStderr::line(::std::format!($($argument)+))
         )
     };
@@ -192,9 +213,9 @@ impl PortId {
 
 /// Stable identity of an ongoing subscription within its owning Component.
 ///
-/// Reconciliation combines this key with the owning [`ComponentId`]. An equal
-/// source descriptor keeps the current subscription alive; changed source
-/// configuration replaces or reconfigures it according to its contract.
+/// Reconciliation combines this key with the owning [`ComponentId`]. The same
+/// [`SourceCapability`] and an equal source descriptor keep the current Source
+/// alive; changing either replaces its generation.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SubscriptionId(Arc<str>);
 
@@ -227,13 +248,15 @@ mod source_plan_private {
 
 /// A cloneable, comparable description of an ongoing external event source.
 ///
-/// Equality is semantic: the runtime uses it during subscription reconciliation
-/// to decide whether an active source is unchanged. Operational state such as a
-/// socket handle or partial input buffer must not live in this descriptor.
+/// Equality is semantic: together with Source capability identity, the runtime
+/// uses it during subscription reconciliation to decide whether an active
+/// Source is unchanged. Operational state such as a socket handle or partial
+/// input buffer must not live in this descriptor.
 ///
 /// SourcePlan lowering is reserved to Samara. A downstream descriptor supplies
-/// only its event types and inherits terminal behavior; the hidden dispatch
-/// method cannot be overridden without naming crate-private types:
+/// only its event types and inherits terminal behavior; the hidden lowering and
+/// terminal-metadata methods cannot be overridden without naming crate-private
+/// types:
 ///
 /// ```compile_fail
 /// use samara::SourceDescriptor;
@@ -270,6 +293,60 @@ pub trait SourceDescriptor: Clone + PartialEq + fmt::Debug + Send + Sync + 'stat
     fn __samara_source_plan(&self, _: source_plan_private::LowerToken) -> SourcePlan {
         SourcePlan::terminal(self.clone())
     }
+
+    /// Internal static terminal-type discovery for closed Program assembly.
+    #[doc(hidden)]
+    #[allow(private_interfaces)]
+    fn __samara_terminal_type_id(_: source_plan_private::LowerToken) -> TypeId {
+        TypeId::of::<Self>()
+    }
+
+    /// Internal static terminal-type diagnostics for closed Program assembly.
+    #[doc(hidden)]
+    #[allow(private_interfaces)]
+    fn __samara_terminal_type_name(_: source_plan_private::LowerToken) -> &'static str {
+        std::any::type_name::<Self>()
+    }
+
+    /// Internal discovery for exact `StreamDescriptor<T>` terminal adapters.
+    #[doc(hidden)]
+    #[allow(private_interfaces)]
+    fn __samara_terminal_stream_item_type_id(_: source_plan_private::LowerToken) -> Option<TypeId> {
+        None
+    }
+}
+
+mod stream_source_private {
+    pub trait Sealed {}
+}
+
+/// Type-level evidence that a source descriptor lowers to
+/// [`StreamDescriptor<Self::StreamItem>`].
+///
+/// This trait is sealed and used only by Samara's exact stream bridge APIs.
+/// Applications do not implement or name it; direct [`StreamDescriptor`]
+/// values and built-in compositions such as [`Framed`] satisfy it
+/// automatically.
+#[doc(hidden)]
+pub trait StreamSourceDescriptor: SourceDescriptor + stream_source_private::Sealed {
+    /// Item accepted by the terminal stream bridge before any Layers run.
+    type StreamItem: Send + 'static;
+}
+
+#[derive(Clone)]
+pub(crate) struct CapabilityToken {
+    id: u64,
+    program: Arc<()>,
+}
+
+impl CapabilityToken {
+    fn belongs_to(&self, program: &Arc<()>) -> bool {
+        Arc::ptr_eq(&self.program, program)
+    }
+
+    fn same_as(&self, other: &Self) -> bool {
+        self.id == other.id && Arc::ptr_eq(&self.program, &other.program)
+    }
 }
 
 /// Runtime-owned lowering of one composed [`SourceDescriptor`].
@@ -278,12 +355,14 @@ pub(crate) struct SourcePlan {
     layers: Vec<Box<dyn ErasedSourceLayer>>,
     output_event_type: TypeId,
     valid_event_chain: bool,
+    capability: Option<CapabilityToken>,
 }
 
 trait ErasedTerminalDescriptor: Send + Sync {
     fn as_any(&self) -> &dyn Any;
     fn descriptor_type_id(&self) -> TypeId;
     fn type_name(&self) -> &'static str;
+    fn ended_event(&self) -> ErasedSourceEvent;
 }
 
 struct TerminalDescriptor<S: SourceDescriptor>(S);
@@ -299,6 +378,10 @@ impl<S: SourceDescriptor> ErasedTerminalDescriptor for TerminalDescriptor<S> {
 
     fn type_name(&self) -> &'static str {
         std::any::type_name::<S>()
+    }
+
+    fn ended_event(&self) -> ErasedSourceEvent {
+        ErasedSourceEvent::typed::<S>(SourceEvent::Ended)
     }
 }
 
@@ -328,6 +411,7 @@ impl SourcePlan {
             layers: Vec::new(),
             output_event_type: TypeId::of::<SourceEvent<S::Item, S::Error>>(),
             valid_event_chain: true,
+            capability: None,
         }
     }
 
@@ -343,6 +427,10 @@ impl SourcePlan {
         self.terminal.as_any()
     }
 
+    pub(crate) fn terminal_ended_event(&self) -> ErasedSourceEvent {
+        self.terminal.ended_event()
+    }
+
     pub(crate) fn accepts_output_event_type(&self, expected: TypeId) -> bool {
         self.valid_event_chain && self.output_event_type == expected
     }
@@ -354,6 +442,12 @@ impl SourcePlan {
                 .flat_map(|event| layer.map_event(event))
                 .collect()
         })
+    }
+
+    pub(crate) fn capability(&self) -> &CapabilityToken {
+        self.capability
+            .as_ref()
+            .expect("every runtime SourcePlan comes from a declared Subscription")
     }
 }
 
@@ -454,7 +548,8 @@ where
 /// Samara's topology-neutral unit of state and behavior.
 ///
 /// A Component configuration may contain immutable logical wiring such as an
-/// [`StreamDescriptor`], [`Port`], or [`ComponentRef`], but it must not contain ambient
+/// [`EffectCapability`], [`SourceCapability`], [`Port`], or [`ComponentRef`],
+/// together with inert descriptor configuration. It must not contain ambient
 /// runtime, clock, I/O, or mutable state handles. The runtime owns `Model` and
 /// guarantees that two calls to [`Component::update`] for the same Component
 /// never overlap.
@@ -491,8 +586,8 @@ pub trait Component: Send + 'static {
     /// Purely describes the ongoing sources desired by the current model.
     ///
     /// The runtime evaluates this after a committed transition and reconciles
-    /// the returned set by [`SubscriptionId`] plus source equality. The default
-    /// declares no ongoing work.
+    /// the returned set by [`SubscriptionId`], [`SourceCapability`], and source
+    /// equality. The default declares no ongoing work.
     fn subscriptions(&self, _model: &Self::Model) -> Subscriptions<Self::Message> {
         Subscriptions::none()
     }
@@ -945,6 +1040,7 @@ macro_rules! protocol {
 }
 
 trait ErasedEffectCommand<Message>: Send {
+    fn capability(&self) -> &CapabilityToken;
     fn intent(&self) -> &dyn Any;
     fn intent_type_name(&self) -> &'static str;
     fn maps_outcome(&self) -> bool;
@@ -962,6 +1058,7 @@ type EffectMapper<E, Message> = Box<
 >;
 
 struct Perform<E, Map> {
+    capability: CapabilityToken,
     effect: E,
     map: Map,
 }
@@ -972,6 +1069,10 @@ where
     E: EffectDescriptor,
     Map: FnOnce(EffectOutcome<E::Output, E::Error>) -> Message + Send + 'static,
 {
+    fn capability(&self) -> &CapabilityToken {
+        &self.capability
+    }
+
     fn intent(&self) -> &dyn Any {
         &self.effect
     }
@@ -985,7 +1086,7 @@ where
     }
 
     fn into_parts(self: Box<Self>) -> (Box<dyn Any + Send>, Option<ErasedEffectMapper<Message>>) {
-        let Self { effect, map } = *self;
+        let Self { effect, map, .. } = *self;
         let mapper = Box::new(move |outcome: Box<dyn Any + Send>| {
             let outcome = match outcome.downcast::<EffectOutcome<E::Output, E::Error>>() {
                 Ok(outcome) => *outcome,
@@ -1001,6 +1102,7 @@ where
 }
 
 struct PerformDiscardingOutcome<E> {
+    capability: CapabilityToken,
     effect: E,
 }
 
@@ -1008,6 +1110,10 @@ impl<Message, E> ErasedEffectCommand<Message> for PerformDiscardingOutcome<E>
 where
     E: EffectDescriptor,
 {
+    fn capability(&self) -> &CapabilityToken {
+        &self.capability
+    }
+
     fn intent(&self) -> &dyn Any {
         &self.effect
     }
@@ -1245,7 +1351,7 @@ where
     /// Consuming the invocation makes a second mapper call impossible:
     ///
     /// ```compile_fail
-    /// use samara::{Command, EffectDescriptor, EffectOutcome};
+    /// use samara::{Command, EffectDescriptor, EffectOutcome, Program};
     ///
     /// struct Read;
     /// impl EffectDescriptor for Read {
@@ -1253,7 +1359,9 @@ where
     ///     type Error = ();
     /// }
     ///
-    /// let invocation = Command::effect_with(Read, |_| ())
+    /// let mut program = Program::builder();
+    /// let read = program.effect::<Read>();
+    /// let invocation = Command::effect_with(&read, Read, |_| ())
     ///     .into_effect::<Read>()
     ///     .ok()
     ///     .unwrap();
@@ -1338,19 +1446,26 @@ impl<Message> Command<Message> {
 
     /// Combines a typed effect intent with its canonical Message conversion.
     ///
+    /// `capability` is the declaration issued by the same [`ProgramBuilder`]
+    /// that owns the Component. Supplying it authorizes inert Command
+    /// construction; it does not execute the effect.
+    ///
     /// This short form uses `Message: From<EffectOutcome<...>>`. Use
     /// [`Command::effect_with`] when this occurrence must capture domain
     /// context or map the same outcome type differently from another call
     /// site.
-    pub fn effect<E>(effect: E) -> Self
+    pub fn effect<E>(capability: &EffectCapability<E>, effect: E) -> Self
     where
         Message: From<EffectOutcome<E::Output, E::Error>> + Send + 'static,
         E: EffectDescriptor,
     {
-        Self::effect_with(effect, Message::from)
+        Self::effect_with(capability, effect, Message::from)
     }
 
     /// Combines a typed effect intent with an explicit pure message mapper.
+    ///
+    /// `capability` is the Program-issued declaration for `E`. The descriptor
+    /// remains the data for this one occurrence.
     ///
     /// Live execution passes `effect` to the registered [`EffectDriver<E>`].
     /// Controlled execution exposes it through
@@ -1360,17 +1475,24 @@ impl<Message> Command<Message> {
     /// An arbitrary value cannot stand in for an explicit descriptor:
     ///
     /// ```compile_fail
-    /// use samara::Command;
+    /// use samara::{Command, EffectDescriptor, Program};
     ///
+    /// struct Read;
+    /// impl EffectDescriptor for Read {
+    ///     type Output = ();
+    ///     type Error = ();
+    /// }
     /// struct HiddenWork;
-    /// let _: Command<()> = Command::effect_with(HiddenWork, |_| ());
+    /// let mut program = Program::builder();
+    /// let read = program.effect::<Read>();
+    /// let _: Command<()> = Command::effect_with(&read, HiddenWork, |_| ());
     /// ```
     ///
     /// The message mapper is synchronous application logic rather than async
     /// work hidden behind the Command boundary:
     ///
     /// ```compile_fail
-    /// use samara::{Command, EffectDescriptor};
+    /// use samara::{Command, EffectDescriptor, Program};
     ///
     /// struct Read;
     /// impl EffectDescriptor for Read {
@@ -1378,18 +1500,27 @@ impl<Message> Command<Message> {
     ///     type Error = ();
     /// }
     ///
-    /// let _: Command<()> = Command::effect_with(Read, |_| async {});
+    /// let mut program = Program::builder();
+    /// let read = program.effect::<Read>();
+    /// let _: Command<()> = Command::effect_with(&read, Read, |_| async {});
     /// ```
-    pub fn effect_with<E, Map>(effect: E, map: Map) -> Self
+    pub fn effect_with<E, Map>(capability: &EffectCapability<E>, effect: E, map: Map) -> Self
     where
         Message: Send + 'static,
         E: EffectDescriptor,
         Map: FnOnce(EffectOutcome<E::Output, E::Error>) -> Message + Send + 'static,
     {
-        Self(CommandKind::Effect(Box::new(Perform { effect, map })))
+        Self(CommandKind::Effect(Box::new(Perform {
+            capability: capability.token.clone(),
+            effect,
+            map,
+        })))
     }
 
     /// Requests a typed finite effect without an application continuation.
+    ///
+    /// The matching Program-issued capability is still required because
+    /// discarding an outcome does not make the world boundary ambient.
     ///
     /// This discards only the terminal [`EffectOutcome`]; it does not detach
     /// the work. Live Drain still waits for the Driver, Cancel still aborts its
@@ -1397,11 +1528,12 @@ impl<Message> Command<Message> {
     /// descriptor through [`ControlledRuntime::next_effect`] until the harness
     /// completes or cancels it. Accepted outcomes remain structurally traced
     /// but schedule no Message.
-    pub fn effect_discarding_outcome<E>(effect: E) -> Self
+    pub fn effect_discarding_outcome<E>(capability: &EffectCapability<E>, effect: E) -> Self
     where
         E: EffectDescriptor,
     {
         Self(CommandKind::Effect(Box::new(PerformDiscardingOutcome {
+            capability: capability.token.clone(),
             effect,
         })))
     }
@@ -1747,6 +1879,7 @@ impl<Message> Command<Message> {
 }
 
 trait ErasedSubscription<Message>: Send {
+    fn capability(&self) -> &CapabilityToken;
     fn descriptor(&self) -> &dyn Any;
     fn descriptor_snapshot(&self) -> Box<dyn ErasedSourceDescriptor>;
     fn source_plan(&self) -> SourcePlan;
@@ -1757,6 +1890,7 @@ trait ErasedSubscription<Message>: Send {
 }
 
 struct MappedSourceDescriptor<S, Map> {
+    capability: CapabilityToken,
     descriptor: S,
     map: Map,
 }
@@ -1767,17 +1901,27 @@ where
     S: SourceDescriptor,
     Map: Fn(SourceEvent<S::Item, S::Error>) -> Message + Send + Sync + 'static,
 {
+    fn capability(&self) -> &CapabilityToken {
+        &self.capability
+    }
+
     fn descriptor(&self) -> &dyn Any {
         &self.descriptor
     }
 
     fn descriptor_snapshot(&self) -> Box<dyn ErasedSourceDescriptor> {
-        Box::new(SourceDescriptorSnapshot(self.descriptor.clone()))
+        Box::new(SourceDescriptorSnapshot {
+            capability: self.capability.clone(),
+            descriptor: self.descriptor.clone(),
+        })
     }
 
     fn source_plan(&self) -> SourcePlan {
-        self.descriptor
-            .__samara_source_plan(source_plan_private::LOWER_TOKEN)
+        let mut plan = self
+            .descriptor
+            .__samara_source_plan(source_plan_private::LOWER_TOKEN);
+        plan.capability = Some(self.capability.clone());
+        plan
     }
 
     fn source_event_type_id(&self) -> TypeId {
@@ -1803,25 +1947,29 @@ where
 }
 
 trait ErasedSourceDescriptor: Send {
-    fn equals(&self, other: &dyn Any) -> bool;
+    fn matches(&self, capability: &CapabilityToken, descriptor: &dyn Any) -> bool;
 }
 
-struct SourceDescriptorSnapshot<S: SourceDescriptor>(S);
+struct SourceDescriptorSnapshot<S: SourceDescriptor> {
+    capability: CapabilityToken,
+    descriptor: S,
+}
 
 impl<S: SourceDescriptor> ErasedSourceDescriptor for SourceDescriptorSnapshot<S> {
-    fn equals(&self, other: &dyn Any) -> bool {
-        other.downcast_ref::<S>() == Some(&self.0)
+    fn matches(&self, capability: &CapabilityToken, descriptor: &dyn Any) -> bool {
+        self.capability.same_as(capability)
+            && descriptor.downcast_ref::<S>() == Some(&self.descriptor)
     }
 }
 
 /// One declarative request for an ongoing source of messages.
 ///
-/// A subscription's logical identity is its owning [`ComponentId`] plus
-/// [`SubscriptionId`]. The [`SourceDescriptor`] value is comparable
-/// configuration: unchanged configuration remains active, while changed
-/// configuration is replaced or reconfigured. The message mapper converts
-/// repeated [`SourceEvent`] values to Component messages and is deliberately
-/// excluded from reconciliation identity.
+/// A subscription's stable local identity is its owning [`ComponentId`] plus
+/// [`SubscriptionId`]. Retention additionally requires the same
+/// [`SourceCapability`] and an equal [`SourceDescriptor`] value; changing either
+/// replaces the Source generation. The message mapper converts repeated
+/// [`SourceEvent`] values to Component messages and is deliberately excluded
+/// from reconciliation identity.
 pub struct Subscription<Message> {
     id: SubscriptionId,
     descriptor: Box<dyn ErasedSubscription<Message>>,
@@ -1830,25 +1978,37 @@ pub struct Subscription<Message> {
 impl<Message> Subscription<Message> {
     /// Declares a typed source using its canonical Message conversion.
     ///
+    /// `capability` is the Program-issued declaration for `S`; `descriptor`
+    /// remains the Model-derived reconciliation value for this desired Source.
+    ///
     /// This short form uses `Message: From<SourceEvent<...>>`. Use
     /// [`Subscription::source_with`] when this Subscription identity must
     /// capture domain context or map the same event type differently from
     /// another Source.
-    pub fn source<S>(id: SubscriptionId, descriptor: S) -> Self
+    pub fn source<S>(capability: &SourceCapability<S>, id: SubscriptionId, descriptor: S) -> Self
     where
         Message: From<SourceEvent<S::Item, S::Error>> + Send + 'static,
         S: SourceDescriptor,
     {
-        Self::source_with(id, descriptor, Message::from)
+        Self::source_with(capability, id, descriptor, Message::from)
     }
 
     /// Declares a typed source with an explicit pure event-to-message mapping.
+    ///
+    /// `capability` is the Program-issued declaration for `S`; it participates
+    /// in reconciliation identity alongside the Component-local Subscription
+    /// identity and descriptor value.
     ///
     /// Constructing this value starts no task and touches no external resource.
     /// `Map` is called repeatedly for the lifetime of an active source, so it is
     /// `Fn` rather than the one-shot `FnOnce` accepted by
     /// [`Command::effect_with`].
-    pub fn source_with<S, Map>(id: SubscriptionId, descriptor: S, map: Map) -> Self
+    pub fn source_with<S, Map>(
+        capability: &SourceCapability<S>,
+        id: SubscriptionId,
+        descriptor: S,
+        map: Map,
+    ) -> Self
     where
         Message: Send + 'static,
         S: SourceDescriptor,
@@ -1856,7 +2016,11 @@ impl<Message> Subscription<Message> {
     {
         Self {
             id,
-            descriptor: Box::new(MappedSourceDescriptor { descriptor, map }),
+            descriptor: Box::new(MappedSourceDescriptor {
+                capability: capability.token.clone(),
+                descriptor,
+                map,
+            }),
         }
     }
 
@@ -1921,7 +2085,7 @@ impl<Message> Subscription<Message> {
     }
 
     fn has_descriptor(&self, descriptor: &dyn ErasedSourceDescriptor) -> bool {
-        descriptor.equals(self.descriptor.descriptor())
+        descriptor.matches(self.descriptor.capability(), self.descriptor.descriptor())
     }
 }
 
@@ -2016,6 +2180,17 @@ impl<T> fmt::Debug for StreamDescriptor<T> {
 impl<T: Send + 'static> SourceDescriptor for StreamDescriptor<T> {
     type Item = T;
     type Error = std::convert::Infallible;
+
+    #[allow(private_interfaces)]
+    fn __samara_terminal_stream_item_type_id(_: source_plan_private::LowerToken) -> Option<TypeId> {
+        Some(TypeId::of::<T>())
+    }
+}
+
+impl<T: Send + 'static> stream_source_private::Sealed for StreamDescriptor<T> {}
+
+impl<T: Send + 'static> StreamSourceDescriptor for StreamDescriptor<T> {
+    type StreamItem = T;
 }
 
 /// Inert description of one finite HTTP request.
@@ -2284,30 +2459,43 @@ where
 
     /// Lowers this pipeline using its canonical Message conversion.
     ///
+    /// The capability is the Program-issued declaration for the raw terminal
+    /// [`HttpRequest`] effect retained beneath this pure response pipeline.
+    ///
     /// This short form uses `Message: From<EffectOutcome<Output,
     /// ResponseError>>`. Use [`HttpResponsePipeline::into_command_with`] when
     /// this endpoint occurrence needs captured context or a distinct Message
     /// projection.
-    pub fn into_command<Message>(self) -> Command<Message>
+    pub fn into_command<Message>(
+        self,
+        capability: &EffectCapability<HttpRequest>,
+    ) -> Command<Message>
     where
         Message: From<EffectOutcome<Output, ResponseError>> + Send + 'static,
     {
-        self.into_command_with(Message::from)
+        self.into_command_with(capability, Message::from)
     }
 
     /// Lowers this pure pipeline with an explicit Message mapper.
+    ///
+    /// The capability is the Program-issued declaration for the raw terminal
+    /// [`HttpRequest`] effect retained beneath this pure response pipeline.
     ///
     /// Live execution still selects the [`HttpRequest`] Driver and controlled
     /// execution still intercepts `next_effect::<HttpRequest>()`. The response
     /// transforms and `map` run synchronously and at most once after that raw
     /// terminal outcome is accepted.
-    pub fn into_command_with<Message, Map>(self, map: Map) -> Command<Message>
+    pub fn into_command_with<Message, Map>(
+        self,
+        capability: &EffectCapability<HttpRequest>,
+        map: Map,
+    ) -> Command<Message>
     where
         Message: Send + 'static,
         Map: FnOnce(EffectOutcome<Output, ResponseError>) -> Message + Send + 'static,
     {
         let Self { request, transform } = self;
-        Command::effect_with(request, move |outcome| map(transform(outcome)))
+        Command::effect_with(capability, request, move |outcome| map(transform(outcome)))
     }
 }
 
@@ -2820,6 +3008,38 @@ where
             TypeId::of::<SourceEvent<D::Frame, FramedError<S::Error, D::Error>>>();
         plan
     }
+
+    #[allow(private_interfaces)]
+    fn __samara_terminal_type_id(token: source_plan_private::LowerToken) -> TypeId {
+        S::__samara_terminal_type_id(token)
+    }
+
+    #[allow(private_interfaces)]
+    fn __samara_terminal_type_name(token: source_plan_private::LowerToken) -> &'static str {
+        S::__samara_terminal_type_name(token)
+    }
+
+    #[allow(private_interfaces)]
+    fn __samara_terminal_stream_item_type_id(
+        token: source_plan_private::LowerToken,
+    ) -> Option<TypeId> {
+        S::__samara_terminal_stream_item_type_id(token)
+    }
+}
+
+impl<S, D> stream_source_private::Sealed for Framed<S, D>
+where
+    S: StreamSourceDescriptor<Item = D::Chunk>,
+    D: Decoder,
+{
+}
+
+impl<S, D> StreamSourceDescriptor for Framed<S, D>
+where
+    S: StreamSourceDescriptor<Item = D::Chunk>,
+    D: Decoder,
+{
+    type StreamItem = S::StreamItem;
 }
 
 impl<S, D> ErasedSourceLayer for FramedLayer<S, D>
@@ -2843,6 +3063,104 @@ where
                 }
             })
             .collect()
+    }
+}
+
+/// Program-issued authority to describe finite effects of type `D`.
+///
+/// Creating this value through [`ProgramBuilder::effect`] both declares the
+/// dependency and provides the only supported way to create a matching Effect
+/// [`Command`]. The capability is inert logical wiring: it owns no Driver,
+/// Tokio handle, or world resource and performs no work itself.
+///
+/// A raw descriptor alone cannot issue work:
+///
+/// ```compile_fail
+/// use samara::{Command, EffectDescriptor};
+///
+/// struct Read;
+/// impl EffectDescriptor for Read {
+///     type Output = ();
+///     type Error = ();
+/// }
+///
+/// let _: Command<()> = Command::effect_with(Read, |_| ());
+/// ```
+#[must_use = "store and thread the declared Effect capability into its Component"]
+pub struct EffectCapability<D: EffectDescriptor> {
+    token: CapabilityToken,
+    marker: PhantomData<fn() -> D>,
+}
+
+impl<D: EffectDescriptor> Clone for EffectCapability<D> {
+    fn clone(&self) -> Self {
+        Self {
+            token: self.token.clone(),
+            marker: PhantomData,
+        }
+    }
+}
+
+impl<D: EffectDescriptor> fmt::Debug for EffectCapability<D> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("EffectCapability")
+            .field("descriptor", &std::any::type_name::<D>())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Program-issued authority to desire ongoing sources described by `S`.
+///
+/// [`ProgramBuilder::source`] declares the dependency. A Component stores this
+/// inert value in immutable configuration and supplies it whenever it creates a
+/// matching [`Subscription`]. Concrete descriptor values remain Model-derived
+/// reconciliation configuration; the capability owns no running Source or live
+/// resource.
+///
+/// A raw descriptor alone cannot create a Subscription:
+///
+/// ```compile_fail
+/// use samara::{SourceDescriptor, SourceEvent, Subscription, SubscriptionId};
+///
+/// #[derive(Clone, Debug, PartialEq)]
+/// struct Input;
+/// impl SourceDescriptor for Input {
+///     type Item = ();
+///     type Error = ();
+/// }
+///
+/// let _: Subscription<()> = Subscription::source_with(
+///     SubscriptionId::new("input"),
+///     Input,
+///     |_: SourceEvent<(), ()>| (),
+/// );
+/// ```
+#[must_use = "store and thread the declared Source capability into its Component"]
+pub struct SourceCapability<S: SourceDescriptor> {
+    token: CapabilityToken,
+    marker: PhantomData<fn() -> S>,
+}
+
+impl<S: SourceDescriptor> Clone for SourceCapability<S> {
+    fn clone(&self) -> Self {
+        Self {
+            token: self.token.clone(),
+            marker: PhantomData,
+        }
+    }
+}
+
+impl<S: SourceDescriptor> fmt::Debug for SourceCapability<S> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SourceCapability")
+            .field("descriptor", &std::any::type_name::<S>())
+            .field(
+                "terminal_descriptor",
+                &S::__samara_terminal_type_name(source_plan_private::LOWER_TOKEN),
+            )
+            .finish_non_exhaustive()
     }
 }
 
@@ -2944,12 +3262,15 @@ impl<C: Component> fmt::Debug for ComponentRef<C> {
 /// Topology-neutral application blueprint assembled from Components.
 ///
 /// A program contains logical Component, effect, source, and protocol
-/// relationships but no live Tokio resources. Call the same program factory for
+/// relationships but no live Tokio resources. Its declaration set is closed
+/// when [`ProgramBuilder::build`] succeeds. Call the same program factory for
 /// [`LiveRuntime`] and [`ControlledRuntime`] assembly.
 pub struct Program {
     program: Arc<()>,
     components: Vec<Box<dyn ErasedComponentKernel>>,
     bindings: Vec<Box<dyn ErasedPortBinding>>,
+    effect_requirements: Vec<EffectRequirement>,
+    source_requirements: Vec<SourceRequirement>,
 }
 
 impl Program {
@@ -2961,8 +3282,210 @@ impl Program {
             components: Vec::new(),
             ports: Vec::new(),
             bindings: Vec::new(),
+            effect_requirements: Vec::new(),
+            source_requirements: Vec::new(),
+            next_capability: 0,
         }
     }
+}
+
+pub(crate) struct EffectRequirement {
+    token: CapabilityToken,
+    descriptor_type: TypeId,
+    descriptor_type_name: &'static str,
+}
+
+pub(crate) struct SourceRequirement {
+    token: CapabilityToken,
+    descriptor_type: TypeId,
+    descriptor_type_name: &'static str,
+    terminal_type: TypeId,
+    terminal_type_name: &'static str,
+    terminal_stream_item_type: Option<TypeId>,
+}
+
+impl Program {
+    fn effect_requirement(&self, token: &CapabilityToken) -> Option<&EffectRequirement> {
+        self.effect_requirements
+            .iter()
+            .find(|requirement| requirement.token.same_as(token))
+    }
+
+    fn source_requirement(&self, token: &CapabilityToken) -> Option<&SourceRequirement> {
+        self.source_requirements
+            .iter()
+            .find(|requirement| requirement.token.same_as(token))
+    }
+
+    pub(crate) fn declares_effect(&self, token: &CapabilityToken, descriptor: TypeId) -> bool {
+        token.belongs_to(&self.program)
+            && self
+                .effect_requirement(token)
+                .is_some_and(|requirement| requirement.descriptor_type == descriptor)
+    }
+
+    pub(crate) fn declares_source(&self, token: &CapabilityToken, descriptor: TypeId) -> bool {
+        token.belongs_to(&self.program)
+            && self
+                .source_requirement(token)
+                .is_some_and(|requirement| requirement.descriptor_type == descriptor)
+    }
+
+    pub(crate) fn declares_source_plan(
+        &self,
+        token: &CapabilityToken,
+        descriptor: TypeId,
+        terminal: TypeId,
+    ) -> bool {
+        self.declares_source(token, descriptor)
+            && self
+                .source_requirement(token)
+                .is_some_and(|requirement| requirement.terminal_type == terminal)
+    }
+
+    fn declares_component_target(
+        &self,
+        target_program: &Arc<()>,
+        target: &ComponentId,
+        message_type: TypeId,
+    ) -> bool {
+        Arc::ptr_eq(target_program, &self.program)
+            && self.components.iter().any(|component| {
+                component.id() == target && component.message_type_id() == message_type
+            })
+    }
+
+    fn declares_port_target(
+        &self,
+        port_program: &Arc<()>,
+        port: &PortId,
+        protocol: TypeId,
+    ) -> bool {
+        Arc::ptr_eq(port_program, &self.program)
+            && self
+                .bindings
+                .iter()
+                .any(|binding| binding.port_id() == port && binding.protocol_type() == protocol)
+    }
+}
+
+pub(crate) fn validate_initial_capabilities<Message>(
+    program: &Program,
+    component: &ComponentId,
+    command: Option<&Command<Message>>,
+    subscriptions: &Subscriptions<Message>,
+) -> Result<(), RuntimeError>
+where
+    Message: Send + 'static,
+{
+    fn validate_command<Message>(
+        program: &Program,
+        component: &ComponentId,
+        command: &Command<Message>,
+    ) -> Result<(), RuntimeError>
+    where
+        Message: Send + 'static,
+    {
+        match &command.0 {
+            CommandKind::None | CommandKind::Reply(_) | CommandKind::After { .. } => Ok(()),
+            CommandKind::Effect(effect) => {
+                let descriptor_type = effect.intent().type_id();
+                if program.declares_effect(effect.capability(), descriptor_type) {
+                    Ok(())
+                } else {
+                    Err(RuntimeError::harness(format!(
+                        "Component {component:?} has an initial Effect {} authorized by a capability from another Program",
+                        effect.intent_type_name()
+                    )))
+                }
+            }
+            CommandKind::Send(send) => {
+                if program.declares_component_target(
+                    send.target_program(),
+                    send.target(),
+                    send.message_type_id(),
+                ) {
+                    Ok(())
+                } else {
+                    Err(RuntimeError::harness(format!(
+                        "Component {component:?} has an initial direct-send target {:?} from another Program or absent from this Program",
+                        send.target()
+                    )))
+                }
+            }
+            CommandKind::Notify(notification) => {
+                if program.declares_port_target(
+                    notification.port_program(),
+                    notification.port(),
+                    notification.protocol_type_id(),
+                ) {
+                    Ok(())
+                } else {
+                    Err(RuntimeError::harness(format!(
+                        "Component {component:?} has an initial notification Port {:?} from another Program or absent from this Program",
+                        notification.port()
+                    )))
+                }
+            }
+            CommandKind::Request(request) => {
+                if program.declares_port_target(
+                    request.port_program(),
+                    request.port(),
+                    request.protocol_type_id(),
+                ) {
+                    Ok(())
+                } else {
+                    Err(RuntimeError::harness(format!(
+                        "Component {component:?} has an initial request Port {:?} from another Program or absent from this Program",
+                        request.port()
+                    )))
+                }
+            }
+            CommandKind::Batch(commands) => {
+                for command in commands {
+                    validate_command(program, component, command)?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    if let Some(command) = command {
+        validate_command(program, component, command)?;
+    }
+
+    let mut ids = std::collections::HashSet::new();
+    for subscription in subscriptions.iter() {
+        if !ids.insert(subscription.id().clone()) {
+            return Err(RuntimeError::harness(format!(
+                "Component {component:?} initially desires duplicate Subscription {:?}",
+                subscription.id()
+            )));
+        }
+        let plan = subscription.source_plan();
+        if !plan.accepts_output_event_type(subscription.source_event_type_id()) {
+            return Err(RuntimeError::harness(format!(
+                "Component {component:?} has an invalid initial SourcePlan for {}",
+                plan.terminal_type_name()
+            )));
+        }
+        let descriptor_type = subscription.descriptor_any().type_id();
+        let Some(requirement) = program.source_requirement(plan.capability()) else {
+            return Err(RuntimeError::harness(format!(
+                "Component {component:?} has an initial Source {} authorized by a capability from another Program",
+                subscription.descriptor_type_name()
+            )));
+        };
+        if !program.declares_source(plan.capability(), descriptor_type)
+            || requirement.terminal_type != plan.terminal_type_id()
+        {
+            return Err(RuntimeError::harness(format!(
+                "Component {component:?} has an initial Source capability inconsistent with {}",
+                subscription.descriptor_type_name()
+            )));
+        }
+    }
+    Ok(())
 }
 
 struct PortDeclaration {
@@ -3128,18 +3651,82 @@ impl fmt::Display for ProgramBuildError {
 
 impl Error for ProgramBuildError {}
 
-/// Mutable builder used to register Components and obtain typed references.
+/// Mutable builder used to declare a closed Program and issue its logical
+/// capability values.
 ///
-/// [`ProgramBuilder::build`] rejects the explicitly knowable assembly errors in
-/// ADR-0003 without introspecting Component fields or behavior-dependent sends.
+/// [`ProgramBuilder::build`] validates Component and Port structure, then
+/// preserves every Effect and Source declaration for complete live or
+/// controlled profile validation. It does not introspect arbitrary Component
+/// fields; conforming Components use only capabilities issued by this builder.
 pub struct ProgramBuilder {
     program: Arc<()>,
     components: Vec<Box<dyn ErasedComponentKernel>>,
     ports: Vec<PortDeclaration>,
     bindings: Vec<Box<dyn ErasedPortBinding>>,
+    effect_requirements: Vec<EffectRequirement>,
+    source_requirements: Vec<SourceRequirement>,
+    next_capability: u64,
 }
 
 impl ProgramBuilder {
+    fn next_capability(&mut self) -> CapabilityToken {
+        let token = CapabilityToken {
+            id: self.next_capability,
+            program: self.program.clone(),
+        };
+        self.next_capability += 1;
+        token
+    }
+
+    /// Declares finite world-facing work of descriptor type `D`.
+    ///
+    /// The returned inert capability is threaded into Component configuration
+    /// and is required by the matching [`Command`] constructors. Declaring the
+    /// capability makes the terminal live and controlled requirement knowable
+    /// even when the first Command is emitted only after a later Message.
+    pub fn effect<D>(&mut self) -> EffectCapability<D>
+    where
+        D: EffectDescriptor,
+    {
+        let token = self.next_capability();
+        self.effect_requirements.push(EffectRequirement {
+            token: token.clone(),
+            descriptor_type: TypeId::of::<D>(),
+            descriptor_type_name: std::any::type_name::<D>(),
+        });
+        EffectCapability {
+            token,
+            marker: PhantomData,
+        }
+    }
+
+    /// Declares ongoing event production described by `S`.
+    ///
+    /// The returned inert capability is required by matching
+    /// [`Subscription`] constructors. For a composed descriptor such as
+    /// [`Framed`], assembly records only its lowered terminal descriptor as the
+    /// profile binding requirement.
+    pub fn source<S>(&mut self) -> SourceCapability<S>
+    where
+        S: SourceDescriptor,
+    {
+        let token = self.next_capability();
+        self.source_requirements.push(SourceRequirement {
+            token: token.clone(),
+            descriptor_type: TypeId::of::<S>(),
+            descriptor_type_name: std::any::type_name::<S>(),
+            terminal_type: S::__samara_terminal_type_id(source_plan_private::LOWER_TOKEN),
+            terminal_type_name: S::__samara_terminal_type_name(source_plan_private::LOWER_TOKEN),
+            terminal_stream_item_type: S::__samara_terminal_stream_item_type_id(
+                source_plan_private::LOWER_TOKEN,
+            ),
+        });
+        SourceCapability {
+            token,
+            marker: PhantomData,
+        }
+    }
+
     /// Adds a Component instance and returns its typed logical address.
     ///
     /// Registration order is assembly detail, not an application execution
@@ -3205,7 +3792,11 @@ impl ProgramBuilder {
         }));
     }
 
-    /// Validates explicit assembly facts and finishes the Program blueprint.
+    /// Closes declaration, validates structural assembly, and finishes the
+    /// Program blueprint.
+    ///
+    /// Terminal Driver or controlled-behavior completeness is validated later
+    /// by the selected runtime builder against the complete declaration set.
     pub fn build(self) -> Result<Program, ProgramBuildError> {
         let mut component_ids = std::collections::HashSet::new();
         for component in &self.components {
@@ -3276,6 +3867,8 @@ impl ProgramBuilder {
             program: self.program,
             components: self.components,
             bindings: self.bindings,
+            effect_requirements: self.effect_requirements,
+            source_requirements: self.source_requirements,
         })
     }
 }
@@ -3448,10 +4041,9 @@ impl Error for RuntimeError {}
 
 /// Binds a topology-neutral [`Program`] to live Tokio world Drivers.
 ///
-/// Binding is assembly-time work: Components still see only typed effect and
-/// source descriptors. Missing initial bindings and duplicate or ambiguous
-/// bindings make [`LiveRuntimeBuilder::build`] fail. A missing binding first
-/// reached through dynamic work faults the running scope.
+/// Binding is assembly-time work: Components retain only inert Program-issued
+/// capabilities and typed descriptors. Missing, duplicate, ambiguous, or
+/// foreign bindings make [`LiveRuntimeBuilder::build`] fail before spawn.
 pub struct LiveRuntimeBuilder {
     program: Program,
     bindings: live_runtime::LiveBindings,
@@ -3541,15 +4133,21 @@ impl LiveRuntime {
 }
 
 impl LiveRuntimeBuilder {
-    /// Binds a logical [`StreamDescriptor`] to one concrete Tokio receiver.
+    /// Binds one declared capability whose terminal descriptor is
+    /// [`StreamDescriptor<T>`] to a Tokio receiver.
     ///
     /// The receiver is unique live-world state and therefore stays out of the
-    /// Component and [`Program`]. Closing it produces [`SourceEvent::Ended`].
-    pub fn bind_mpsc<T: Send + 'static>(
+    /// Component and [`Program`]. The capability may describe the terminal
+    /// stream directly or a composition such as [`Framed`] above it. Closing
+    /// the receiver produces [`SourceEvent::Ended`] through the same Layers.
+    pub fn bind_mpsc<S>(
         mut self,
-        stream: StreamDescriptor<T>,
-        receiver: tokio::sync::mpsc::Receiver<T>,
-    ) -> Self {
+        stream: &SourceCapability<S>,
+        receiver: tokio::sync::mpsc::Receiver<S::StreamItem>,
+    ) -> Self
+    where
+        S: StreamSourceDescriptor,
+    {
         live_runtime::bind_mpsc(&mut self.bindings, stream, receiver);
         self
     }
@@ -3580,9 +4178,11 @@ impl LiveRuntimeBuilder {
 
     /// Registers Samara's first-party one-connection Tokio TCP Driver.
     ///
-    /// Components declare [`TcpBytes`] values and controlled execution binds
-    /// that same terminal descriptor type with `control_source::<TcpBytes>()`.
-    /// The live Driver performs no DNS, retry, reconnect, or framing.
+    /// Components store a declared [`SourceCapability`] for their raw or
+    /// composed descriptor and produce [`TcpBytes`] terminal values. Controlled
+    /// execution binds that same terminal descriptor type with
+    /// `control_source::<TcpBytes>()`. The live Driver performs no DNS, retry,
+    /// reconnect, or framing.
     pub fn bind_tcp(mut self) -> Self {
         live_runtime::bind_tcp(&mut self.bindings);
         self
@@ -3590,9 +4190,10 @@ impl LiveRuntimeBuilder {
 
     /// Registers Samara's first-party pooled HTTP Effect Driver.
     ///
-    /// Components issue raw [`HttpRequest`] descriptors and receive complete
-    /// [`HttpResponse`] values or typed [`HttpError`] data. One reusable client
-    /// and connection pool are retained by this binding. The v0 Driver follows
+    /// Components use a declared [`EffectCapability<HttpRequest>`] to issue raw
+    /// [`HttpRequest`] descriptors and receive complete [`HttpResponse`] values
+    /// or typed [`HttpError`] data. One reusable client and connection pool are
+    /// retained by this binding. The v0 Driver follows
     /// no redirects, performs no retries, uses no system proxy, performs no
     /// automatic content decompression, and applies no status or body-decoding
     /// policy. It supplies `Accept: */*` only when the descriptor omits
@@ -3605,13 +4206,14 @@ impl LiveRuntimeBuilder {
 
     /// Registers Samara's first-party Tokio standard-output Drivers.
     ///
-    /// [`PrintStdout`] and [`PrintStderr`] each attempt to write their complete
-    /// text and flush the selected stream. Host I/O errors are deliberately
-    /// discarded, so these high-level effects are infallible from the
-    /// Component's perspective. Within this binding, each stream is serialized
-    /// independently; this method adds no ordering guarantee among otherwise
-    /// independent effects, between stdout and stderr, or relative to direct
-    /// process writes.
+    /// Components declare separate [`EffectCapability<PrintStdout>`] and/or
+    /// [`EffectCapability<PrintStderr>`] dependencies. Their descriptors each
+    /// attempt to write complete text and flush the selected stream. Host I/O
+    /// errors are deliberately discarded, so these high-level effects are
+    /// infallible from the Component's perspective. Within this binding, each
+    /// stream is serialized independently; this method adds no ordering
+    /// guarantee among otherwise independent effects, between stdout and
+    /// stderr, or relative to direct process writes.
     pub fn bind_stdio(mut self) -> Self {
         live_runtime::bind_stdio(&mut self.bindings);
         self
@@ -3619,9 +4221,9 @@ impl LiveRuntimeBuilder {
 
     /// Validates bindings and finishes live assembly.
     pub fn build(self) -> Result<LiveRuntime, RuntimeError> {
-        self.bindings.validate()?;
+        self.bindings.validate(&self.program)?;
         for component in &self.program.components {
-            component.validate_initial_live_bindings(&self.bindings)?;
+            component.validate_initial_capabilities(&self.program)?;
         }
         let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
         let scope = Arc::new(live_runtime::LiveScope::new(sender));
@@ -3932,21 +4534,27 @@ impl ControlledRuntime {
         self.core.send(component, message)
     }
 
-    /// Emits one item through a controlled [`StreamDescriptor`].
-    pub fn emit_stream<T: Send + 'static>(
+    /// Emits one terminal stream item through an exact controlled capability.
+    ///
+    /// For a composed capability, the item enters below its Layers and is then
+    /// transformed exactly as it would be in live execution.
+    pub fn emit_stream<S>(
         &mut self,
-        stream: &StreamDescriptor<T>,
-        item: T,
-    ) -> Result<(), RuntimeError> {
+        stream: &SourceCapability<S>,
+        item: S::StreamItem,
+    ) -> Result<(), RuntimeError>
+    where
+        S: StreamSourceDescriptor,
+    {
         self.core.emit_stream(stream, item)
     }
 
-    /// Ends a controlled [`StreamDescriptor`] normally.
+    /// Ends an exact controlled stream capability normally.
     ///
     /// Its subscription mapper receives [`SourceEvent::Ended`].
-    pub fn close_stream<T: Send + 'static>(
+    pub fn close_stream<S: StreamSourceDescriptor>(
         &mut self,
-        stream: &StreamDescriptor<T>,
+        stream: &SourceCapability<S>,
     ) -> Result<(), RuntimeError> {
         self.core.close_stream(stream)
     }
@@ -4075,11 +4683,18 @@ impl ControlledRuntime {
 }
 
 impl ControlledRuntimeBuilder {
-    /// Allows tests to script one logical [`StreamDescriptor`].
-    pub fn control_stream<T: Send + 'static>(mut self, stream: StreamDescriptor<T>) -> Self {
-        self.bindings
-            .exact_sources
-            .push(controlled_runtime::exact_source(stream));
+    /// Allows tests to script one exact logical stream capability.
+    ///
+    /// The capability must belong to this Program. Registering the same exact
+    /// capability twice, or combining it with type-wide control for its terminal
+    /// descriptor, is rejected as ambiguous during [`Self::build`]. Composed
+    /// descriptors such as [`Framed<StreamDescriptor<T>, D>`] are accepted and
+    /// retain their Layers above the exact terminal stream.
+    pub fn control_stream<S: StreamSourceDescriptor>(
+        mut self,
+        stream: &SourceCapability<S>,
+    ) -> Self {
+        self.bindings.exact_sources.push(stream.token.clone());
         self
     }
 
@@ -4100,10 +4715,13 @@ impl ControlledRuntimeBuilder {
 
     /// Creates a paused deterministic runtime with the declared controls.
     ///
-    /// Missing terminal behavior faults only when initialization or a later
-    /// transition reaches that boundary, preserving an inspectable runtime and
-    /// trace for diagnosis.
+    /// Every Program-declared terminal boundary must have controlled behavior;
+    /// missing or foreign bindings fail before the runtime is created.
     pub fn build(self) -> Result<ControlledRuntime, RuntimeError> {
+        self.bindings.validate(&self.program)?;
+        for component in &self.program.components {
+            component.validate_initial_capabilities(&self.program)?;
+        }
         Ok(ControlledRuntime {
             core: ControlledCore::new(self.program, self.bindings),
         })
@@ -4199,9 +4817,11 @@ pub enum TraceCommandKind {
 pub enum SubscriptionAction {
     /// A newly desired Source realization started.
     Started,
-    /// An equal descriptor retained its Source and adopted the latest mapper.
+    /// The same capability and an equal descriptor retained the Source and
+    /// adopted the latest mapper.
     Retained,
-    /// A changed descriptor withdrew one generation and started another.
+    /// A changed capability or descriptor withdrew one generation and started
+    /// another.
     Replaced,
     /// Removed desire cancelled the active Source.
     Cancelled,

@@ -37,7 +37,9 @@ enum OutputMessage {
 }
 
 struct OutputProbe {
-    observe: bool,
+    stdout: EffectCapability<PrintStdout>,
+    stderr: EffectCapability<PrintStderr>,
+    observe: Option<EffectCapability<ObserveOutput>>,
 }
 
 impl Component for OutputProbe {
@@ -51,8 +53,8 @@ impl Component for OutputProbe {
     fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
         match message {
             OutputMessage::Start => Command::batch([
-                Command::effect_with(PrintStdout::text(""), OutputMessage::Finished),
-                Command::effect_with(PrintStderr::text(""), OutputMessage::Finished),
+                Command::effect_with(&self.stdout, PrintStdout::text(""), OutputMessage::Finished),
+                Command::effect_with(&self.stderr, PrintStderr::text(""), OutputMessage::Finished),
             ]),
             OutputMessage::Finished(outcome) => {
                 let succeeded = match outcome {
@@ -66,8 +68,10 @@ impl Component for OutputProbe {
                         false
                     }
                 };
-                if self.observe {
-                    Command::effect_with(ObserveOutput(succeeded), |_| OutputMessage::Observed)
+                if let Some(observe) = &self.observe {
+                    Command::effect_with(observe, ObserveOutput(succeeded), |_| {
+                        OutputMessage::Observed
+                    })
                 } else {
                     Command::none()
                 }
@@ -79,7 +83,17 @@ impl Component for OutputProbe {
 
 fn output_program(observe: bool) -> (Program, ComponentRef<OutputProbe>) {
     let mut builder = Program::builder();
-    let probe = builder.component(ComponentId::new("standard-output"), OutputProbe { observe });
+    let stdout = builder.effect::<PrintStdout>();
+    let stderr = builder.effect::<PrintStderr>();
+    let observe = observe.then(|| builder.effect::<ObserveOutput>());
+    let probe = builder.component(
+        ComponentId::new("standard-output"),
+        OutputProbe {
+            stdout,
+            stderr,
+            observe,
+        },
+    );
     (builder.build().expect("valid output program"), probe)
 }
 

@@ -11,24 +11,29 @@ substitute for the behavioral contracts in the vision and ADRs.
 The concepts below are canonical unless marked historical. Accepted API slices
 and the Phase 5 controlled-execution contract follow these spellings. Accepted
 ADR-0004 uses them for the active initial live-runtime contract.
+ADR-0008 closes Program assembly around Program-issued Component, Protocol,
+Effect, and Source capabilities.
 `api-contract.md` records which slice is frozen for each
 implementation phase and which policy-bearing surfaces remain provisional.
 
 ## Program and State
 
-**Samara program** — A declared collection of Components and their protocol,
-effect, and subscription contracts. It contains logical application structure,
-not live Tokio resources.
+**Samara program** — A closed declared collection of Components and the
+Component, Protocol, Effect, and Source capabilities they may use. It contains
+logical application structure, not live Tokio resources. Execution can issue
+new occurrences and Model-derived descriptor values but cannot add another
+dependency after build.
 
 **Program assembly** — The construction of a Samara program, including
-Component registration, named Port declaration, provider binding, and execution
-profile selection.
+Component registration; ComponentRef, named Port, EffectCapability, and
+SourceCapability issuance; provider binding; and execution profile selection.
 
-`ProgramBuilder::build()` is the fallible boundary for explicitly knowable
-assembly errors: duplicate Component identity, duplicate `(Protocol type,
-PortId)`, a Port not bound exactly once, or a provider from another builder.
-Assembly does not introspect arbitrary Component fields or behavior-dependent
-message edges and therefore does not claim a closed static dependency graph.
+`ProgramBuilder::build()` rejects logical assembly errors and closes the
+Program-issued capability inventory. Live and controlled profile builders then
+validate every declared terminal Effect and Source requirement before
+execution. The inventory is closed even though assembly does not introspect
+arbitrary Component fields or statically enumerate behavior-dependent message
+edges.
 
 **Program boundary** — The scope within which Samara's guarantees apply. Code
 outside this boundary is part of the surrounding world and interacts with the
@@ -52,8 +57,8 @@ conformance obligation.
 
 **Component configuration** — A particular immutable value of a Component
 implementation type. It may hold logical wiring and declarative configuration,
-such as Ports and SourceDescriptors. Behaviorally relevant mutable state does
-not belong here.
+such as Ports, EffectCapabilities, SourceCapabilities, and SourceDescriptors.
+Behaviorally relevant mutable state does not belong here.
 
 **Model** — The mutable behavioral state exclusively owned by one Component.
 Sockets, tasks, clocks, transport-correlation tables, and other operational
@@ -99,17 +104,24 @@ interaction. Each Command occurrence creates a distinct effect invocation,
 even when two descriptors contain equal-looking data. EffectDescriptors need
 not be comparable or cloneable.
 
+**EffectCapability / `EffectCapability<D>`** — An inert Program-issued value
+declaring that its Program may issue EffectDescriptor type `D`. The capability
+is required by every public Effect Command constructor but performs no I/O and
+contains no Driver or runtime handle. Cloning it does not declare another
+dependency. Its private Program provenance prevents it from authorizing work
+in another Program.
+
 **EffectOutcome** — The single terminal completion of an effect invocation: a
 typed success, a failure carrying typed Error data, or cancellation as defined
-by that effect's contract. `Command::effect(effect)` supplies the one-shot
-mapper through `Message: From<EffectOutcome<Output, Error>>`, while
-`Command::effect_with(effect, mapper)` supplies it explicitly. A Command may
-instead explicitly discard the outcome when no terminal application reaction
-is meaningful. That mode remains runtime-owned finite work rather than "fire
-and forget". Aborting the entire live runtime scope under ADR-0004 is ownership
-cleanup rather than an effect-contract cancellation: the live future is
-dropped or cancelled and no EffectOutcome or mapped Message is manufactured
-for an application that is ending.
+by that effect's contract. `Command::effect(&capability, effect)` supplies the
+one-shot mapper through `Message: From<EffectOutcome<Output, Error>>`, while
+`Command::effect_with(&capability, effect, mapper)` supplies it explicitly. A
+Command may instead explicitly discard the outcome when no terminal
+application reaction is meaningful. That mode remains runtime-owned finite
+work rather than "fire and forget". Aborting the entire live runtime scope under
+ADR-0004 is ownership cleanup rather than an effect-contract cancellation: the
+live future is dropped or cancelled and no EffectOutcome or mapped Message is
+manufactured for an application that is ending.
 
 **HttpRequest** — The first-party terminal EffectDescriptor for one raw finite
 HTTP interaction. It owns method, URL text, headers, and body bytes; it is not
@@ -125,11 +137,12 @@ remote endpoint.
 
 **HttpResponsePipeline** — An inert, must-use, one-shot pure continuation
 created when `HttpRequest::on_response` consumes a request. It declares ordered
-response policy and decoding, then lowers through `into_command()` using the
-Component Message's canonical `From` conversion or through
-`into_command_with(mapper)` using an explicit conversion. Both produce the same
-raw HttpRequest Effect plus a composed Message mapper. It is not a Driver,
-runtime Layer, or separately traced Effect.
+response policy and decoding, then lowers through `into_command(&capability)`
+using the matching EffectCapability and the Component Message's canonical
+`From` conversion, or through `into_command_with(&capability, mapper)` using an
+explicit conversion. Both produce the same raw HttpRequest Effect plus a
+composed Message mapper. It is not a Driver, runtime Layer, or separately
+traced Effect.
 
 **HttpResponseError** — The non-exhaustive response-pipeline error algebra
 distinguishing a raw configuration/transport HttpError, an explicitly selected
@@ -157,6 +170,13 @@ production. Comparability exists so Subscription reconciliation can determine
 whether desired work is unchanged; a SourceDescriptor does not contain a live
 resource or stable Subscription identity.
 
+**SourceCapability / `SourceCapability<S>`** — An inert Program-issued value
+declaring that its Program may subscribe to SourceDescriptor type `S`. It is
+required by every public Source Subscription constructor and has private
+Program provenance and identity. For a composed `S`, the one outer capability
+also records the sealed lowered terminal descriptor requirement; applications
+do not separately declare inner descriptors or Layers.
+
 **Terminal descriptor** — An EffectDescriptor or SourceDescriptor directly
 realized by a matching Driver in live execution or by terminal controlled
 behavior. `TcpBytes` is a terminal SourceDescriptor.
@@ -168,18 +188,21 @@ SourceDescriptor whose framed event vocabulary is visible to its Subscription.
 
 **SourcePlan** — The runtime-owned compiled mechanism produced by lowering one
 desired composed SourceDescriptor during reconciliation. It contains the
-terminal SourceDescriptor, its ordered profile-independent Layers, and the
-Subscription's message mapper. It is not another application declaration,
-Subscription identity, or running Source. Applications bind live or controlled
-behavior only for the terminal descriptor.
+terminal SourceDescriptor, its ordered profile-independent Layers,
+SourceCapability identity, and Subscription message mapper. It is not another
+application declaration, Subscription identity, or running Source.
+Applications bind live or controlled behavior only for the terminal
+descriptor.
 
 **Subscription / `Subscription<Message>`** — A Component's declarative desire
 to maintain a Source matching a SourceDescriptor under a stable,
-Component-local identity, plus a message mapper from SourceEvents to Component
-Messages. `Subscription::source(id, descriptor)` obtains that mapper through
-`Message: From<SourceEvent<Item, Error>>`; `Subscription::source_with` accepts
-it explicitly. Declaring a Subscription does not itself start work, and the
-constructor spelling does not affect reconciliation.
+Component-local identity through a SourceCapability, plus a message mapper from
+SourceEvents to Component Messages.
+`Subscription::source(&capability, id, descriptor)` obtains that mapper through
+`Message: From<SourceEvent<Item, Error>>`;
+`Subscription::source_with(&capability, ...)` accepts it explicitly. Declaring
+a Subscription does not itself start work, and the constructor spelling does
+not affect reconciliation.
 
 **Source** — The runtime-scoped ongoing realization executing behind a
 SourceDescriptor. It may contain operational resources such as tasks, sockets,
@@ -211,9 +234,10 @@ including any currently maintained Source.
 
 **Subscription reconciliation** — The post-transition comparison of desired
 and active Subscriptions. A new stable identity starts a Source; the same
-identity and equal SourceDescriptor retain it; the same identity and a changed
-descriptor replace it; a removed identity cancels it. Removal or replacement
-does not inherently manufacture a SourceEvent.
+identity, SourceCapability, and equal SourceDescriptor retain it; the same
+identity with a changed capability or descriptor replaces it; a removed
+identity cancels it. Removal or replacement does not inherently manufacture a
+SourceEvent.
 
 When a Source is retained, reconciliation atomically installs the latest
 mapper returned by `subscriptions()`. Already-created Messages are unchanged;
@@ -254,20 +278,30 @@ EffectDescriptor type `D` and its live-world Driver.
 **`SourceDriver<D>`** — The provisional static relationship between a terminal
 SourceDescriptor type `D` and its live-world Driver.
 
+**Type-wide binding** — One live Driver or controlled behavior registration
+that can satisfy every declared capability lowering to the same terminal
+descriptor type.
+
+**Exact binding** — A profile binding associated with one private capability
+identity because it owns one concrete resource rather than an implementation
+for every value of a descriptor type. The first-party one-shot `mpsc` receiver
+bridge is the initial example.
+
 Under ADR-0004, normal EffectDriver return maps success or failure
 exactly once. A SourceDriver that returns without an accepted terminal sink
 call normally ends its still-active Source exactly once. Driver panic instead
 faults the runtime and produces no fabricated typed application result.
 
 Controlled execution provides deterministic behavior for the same terminal
-descriptor contracts without silently invoking live Drivers. The exact Rust
-shape of profile bindings remains open.
+descriptor contracts without silently invoking live Drivers. Normal Driver and
+controlled registrations are type-wide; exact resource bridges such as Tokio
+`mpsc` select one SourceCapability identity.
 
 The finite and ongoing lifecycles are deliberately similar only where their
 semantics are actually similar:
 
 ```text
-Command + EffectDescriptor
+Command + EffectCapability + EffectDescriptor
     -> zero or more Layers
     -> terminal EffectDriver in live execution, or controlled behavior
     -> EffectOutcome exactly once on normal completion
@@ -275,7 +309,7 @@ Command + EffectDescriptor
     -> one-shot message mapper -> Component Message,
        or explicitly discard outcome -> no Message
 
-Subscription(identity + SourceDescriptor + message mapper)
+Subscription(identity + SourceCapability + SourceDescriptor + message mapper)
     -> reconciliation
     -> SourcePlan(ordered Layers + terminal descriptor + latest mapper)
     -> terminal SourceDriver in live execution, or controlled behavior
@@ -316,7 +350,10 @@ Concrete descriptor types must not use `Source` to mean an inert declaration,
 because `Source` is reserved for the runtime-scoped realization.
 `StreamDescriptor<T>` uses the otherwise optional `Descriptor` suffix to avoid
 confusion with a running stream. It names logical event production independently
-of the live adapter; `bind_mpsc` names one concrete Tokio realization.
+of the live adapter; `bind_mpsc(&capability, receiver)` names one concrete Tokio
+realization for one exact SourceCapability whose terminal descriptor is
+`StreamDescriptor<T>`. That capability may itself describe a built-in composed
+Source, in which case stream items still traverse its Layers.
 
 The accepted first-party `mpsc` realization is one-shot because a Tokio
 receiver is a unique live resource. Channel closure ends its Source normally;
@@ -339,7 +376,7 @@ Notification variants and dynamic RequestInvocation variants. Concrete enum
 names should make the association explicit, such as `HealthProtocolMessage`;
 directional names such as `HealthInbound` are avoided.
 
-**Port** — A named, inert logical dependency on a Protocol. A Port contains no
+**Port** — A named, inert Program-issued logical dependency on a Protocol. A Port contains no
 provider reference, channel, runtime handle, or lookup capability. It remains
 distinct from the live-only `PortHandle` obtained from an assembled runtime.
 
@@ -414,8 +451,8 @@ that permits a provider to emit the correctly typed Reply. It is inert data,
 not a channel, future, or runtime handle.
 
 **`ComponentRef`** — The current provisional name for an inert typed logical
-address used when direct coupling to another Component's complete Message API
-is deliberate.
+address issued during Program assembly when direct coupling to another
+Component's complete Message API is deliberate.
 
 **`ComponentHandle`** — The current provisional name for a live
 external-ingress capability available at the Samara program boundary. Unlike a
@@ -570,8 +607,10 @@ to hold.
 | Do not collapse | Distinction |
 | --- | --- |
 | Command and EffectDescriptor | A Command is the broader finite-work envelope; an EffectDescriptor is one typed world-facing intent it may contain. |
+| EffectCapability and EffectDescriptor | The capability declares one closed Program dependency; each descriptor carries one concrete finite intent. |
+| EffectCapability or SourceCapability and a live Handle | Descriptor capabilities are inert Component wiring that only authorizes declarative work; ComponentHandle and PortHandle cross live external ingress. |
 | EffectOutcome and SourceEvent | An EffectOutcome terminates one invocation; a SourceEvent is one of zero or more occurrences from ongoing work. |
-| SourceDescriptor, Subscription, SourcePlan, and Source | A SourceDescriptor describes ongoing production, a Subscription adds desire, identity, and mapping, a SourcePlan lowers that desire to ordered Layers and a terminal descriptor, and a Source is the runtime-scoped realization. |
+| SourceCapability, SourceDescriptor, Subscription, SourcePlan, and Source | A SourceCapability declares one closed Program dependency, a SourceDescriptor describes concrete ongoing production, a Subscription adds desire, identity, and mapping, a SourcePlan lowers that desire to ordered Layers and a terminal descriptor, and a Source is the runtime-scoped realization. |
 | Layer and Driver | A Layer composes declarations inside the program boundary; a Driver terminates a descriptor into the selected live world. |
 | Adapter and a code abstraction | Adapter is the conceptual category; Layer and Driver are the code-level roles Samara currently names. |
 | Component Message and Protocol Message | A Component Message is private transition input; a Protocol Message is the provider-neutral vocabulary crossing a Port. |
@@ -623,9 +662,11 @@ Component-kernel freeze:
   whole-scope Cancel/fault cutovers.
 - The initial code shape of Layer abstractions. Multiple Layer kinds are
   expected, so this checkpoint does not promise one universal `Layer` trait.
-- The exact Rust representation of live and controlled execution-profile
-  bindings. Controlled execution must preserve the same descriptor contracts,
-  but it need not execute the live Driver traits.
+- General live and controlled execution-profile binding abstractions beyond
+  ADR-0008's type-wide Driver and exact Source-capability forms.
+- Named capability bundles, capability identity inspection, and any blessed
+  dynamic or ambient escape hatch. The current Program capability set is
+  closed after assembly.
 - Descriptor/message payload tracing, typed trace projections, streaming/live
   observer APIs, and durable trace storage. ADR-0004 explicitly leaves
   a public live observer outside v0.

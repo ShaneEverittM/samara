@@ -2,9 +2,12 @@
 
 Status: the narrow HTTP continuation-builder recommendation was accepted on
 July 25, 2026 and is specified by ADR-0005. Its API now follows Samara's paired
-continuation convention: `into_command()` uses `Message: From<BoundaryValue>`,
-while `into_command_with` accepts an explicit mapper. The general `EffectPlan`
-sketches in this note remain exploratory and are not architecture contracts.
+continuation convention: `into_command(&http_capability)` uses
+`Message: From<BoundaryValue>`, while
+`into_command_with(&http_capability, mapper)` accepts an explicit mapper.
+ADR-0008 added the capability argument without changing the pure HTTP pipeline
+semantics. The general `EffectPlan` sketches in this note remain exploratory
+and are not architecture contracts.
 
 ## Decision resolution
 
@@ -32,12 +35,12 @@ HttpRequest::get("https://api.coinbase.com/v2/time")
     .on_response()
     .require_success()
     .json::<TimeResponse>()
-    .into_command()
+    .into_command(&self.http)
 ```
 
 When the same outcome type has call-site-specific meaning or the continuation
 must capture domain context, the explicit spelling is
-`into_command_with(mapper)`. Both forms build the same Command representation;
+`into_command_with(&self.http, mapper)`. Both forms build the same Command representation;
 the difference is only how the final pure conversion to Message is supplied.
 
 `on_response()` is the explicit request-to-response phase boundary. It consumes
@@ -118,11 +121,18 @@ where
     Output: Send + 'static,
     ResponseError: Send + 'static,
 {
-    pub fn into_command<Message>(self) -> Command<Message>
+    pub fn into_command<Message>(
+        self,
+        capability: &EffectCapability<HttpRequest>,
+    ) -> Command<Message>
     where
         Message: From<EffectOutcome<Output, ResponseError>> + Send + 'static;
 
-    pub fn into_command_with<Message, Map>(self, map: Map) -> Command<Message>
+    pub fn into_command_with<Message, Map>(
+        self,
+        capability: &EffectCapability<HttpRequest>,
+        map: Map,
+    ) -> Command<Message>
     where
         Message: Send + 'static,
         Map: FnOnce(EffectOutcome<Output, ResponseError>) -> Message
@@ -181,17 +191,17 @@ fn update(&self, model: &mut Model, message: Message) -> Command<Message> {
                 .on_response()
                 .require_success()
                 .json::<TimeResponse>()
-                .into_command()
+                .into_command(&self.http)
         }
         Message::TimeRequestFinished(EffectOutcome::Succeeded(response)) => {
             model.current_time = Some(response.data.iso);
-            samara::println!("Got time: {}", response.data.iso)
+            samara::println!(&self.stdout, "Got time: {}", response.data.iso)
         }
         Message::TimeRequestFinished(EffectOutcome::Failed(error)) => {
-            samara::eprintln!("Failed to get time: {error}")
+            samara::eprintln!(&self.stderr, "Failed to get time: {error}")
         }
         Message::TimeRequestFinished(EffectOutcome::Cancelled(reason)) => {
-            samara::eprintln!("Time request was cancelled: {reason:?}")
+            samara::eprintln!(&self.stderr, "Time request was cancelled: {reason:?}")
         }
     }
 }
@@ -206,7 +216,7 @@ match message {
             .on_response()
             .require_success()
             .json::<TimeResponse>()
-            .into_command_with(|outcome| match outcome {
+            .into_command_with(&self.http, |outcome| match outcome {
                 EffectOutcome::Succeeded(response) => {
                     Message::TimeRetrieved(response.data.iso)
                 }
@@ -220,10 +230,10 @@ match message {
     }
     Message::TimeRetrieved(time) => {
         model.current_time = Some(time);
-        samara::println!("Got time: {time}")
+        samara::println!(&self.stdout, "Got time: {time}")
     }
     Message::FailedToGetTime(error) => {
-        samara::eprintln!("Failed to get time: {error}")
+        samara::eprintln!(&self.stderr, "Failed to get time: {error}")
     }
 }
 ```
@@ -240,7 +250,7 @@ match message {
         HttpRequest::get(REJECTION_URL)
             .on_response()
             .json::<ApiRejection>()
-            .into_command()
+            .into_command(&self.http)
     }
     Message::RejectionDecoded(outcome) => {
         // A valid JSON body from a 400 response can be Succeeded here.
@@ -266,7 +276,7 @@ match message {
             .with_body(encoded)
             .on_response()
             .require_success()
-            .into_command()
+            .into_command(&self.http)
     }
     Message::SubmitFinished(outcome) => {
         apply_submit_outcome(model, outcome);
@@ -335,14 +345,21 @@ status policy, decoding failure, and cancellation.
 The paired methods are approximately:
 
 ```rust
-pub fn into_command<Message>(self) -> Command<Message>
+pub fn into_command<Message>(
+    self,
+    capability: &EffectCapability<HttpRequest>,
+) -> Command<Message>
 where
     Message: From<EffectOutcome<Output, ResponseError>> + Send + 'static,
 {
-    self.into_command_with(Message::from)
+    self.into_command_with(capability, Message::from)
 }
 
-pub fn into_command_with<Message, Map>(self, map: Map) -> Command<Message>
+pub fn into_command_with<Message, Map>(
+    self,
+    capability: &EffectCapability<HttpRequest>,
+    map: Map,
+) -> Command<Message>
 where
     Message: Send + 'static,
     Map: FnOnce(EffectOutcome<Output, ResponseError>) -> Message
@@ -350,7 +367,7 @@ where
         + 'static,
 {
     let Self { request, transform } = self;
-    Command::effect_with(request, move |raw_outcome| {
+    Command::effect_with(capability, request, move |raw_outcome| {
         map(transform(raw_outcome))
     })
 }
@@ -503,8 +520,8 @@ semantics depend on observation and make traces misleading.
 
 The narrow HTTP builder need not add a composed discard convenience in its
 first slice. A caller that genuinely ignores an HTTP response can continue to
-use `Command::effect_discarding_outcome(HttpRequest::get(...))`; decoding a
-value and then discarding it has no demonstrated ergonomic use yet.
+use `Command::effect_discarding_outcome(&self.http, HttpRequest::get(...))`;
+decoding a value and then discarding it has no demonstrated ergonomic use yet.
 
 ## Conformance evidence for the accepted slice
 

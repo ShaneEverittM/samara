@@ -6,6 +6,13 @@
 - Extends: [ADR 0002](0002-runtime-topology-and-ordering.md) and
   [ADR 0003](0003-controlled-execution-semantics.md)
 
+> Supersession note (July 25, 2026): [ADR-0008](0008-closed-program-capabilities.md)
+> requires every declared Effect and Source terminal binding to validate during
+> profile build. References below to legitimately discovering a missing dynamic
+> binding after startup are historical; only deliberately hidden foreign or
+> internally inconsistent capabilities may now reach that defense-in-depth
+> fault path.
+
 ## Context
 
 ADR-0002 defines topology-neutral ordering and ADR-0003 defines controlled
@@ -120,11 +127,11 @@ A normally returning `EffectDriver` result maps exactly once:
 - `Ok(output)` becomes `EffectOutcome::Succeeded(output)`; and
 - `Err(error)` becomes `EffectOutcome::Failed(error)`.
 
-For `Command::effect`, the originating one-shot mapper is then invoked exactly
-once and its Message re-enters runtime-managed delivery. For
-`Command::effect_discarding_outcome`, the runtime accepts the same terminal
-outcome and closes the same finite obligation, but deliberately schedules no
-Message.
+For `Command::effect(&capability, descriptor)`, the originating one-shot mapper
+is then invoked exactly once and its Message re-enters runtime-managed delivery.
+For `Command::effect_discarding_outcome(&capability, descriptor)`, the runtime
+accepts the same terminal outcome and closes the same finite obligation, but
+deliberately schedules no Message.
 
 The discarded-outcome mode is not detached execution. Drain waits for it and
 retains finite work causally emitted before it just as for any other effect.
@@ -233,7 +240,8 @@ input is an explicit Decoder decision.
 ### The First-Party `mpsc` Binding Is One-Shot
 
 One `tokio::sync::mpsc::Receiver<T>` backs at most one active realization of
-its `StreamDescriptor<T>`. Channel closure maps to one normal `Ended` event.
+its exact `SourceCapability<StreamDescriptor<T>>`. Channel closure maps to one
+normal `Ended` event.
 
 The receiver is a unique live resource and is consumed by the first activation
 of its exact binding. A second concurrent claimant, or any later activation
@@ -245,10 +253,11 @@ module organization remains an implementation-review detail.
 
 ### Live Binding and Runtime Faults Close the Scope
 
-Missing, duplicate, or ambiguous live bindings that assembly can know make
-`LiveRuntimeBuilder::build()` fail. A missing terminal binding discovered only
-when dynamic work reaches it, an exhausted one-shot `mpsc` binding, a Driver
-panic, or an equivalent live mechanism violation faults the running scope.
+Missing, duplicate, ambiguous, foreign, or type-incompatible bindings for any
+declared capability make `LiveRuntimeBuilder::build()` fail. An exhausted
+one-shot `mpsc` binding, a Driver panic, a deliberately hidden foreign
+capability reached after startup, or an equivalent live mechanism violation
+faults the running scope.
 
 A live runtime fault closes ingress, stops application driving, cancels queued
 obligations and Driver tasks, and joins or aborts every runtime-owned task.
@@ -328,9 +337,9 @@ Before Phase 6 can be accepted, executable evidence must demonstrate:
   exactly once, and cancellation/removal/replacement produce no unpromised
   SourceEvent;
 - stale Source generations cannot deliver after live replacement;
-- knowable live binding errors fail assembly, while a dynamic missing binding,
-  Driver panic, or exhausted one-shot resource faults the runtime and still
-  closes all runtime-owned work;
+- every declared live binding error fails assembly, while a deliberately
+  hidden foreign capability, Driver panic, or exhausted one-shot resource
+  faults the runtime and still closes all runtime-owned work;
 - accepted internal delivery does not silently drop under a bounded
   characterization workload, while the results are reported as non-normative;
 - TCP emits `Bytes`, maps connect/read/peer-EOF correctly, contains no hidden

@@ -57,8 +57,9 @@ Continuation-bearing APIs therefore use a paired convention:
   context or distinguish this occurrence from another occurrence with the same
   boundary type.
 
-For example, `Command::effect(effect)` uses `Message::from`, while
-`Command::effect_with(effect, mapper)` preserves an explicit continuation.
+For example, `Command::effect(&capability, effect)` uses `Message::from`, while
+`Command::effect_with(&capability, effect, mapper)` preserves an explicit
+continuation.
 The same convention applies to Requests, Subscriptions, and pure HTTP response
 pipelines where their lifecycle semantics permit it.
 
@@ -80,8 +81,9 @@ the Command boundary without allowing heterogeneous branch types.
 ## Where Does Each Kind of State Belong?
 
 The `Model` contains mutable behavioral state. A Component configuration may
-contain immutable logical configuration and wiring, such as Ports and
-SourceDescriptors. Component methods receive `&self`; after registration, the
+contain immutable logical configuration and wiring, such as Ports,
+EffectCapabilities, SourceCapabilities, and SourceDescriptors. Component
+methods receive `&self`; after registration, the
 configuration is observationally immutable. Behaviorally relevant mutation
 belongs in the Model rather than behind interior mutability in the
 configuration.
@@ -99,6 +101,8 @@ live resources are pure values.
 A transition should depend only on its current model and input message. Giving
 it a runtime, clock, executor, or I/O capability would create an ambient path
 around explicit commands and make controlled execution less trustworthy.
+Program-issued EffectCapability and SourceCapability values are inert
+declaration tokens, not executing capabilities in this sense.
 
 ## Why Are Effect Descriptors Explicit Typed Values?
 
@@ -111,10 +115,46 @@ Pure synchronous closures or function pointers may still map an EffectOutcome
 to a Component Message. They transform data and do not perform the effect
 themselves.
 
+## Why Must Boundary Work Also Carry a Program-Issued Capability?
+
+A descriptor answers *what should happen this time*. A capability answers
+*which closed Program dependency authorizes that kind of work*. Keeping both
+lets descriptor payloads remain Model-derived while making the Program's
+complete world boundary knowable before execution.
+
+`ProgramBuilder::effect::<D>()` returns `EffectCapability<D>`, and
+`ProgramBuilder::source::<S>()` returns `SourceCapability<S>`.
+
+Assembly therefore declares and obtains each capability once:
+
+```rust,ignore
+let http = program.effect::<HttpRequest>();
+let input = program.source::<StreamDescriptor<Input>>();
+program.component(ComponentId::new("worker"), Worker { http, input });
+```
+
+Every issuance site then names the stored capability. This adds one explicit
+field, assembly declaration, and borrowed argument per logical dependency, but
+it avoids a separate `uses_effect` manifest that can drift from actual code.
+The capability performs no I/O and exposes no runtime context, so transition
+purity is unchanged.
+
+`ProgramBuilder::build()` closes the declared capability set. Both profile
+builders validate every declaration before execution, including dependencies
+used only in later branches. A raw descriptor deliberately cannot construct a
+Command or Subscription. This is the cost of turning missing legitimate
+bindings into synchronous assembly errors rather than late runtime surprises.
+
+The closed set does not mean Samara reflects over Component fields or predicts
+every message edge. Deliberately hiding a foreign capability remains a user
+conformance violation; Samara faults before terminal behavior when that value
+becomes observable.
+
 ## When Should an Effect Discard Its Outcome?
 
-Use `Command::effect_discarding_outcome` when the Component deliberately has no
-behavioral reaction to success, typed failure, or effect-contract cancellation.
+Use `Command::effect_discarding_outcome(&capability, descriptor)` when the
+Component deliberately has no behavioral reaction to success, typed failure,
+or effect-contract cancellation.
 Best-effort printing is the motivating case: an artificial "print finished"
 Message would communicate no application intent.
 
@@ -122,9 +162,9 @@ This mode should not be called *fire and forget*. Samara still owns the effect,
 controlled execution still exposes and traces it, Drain still waits for it,
 Cancel still aborts it, and Driver or runtime faults still surface. Only the
 application continuation is absent. If any terminal outcome should affect the
-Model or cause another Command, use `Command::effect` when the Message has the
-canonical `From<EffectOutcome<...>>` conversion, or `Command::effect_with` for
-an explicit mapper.
+Model or cause another Command, use `Command::effect` with the matching
+capability when the Message has the canonical `From<EffectOutcome<...>>`
+conversion, or `Command::effect_with` for an explicit mapper.
 
 ## Why Distinguish Error Data from Failure?
 
@@ -159,23 +199,28 @@ They answer three different questions:
 
 - A SourceDescriptor says what ongoing production is desired and is comparable
   for reconciliation.
+- A SourceCapability says which Program-declared ongoing boundary authorizes
+  the desire.
 - A Subscription says that this Component wants that descriptor maintained
-  under a stable identity and maps its events into Component Messages.
+  through that capability under a stable identity and maps its events into
+  Component Messages.
 - A Source is the runtime-scoped realization that actually produces events.
 
 Putting stable identity in the Subscription allows the same descriptor type to
 serve multiple logical roles. Reserving Source for the running realization also
 keeps sockets, tasks, and buffers out of inert API values.
 
-When equal identity and SourceDescriptor retain the Source, reconciliation
-atomically installs the latest mapper returned by `subscriptions()`. Messages
+When equal identity, SourceCapability, and SourceDescriptor retain the Source,
+reconciliation atomically installs the latest mapper returned by
+`subscriptions()`. Messages
 already created keep their meaning; later events use the latest projection.
 This follows the declarative model: each projection reasserts the Component's
 complete current desire without forcing an unchanged world resource to
 restart.
 
-Changing the descriptor is different: replacement is a hard private-generation
-cutover. Undelivered old work is stale and never crosses through the new mapper.
+Changing the capability or descriptor is different: replacement is a hard
+private-generation cutover. Undelivered old work is stale and never crosses
+through the new mapper.
 Applications that need overlap declare two Subscription identities or carry a
 domain generation explicitly.
 
@@ -191,7 +236,12 @@ Concrete inert types should not use `Source`, which is reserved for the running
 realization. `StreamDescriptor<T>` uses the otherwise optional `Descriptor`
 suffix because plain `Stream` could be mistaken for that running realization.
 It names the logical stream independently of how the world realizes it;
-adapter-specific assembly methods such as `bind_mpsc` name the Tokio mechanism.
+adapter-specific assembly methods such as `bind_mpsc(&capability, receiver)`
+name the Tokio mechanism and exact logical boundary. The capability may be
+`SourceCapability<StreamDescriptor<T>>` or a built-in composition whose
+terminal descriptor is `StreamDescriptor<T>`; callers declare and thread only
+the application-visible composed capability.
+
 A future bridge module may add neighboring bindings without changing the
 descriptor's application-facing meaning.
 
@@ -216,9 +266,12 @@ alias, but that alias does not introduce another Samara lifecycle concept.
 
 During reconciliation, Samara automatically lowers the composed descriptor to
 a runtime-owned SourcePlan containing its ordered Layers, terminal descriptor,
-and Subscription mapper. Applications bind live or controlled behavior only
-for `TcpBytes` in this example; requiring them to register `Framed` or its Layer
-again would duplicate intent already expressed in the descriptor.
+Source capability identity, and Subscription mapper. One
+`SourceCapability<Framed<TcpBytes, D>>` records the `TcpBytes` terminal
+requirement. Applications bind live or controlled behavior only for `TcpBytes`
+in this example; requiring them to declare the inner descriptor or register
+`Framed` or its Layer again would duplicate intent already expressed in the
+composed capability.
 
 Controlled execution supplies deterministic behavior for the same descriptor
 contracts and must never silently fall back to a live Driver. Drivers are
@@ -369,19 +422,28 @@ binding, Message delivery, and provider transition path. ControlledRuntime does
 not mimic this live host handle. Controlled tests continue to drive explicit
 deterministic inputs and inspect the same downstream Program behavior.
 
-## Why Is Program Assembly Validation Deliberately Narrow?
+## What Does Program Assembly Validate?
 
 `ProgramBuilder::build()` can reject facts that assembly directly owns:
 duplicate Component identities, duplicate `(Protocol type, PortId)`
 declarations, Ports not bound exactly once, and providers registered in a
 different builder. Failing there gives both profiles the same valid logical
-Program before runtime startup.
+Program before runtime startup. It also closes the set of Program-issued
+Component, Port, Effect, and Source capabilities.
 
 It cannot inspect arbitrary fields inside Component configuration or predict
 behavior-dependent `Command::send` edges. Port cycles are therefore legal and
-not detected, and Samara does not pretend to build a closed static dependency
-graph. A missing direct-send target is diagnosed only if that Command is later
-interpreted.
+not detected. The Program has a closed capability inventory without claiming
+an introspected static graph of every possible edge.
+
+The live and controlled profile builders perform the second validation stage.
+They check every Effect and Source capability declaration against the selected
+terminal Drivers or controlled behaviors before execution. Missing, duplicate,
+ambiguous, foreign, and type-incompatible bindings fail synchronously. A
+foreign ComponentRef, Port, or boundary capability visible in initial work is
+rejected during profile build. If deliberately hidden until a later Message,
+it is diagnosed before the target operation or terminal behavior executes;
+that defense-in-depth fault does not add a dynamic dependency to the Program.
 
 ## When Is a Direct Component Reference Appropriate?
 
@@ -401,8 +463,9 @@ should become a Component.
 ## What Must Remain the Same Across Live and Controlled Execution?
 
 The Component implementation and configuration, Model, Messages, Commands,
-EffectDescriptors, SourceDescriptors, Subscriptions, Protocols, Layers, and
-pure message-mapping logic are the same program in both profiles. Runtime
+EffectCapabilities, SourceCapabilities, EffectDescriptors, SourceDescriptors,
+Subscriptions, Protocols, Layers, and pure message-mapping logic are the same
+program in both profiles. Runtime
 decisions and terminal world-facing bindings differ. Convenience APIs must
 preserve that shared path rather than creating a second testing-only
 application model.
@@ -503,7 +566,8 @@ pretending a transport failure was a complete stream.
 ## Why Are the Initial `mpsc` and TCP Bridges Narrow?
 
 A Tokio `mpsc::Receiver` is a unique, single-consumer resource. The accepted
-first-party binding consumes it on first activation; a competing claimant or
+first-party binding associates it with one exact SourceCapability and consumes
+it on first activation; a competing claimant or
 later activation after end or cancellation faults explicitly. Fabricating
 another `Ended` would hide that no new receiver exists, and
 `StreamDescriptor<T>` deliberately has `Infallible` Source Error data.
@@ -524,6 +588,10 @@ Driver recovery, restartable or shared bridges, the broader first-party Tokio
 module organization, the Rust shape of general Layer/profile bindings, Request
 lifecycle policy, notification delivery failures, public live and
 domain-payload trace APIs, and runtime topology remain separate decisions.
+Named capability bundles, capability identity inspection, and any future
+blessed dynamic or ambient escape hatch also remain separate decisions; v0
+Program assembly is closed.
+
 ADR-0005 additionally freezes only its narrow raw, pooled, no-redirect,
 no-retry HTTP Effect; it does not settle higher-level endpoint or client policy.
 Those choices should follow the guidance above rather than being inferred from

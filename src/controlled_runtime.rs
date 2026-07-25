@@ -14,11 +14,11 @@ use std::{
 
 use crate::declarative_work::SubscriptionChange;
 use crate::{
-    Command, CommandKind, Component, ComponentId, ComponentRef, EffectDescriptor, EffectOutcome,
-    EffectOutcomeKind, ErasedRequestMapper, ErasedSourceDescriptor, ErasedSourceEvent, LogicalTime,
+    CapabilityToken, Command, CommandKind, Component, ComponentId, ComponentRef, EffectDescriptor,
+    EffectOutcome, EffectOutcomeKind, ErasedRequestMapper, ErasedSourceEvent, LogicalTime,
     PendingEffect, PendingWork, PortId, Program, RunReport, RuntimeError, ShutdownReport,
-    SourceDescriptor, SourceDescriptorSnapshot, SourceEvent, SourceEventKind, SourcePlan,
-    StreamDescriptor, Subscription, SubscriptionAction, SubscriptionId, TraceCommandKind,
+    SourceCapability, SourceDescriptor, SourceEvent, SourcePlan, StreamDescriptor,
+    StreamSourceDescriptor, Subscription, SubscriptionAction, SubscriptionId, TraceCommandKind,
     TraceEvent, TraceId, TraceRecord,
 };
 
@@ -245,7 +245,7 @@ struct OutstandingRequest {
 pub(crate) struct ControlledBindings {
     pub(crate) effects: HashSet<TypeId>,
     pub(crate) sources: HashSet<TypeId>,
-    pub(crate) exact_sources: Vec<Box<dyn ErasedSourceDescriptor>>,
+    pub(crate) exact_sources: Vec<CapabilityToken>,
 }
 
 impl ControlledBindings {
@@ -255,6 +255,68 @@ impl ControlledBindings {
             sources: HashSet::new(),
             exact_sources: Vec::new(),
         }
+    }
+
+    pub(crate) fn validate(&self, program: &Program) -> Result<(), RuntimeError> {
+        for (index, capability) in self.exact_sources.iter().enumerate() {
+            if !capability.belongs_to(&program.program) {
+                return Err(RuntimeError::harness(
+                    "exact controlled Source binding uses a capability from another Program",
+                ));
+            }
+            let Some(requirement) = program
+                .source_requirements
+                .iter()
+                .find(|requirement| requirement.token.same_as(capability))
+            else {
+                return Err(RuntimeError::harness(
+                    "exact controlled Source binding has no declared Program capability",
+                ));
+            };
+            if requirement.terminal_stream_item_type.is_none() {
+                return Err(RuntimeError::harness(format!(
+                    "exact controlled stream binding requires a StreamDescriptor terminal, but {} lowers to {}",
+                    requirement.descriptor_type_name, requirement.terminal_type_name
+                )));
+            }
+            if self.exact_sources[index + 1..]
+                .iter()
+                .any(|other| other.same_as(capability))
+            {
+                return Err(RuntimeError::harness(
+                    "duplicate exact controlled Source binding",
+                ));
+            }
+            if self.sources.contains(&requirement.terminal_type) {
+                return Err(RuntimeError::harness(format!(
+                    "ambiguous exact and type-wide controlled Source bindings for {}",
+                    requirement.terminal_type_name
+                )));
+            }
+        }
+
+        for requirement in &program.effect_requirements {
+            if !self.effects.contains(&requirement.descriptor_type) {
+                return Err(RuntimeError::harness(format!(
+                    "declared Effect capability for {} has no controlled behavior",
+                    requirement.descriptor_type_name
+                )));
+            }
+        }
+        for requirement in &program.source_requirements {
+            let controlled = self.sources.contains(&requirement.terminal_type)
+                || self
+                    .exact_sources
+                    .iter()
+                    .any(|capability| capability.same_as(&requirement.token));
+            if !controlled {
+                return Err(RuntimeError::harness(format!(
+                    "declared Source capability for {} (terminal {}) has no controlled behavior",
+                    requirement.descriptor_type_name, requirement.terminal_type_name
+                )));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -449,7 +511,7 @@ impl ControlledCore {
                 .bindings
                 .exact_sources
                 .iter()
-                .any(|descriptor| descriptor.equals(plan.terminal_descriptor()))
+                .any(|capability| capability.same_as(plan.capability()))
     }
 
     fn allocate_generation(&mut self) -> u64 {
@@ -471,6 +533,18 @@ impl ControlledCore {
                 Some(plan.terminal_type_name()),
                 work,
                 "SourcePlan output does not match its Subscription event type",
+            ));
+        }
+        if !self.program.declares_source_plan(
+            plan.capability(),
+            subscription.descriptor().type_id(),
+            plan.terminal_type_id(),
+        ) {
+            return Err(self.set_fault(
+                component.clone(),
+                Some(plan.terminal_type_name()),
+                work,
+                "Source capability belongs to another Program or has inconsistent terminal metadata",
             ));
         }
         if !self.terminal_is_controlled(&plan) {
@@ -618,6 +692,17 @@ impl ControlledCore {
                         None,
                         None,
                     );
+                    if !self
+                        .program
+                        .declares_effect(command.capability(), descriptor_type)
+                    {
+                        return Err(self.set_fault(
+                            component.clone(),
+                            Some(descriptor_type_name),
+                            work,
+                            "Effect capability belongs to another Program",
+                        ));
+                    }
                     if !self.bindings.effects.contains(&descriptor_type) {
                         return Err(self.set_fault(
                             component.clone(),
@@ -930,15 +1015,28 @@ impl ControlledCore {
         source_index: usize,
         event: SourceEvent<S::Item, S::Error>,
     ) -> Result<(), RuntimeError> {
+        self.enqueue_erased_source_event(
+            source_index,
+            TypeId::of::<S>(),
+            ErasedSourceEvent::typed::<S>(event),
+        )
+    }
+
+    fn enqueue_erased_source_event(
+        &mut self,
+        source_index: usize,
+        terminal_type: TypeId,
+        event: ErasedSourceEvent,
+    ) -> Result<(), RuntimeError> {
         let source = &self.sources[source_index];
-        if !source.running || source.plan.terminal_type_id() != TypeId::of::<S>() {
+        if !source.running || source.plan.terminal_type_id() != terminal_type {
             return Err(RuntimeError::harness(
                 "controlled Source input does not match an active terminal descriptor",
             ));
         }
         let stamp = source.stamp.clone();
         let terminal_type_name = source.plan.terminal_type_name();
-        let kind = SourceEventKind::of(&event);
+        let kind = event.kind;
         let cause = self.push_root(TraceEvent::ControlledSourceInput {
             component: stamp.component.clone(),
             subscription: stamp.subscription.clone(),
@@ -949,32 +1047,42 @@ impl ControlledCore {
             self.now,
             ScheduledKind::SourceEvent(QueuedSourceEvent {
                 stamp,
-                terminal_type: TypeId::of::<S>(),
-                event: ErasedSourceEvent::typed::<S>(event),
+                terminal_type,
+                event,
                 cause,
             }),
         );
         Ok(())
     }
 
-    pub(crate) fn emit_stream<T: Send + 'static>(
+    pub(crate) fn emit_stream<S>(
         &mut self,
-        stream: &StreamDescriptor<T>,
-        item: T,
-    ) -> Result<(), RuntimeError> {
+        stream: &SourceCapability<S>,
+        item: S::StreamItem,
+    ) -> Result<(), RuntimeError>
+    where
+        S: StreamSourceDescriptor,
+    {
         self.ensure_not_faulted()?;
+        let Some(requirement) = self.program.source_requirement(&stream.token) else {
+            return Err(RuntimeError::harness(
+                "controlled stream capability belongs to another Program",
+            ));
+        };
+        if requirement.terminal_type != TypeId::of::<StreamDescriptor<S::StreamItem>>() {
+            return Err(RuntimeError::harness(
+                "controlled stream item type does not match the capability's terminal StreamDescriptor",
+            ));
+        }
         let matches = self
             .sources
             .iter()
             .enumerate()
             .filter_map(|(index, source)| {
                 (source.running
-                    && source.plan.terminal_type_id() == TypeId::of::<StreamDescriptor<T>>()
-                    && source
-                        .plan
-                        .terminal_descriptor()
-                        .downcast_ref::<StreamDescriptor<T>>()
-                        == Some(stream))
+                    && source.plan.terminal_type_id()
+                        == TypeId::of::<StreamDescriptor<S::StreamItem>>()
+                    && source.plan.capability().same_as(&stream.token))
                 .then_some(index)
             })
             .collect::<Vec<_>>();
@@ -983,26 +1091,35 @@ impl ControlledCore {
                 "controlled stream input requires exactly one active matching Source",
             ));
         };
-        self.enqueue_source_event::<StreamDescriptor<T>>(*index, SourceEvent::Item(item))
+        self.enqueue_source_event::<StreamDescriptor<S::StreamItem>>(
+            *index,
+            SourceEvent::Item(item),
+        )
     }
 
-    pub(crate) fn close_stream<T: Send + 'static>(
+    pub(crate) fn close_stream<S: StreamSourceDescriptor>(
         &mut self,
-        stream: &StreamDescriptor<T>,
+        stream: &SourceCapability<S>,
     ) -> Result<(), RuntimeError> {
         self.ensure_not_faulted()?;
+        let Some(requirement) = self.program.source_requirement(&stream.token) else {
+            return Err(RuntimeError::harness(
+                "controlled stream capability belongs to another Program",
+            ));
+        };
+        if requirement.terminal_stream_item_type.is_none() {
+            return Err(RuntimeError::harness(
+                "controlled stream close requires a StreamDescriptor terminal",
+            ));
+        }
         let matches = self
             .sources
             .iter()
             .enumerate()
             .filter_map(|(index, source)| {
                 (source.running
-                    && source.plan.terminal_type_id() == TypeId::of::<StreamDescriptor<T>>()
-                    && source
-                        .plan
-                        .terminal_descriptor()
-                        .downcast_ref::<StreamDescriptor<T>>()
-                        == Some(stream))
+                    && source.plan.terminal_type_id() == requirement.terminal_type
+                    && source.plan.capability().same_as(&stream.token))
                 .then_some(index)
             })
             .collect::<Vec<_>>();
@@ -1011,7 +1128,9 @@ impl ControlledCore {
                 "controlled stream close requires exactly one active matching Source",
             ));
         };
-        self.enqueue_source_event::<StreamDescriptor<T>>(*index, SourceEvent::Ended)
+        let terminal_type = self.sources[*index].plan.terminal_type_id();
+        let event = self.sources[*index].plan.terminal_ended_event();
+        self.enqueue_erased_source_event(*index, terminal_type, event)
     }
 
     pub(crate) fn emit_source<C, S>(
@@ -1424,8 +1543,4 @@ impl ControlledCore {
     pub(crate) fn trace(&self) -> &[TraceRecord] {
         &self.trace
     }
-}
-
-pub(crate) fn exact_source<S: SourceDescriptor>(descriptor: S) -> Box<dyn ErasedSourceDescriptor> {
-    Box::new(SourceDescriptorSnapshot(descriptor))
 }

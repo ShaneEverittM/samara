@@ -48,9 +48,10 @@ enum CounterMessage {
 
 /// One Counter instance and its immutable logical input wiring.
 ///
-/// `StreamDescriptor` is only a descriptor. The live `Receiver` remains at assembly
-/// time, outside both this value and `CounterModel`.
+/// Both fields are inert logical configuration. The live `Receiver` remains at
+/// runtime assembly, outside this value and `CounterModel`.
 struct Counter {
+    input: SourceCapability<StreamDescriptor<u64>>,
     increments: StreamDescriptor<u64>,
 }
 
@@ -86,6 +87,7 @@ impl Component for Counter {
         }
 
         Subscriptions::one(Subscription::source_with(
+            &self.input,
             SubscriptionId::new(INCREMENT_SUBSCRIPTION),
             self.increments.clone(),
             |event| match event {
@@ -100,13 +102,28 @@ impl Component for Counter {
 /// Declares the logical application once for every execution profile.
 ///
 /// No Tokio receiver or scripted test input enters this function. It contains
-/// only the Component and the logical source descriptor they share.
-fn program(increments: StreamDescriptor<u64>) -> (Program, ComponentRef<Counter>) {
+/// only the Component, its logical source descriptor, and the Program-issued
+/// capability used to authorize and bind that source.
+fn program(
+    increments: StreamDescriptor<u64>,
+) -> (
+    Program,
+    ComponentRef<Counter>,
+    SourceCapability<StreamDescriptor<u64>>,
+) {
     let mut program = Program::builder();
-    let counter = program.component(ComponentId::new("counter"), Counter { increments });
+    let input = program.source::<StreamDescriptor<u64>>();
+    let counter = program.component(
+        ComponentId::new("counter"),
+        Counter {
+            input: input.clone(),
+            increments,
+        },
+    );
     (
         program.build().expect("the example graph is valid"),
         counter,
+        input,
     )
 }
 
@@ -118,16 +135,16 @@ fn program(increments: StreamDescriptor<u64>) -> (Program, ComponentRef<Counter>
 async fn run_live() -> Result<(), Box<dyn Error>> {
     let increments = StreamDescriptor::named(INCREMENT_INPUT);
     let (input, receiver) = tokio::sync::mpsc::channel(1);
-    let (program, _counter) = program(increments.clone());
+    let (program, _counter, input_capability) = program(increments);
 
     // Fill the one-slot upstream channel before spawning. This is ordinary
     // Tokio pressure; Samara has not accepted the value yet.
     input.send(2).await?;
 
     // Binding transfers the unique receiver into Samara's structured runtime
-    // scope. The Component still contains only `StreamDescriptor`.
+    // scope. The Component still contains only inert logical configuration.
     let runtime = LiveRuntime::builder(program)
-        .bind_mpsc(increments, receiver)
+        .bind_mpsc(&input_capability, receiver)
         .build()?;
     let runtime = runtime.spawn();
 
@@ -161,7 +178,9 @@ mod tests {
     #[test]
     fn component_logic_is_directly_testable() {
         let increments = StreamDescriptor::named(INCREMENT_INPUT);
+        let mut program = Program::builder();
         let counter = Counter {
+            input: program.source::<StreamDescriptor<u64>>(),
             increments: increments.clone(),
         };
         let mut model = counter.init().model;
@@ -190,14 +209,14 @@ mod tests {
     #[test]
     fn controlled_stream_updates_the_same_program() -> Result<(), RuntimeError> {
         let increments = StreamDescriptor::named(INCREMENT_INPUT);
-        let (program, counter) = program(increments.clone());
+        let (program, counter, input_capability) = program(increments);
         let mut runtime = ControlledRuntime::builder(program)
-            .control_stream(increments.clone())
+            .control_stream(&input_capability)
             .build()?;
 
-        runtime.emit_stream(&increments, 2)?;
-        runtime.emit_stream(&increments, 3)?;
-        runtime.close_stream(&increments)?;
+        runtime.emit_stream(&input_capability, 2)?;
+        runtime.emit_stream(&input_capability, 3)?;
+        runtime.close_stream(&input_capability)?;
         runtime.run_until_idle()?;
 
         assert_eq!(

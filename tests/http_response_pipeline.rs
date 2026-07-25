@@ -33,25 +33,31 @@ fn json_command<T>() -> Command<EffectOutcome<T, HttpResponseError>>
 where
     T: serde::de::DeserializeOwned + Send + 'static,
 {
+    let mut program = Program::builder();
+    let http = program.effect::<HttpRequest>();
     HttpRequest::get("https://example.test/value")
         .on_response()
         .json::<T>()
-        .into_command_with(|outcome| outcome)
+        .into_command_with(&http, |outcome| outcome)
 }
 
 fn successful_json_command<T>() -> Command<EffectOutcome<T, HttpResponseError>>
 where
     T: serde::de::DeserializeOwned + Send + 'static,
 {
+    let mut program = Program::builder();
+    let http = program.effect::<HttpRequest>();
     HttpRequest::get("https://example.test/value")
         .on_response()
         .require_success()
         .json::<T>()
-        .into_command_with(|outcome| outcome)
+        .into_command_with(&http, |outcome| outcome)
 }
 
 #[test]
 fn http_response_pipeline_preserves_the_owned_raw_request_boundary() {
+    let mut program = Program::builder();
+    let http = program.effect::<HttpRequest>();
     let command: Command<()> = HttpRequest::get("https://example.test/owned")
         .with_header(
             http::header::CONTENT_TYPE,
@@ -59,7 +65,7 @@ fn http_response_pipeline_preserves_the_owned_raw_request_boundary() {
         )
         .with_body(Bytes::from_static(b"owned request"))
         .on_response()
-        .into_command_with(|_| ());
+        .into_command_with(&http, |_| ());
 
     let invocation = command
         .into_effect::<HttpRequest>()
@@ -95,6 +101,8 @@ enum PipelineMessage {
 }
 
 struct PipelineComponent {
+    http: EffectCapability<HttpRequest>,
+    observe: EffectCapability<ObservePipelineResult>,
     url: String,
 }
 
@@ -112,7 +120,7 @@ impl Component for PipelineComponent {
                 .on_response()
                 .require_success()
                 .json::<Payload>()
-                .into_command_with(PipelineMessage::Finished),
+                .into_command_with(&self.http, PipelineMessage::Finished),
             PipelineMessage::Finished(outcome) => {
                 let result = match outcome {
                     EffectOutcome::Succeeded(payload) => PipelineResult::Succeeded(payload.value),
@@ -127,7 +135,9 @@ impl Component for PipelineComponent {
                     EffectOutcome::Cancelled(reason) => PipelineResult::Cancelled(reason),
                 };
                 model.result = Some(result.clone());
-                Command::effect_with(ObservePipelineResult(result), |_| PipelineMessage::Observed)
+                Command::effect_with(&self.observe, ObservePipelineResult(result), |_| {
+                    PipelineMessage::Observed
+                })
             }
             PipelineMessage::Observed => Command::none(),
         }
@@ -144,9 +154,15 @@ impl EffectDescriptor for ObservePipelineResult {
 
 fn pipeline_program(url: impl Into<String>) -> (Program, ComponentRef<PipelineComponent>) {
     let mut builder = Program::builder();
+    let http = builder.effect::<HttpRequest>();
+    let observe = builder.effect::<ObservePipelineResult>();
     let component = builder.component(
         ComponentId::new("http-pipeline"),
-        PipelineComponent { url: url.into() },
+        PipelineComponent {
+            http,
+            observe,
+            url: url.into(),
+        },
     );
     (builder.build().expect("valid pipeline program"), component)
 }
@@ -316,6 +332,8 @@ impl<'de> Deserialize<'de> for OnceDecoded {
 
 #[test]
 fn http_pipeline_transforms_and_maps_at_most_once() {
+    let mut program = Program::builder();
+    let http = program.effect::<HttpRequest>();
     ONCE_DECODE_CALLS.store(0, Ordering::SeqCst);
     let mapper_calls = Arc::new(AtomicUsize::new(0));
     let counted_mapper_calls = mapper_calls.clone();
@@ -323,7 +341,7 @@ fn http_pipeline_transforms_and_maps_at_most_once() {
         .on_response()
         .require_success()
         .json::<OnceDecoded>()
-        .into_command_with(move |outcome| {
+        .into_command_with(&http, move |outcome| {
             counted_mapper_calls.fetch_add(1, Ordering::SeqCst);
             outcome
         });

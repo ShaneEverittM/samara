@@ -2,9 +2,11 @@
 
 ## Status
 
-- Phase: Phase 6 live Driver implementation complete; audit ready.
+- Phase: Phase 6 live Driver implementation complete; ADR-0008 closed
+  capabilities accepted for implementation.
 - Date: July 25, 2026.
-- API names are provisional; semantic roles follow `docs/glossary.md`.
+- Capability spellings follow ADR-0008; remaining Layer abstractions are
+  provisional and semantic roles follow `docs/glossary.md`.
 
 ## Purpose
 
@@ -15,6 +17,8 @@ from runtime mechanism.
 ## Core Principles
 
 - Descriptors are inert, typed declarations.
+- Program-issued EffectCapabilities and SourceCapabilities declare the closed
+  set of descriptor boundaries a Component may use.
 - Layers build composed descriptors inside the Samara program boundary.
 - Drivers terminate descriptor stacks into the selected live surrounding world.
 - Controlled execution supplies deterministic behavior for terminal descriptor contracts
@@ -31,17 +35,18 @@ universal `Adapter` trait.
 ### EffectDescriptor and EffectDriver
 
 An `EffectDescriptor` describes one finite world-facing interaction. A Command
-combines it with either a pure one-shot message mapper or an explicit
-discarded-outcome mode.
+combines it with its Program-issued `EffectCapability<D>` and either a pure
+one-shot message mapper or an explicit discarded-outcome mode.
 
-`Command::effect(effect)` uses the standard
+`Command::effect(&capability, effect)` uses the standard
 `Message: From<EffectOutcome<Output, Error>>` conversion as its mapper;
-`Command::effect_with(effect, mapper)` accepts an explicit call-site mapper.
+`Command::effect_with(&capability, effect, mapper)` accepts an explicit
+call-site mapper.
 The two spellings compile to the same effect obligation and differ only in how
 the pure continuation is supplied.
 
 ```text
-Command + EffectDescriptor
+Command + EffectCapability + EffectDescriptor
     -> zero or more Layers
     -> terminal EffectDescriptor
     -> live EffectDriver<D>, or controlled behavior
@@ -57,18 +62,20 @@ invocations. EffectDescriptors therefore need not be comparable or cloneable.
 ### SourceDescriptor, Subscription, Source, and SourceDriver
 
 A `SourceDescriptor` describes ongoing event production and is comparable for
-Subscription reconciliation. A Subscription adds stable Component-local identity and a
-reusable message mapper. A Source is the runtime-scoped realization.
+Subscription reconciliation. A Subscription adds its Program-issued
+`SourceCapability<S>`, stable Component-local identity, and a reusable message
+mapper. A Source is the runtime-scoped realization.
 
-`Subscription::source(id, descriptor)` uses the standard
+`Subscription::source(&capability, id, descriptor)` uses the standard
 `Message: From<SourceEvent<Item, Error>>` conversion;
-`Subscription::source_with(id, descriptor, mapper)` supplies the reusable
-mapper explicitly. This API choice does not affect reconciliation identity.
+`Subscription::source_with(&capability, id, descriptor, mapper)` supplies the
+reusable mapper explicitly. This API choice does not affect reconciliation
+identity.
 
 ```text
-Subscription(identity + SourceDescriptor + message mapper)
+Subscription(identity + SourceCapability + SourceDescriptor + message mapper)
     -> reconciliation
-    -> SourcePlan(ordered Layers + terminal SourceDescriptor + mapper)
+    -> SourcePlan(capability identity + ordered Layers + terminal descriptor + mapper)
     -> live SourceDriver<D>, or controlled behavior
     -> Source
     -> SourceEvent zero or more times
@@ -77,8 +84,9 @@ Subscription(identity + SourceDescriptor + message mapper)
 ```
 
 Stable identity belongs to the Subscription rather than the SourceDescriptor. The same
-identity with an equal descriptor retains its Source and atomically adopts the latest
-post-transition mapper. A changed descriptor atomically replaces it; removal cancels it.
+identity with the same capability and an equal descriptor retains its Source and
+atomically adopts the latest post-transition mapper. A changed capability or descriptor
+atomically replaces it; removal cancels it.
 Cancellation does not inherently manufacture a SourceEvent.
 
 Each Source realization has a private runtime generation. After replacement commits, an
@@ -98,9 +106,11 @@ and SourceDescriptor; `TelemetryFeed` is merely an application alias for one com
 SourceDescriptor in the framed-socket reference example.
 
 A **SourcePlan** is the runtime-owned compiled mechanism produced automatically during
-reconciliation. It contains the terminal SourceDescriptor, its ordered Layers, and the
-Subscription mapper. Applications declare the composed descriptor and bind or control
-only the terminal descriptor; they never register its Layers redundantly. The exact Rust
+reconciliation. It contains the terminal SourceDescriptor, its ordered Layers,
+SourceCapability identity, and the Subscription mapper. One
+`SourceCapability<Composed>` declaration records the sealed lowered terminal
+requirement. Applications neither declare the inner descriptor nor register its Layers
+redundantly; profiles bind only the terminal descriptor. The exact SourcePlan Rust
 representation remains implementation-selectable.
 
 ## Layer and Driver Roles
@@ -139,8 +149,10 @@ The provisional code-level roles are `EffectDriver<D>` and `SourceDriver<D>`. Th
 generic descriptor parameter supplies the static relationship without forcing Driver
 wiring into the descriptor or Component types.
 
-Controlled execution need not implement or call those live Driver traits. The exact Rust
-shape of live and controlled profile bindings remains open.
+Controlled execution need not implement or call those live Driver traits. Normal Driver
+and controlled registrations are type-wide. Exact resource adapters may instead select
+one SourceCapability identity; a type-wide and exact binding that both satisfy one
+capability are ambiguous and rejected.
 
 Under ADR-0004, a normally returning EffectDriver result becomes exactly one
 Succeeded or Failed EffectOutcome. A mapped effect invokes its mapper once; an
@@ -179,10 +191,12 @@ an apparently primitive operation.
 
 ## Representative Compositions
 
-These examples are schematic, not frozen Rust APIs.
+These compositions are schematic; their capability arguments follow the
+accepted public API.
 
 ```text
 Command::effect_with(
+    &self.persistence,
     PersistFrame { frame },             // EffectDescriptor
     TelemetryMessage::Persisted,        // one-shot message mapper
 )
@@ -197,6 +211,7 @@ the runtime continues to own, supervise, and account for the invocation.
 
 ```text
 Subscription::source_with(
+    &self.socket_frames,
     "socket-frames",
     Framed(TcpBytes { endpoint }, U16LengthDelimited),
     TelemetryMessage::Socket,
@@ -214,14 +229,20 @@ application binds neither `Framed` nor its Layer separately.
 - Layers must be deterministic for equivalent inputs and contain no ambient I/O.
 - Drivers must remain terminal, narrow, runtime-scoped, and profile-selected.
 - All world-facing side effects must cross a declared terminal descriptor boundary.
+- Raw descriptors cannot issue work. Commands and Subscriptions must carry a
+  matching Program-issued capability, and convenience helpers must preserve
+  that requirement.
 - Behaviorally relevant EffectOutcomes and SourceEvents return through message mappers.
 - Default `effect` and `source` constructors obtain those mappers through the
   standard `From` trait; `_with` constructors accept explicit mappers without
   changing runtime semantics.
-- Missing controlled behavior fails explicitly rather than falling through to a live
-  Driver. Reaching an unhandled terminal descriptor faults the controlled run before a
-  message mapper is invoked; state and trace remain inspectable and cancellation remains
-  available.
+- Live and controlled profile builders validate every declared terminal
+  requirement before execution. Missing, duplicate, ambiguous, foreign, or
+  type-incompatible bindings fail synchronously and controlled execution never
+  falls through to a live Driver.
+- A deliberately hidden foreign capability reached only after execution begins
+  faults before terminal behavior or a message mapper; it does not discover or
+  add a dynamic dependency.
 - Retained Sources install the latest projected mapper without restarting.
 - Replaced Source generations cannot deliver stale work into a transition or through the
   replacement mapper.

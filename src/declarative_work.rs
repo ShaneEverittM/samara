@@ -32,9 +32,11 @@ struct ActiveDescriptor {
 pub(crate) enum SubscriptionChange<Message> {
     /// A new Component-local identity needs a Source.
     Start { subscription: Subscription<Message> },
-    /// The identity and descriptor are unchanged, so its Source is retained.
+    /// Capability identity and descriptor data are unchanged, so the Source is
+    /// retained.
     Retain { subscription: Subscription<Message> },
-    /// The identity remains but changed descriptor data requires replacement.
+    /// The local identity remains but changed capability or descriptor data
+    /// requires replacement.
     Replace { subscription: Subscription<Message> },
     /// A formerly active identity is no longer desired.
     Cancel { id: SubscriptionId },
@@ -124,8 +126,9 @@ mod tests {
     use super::{SubscriptionChange, SubscriptionReconciler};
     use crate::component_kernel::ComponentKernel;
     use crate::{
-        Command, Component, ComponentId, EffectDescriptor, EffectOutcome, Init, SourceEvent,
-        StreamDescriptor, Subscription, SubscriptionId, Subscriptions,
+        Command, Component, ComponentId, EffectDescriptor, EffectOutcome, Init, Program,
+        SourceCapability, SourceEvent, StreamDescriptor, Subscription, SubscriptionId,
+        Subscriptions,
     };
 
     #[derive(Debug, PartialEq, Eq)]
@@ -148,15 +151,21 @@ mod tests {
         New(SourceEvent<u64, Infallible>),
     }
 
-    fn desired(binding: &'static str) -> Subscriptions<Message> {
+    fn desired(
+        source: &SourceCapability<StreamDescriptor<u64>>,
+        binding: &'static str,
+    ) -> Subscriptions<Message> {
         Subscriptions::one(Subscription::source_with(
+            source,
             SubscriptionId::new("input"),
             StreamDescriptor::<u64>::named(binding),
             Message::Old,
         ))
     }
 
-    struct DesiredComponent;
+    struct DesiredComponent {
+        source: SourceCapability<StreamDescriptor<u64>>,
+    }
 
     enum DesiredMessage {
         Use(&'static str),
@@ -188,6 +197,7 @@ mod tests {
         fn subscriptions(&self, model: &Self::Model) -> Subscriptions<Self::Message> {
             match model {
                 Some(binding) => Subscriptions::one(Subscription::source_with(
+                    &self.source,
                     SubscriptionId::new("input"),
                     StreamDescriptor::<u64>::named(*binding),
                     DesiredMessage::Input,
@@ -199,14 +209,16 @@ mod tests {
 
     #[test]
     fn v3_batched_effect_occurrences_keep_distinct_one_shot_mappers() {
+        let mut program = Program::builder();
+        let write = program.effect::<Write>();
         let command = Command::batch([
-            Command::effect_with(Write(7), |outcome| {
+            Command::effect_with(&write, Write(7), |outcome| {
                 let EffectOutcome::Succeeded(output) = outcome else {
                     unreachable!("the fixture supplies success")
                 };
                 Written { request: 1, output }
             }),
-            Command::effect_with(Write(7), |outcome| {
+            Command::effect_with(&write, Write(7), |outcome| {
                 let EffectOutcome::Succeeded(output) = outcome else {
                     unreachable!("the fixture supplies success")
                 };
@@ -244,7 +256,10 @@ mod tests {
 
     #[test]
     fn v4_component_kernel_reconciles_the_committed_model_projection() {
-        let mut kernel = ComponentKernel::new(ComponentId::new("desired"), DesiredComponent);
+        let mut program = Program::builder();
+        let source = program.source::<StreamDescriptor<u64>>();
+        let mut kernel =
+            ComponentKernel::new(ComponentId::new("desired"), DesiredComponent { source });
 
         assert!(matches!(
             kernel
@@ -281,25 +296,27 @@ mod tests {
 
     #[test]
     fn v4_new_equal_changed_and_removed_descriptors_reconcile_lifecycle() {
+        let mut program = Program::builder();
+        let source = program.source::<StreamDescriptor<u64>>();
         let mut reconciler = SubscriptionReconciler::new(ComponentId::new("alpha"));
 
         assert!(matches!(
             reconciler
-                .reconcile(desired("one"))
+                .reconcile(desired(&source, "one"))
                 .expect("valid desires")
                 .as_slice(),
             [SubscriptionChange::Start { .. }]
         ));
         assert!(matches!(
             reconciler
-                .reconcile(desired("one"))
+                .reconcile(desired(&source, "one"))
                 .expect("valid desires")
                 .as_slice(),
             [SubscriptionChange::Retain { .. }]
         ));
         assert!(matches!(
             reconciler
-                .reconcile(desired("two"))
+                .reconcile(desired(&source, "two"))
                 .expect("valid desires")
                 .as_slice(),
             [SubscriptionChange::Replace { .. }]
@@ -315,6 +332,8 @@ mod tests {
 
     #[test]
     fn v4_subscription_identity_is_local_to_one_component() {
+        let mut program = Program::builder();
+        let source = program.source::<StreamDescriptor<u64>>();
         let mut alpha = SubscriptionReconciler::new(ComponentId::new("alpha"));
         let mut beta = SubscriptionReconciler::new(ComponentId::new("beta"));
 
@@ -323,13 +342,13 @@ mod tests {
 
         assert!(matches!(
             alpha
-                .reconcile(desired("shared"))
+                .reconcile(desired(&source, "shared"))
                 .expect("valid desires")
                 .as_slice(),
             [SubscriptionChange::Start { .. }]
         ));
         assert!(matches!(
-            beta.reconcile(desired("shared"))
+            beta.reconcile(desired(&source, "shared"))
                 .expect("valid desires")
                 .as_slice(),
             [SubscriptionChange::Start { .. }]
@@ -338,14 +357,18 @@ mod tests {
 
     #[test]
     fn duplicate_desired_identity_is_rejected_before_bookkeeping_changes() {
+        let mut program = Program::builder();
+        let source = program.source::<StreamDescriptor<u64>>();
         let mut reconciler = SubscriptionReconciler::new(ComponentId::new("alpha"));
         let duplicate = vec![
             Subscription::source_with(
+                &source,
                 SubscriptionId::new("input"),
                 StreamDescriptor::<u64>::named("one"),
                 Message::Old,
             ),
             Subscription::source_with(
+                &source,
                 SubscriptionId::new("input"),
                 StreamDescriptor::<u64>::named("two"),
                 Message::New,
@@ -360,7 +383,7 @@ mod tests {
         assert_eq!(error.id, SubscriptionId::new("input"));
         assert!(matches!(
             reconciler
-                .reconcile(desired("one"))
+                .reconcile(desired(&source, "one"))
                 .expect("failed reconciliation was transactional")
                 .as_slice(),
             [SubscriptionChange::Start { .. }]
@@ -369,10 +392,15 @@ mod tests {
 
     #[test]
     fn v4_retention_preserves_new_mapper_as_unselected_candidate_data() {
+        let mut program = Program::builder();
+        let source = program.source::<StreamDescriptor<u64>>();
         let mut reconciler = SubscriptionReconciler::new(ComponentId::new("alpha"));
-        let _ = reconciler.reconcile(desired("one")).expect("valid desires");
+        let _ = reconciler
+            .reconcile(desired(&source, "one"))
+            .expect("valid desires");
         let changes = reconciler
             .reconcile(Subscriptions::one(Subscription::source_with(
+                &source,
                 SubscriptionId::new("input"),
                 StreamDescriptor::<u64>::named("one"),
                 Message::New,
@@ -388,5 +416,24 @@ mod tests {
                 .expect("the desired mapper is still available"),
             Message::New(SourceEvent::Item(9))
         );
+    }
+
+    #[test]
+    fn v4_equal_descriptor_with_another_capability_replaces_source() {
+        let mut program = Program::builder();
+        let first = program.source::<StreamDescriptor<u64>>();
+        let second = program.source::<StreamDescriptor<u64>>();
+        let mut reconciler = SubscriptionReconciler::new(ComponentId::new("alpha"));
+
+        let _ = reconciler
+            .reconcile(desired(&first, "same"))
+            .expect("valid first desire");
+        assert!(matches!(
+            reconciler
+                .reconcile(desired(&second, "same"))
+                .expect("valid replacement desire")
+                .as_slice(),
+            [SubscriptionChange::Replace { .. }]
+        ));
     }
 }

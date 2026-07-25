@@ -5,6 +5,11 @@
 - Decision owners: Samara maintainers
 - Extends: [ADR 0002](0002-runtime-topology-and-ordering.md)
 
+> Supersession note (July 25, 2026): [ADR-0008](0008-closed-program-capabilities.md)
+> supersedes this ADR's open Effect/Source dependency qualification and normal
+> runtime discovery of missing controlled behavior. The scheduling, trace,
+> Source-cutover, and work-accounting decisions below remain in force.
+
 ## Context
 
 ADR-0002 requires deterministic controlled execution without making its chosen
@@ -167,9 +172,10 @@ implementation and audit details.
 
 ### An Effect May Deliberately Discard Its Outcome
 
-`Command::effect_discarding_outcome` declares the same finite typed effect
-obligation as `Command::effect`, but deliberately installs no application
-continuation. This is one-way intent from the Component, not detached work.
+`Command::effect_discarding_outcome(&capability, descriptor)` declares the same
+finite typed effect obligation as `Command::effect(&capability, descriptor)`,
+but deliberately installs no application continuation. This is one-way intent
+from the Component, not detached work.
 
 Controlled execution still exposes the descriptor through `next_effect`,
 counts it as pending work, and requires the harness either to complete it with

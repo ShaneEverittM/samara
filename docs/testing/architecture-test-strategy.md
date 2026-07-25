@@ -1,7 +1,7 @@
 # Architecture Test Strategy (v0)
 
 ## Status
-- Phase: Phase 6 live-runtime implementation complete; ADR-0006 live Port-ingress evidence active.
+- Phase: Phase 6 live-runtime implementation complete; ADR-0008 closed-capability evidence active.
 - Date: July 25, 2026.
 
 ## Purpose
@@ -21,8 +21,13 @@ architecture before each implementation slice begins.
 ### L1: Command Emission Tests
 - Validate Message-to-Command mapping.
 - Ensure command intent is explicit and complete for each transition.
+- Validate boundary work retains its matching EffectCapability or
+  SourceCapability provenance through interpretation without exposing private
+  identity as application data.
 - Inspect typed descriptors without executing live work and exercise pure message
   mappers with equivalent outcomes or events.
+- Compile-contract tests must prove raw EffectDescriptors cannot construct
+  Effect Commands and raw SourceDescriptors cannot construct Subscriptions.
 
 ### L2: Descriptor, Layer, and Driver Contract Tests
 - Validate the public descriptor and Command boundary cannot substitute an
@@ -56,7 +61,16 @@ architecture before each implementation slice begins.
 - Validate a non-terminal descriptor passes through its Layers before only the
   resulting terminal descriptor reaches a Driver or controlled behavior.
 - Validate composed SourceDescriptors automatically lower to SourcePlans and
+  one outer SourceCapability declares only the lowered terminal requirement;
   applications bind only terminal descriptors.
+- Validate every Program-declared Effect and Source capability has exactly one
+  applicable live binding before the live profile starts and one controlled
+  behavior before the controlled profile starts. Cover missing, duplicate,
+  ambiguous, foreign, and type-incompatible cases.
+- Validate type-wide Drivers may satisfy multiple declared capabilities of one
+  terminal type, while exact adapters select one SourceCapability identity.
+- Validate changing only Source capability under an equal Subscription identity
+  and descriptor replaces the Source.
 - Validate Drivers remain terminal, selected by live-profile assembly, and
   runtime-owned.
 - Validate normal EOF alone invokes pure Decoder finalization exactly once,
@@ -81,9 +95,18 @@ architecture before each implementation slice begins.
   resolves its waiter to `R::Reply` directly, without a requester Component
   Message or RequestOutcome. Concurrent same-typed requests must remain distinct
   when Replies complete in a different order.
-- Confirm `ProgramBuilder::build()` rejects exactly the explicitly knowable
-  assembly errors and permits Port cycles without claiming a closed static
-  dependency graph.
+- Confirm `ProgramBuilder::build()` rejects logical assembly errors, closes the
+  Program-issued capability inventory, and permits Port cycles without
+  claiming field introspection or static enumeration of every message edge.
+- Confirm both profile builders reject incomplete declared Effect/Source
+  bindings synchronously, including dependencies first used after a later
+  Message.
+- Confirm initial foreign Effect, Source, ComponentRef, and Port values fail
+  profile build, while deliberately hidden later foreign values fault before
+  any terminal behavior runs.
+- Confirm exact stream identity disambiguates equal descriptors in both
+  profiles and works beneath a composed Source whose terminal descriptor is
+  `StreamDescriptor<T>`.
 
 ### L4: Cancellation and Shutdown Tests
 - Validate Drain atomically closes ingress and Source admission, stops
@@ -140,13 +163,14 @@ architecture before each implementation slice begins.
 - Validate that runtime scheduling semantics can run in controlled time.
 - Validate faster-than-real-time execution paths for simulation workloads.
 - Confirm determinism across repeated accelerated runs with identical inputs.
-- Confirm controlled execution never falls back to a live Driver when terminal
-  controlled behavior is unbound. A bound effect, Source, or timer merely
-  awaiting future harness input or logical time remains a `pending_later`
-  obligation rather than being confused with missing behavior.
-- Confirm missing controlled terminal behavior faults at that boundary without
-  invoking a message mapper, leaves state and trace inspectable, permits
-  cancellation, and prevents resumed driving.
+- Confirm controlled profile build rejects every declared terminal requirement
+  without controlled behavior and never falls back to a live Driver. A bound
+  effect, Source, or timer merely awaiting future harness input or logical time
+  remains a `pending_later` obligation rather than being confused with missing
+  behavior.
+- Confirm a deliberately hidden foreign or internally inconsistent capability
+  faults before controlled behavior or a message mapper, leaves state and trace
+  inspectable, permits cancellation, and prevents resumed driving.
 - Confirm equal-time work follows logical deadline plus deterministic insertion
   ticket, including declaration order, harness order, and Component-identity
   ordering rather than registration order.
@@ -183,9 +207,21 @@ architecture before each implementation slice begins.
   typed Error data must enter through explicit Component Messages or typed
   boundary outcomes/events where behaviorally relevant.
 - Live mechanism faults that cannot truthfully construct typed application
-  data, including Driver panic, unavailable dynamic binding, and exhausted
-  one-shot `mpsc`, must instead close admission, cancel/join owned work, and
-  surface `RuntimeError` through the host boundary.
+  data, including Driver panic, a deliberately hidden foreign capability, and
+  exhausted one-shot `mpsc`, must instead close admission, cancel/join owned
+  work, and surface `RuntimeError` through the host boundary. A legitimate
+  declared missing binding is a synchronous profile-build error.
+- Closed-capability coverage must prove:
+  - a dependency used only after a later Message still requires live and
+    controlled behavior at profile build;
+  - raw Effect and Source descriptors have no public issuance path;
+  - initial foreign capabilities and foreign exact bindings fail build, while
+    a later hidden foreign capability faults before terminal behavior;
+  - two exact Source capabilities of one descriptor type bind independently;
+  - a composed Source capability declares only its sealed terminal requirement;
+    and
+  - standard-output macros, HTTP pipelines, and stream helpers cannot bypass
+    capability declaration.
 - Component interaction coverage for `Command::notify` (one-way) and the
   `Command::request` / `Command::request_with` request/reply pair. Phase 5
   activates only the successful Request/Reply path; dropped-reply policy

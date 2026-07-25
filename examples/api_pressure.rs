@@ -192,8 +192,14 @@ struct PersistError {
 
 /// Immutable logical wiring for one Counter Component instance.
 struct Counter {
+    /// Declared authority for the ongoing increment source.
+    increment_source: SourceCapability<StreamDescriptor<u64>>,
+
     /// Descriptor for the ongoing external increment source.
     increments: StreamDescriptor<u64>,
+
+    /// Declared authority for finite persistence effects.
+    persistence: EffectCapability<PersistCount>,
 
     /// Named dependency on any provider of the quota protocol.
     quota: Port<QuotaProtocol>,
@@ -231,6 +237,7 @@ impl Component for Counter {
                     RequestOutcome::Replied(Reservation::Granted { amount }) => {
                         model.count += amount;
                         Command::effect_with(
+                            &self.persistence,
                             PersistCount { value: model.count },
                             CounterMessage::Persisted,
                         )
@@ -265,6 +272,7 @@ impl Component for Counter {
         // reconcile this desired source across transitions without exposing a
         // task, receiver, or cancellation handle to the Component.
         Subscriptions::one(Subscription::source_with(
+            &self.increment_source,
             SubscriptionId::new(INCREMENT_SUBSCRIPTION),
             self.increments.clone(),
             |event| match event {
@@ -311,11 +319,16 @@ struct AppRefs {
 
     /// Address used to inspect Quota's independently owned state.
     quota: ComponentRef<Quota>,
+
+    /// Exact source capability used by live and controlled stream adapters.
+    increments: SourceCapability<StreamDescriptor<u64>>,
 }
 
 /// Declares the logical application graph shared by every execution profile.
 fn program(increments: StreamDescriptor<u64>) -> (Program, AppRefs) {
     let mut program = Program::builder();
+    let increment_source = program.source::<StreamDescriptor<u64>>();
+    let persistence = program.effect::<PersistCount>();
 
     // A named Port is immutable dependency wiring. Naming allows another Quota
     // protocol instance to coexist without a global “one provider per type” rule.
@@ -329,14 +342,20 @@ fn program(increments: StreamDescriptor<u64>) -> (Program, AppRefs) {
     let counter = program.component(
         ComponentId::new("counter"),
         Counter {
+            increment_source: increment_source.clone(),
             increments: increments.clone(),
+            persistence,
             quota: quota_port,
         },
     );
 
     (
         program.build().expect("the example graph is valid"),
-        AppRefs { counter, quota },
+        AppRefs {
+            counter,
+            quota,
+            increments: increment_source,
+        },
     )
 }
 
@@ -351,9 +370,10 @@ async fn live_shape() -> Result<(), RuntimeError> {
     let (program, refs) = program(increments.clone());
 
     // Runtime assembly owns the operational channel receiver and effect
-    // executor. The logical descriptors inside Components stay inert.
+    // executor. The logical capabilities and descriptors inside Components
+    // stay inert.
     let runtime = LiveRuntime::builder(program)
-        .bind_mpsc(increments, receiver)
+        .bind_mpsc(&refs.increments, receiver)
         .bind_effect::<PersistCount, _>(LivePersistence)
         .build()?;
 
@@ -381,13 +401,13 @@ fn controlled_shape() -> Result<(), RuntimeError> {
     let (program, refs) = program(increments.clone());
 
     let mut runtime = ControlledRuntime::builder(program)
-        .control_stream(increments.clone())
+        .control_stream(&refs.increments)
         .control_effect::<PersistCount>()
         .build()?;
 
     // This single controlled input drives the full causal chain:
     // Increment -> quota request -> Quota transition -> reply -> Counter transition.
-    runtime.emit_stream(&increments, 3)?;
+    runtime.emit_stream(&refs.increments, 3)?;
     runtime.run_until_idle()?;
 
     // The world-facing persistence intent is now pending, rather than having
@@ -453,9 +473,13 @@ mod tests {
     fn transition_and_subscription_shape_are_directly_testable() {
         let increments = StreamDescriptor::named(INCREMENT_INPUT);
         let mut program = Program::builder();
+        let increment_source = program.source::<StreamDescriptor<u64>>();
+        let persistence = program.effect::<PersistCount>();
         let quota = program.port(PortId::new(QUOTA));
         let component = Counter {
+            increment_source,
             increments: increments.clone(),
+            persistence,
             quota,
         };
         let mut model = component.init().model;

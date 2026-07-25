@@ -45,7 +45,11 @@ struct CliTimeModel {
     current_time: Option<DateTime<Utc>>,
 }
 
-struct CliTimeServer;
+struct CliTimeServer {
+    http: EffectCapability<HttpRequest>,
+    stdout: EffectCapability<PrintStdout>,
+    stderr: EffectCapability<PrintStderr>,
+}
 
 impl Component for CliTimeServer {
     type Model = CliTimeModel;
@@ -63,7 +67,7 @@ impl Component for CliTimeServer {
                     .on_response()
                     .require_success()
                     .json::<TimeResponse>()
-                    .into_command();
+                    .into_command(&self.http);
                 let tick = Command::after(Duration::from_secs(1), Message::Tick);
 
                 Command::batch([get, tick])
@@ -76,11 +80,13 @@ impl Component for CliTimeServer {
             Message::TimeRetrieved(time) => {
                 model.current_time = Some(time);
 
-                samara::println!("Got time: {time}")
+                samara::println!(&self.stdout, "Got time: {time}")
             }
 
             // Couldn't get the time, request an error be printed.
-            Message::FailedToGetTime(error) => samara::eprintln!("Failed to get time: {error}"),
+            Message::FailedToGetTime(error) => {
+                samara::eprintln!(&self.stderr, "Failed to get time: {error}")
+            }
         }
     }
 }
@@ -115,8 +121,22 @@ async fn main() -> Result<()> {
     // Start building a Samara program, which is a declaration of the topology.
     let mut builder = Program::builder();
 
+    // Declare every world boundary before constructing Components. These inert
+    // capabilities are both the dependency declarations and the only way the
+    // Component can issue the corresponding Effects.
+    let http = builder.effect::<HttpRequest>();
+    let stdout = builder.effect::<PrintStdout>();
+    let stderr = builder.effect::<PrintStderr>();
+
     // Create a time-server component.
-    let time_server = builder.component(ComponentId::new("TimeServer"), CliTimeServer);
+    let time_server = builder.component(
+        ComponentId::new("TimeServer"),
+        CliTimeServer {
+            http,
+            stdout,
+            stderr,
+        },
+    );
 
     // Declare the existence of a Port on the runtime, which exposes the TimeServerProtocol.
     let port = builder.port::<TimeServerProtocol>(PortId::new("TimeServer"));

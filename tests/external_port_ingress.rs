@@ -119,7 +119,11 @@ impl From<HostProtocolMessage> for ProviderMessage {
     }
 }
 
-struct Provider;
+struct Provider {
+    ingress_observed: EffectCapability<IngressObserved>,
+    request_observed: EffectCapability<RequestObserved>,
+    await_release: EffectCapability<AwaitRelease>,
+}
 
 impl Component for Provider {
     type Model = u64;
@@ -137,7 +141,7 @@ impl Component for Provider {
             }
             ProviderMessage::Protocol(HostProtocolMessage::RecordIngress(value))
             | ProviderMessage::RecordIngressDirect(value) => {
-                Command::effect_discarding_outcome(IngressObserved(value))
+                Command::effect_discarding_outcome(&self.ingress_observed, IngressObserved(value))
             }
             ProviderMessage::Protocol(HostProtocolMessage::Read(request)) => {
                 Command::reply(request.reply_to, *model)
@@ -149,7 +153,9 @@ impl Component for Provider {
                     Duration::from_millis(10)
                 };
                 Command::batch([
-                    Command::effect_with(RequestObserved, |_| ProviderMessage::Signalled),
+                    Command::effect_with(&self.request_observed, RequestObserved, |_| {
+                        ProviderMessage::Signalled
+                    }),
                     Command::after(
                         delay,
                         ProviderMessage::CompleteDelayed {
@@ -162,6 +168,7 @@ impl Component for Provider {
             ProviderMessage::Protocol(HostProtocolMessage::Held(request)) => {
                 let reply_to = request.reply_to;
                 Command::effect_with(
+                    &self.await_release,
                     AwaitRelease(request.request.0),
                     move |outcome| match outcome {
                         EffectOutcome::Succeeded(value) => {
@@ -173,7 +180,9 @@ impl Component for Provider {
                 )
             }
             ProviderMessage::Protocol(HostProtocolMessage::Never(_request)) => {
-                Command::effect_with(RequestObserved, |_| ProviderMessage::Signalled)
+                Command::effect_with(&self.request_observed, RequestObserved, |_| {
+                    ProviderMessage::Signalled
+                })
             }
             ProviderMessage::Protocol(HostProtocolMessage::Crash(_request)) => {
                 panic!("provider crashed while handling an external request")
@@ -225,6 +234,14 @@ impl EffectDriver<AwaitRelease> for ReleaseDriver {
     }
 }
 
+struct ImmediateReleaseDriver;
+
+impl EffectDriver<AwaitRelease> for ImmediateReleaseDriver {
+    fn execute(&self, descriptor: AwaitRelease) -> BoxFuture<Result<u64, Infallible>> {
+        Box::pin(async move { Ok(descriptor.0) })
+    }
+}
+
 #[derive(Debug)]
 struct IngressObserved(u64);
 
@@ -260,7 +277,17 @@ impl EffectDriver<RequestObserved> for ObservationDriver {
 fn program() -> (Program, Port<HostProtocol>) {
     let mut builder = Program::builder();
     let port = builder.port(PortId::new("host"));
-    let provider = builder.component(ComponentId::new("provider"), Provider);
+    let ingress_observed = builder.effect::<IngressObserved>();
+    let request_observed = builder.effect::<RequestObserved>();
+    let await_release = builder.effect::<AwaitRelease>();
+    let provider = builder.component(
+        ComponentId::new("provider"),
+        Provider {
+            ingress_observed,
+            request_observed,
+            await_release,
+        },
+    );
     builder.bind_port(&port, &provider);
     (builder.build().expect("valid Program"), port)
 }
@@ -280,19 +307,37 @@ fn runtime_with_observer(
     program: Program,
 ) -> (LiveRuntime, tokio::sync::mpsc::UnboundedReceiver<()>) {
     let (observed, observations) = tokio::sync::mpsc::unbounded_channel();
+    let (ingress_observed, _ingress_observations) = tokio::sync::mpsc::unbounded_channel();
     let runtime = LiveRuntime::builder(program)
         .bind_effect::<RequestObserved, _>(ObservationDriver { observed })
+        .bind_effect::<AwaitRelease, _>(ImmediateReleaseDriver)
+        .bind_effect::<IngressObserved, _>(IngressObserver {
+            observed: ingress_observed,
+        })
         .build()
         .expect("valid live bindings");
     (runtime, observations)
 }
 
+fn runtime_with_default_effects(program: Program) -> LiveRuntime {
+    let (request_observed, _request_observations) = tokio::sync::mpsc::unbounded_channel();
+    let (ingress_observed, _ingress_observations) = tokio::sync::mpsc::unbounded_channel();
+    LiveRuntime::builder(program)
+        .bind_effect::<RequestObserved, _>(ObservationDriver {
+            observed: request_observed,
+        })
+        .bind_effect::<AwaitRelease, _>(ImmediateReleaseDriver)
+        .bind_effect::<IngressObserved, _>(IngressObserver {
+            observed: ingress_observed,
+        })
+        .build()
+        .expect("valid default live bindings")
+}
+
 #[test]
 fn live_port_handle_rejects_a_port_from_another_program() {
     let (program, _) = program();
-    let runtime = LiveRuntime::builder(program)
-        .build()
-        .expect("valid runtime");
+    let runtime = runtime_with_default_effects(program);
 
     let mut foreign_builder = Program::builder();
     let foreign_port = foreign_builder.port::<HostProtocol>(PortId::new("host"));
@@ -306,7 +351,7 @@ fn live_port_handle_rejects_a_port_from_another_program() {
 #[tokio::test]
 async fn live_port_handle_notifies_and_returns_typed_request_replies() -> Result<(), RuntimeError> {
     let (program, port) = program();
-    let runtime = LiveRuntime::builder(program).build()?;
+    let runtime = runtime_with_default_effects(program);
     let host = runtime.port_handle(&port)?;
     let task = runtime.spawn();
 
@@ -333,11 +378,26 @@ async fn live_port_handle_notifies_and_returns_typed_request_replies() -> Result
 async fn cloned_port_handles_deliver_each_notification_exactly_once() -> Result<(), RuntimeError> {
     let mut builder = Program::builder();
     let port = builder.port::<HostProtocol>(PortId::new("cloned-host"));
-    let provider = builder.component(ComponentId::new("cloned-provider"), Provider);
+    let ingress_observed = builder.effect::<IngressObserved>();
+    let request_observed = builder.effect::<RequestObserved>();
+    let await_release = builder.effect::<AwaitRelease>();
+    let provider = builder.component(
+        ComponentId::new("cloned-provider"),
+        Provider {
+            ingress_observed,
+            request_observed,
+            await_release,
+        },
+    );
     builder.bind_port(&port, &provider);
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
+    let (request_observed, _request_observations) = tokio::sync::mpsc::unbounded_channel();
     let runtime = LiveRuntime::builder(builder.build().expect("valid cloned-handle Program"))
         .bind_effect::<IngressObserved, _>(IngressObserver { observed })
+        .bind_effect::<RequestObserved, _>(ObservationDriver {
+            observed: request_observed,
+        })
+        .bind_effect::<AwaitRelease, _>(ImmediateReleaseDriver)
         .build()?;
     let host = runtime.port_handle(&port)?;
     let task = runtime.spawn();
@@ -424,7 +484,7 @@ async fn cancel_wakes_an_external_request_waiter_without_inventing_a_reply()
 #[tokio::test]
 async fn dropping_an_unpolled_request_admits_no_runtime_work() -> Result<(), RuntimeError> {
     let (program, port) = program();
-    let runtime = LiveRuntime::builder(program).build()?;
+    let runtime = runtime_with_default_effects(program);
     let host = runtime.port_handle(&port)?;
     let task = runtime.spawn();
 
@@ -444,10 +504,18 @@ async fn dropping_the_waiter_does_not_cancel_runtime_owned_request_work() -> Res
     let (program, port) = program();
     let (started, request_started) = tokio::sync::oneshot::channel();
     let (release, request_release) = tokio::sync::oneshot::channel();
+    let (request_observed, _request_observations) = tokio::sync::mpsc::unbounded_channel();
+    let (ingress_observed, _ingress_observations) = tokio::sync::mpsc::unbounded_channel();
     let runtime = LiveRuntime::builder(program)
         .bind_effect::<AwaitRelease, _>(ReleaseDriver {
             started: Mutex::new(Some(started)),
             release: Mutex::new(Some(request_release)),
+        })
+        .bind_effect::<RequestObserved, _>(ObservationDriver {
+            observed: request_observed,
+        })
+        .bind_effect::<IngressObserved, _>(IngressObserver {
+            observed: ingress_observed,
         })
         .build()?;
     let host = runtime.port_handle(&port)?;
@@ -502,11 +570,26 @@ async fn dropping_the_runtime_owner_wakes_an_external_request_waiter() -> Result
 async fn component_and_port_ingress_share_one_shutdown_cutoff() -> Result<(), RuntimeError> {
     let mut builder = Program::builder();
     let port = builder.port::<HostProtocol>(PortId::new("race-host"));
-    let provider = builder.component(ComponentId::new("race-provider"), Provider);
+    let ingress_observed = builder.effect::<IngressObserved>();
+    let request_observed = builder.effect::<RequestObserved>();
+    let await_release = builder.effect::<AwaitRelease>();
+    let provider = builder.component(
+        ComponentId::new("race-provider"),
+        Provider {
+            ingress_observed,
+            request_observed,
+            await_release,
+        },
+    );
     builder.bind_port(&port, &provider);
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
+    let (request_observed, _request_observations) = tokio::sync::mpsc::unbounded_channel();
     let runtime = LiveRuntime::builder(builder.build().expect("valid race Program"))
         .bind_effect::<IngressObserved, _>(IngressObserver { observed })
+        .bind_effect::<RequestObserved, _>(ObservationDriver {
+            observed: request_observed,
+        })
+        .bind_effect::<AwaitRelease, _>(ImmediateReleaseDriver)
         .build()?;
     let component = runtime.handle(&provider)?;
     let protocol = runtime.port_handle(&port)?;
@@ -561,7 +644,7 @@ async fn component_and_port_ingress_share_one_shutdown_cutoff() -> Result<(), Ru
 #[tokio::test]
 async fn a_runtime_fault_is_returned_to_the_external_request_waiter() -> Result<(), RuntimeError> {
     let (program, port) = program();
-    let runtime = LiveRuntime::builder(program).build()?;
+    let runtime = runtime_with_default_effects(program);
     let host = runtime.port_handle(&port)?;
     let task = runtime.spawn();
 
@@ -587,7 +670,7 @@ async fn a_runtime_fault_is_returned_to_the_external_request_waiter() -> Result<
 #[tokio::test]
 async fn request_conversion_panics_are_contained_as_runtime_faults() -> Result<(), RuntimeError> {
     let (program, port) = program();
-    let runtime = LiveRuntime::builder(program).build()?;
+    let runtime = runtime_with_default_effects(program);
     let host = runtime.port_handle(&port)?;
     let task = runtime.spawn();
 
@@ -613,7 +696,7 @@ async fn request_conversion_panics_are_contained_as_runtime_faults() -> Result<(
 async fn notification_conversion_panics_are_contained_as_runtime_faults() -> Result<(), RuntimeError>
 {
     let (program, port) = program();
-    let runtime = LiveRuntime::builder(program).build()?;
+    let runtime = runtime_with_default_effects(program);
     let host = runtime.port_handle(&port)?;
     let task = runtime.spawn();
 

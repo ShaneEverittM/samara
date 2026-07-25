@@ -8,11 +8,14 @@ use samara::prelude::*;
 
 #[test]
 fn print_macros_preserve_familiar_formatting_and_select_the_stream() {
+    let mut program = Program::builder();
+    let stdout = program.effect::<PrintStdout>();
+    let stderr = program.effect::<PrintStderr>();
     let subject = String::from("Samara");
-    let print: Command<()> = samara::print!("hello {subject} {}", 1 + 1);
-    let println: Command<()> = samara::println!();
-    let eprint: Command<()> = samara::eprint!("error: {code:04}", code = 7);
-    let eprintln: Command<()> = samara::eprintln!("{subject}\n");
+    let print: Command<()> = samara::print!(&stdout, "hello {subject} {}", 1 + 1);
+    let println: Command<()> = samara::println!(&stdout);
+    let eprint: Command<()> = samara::eprint!(&stderr, "error: {code:04}", code = 7);
+    let eprintln: Command<()> = samara::eprintln!(&stderr, "{subject}\n");
 
     assert_eq!(
         print.effect_intent::<PrintStdout>().unwrap().as_str(),
@@ -41,7 +44,9 @@ enum PrintMessage {
     Start,
 }
 
-struct PrintProbe;
+struct PrintProbe {
+    stdout: EffectCapability<PrintStdout>,
+}
 
 impl Component for PrintProbe {
     type Model = PrintModel;
@@ -57,14 +62,15 @@ impl Component for PrintProbe {
         PrintMessage::Start: Self::Message,
     ) -> Command<Self::Message> {
         model.transitions += 1;
-        samara::println!("transition {}", model.transitions)
+        samara::println!(&self.stdout, "transition {}", model.transitions)
     }
 }
 
 #[test]
 fn controlled_discarded_outcome_is_traced_without_scheduling_a_message() {
     let mut program = Program::builder();
-    let probe = program.component(ComponentId::new("discarded-print"), PrintProbe);
+    let stdout = program.effect::<PrintStdout>();
+    let probe = program.component(ComponentId::new("discarded-print"), PrintProbe { stdout });
     let mut runtime = ControlledRuntime::builder(program.build().unwrap())
         .control_effect::<PrintStdout>()
         .build()
@@ -130,19 +136,13 @@ fn controlled_discarded_cancellation_is_traced_without_scheduling_a_message() {
 }
 
 #[test]
-fn discarded_outcome_does_not_hide_a_missing_controlled_binding() {
-    let (program, probe) = gated_program();
-    let mut runtime = ControlledRuntime::builder(program).build().unwrap();
-
-    runtime.send(&probe, GateMessage::Start).unwrap();
-    let error = runtime.run_until_idle().unwrap_err();
-
-    assert_eq!(error.component(), Some(probe.id()));
-    assert!(
-        error
-            .to_string()
-            .contains("missing controlled terminal Effect behavior")
-    );
+fn discarded_outcome_dependency_is_validated_during_controlled_build() {
+    let (program, _probe) = gated_program();
+    let error = ControlledRuntime::builder(program)
+        .build()
+        .err()
+        .expect("the declared Effect must be controlled before execution");
+    assert!(error.to_string().contains("GateEffect"));
 }
 
 #[derive(Debug)]
@@ -158,7 +158,9 @@ enum GateMessage {
     Noop,
 }
 
-struct GateProbe;
+struct GateProbe {
+    effect: EffectCapability<GateEffect>,
+}
 
 impl Component for GateProbe {
     type Model = ();
@@ -170,7 +172,7 @@ impl Component for GateProbe {
 
     fn update(&self, _model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
         match message {
-            GateMessage::Start => Command::effect_discarding_outcome(GateEffect),
+            GateMessage::Start => Command::effect_discarding_outcome(&self.effect, GateEffect),
             GateMessage::Noop => Command::none(),
         }
     }
@@ -212,7 +214,8 @@ impl EffectDriver<GateEffect> for GatedDriver {
 
 fn gated_program() -> (Program, ComponentRef<GateProbe>) {
     let mut program = Program::builder();
-    let probe = program.component(ComponentId::new("discarded-gate"), GateProbe);
+    let effect = program.effect::<GateEffect>();
+    let probe = program.component(ComponentId::new("discarded-gate"), GateProbe { effect });
     (program.build().unwrap(), probe)
 }
 

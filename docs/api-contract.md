@@ -1,6 +1,7 @@
 # Samara v0 Milestone API Contract
 
-- Status: Phase 6 live-runtime implementation complete; live Port-ingress and host-lifecycle contracts implemented, conformance audit pending
+- Status: Phase 6 live-runtime implementation complete; ADR-0008
+  closed-capability contract accepted for implementation
 - Date: July 25, 2026
 - Scope: Change-controlled public API slices for staged implementation
 
@@ -106,9 +107,9 @@ The July 25 API revision adopts one consistent continuation convention without
 changing these lifecycle semantics or the concrete
 `Component::update(...) -> Command<Message>` boundary:
 
-- `Command::effect(effect)`, `Command::request(port, request)`,
-  `Subscription::source(id, descriptor)`, and
-  `HttpResponsePipeline::into_command()` use the standard
+- `Command::effect(&capability, effect)`, `Command::request(port, request)`,
+  `Subscription::source(&capability, id, descriptor)`, and
+  `HttpResponsePipeline::into_command(&capability)` use the standard
   `Message: From<BoundaryValue>` conversion as their default mapper.
 - Their `effect_with`, `request_with`, `source_with`, and
   `into_command_with` counterparts accept an explicit pure mapper.
@@ -146,10 +147,12 @@ controlled-runtime behavior implemented and accepted in Phase 5:
 - Controlled execution always records an in-memory structural trace with
   logical time, parentless roots, and exactly one immediate causal parent for
   every non-root record.
-- `ProgramBuilder::build()` is fallible for explicitly knowable assembly
-  errors, without claiming a closed static dependency graph.
-- Missing controlled terminal behavior faults the run at that boundary and
-  never falls through to a live Driver.
+- `ProgramBuilder::build()` is fallible for explicitly knowable logical
+  assembly errors. ADR-0008 subsequently closes the world-boundary capability
+  inventory and requires complete profile binding validation before execution.
+- A deliberately hidden foreign capability still faults before controlled
+  behavior when first observed; controlled execution never falls through to a
+  live Driver.
 - Work reports count semantic obligations as `pending_now` and
   `pending_later`, not tasks, queues, or other runtime mechanics.
 - Phase 5 implements only the successful typed Request/Reply lifecycle through
@@ -305,8 +308,9 @@ streams. These descriptors add no formatting, logging, buffering, routing, or
 retry policy to the runtime.
 
 The root-qualified `samara::print!`, `samara::println!`, `samara::eprint!`, and
-`samara::eprintln!` macros accept familiar Rust formatting syntax, own the
-resulting `String` in the matching descriptor, and return an ordinary
+`samara::eprintln!` macros take the matching `EffectCapability` as their first
+argument, accept familiar Rust formatting syntax, own the resulting `String` in
+the matching descriptor, and return an ordinary
 `Command::effect_discarding_outcome`. They are deliberately absent from
 `samara::prelude`; qualification makes the deferred Samara effect visible at
 the call site. The returned `Command` remains `#[must_use]` because dropping it
@@ -371,12 +375,12 @@ modifies the request.
 The non-exhaustive `HttpResponseError` distinguishes raw `HttpError`,
 status-policy rejection, and JSON decoding while leaving room for later
 explicit response operations. Cancellation remains `EffectOutcome::Cancelled`
-rather than becoming response-error data. `into_command()` uses the canonical
-`Message: From<EffectOutcome<...>>` conversion, while `into_command_with`
-accepts an explicit mapper. Both lower the complete chain to one ordinary
-Effect Command for the original `HttpRequest`; the pure response steps and
-application mapper each run at most once after the raw
-terminal outcome.
+rather than becoming response-error data. `into_command(&http)` uses the
+canonical `Message: From<EffectOutcome<...>>` conversion, while
+`into_command_with(&http, mapper)` accepts an explicit mapper. Both lower the
+complete chain to one ordinary Effect Command for the original `HttpRequest`;
+the pure response steps and application mapper each run at most once after the
+raw terminal outcome.
 
 Consequently, live assembly still binds only `HttpRequest`, controlled tests
 still claim `next_effect::<HttpRequest>()`, and the generic trace records only
@@ -384,6 +388,52 @@ that terminal raw outcome. Status and JSON failures are deterministic mapper
 behavior delivered through the resulting Component Message, not additional
 runtime-traced Effect failures. A general `EffectPlan` and outer-outcome
 tracing remain deferred.
+
+## Accepted for ADR-0008: Closed Program Capabilities
+
+[ADR-0008](adr/0008-closed-program-capabilities.md) closes Program assembly
+around values issued by one `ProgramBuilder`:
+
+- `effect::<D>() -> EffectCapability<D>` and
+  `source::<S>() -> SourceCapability<S>` both declare a dependency and produce
+  the only public authority that can issue work through that dependency.
+- Component references and Ports remain the corresponding Program-issued
+  values for concrete and provider-neutral Component communication.
+- Component configuration stores these inert values. They expose no I/O,
+  runtime handle, Driver, or controlled-world operation.
+- `Command::effect(&capability, descriptor)`,
+  `Command::effect_with(&capability, descriptor, mapper)`, and
+  `Command::effect_discarding_outcome(&capability, descriptor)` are the only
+  public Effect issuance paths.
+- `Subscription::source(&capability, id, descriptor)` and
+  `Subscription::source_with(&capability, id, descriptor, mapper)` are the only
+  public Source issuance paths.
+- Capability identity participates in Source reconciliation. Equal
+  Subscription identity and descriptor with another Source capability replaces
+  the Source.
+- One `SourceCapability<Framed<S, D>>` declaration records the terminal `S`
+  requirement. Applications do not separately declare or bind the inner
+  descriptor or Layer stack.
+
+After `ProgramBuilder::build()` consumes the builder, the logical capability
+set is closed. `LiveRuntimeBuilder::build()` and
+`ControlledRuntimeBuilder::build()` synchronously require exactly one
+applicable terminal behavior for every declaration. Normal Drivers and
+controlled registrations are type-wide; the one-shot `mpsc` bridge uses an
+exact Source capability through `bind_mpsc(&capability, receiver)` and
+`control_stream(&capability)`. Controlled `emit_stream` and `close_stream`
+operations select that same exact capability. These exact APIs also accept a
+composed capability such as `SourceCapability<Framed<StreamDescriptor<T>, D>>`;
+raw items and ending enter at the terminal stream and traverse the declared
+Layers.
+
+Raw descriptors cannot construct Commands or Subscriptions. HTTP pipeline
+lowering, standard-output macros, and Source bridge helpers also require their
+matching capability so a convenience API cannot reopen an undeclared path.
+Initial foreign Effect, Source, ComponentRef, and Port capabilities and foreign
+exact bindings fail profile build. A deliberately hidden foreign capability
+first reached after execution starts is a Component-conformance fault rejected
+before Driver or controlled behavior, not a supported form of dynamic assembly.
 
 ## Deliberately Unfrozen Surfaces
 
@@ -397,10 +447,10 @@ accidental promises made by a placeholder type or variant:
   whole-scope Cancel/fault cutovers.
 - The complete public Command/conformance inspection API, including sends,
   timers, batches, and stored message mappers.
-- The exact `ProgramBuilder::build()` error taxonomy beyond ADR-0003's
-  validation scope.
-- The general Rust shape of Layers, SourcePlan lowering, and live/controlled
-  profile bindings beyond ADR-0003's application-facing behavior.
+- The detailed error taxonomy for closed logical assembly, complete
+  profile-binding validation, and later foreign-capability conformance faults.
+- General Layer and profile-binding abstractions beyond ADR-0008's type-wide
+  Driver and exact Source-capability forms.
 - Descriptor/message payload tracing, typed trace projections, streaming and
   public live observer APIs, and any durable trace representation. A public
   live observer is explicitly outside v0 under ADR-0004.
@@ -451,7 +501,7 @@ Phase 2 is ready for human acceptance when:
 2. All three reference Components compile against `samara`.
 3. The executable Phase 2 tests and doctests pass, including the `ReplyTo`
    `#[must_use]` compile contract.
-4. Every V1-V11 requirement maps to named scenarios and a planned phase.
+4. Every V1-V12 requirement maps to named scenarios and a planned phase.
 5. Missing semantics and non-executable promises are listed rather than hidden
    behind passing placeholder tests.
 6. Formatting, documentation, Clippy, and stale-vocabulary checks pass.

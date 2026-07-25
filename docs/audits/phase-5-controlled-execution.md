@@ -5,6 +5,11 @@
 - Governing phase: `docs/goal-mode-checklist.md`, Phase 5
 - Baseline: commit `8158f1b`
 
+> Historical note: ADR-0008 later added Program-issued Effect and Source
+> capabilities and complete profile-build validation. API spellings and the
+> open-dependency qualification recorded in this accepted phase snapshot are
+> intentionally preserved as historical evidence, not current guidance.
+
 ## Outcome
 
 The bounded Phase 5 controlled runtime is implemented. One topology-neutral

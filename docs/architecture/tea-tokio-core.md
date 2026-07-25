@@ -1,7 +1,8 @@
 # TEA + Tokio Core Architecture (v0)
 
 ## Status
-- Phase: Phase 6 live-runtime implementation complete; ADR-0006 live Port-ingress and ADR-0007 host-lifecycle contracts implemented, conformance audit pending.
+- Phase: Phase 6 live-runtime implementation complete; ADR-0008 closed Program
+  capabilities accepted for implementation.
 - Date: July 25, 2026.
 - Library scope: `samara` is library-first.
 
@@ -28,7 +29,8 @@
 - A Component implementation is the Rust type and `impl Component` that define
   one kind of Component behavior.
 - A configured value of that implementation contains immutable logical
-  configuration and wiring, such as Ports and SourceDescriptors.
+  configuration and wiring, such as Ports, EffectCapabilities,
+  SourceCapabilities, and SourceDescriptors.
 - Component methods receive that value immutably. Behaviorally relevant mutable
   state belongs in `Model`; interior mutability must not create hidden state,
   effects, or transition inputs.
@@ -48,9 +50,10 @@
 ### Command Contract
 - A `Command` is an inert value describing finite work requested by a
   transition; it never performs that work itself.
-- Commands may carry an EffectDescriptor with a one-shot message mapper or an
-  explicit discarded-outcome mode, schedule a Message, communicate with
-  another Component, issue a correlated Request, or emit a Reply.
+- Commands may carry a matching EffectCapability and EffectDescriptor with a
+  one-shot message mapper or an explicit discarded-outcome mode, schedule a
+  Message, communicate with another Component, issue a correlated Request, or
+  emit a Reply.
 - Command intent must remain explicit, inspectable, and testable in isolation.
 - Command and EffectDescriptor are not synonyms: a Command is the broader
   finite-work envelope.
@@ -72,6 +75,29 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
     `model` + `message` must produce equivalent state and Command intent.
   - Total for supported messages: no silent drops.
 
+### Closed Program Capability Contract
+
+- `ProgramBuilder` is the only public issuer of ComponentRef, Port,
+  `EffectCapability<D>`, and `SourceCapability<S>` values.
+- Capability issuance is the dependency declaration. Components store these
+  inert values in immutable configuration; no separate dependency manifest may
+  drift from actual use.
+- `ProgramBuilder::build()` closes the capability set. Execution may issue new
+  occurrences and Model-derived descriptor values but may not add Components,
+  Ports, Effects, or Sources.
+- A raw EffectDescriptor cannot construct an Effect Command and a raw
+  SourceDescriptor cannot construct a Subscription. Every public issuance path
+  and first-party helper requires the matching capability.
+- Live and controlled profile builders validate the complete declared terminal
+  requirement set synchronously. Missing, duplicate, ambiguous, foreign, and
+  type-incompatible bindings fail before execution.
+- Normal Driver and controlled registrations are type-wide. Exact resource
+  bridges such as one-shot Tokio `mpsc` bind one SourceCapability identity.
+- The closed inventory does not imply field reflection or static analysis of
+  every behavior-dependent message edge. A deliberately hidden foreign
+  capability faults before Driver or controlled behavior when first observed;
+  it does not extend the Program dynamically.
+
 ### EffectDescriptor and EffectDriver Contract
 - An `EffectDescriptor` is inert typed data describing one finite world-facing
   interaction. It need not be cloneable or comparable.
@@ -82,10 +108,11 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
   declaration that the Component discards the outcome. Discarding the outcome
   removes only the application continuation; it does not detach the effect
   from runtime ownership.
-- `Command::effect(effect)` obtains that mapper from
+- `Command::effect(&capability, effect)` obtains that mapper from
   `Message: From<EffectOutcome<Output, Error>>` when the outcome type has one
-  canonical Message meaning. `Command::effect_with(effect, mapper)` accepts an
-  explicit mapper for call-site-specific meaning or captured domain context.
+  canonical Message meaning.
+  `Command::effect_with(&capability, effect, mapper)` accepts an explicit mapper
+  for call-site-specific meaning or captured domain context.
   Both forms create the same runtime-owned effect obligation and stored
   one-shot continuation.
 - In live execution, an `EffectDriver<D>` is the terminal Adapter that realizes
@@ -103,19 +130,20 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
   instead: the future is cancelled, no EffectOutcome is manufactured, and no
   mapper is invoked. Drain never cancels an eligible finite effect merely to
   finish sooner.
-- The exact Rust shape used to bind profile-specific Drivers and controlled
-  behavior remains an API decision.
+- General profile-binding abstractions beyond ADR-0008's type-wide Driver and
+  exact Source-capability forms remain an API decision.
 
 ### SourceDescriptor, Subscription, and SourceDriver Contract
 - A `SourceDescriptor` is inert, typed, comparable configuration describing
   ongoing event production. Equality has reconciliation semantics.
-- A `Subscription` combines a stable Component-local identity, a
-  SourceDescriptor, and a pure reusable message mapper from `SourceEvent` to the
-  owning Component's Message. Declaring one starts no work.
-- `Subscription::source(id, descriptor)` obtains that mapper from
-  `Message: From<SourceEvent<Item, Error>>`; `Subscription::source_with` accepts
-  an explicit reusable mapper. This constructor choice does not participate in
-  reconciliation identity or alter Source lifecycle semantics.
+- A `Subscription` combines a SourceCapability, stable Component-local
+  identity, SourceDescriptor, and a pure reusable message mapper from
+  `SourceEvent` to the owning Component's Message. Declaring one starts no work.
+- `Subscription::source(&capability, id, descriptor)` obtains that mapper from
+  `Message: From<SourceEvent<Item, Error>>`;
+  `Subscription::source_with(&capability, ...)` accepts an explicit reusable
+  mapper. This constructor choice does not participate in reconciliation
+  identity or alter Source lifecycle semantics.
 - In live execution, a `SourceDriver<D>` is the terminal Adapter that realizes
   terminal descriptor type `D` against the surrounding world under runtime
   supervision. A non-terminal descriptor first passes through one or more
@@ -124,9 +152,9 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
 - A `Source` is the runtime-owned ongoing realization of a SourceDescriptor. It
   may emit zero or more SourceEvents until it ends, fails, or is canceled.
 - Reconciliation starts a Source for a newly desired Subscription, retains it
-  while identity and descriptor are unchanged, atomically replaces it when the
-  same identity has changed configuration, and cancels it when no longer
-  desired.
+  while identity, SourceCapability, and descriptor are unchanged, atomically
+  replaces it when the same identity has changed capability or configuration,
+  and cancels it when no longer desired.
 - A retained Source atomically adopts the latest mapper returned by the
   post-transition Subscription projection. Messages already created remain
   unchanged; later events use the new mapper.
@@ -137,8 +165,9 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
   replacement generation.
 - During reconciliation, a composed SourceDescriptor automatically lowers to a
   runtime-owned `SourcePlan` containing its terminal descriptor, ordered
-  profile-independent Layers, and message mapper. Applications bind or control
-  only the terminal descriptor.
+  profile-independent Layers, Source capability identity, and message mapper.
+  One outer SourceCapability records its terminal requirement; applications
+  bind or control only the terminal descriptor.
 - Source cancellation does not imply a synthetic SourceEvent unless the
   applicable contract explicitly promises one.
 - Under ADR-0004, successful sink calls from one live Source preserve
@@ -159,7 +188,8 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
 - A `Driver` is a terminal Adapter. It crosses from a descriptor stack into the
   selected live surrounding world and remains owned by the runtime scope.
 - EffectDriver and SourceDriver are the currently named Driver roles. The
-  taxonomy does not choose a universal Layer trait or exact profile-binding API.
+  taxonomy does not choose a universal Layer trait. ADR-0008 selects type-wide
+  Driver bindings and exact Source-capability bindings for resource adapters.
 - Runtime-level mechanisms remain separate from protocol and application
   policy. See `docs/architecture/effects-layering.md` for the underlying
   mechanism/policy analysis.
@@ -175,6 +205,8 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
   - Reconcile desired Subscriptions with runtime-owned Sources.
   - Compile composed SourceDescriptors into SourcePlans and enforce private
     Source-generation cutovers.
+  - Reject Command and Subscription capabilities that do not belong to the
+    Program before invoking terminal behavior.
   - Record topology-neutral structural trace entries with logical time and
     causation in controlled execution.
   - Supervise task lifecycle, cancellation, and shutdown.
@@ -253,10 +285,11 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
 - `ProgramBuilder::build()` is fallible. It rejects duplicate Component
   identities, duplicate `(Protocol type, PortId)` declarations, Ports not bound
   exactly once, and providers not registered in that same builder.
-- Port cycles are legal and are not detected. Assembly does not introspect
-  arbitrary Component fields or behavior-dependent `Command::send` edges and
-  therefore does not claim a closed static dependency graph. A send to an
-  absent Component is diagnosed when interpreted.
+- Port cycles are legal and are not detected. Assembly closes the Program-issued
+  capability inventory without introspecting arbitrary Component fields or
+  statically enumerating behavior-dependent `Command::send` edges. Initial
+  foreign ComponentRef and Port commands fail profile build; a foreign
+  reference hidden until execution is diagnosed before its send is interpreted.
 - Swapping a real, mock, or controlled provider does not require consumer
   transition changes.
 - Notification values and Request values use the symmetric `Command::notify`
@@ -358,11 +391,13 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
 
 ### Initial Live Fault Contract
 
-- Duplicate or ambiguous live bindings fail `LiveRuntimeBuilder::build()` when
-  assembly can know them.
-- An unavailable terminal binding discovered only while interpreting work, an
-  exhausted one-shot `mpsc` binding, a Driver panic, or an equivalent live
-  mechanism violation faults the running scope.
+- Every declared Effect and Source capability must have exactly one applicable
+  terminal live binding. Missing, duplicate, ambiguous, foreign, or
+  type-incompatible bindings fail `LiveRuntimeBuilder::build()`.
+- An exhausted one-shot `mpsc` binding, a Driver panic, a deliberately hidden
+  foreign capability reached after startup, or an equivalent live mechanism
+  violation faults the running scope. A legitimate declared dependency cannot
+  first discover its binding is missing during execution.
 - A live fault closes ingress, stops application driving, cancels and joins or
   aborts all runtime-owned tasks, suppresses application mappers for aborted
   work, and surfaces `RuntimeError` through subsequent ingress and the owning
@@ -394,8 +429,13 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
   `bytes::Bytes`, maps connect/read errors to typed Source failure, maps peer
   EOF to normal ending, closes on cancellation, and contains no retry,
   reconnect, framing, or domain policy.
-- One `tokio::sync::mpsc::Receiver<T>` is consumed by the first activation of
-  its exact `StreamDescriptor<T>` binding. Channel closure ends normally.
+- One `tokio::sync::mpsc::Receiver<T>` is bound through
+  `bind_mpsc(&source_capability, receiver)` and consumed by the first
+  activation of that exact capability. Its terminal descriptor must be
+  `StreamDescriptor<T>`; the capability may describe that terminal directly or
+  a built-in composition such as `Framed<StreamDescriptor<T>, D>`. Items and
+  channel closure traverse the same Layers in both profiles, and closure ends
+  normally.
   Another concurrent claimant or any later activation after end or cancellation
   faults the runtime; it does not fabricate another `Ended`.
 - The `mpsc` rule is necessarily diagnostic because
@@ -419,10 +459,11 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
   effects.
 - A future fallible exact-byte write boundary is a separate, lower-level API.
 - Root-qualified `samara::print!`, `samara::println!`, `samara::eprint!`, and
-  `samara::eprintln!` own their formatted UTF-8 text in the matching descriptor
-  and return an ordinary discarded-outcome Command. They are not re-exported
-  by the prelude. Rust's unqualified `print!` and `println!` remain immediate
-  ambient I/O and are not valid inside a pure `update`.
+  `samara::eprintln!` take the matching output EffectCapability first, own their
+  formatted UTF-8 text in the matching descriptor, and return an ordinary
+  discarded-outcome Command. They are not re-exported by the prelude. Rust's
+  unqualified `print!` and `println!` remain immediate ambient I/O and are not
+  valid inside a pure `update`.
 
 ### First-Party HTTP Effect
 
@@ -451,9 +492,10 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
 - `require_success` adds only an explicit 2xx policy. `json::<T>` adds only
   owned JSON decoding and never implies that policy. Both retain the complete
   raw response in their typed error data; JSON errors also retain their source.
-- `into_command()` uses
+- `into_command(&http_capability)` uses
   `Message: From<EffectOutcome<Output, ResponseError>>` for the final
-  conversion; `into_command_with(mapper)` accepts an explicit call-site mapper.
+  conversion; `into_command_with(&http_capability, mapper)` accepts an explicit
+  call-site mapper.
   Each lowers the pipeline to the original terminal `HttpRequest` plus one
   composed `FnOnce` mapper. Live and controlled execution therefore share the
   same deterministic status/decoding behavior without a new Driver, controlled
@@ -500,17 +542,20 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
 3. The runtime calls the target Component's pure transition using its immutable
    configuration, current Model, and Message, then commits the resulting Model.
 4. The runtime interprets emitted Commands and reconciles desired Subscriptions.
-5. An EffectDescriptor passes through zero or more Layers. Its terminal
+5. The runtime first validates the Command's EffectCapability provenance. Its
+   EffectDescriptor then passes through zero or more Layers. The terminal
    descriptor reaches a live EffectDriver or controlled behavior. Every
    accepted EffectOutcome passes through the composed path exactly once. A
    mapped effect invokes its one-shot mapper to produce one Component Message;
    an explicitly discarded outcome schedules no Message. Whole-scope live abort
    may instead cancel the Driver without manufacturing an outcome.
-6. A desired SourceDescriptor passes through zero or more Layers. Its terminal
-   descriptor, ordered Layers, and mapper compile into a SourcePlan. The
-   terminal descriptor reaches a live SourceDriver or controlled behavior,
-   producing a runtime-owned Source whose SourceEvents return through the same
-   Layers and repeatedly pass through the current reusable message mapper.
+6. The runtime validates each desired Subscription's SourceCapability. Its
+   SourceDescriptor then passes through zero or more Layers. The terminal
+   descriptor, ordered Layers, capability identity, and mapper compile into a
+   SourcePlan. The terminal descriptor reaches a live SourceDriver or
+   controlled behavior, producing a runtime-owned Source whose SourceEvents
+   return through the same Layers and repeatedly pass through the current
+   reusable message mapper.
 7. Resulting Messages return through runtime-managed delivery, and execution
    continues until the applicable lifecycle, fault, or shutdown policy
    triggers.
@@ -531,7 +576,8 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
   `docs/adr/0002-runtime-topology-and-ordering.md`, and
   `docs/adr/0003-controlled-execution-semantics.md`. Accepted live behavior is
   in
-  `docs/adr/0004-initial-live-runtime-semantics.md`.
+  `docs/adr/0004-initial-live-runtime-semantics.md`; closed capability assembly
+  is in `docs/adr/0008-closed-program-capabilities.md`.
 
 ## Related Design Sketches
 - Thin-slice API comparison and PoC shape: `docs/architecture/thin-slice-value.md`.

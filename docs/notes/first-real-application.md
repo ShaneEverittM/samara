@@ -3,7 +3,8 @@
 - Status: Exploratory notes
 - Date: July 25, 2026
 - Evidence: [`examples/shane.rs`](../../examples/shane.rs)
-- Contract impact: Follow-through accepted by ADR-0005, ADR-0006, and ADR-0007; remaining notes are exploratory
+- Contract impact: Follow-through accepted by ADR-0005 through ADR-0008;
+  remaining notes are exploratory
 
 ## Purpose
 
@@ -77,38 +78,44 @@ and escalation remain ordinary host policy. ADR-0007 specifies the terminal
 lifecycle boundary. It is not the public live trace observer deferred beyond
 v0.
 
-## 2. Validate Effect Bindings During `LiveRuntimeBuilder::build`
+## 2. Validate Effect and Source Bindings During Profile Build (Implemented)
 
 The application initially omitted its HTTP Effect Driver binding. Because the
 effect first appeared after a timer Message rather than in `init`, the runtime
 spawned successfully and faulted only when that branch of `update` issued the
 effect.
 
-Desired direction: a Program with an unbound terminal effect or source
-dependency should not spawn. Missing, duplicate, or ambiguous bindings should
-fail synchronously during live runtime assembly.
-
-The current Program cannot derive this complete set by inspecting arbitrary
-`update` code, and Rust cannot enumerate all `EffectDriver<D>` implementations.
-The design therefore needs an explicit declaration that cannot be accidentally
-separated from issuing the Command. A typed effect capability, dependency
-token, or related Port-like construction mechanism is one candidate:
+ADR-0008 resolves the problem with Program-issued `EffectCapability<D>` and
+`SourceCapability<S>` values. Declaring the dependency and obtaining the only
+supported means of using it are one operation:
 
 ```rust,ignore
 let network_time = program.effect::<HttpRequest>();
+let input = program.source::<StreamDescriptor<Input>>();
 program.component(
     ComponentId::new("time-display"),
-    TimeDisplay { network_time },
+    TimeDisplay { network_time, input },
 );
 ```
 
-If constructing `Command::effect` requires that registered capability, the
-Program can retain the requirement and live `build()` can validate it. Merely
-adding an optional `uses_effect::<HttpRequest>()` annotation would be weaker because
-the author could forget both the annotation and the binding.
+Effect Commands and Source Subscriptions require those stored capabilities. A
+separate `uses_effect` manifest cannot drift because no raw-descriptor issuance
+path remains. `ProgramBuilder::build()` closes the declarations, then both live
+and controlled profile builders validate every terminal requirement
+synchronously—even one first used only after a later Message.
 
-This revisits ADR-0004's accepted allowance for dynamically discovered missing
-bindings and must be designed before changing the contract.
+The example now stores three Effect capabilities—HTTP, stdout, and stderr—and
+declares them in three adjacent assembly calls. That is one field, one
+declaration, and one borrowed issuance argument per logical world dependency.
+The extra ceremony is visible, but it is also an accurate inventory of the
+Component's authority. One composed Source capability similarly covers the
+application-visible composed descriptor type and its lowered terminal
+requirement; it does not require a second capability for the inner descriptor.
+
+This supersedes ADR-0004's accepted dynamic-missing-binding allowance. A
+deliberately hidden capability from another Program can still evade field
+inspection, but it is non-conforming code and faults before terminal behavior;
+it is not supported dynamic assembly.
 
 ## 3. Default Model Initialization
 
@@ -183,6 +190,7 @@ desire to receive periodic ticks is a natural Subscription:
 
 ```rust,ignore
 Subscription::source_with(
+    &self.interval,
     SubscriptionId::new("refresh-time"),
     Interval::every(Duration::from_secs(1)),
     |_| Message::RefreshDue,
@@ -249,12 +257,10 @@ misuse of Component communication.
 
 ## Follow-Up Questions
 
-1. What typed declaration makes every effect and source dependency knowable at
-   live build without duplicating intent?
-2. Is persistent state on the Driver instance sufficient, and how should
+1. Is persistent state on the Driver instance sufficient, and how should
    concurrent invocation be expressed?
-3. Which interval semantics deserve the first-party name `Interval`?
-4. Does another real custom Effect reveal enough repeated declaration ceremony
+2. Which interval semantics deserve the first-party name `Interval`?
+3. Does another real custom Effect reveal enough repeated declaration ceremony
    to justify a derive or macro?
 
 ## First Follow-Through: Standard Output
@@ -270,9 +276,11 @@ to react to output failure.
 
 The ergonomic follow-through is a root-qualified family of Samara formatting
 macros. `samara::println!` and its stdout/stderr, line/no-line counterparts
+take the corresponding output EffectCapability as their first argument and
 produce discarded-outcome Commands: the runtime still owns and waits for the
 print effect, but the Component does not need an artificial "printing
-finished" Message. They remain visibly distinct from Rust's ambient,
+finished" Message. The capability argument is deliberate ceremony around
+world authority. The macros remain visibly distinct from Rust's ambient,
 unqualified `println!`.
 
 ## Second Follow-Through: Raw HTTP
@@ -285,6 +293,10 @@ per-request client construction are gone. Loopback conformance evidence
 verifies raw status handling, owned request data, controlled interception,
 duplicate-binding rejection, and reuse of one HTTP/1.1 connection by
 sequential effects.
+
+The response pipeline lowers with `.into_command(&self.http)` (or the explicit
+mapper variant), so its convenience syntax preserves the same declared HTTP
+capability as a direct Effect Command.
 
 ## Third Follow-Through: External Port Ingress
 

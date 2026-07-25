@@ -1,4 +1,4 @@
-use std::{convert::Infallible, time::Duration};
+use std::convert::Infallible;
 
 use samara::prelude::*;
 
@@ -14,7 +14,9 @@ enum FaultMessage {
     Trigger,
 }
 
-struct FaultProbe;
+struct FaultProbe {
+    effect: EffectCapability<DynamicallyReachedEffect>,
+}
 
 impl Component for FaultProbe {
     type Model = ();
@@ -26,45 +28,31 @@ impl Component for FaultProbe {
 
     fn update(&self, (): &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
         match message {
-            FaultMessage::Trigger => Command::effect_discarding_outcome(DynamicallyReachedEffect),
+            FaultMessage::Trigger => {
+                Command::effect_discarding_outcome(&self.effect, DynamicallyReachedEffect)
+            }
         }
     }
 }
 
-#[tokio::test]
-async fn run_forever_surfaces_runtime_fault_without_shutdown() {
+#[test]
+fn live_build_rejects_later_reached_effect_without_driver() {
     let mut program = Program::builder();
-    let probe = program.component(ComponentId::new("host-lifecycle-fault"), FaultProbe);
-    let runtime = LiveRuntime::builder(program.build().expect("valid program"))
+    let effect = program.effect::<DynamicallyReachedEffect>();
+    let _probe = program.component(
+        ComponentId::new("host-lifecycle-fault"),
+        FaultProbe { effect },
+    );
+    let _trigger = FaultMessage::Trigger;
+    let error = LiveRuntime::builder(program.build().expect("valid program"))
         .build()
-        .expect("dynamic work need not be bound at assembly");
-    let handle = runtime.handle(&probe).expect("live handle");
-    let mut task = runtime.spawn();
+        .err()
+        .expect("declared effect dependencies must be bound before spawn");
 
-    handle
-        .send(FaultMessage::Trigger)
-        .await
-        .expect("trigger accepted before the fault");
-
-    let error = tokio::time::timeout(Duration::from_secs(1), task.run_forever())
-        .await
-        .expect("runtime termination must become observable immediately")
-        .expect_err("the dynamically missing binding must fault the runtime");
-
-    assert_eq!(error.component(), Some(probe.id()));
-    assert_eq!(
-        error.descriptor_type(),
-        Some(std::any::type_name::<DynamicallyReachedEffect>())
-    );
-    assert_eq!(
-        handle.send(FaultMessage::Trigger).await.unwrap_err(),
-        error,
-        "the lifecycle boundary and later ingress preserve one fault"
-    );
-    assert_eq!(
-        task.shutdown(Shutdown::Cancel).await.unwrap_err(),
-        error,
-        "later ownership operations preserve the observed terminal fault"
+    assert!(
+        error
+            .to_string()
+            .contains(std::any::type_name::<DynamicallyReachedEffect>())
     );
 }
 

@@ -5,6 +5,11 @@
 - Governing phase: `docs/goal-mode-checklist.md`, Phase 6
 - Governing decisions: ADR-0002, ADR-0003, and ADR-0004
 
+> Historical note: ADR-0008 later made every legitimate declared Effect and
+> Source binding a synchronous profile-build obligation. The dynamic
+> missing-binding scenario and raw API spellings in this phase snapshot are
+> intentionally preserved as historical evidence, not current guidance.
+
 ## Outcome
 
 The bounded Phase 6 live Tokio runtime is implemented. The same `Program`,

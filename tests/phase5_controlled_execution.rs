@@ -176,6 +176,7 @@ struct EffectModel {
 
 struct EffectComponent {
     mapper_calls: Arc<AtomicUsize>,
+    effect: EffectCapability<ProbeEffect>,
 }
 
 impl Component for EffectComponent {
@@ -191,7 +192,7 @@ impl Component for EffectComponent {
             EffectMessage::Start => {
                 model.starts += 1;
                 let mapper_calls = self.mapper_calls.clone();
-                Command::effect_with(ProbeEffect(41), move |outcome| {
+                Command::effect_with(&self.effect, ProbeEffect(41), move |outcome| {
                     mapper_calls.fetch_add(1, Ordering::SeqCst);
                     EffectMessage::Finished(outcome)
                 })
@@ -208,7 +209,14 @@ impl Component for EffectComponent {
 
 fn effect_program(mapper_calls: Arc<AtomicUsize>) -> (Program, ComponentRef<EffectComponent>) {
     let mut builder = Program::builder();
-    let component = builder.component(ComponentId::new("effect"), EffectComponent { mapper_calls });
+    let effect = builder.effect::<ProbeEffect>();
+    let component = builder.component(
+        ComponentId::new("effect"),
+        EffectComponent {
+            mapper_calls,
+            effect,
+        },
+    );
     (builder.build().expect("valid effect program"), component)
 }
 
@@ -309,50 +317,37 @@ fn v9_effect_cancellation_has_one_outcome() {
 }
 
 #[test]
-fn phase5_missing_controlled_behavior_faults_without_live_fallback() {
+fn phase5_missing_controlled_behavior_is_rejected_without_live_fallback() {
     let mapper_calls = Arc::new(AtomicUsize::new(0));
-    let (program, component) = effect_program(mapper_calls.clone());
-    let mut runtime = ControlledRuntime::builder(program)
+    let (program, _component) = effect_program(mapper_calls.clone());
+    let error = ControlledRuntime::builder(program)
         .build()
-        .expect("the logical program is valid");
+        .err()
+        .expect("an unbound declared effect must reject controlled assembly");
 
-    runtime.send(&component, EffectMessage::Start).unwrap();
-    let error = runtime
-        .run_until_idle()
-        .expect_err("an unbound terminal effect must fault");
-
-    assert_eq!(error.component(), Some(component.id()));
-    assert_eq!(
-        error.descriptor_type(),
-        Some(std::any::type_name::<ProbeEffect>())
+    assert!(
+        error
+            .to_string()
+            .contains(std::any::type_name::<ProbeEffect>())
     );
-    assert!(error.work_occurrence().is_some());
     assert_eq!(mapper_calls.load(Ordering::SeqCst), 0);
-    assert_eq!(runtime.state(&component).unwrap().starts, 1);
-    assert!(runtime.trace().iter().any(|record| matches!(
-        &record.event,
-        TraceEvent::RuntimeFault {
-            descriptor_type,
-            ..
-        } if *descriptor_type == std::any::type_name::<ProbeEffect>()
-    )));
 }
 
 #[test]
-fn phase5_faulted_run_remains_inspectable_and_cancellable() {
-    let (program, component) = effect_program(Arc::new(AtomicUsize::new(0)));
-    let mut runtime = ControlledRuntime::builder(program).build().unwrap();
-    runtime.send(&component, EffectMessage::Start).unwrap();
-    let first = runtime.run_until_idle().expect_err("first drive faults");
+fn phase5_missing_controlled_behavior_rejects_before_any_run_exists() {
+    let mapper_calls = Arc::new(AtomicUsize::new(0));
+    let (program, _component) = effect_program(mapper_calls.clone());
+    let error = ControlledRuntime::builder(program)
+        .build()
+        .err()
+        .expect("closed assembly rejects the missing controlled behavior");
 
-    assert_eq!(runtime.state(&component).unwrap().starts, 1);
-    assert!(!runtime.trace().is_empty());
-    assert_eq!(runtime.run_until_idle().unwrap_err(), first);
-
-    let report = runtime.cancel().expect("faulted work remains cancellable");
-    assert!(report.is_clean());
-    assert_eq!(report.pending_now, 0);
-    assert_eq!(report.pending_later, 0);
+    assert!(
+        error
+            .to_string()
+            .contains(std::any::type_name::<ProbeEffect>())
+    );
+    assert_eq!(mapper_calls.load(Ordering::SeqCst), 0);
 }
 
 // Subscription retention, cutover, and SourcePlan lowering -----------------
@@ -372,7 +367,9 @@ enum MappingMessage {
     Ended,
 }
 
-struct MappingComponent;
+struct MappingComponent {
+    input: SourceCapability<StreamDescriptor<u64>>,
+}
 
 impl Component for MappingComponent {
     type Model = MappingModel;
@@ -399,6 +396,7 @@ impl Component for MappingComponent {
     fn subscriptions(&self, model: &Self::Model) -> Subscriptions<Self::Message> {
         let mapper = model.mapper_version;
         Subscriptions::one(Subscription::source_with(
+            &self.input,
             SubscriptionId::new("input"),
             StreamDescriptor::<u64>::named(model.binding),
             move |event| match event {
@@ -412,7 +410,8 @@ impl Component for MappingComponent {
 
 fn mapping_program() -> (Program, ComponentRef<MappingComponent>) {
     let mut builder = Program::builder();
-    let component = builder.component(ComponentId::new("mapping"), MappingComponent);
+    let input = builder.source::<StreamDescriptor<u64>>();
+    let component = builder.component(ComponentId::new("mapping"), MappingComponent { input });
     (builder.build().expect("valid source program"), component)
 }
 
@@ -640,7 +639,9 @@ enum FramedMessage {
 #[derive(Default, Debug, PartialEq, Eq)]
 struct FramedModel(Vec<Vec<u8>>);
 
-struct FramedComponent;
+struct FramedComponent {
+    source: SourceCapability<TwiceFramed>,
+}
 
 impl Component for FramedComponent {
     type Model = FramedModel;
@@ -660,6 +661,7 @@ impl Component for FramedComponent {
 
     fn subscriptions(&self, _model: &Self::Model) -> Subscriptions<Self::Message> {
         Subscriptions::one(Subscription::source_with(
+            &self.source,
             SubscriptionId::new("framed"),
             Framed::new(Framed::new(RawBytes, LengthPrefix), LengthPrefix),
             FramedMessage::Event,
@@ -670,7 +672,8 @@ impl Component for FramedComponent {
 #[test]
 fn v4_composed_source_plan_reaches_terminal_controlled_behavior() {
     let mut builder = Program::builder();
-    let component = builder.component(ComponentId::new("framed"), FramedComponent);
+    let source = builder.source::<TwiceFramed>();
+    let component = builder.component(ComponentId::new("framed"), FramedComponent { source });
     let program = builder.build().unwrap();
     let mut runtime = ControlledRuntime::builder(program)
         .control_source::<RawBytes>()
@@ -701,29 +704,19 @@ fn v4_composed_source_plan_reaches_terminal_controlled_behavior() {
 #[test]
 fn v4_composed_source_binding_must_name_the_terminal_descriptor() {
     let mut builder = Program::builder();
-    let component = builder.component(ComponentId::new("framed"), FramedComponent);
+    let source = builder.source::<TwiceFramed>();
+    let _component = builder.component(ComponentId::new("framed"), FramedComponent { source });
     let program = builder.build().unwrap();
-    let mut runtime = ControlledRuntime::builder(program)
+    let error = ControlledRuntime::builder(program)
         .control_source::<TwiceFramed>()
         .build()
-        .unwrap();
-
-    let error = runtime
-        .run_until_idle()
-        .expect_err("binding the composed type must not hide a missing terminal binding");
-    assert_eq!(error.component(), Some(component.id()));
-    assert_eq!(
-        error.descriptor_type(),
-        Some(std::any::type_name::<RawBytes>())
+        .err()
+        .expect("binding the composed type must not hide a missing terminal binding");
+    assert!(
+        error
+            .to_string()
+            .contains(std::any::type_name::<RawBytes>())
     );
-    assert!(runtime.trace().iter().any(|record| matches!(
-        record.event,
-        TraceEvent::RuntimeFault {
-            descriptor_type,
-            ..
-        } if descriptor_type == std::any::type_name::<RawBytes>()
-    )));
-    assert!(runtime.cancel().unwrap().is_clean());
 }
 
 // Logical time, determinism, trace causality -------------------------------
@@ -1121,7 +1114,8 @@ enum OwnershipMessage {
 
 struct OwnershipComponent {
     port: Port<EchoProtocol>,
-    input: StreamDescriptor<u64>,
+    effect: EffectCapability<ProbeEffect>,
+    input: SourceCapability<StreamDescriptor<u64>>,
 }
 
 impl Component for OwnershipComponent {
@@ -1138,7 +1132,7 @@ impl Component for OwnershipComponent {
     fn update(&self, _model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
         match message {
             OwnershipMessage::Kick => Command::batch([
-                Command::effect_with(ProbeEffect(1), OwnershipMessage::Effect),
+                Command::effect_with(&self.effect, ProbeEffect(1), OwnershipMessage::Effect),
                 Command::request_with(self.port.clone(), Echo(1), OwnershipMessage::Request),
             ]),
             OwnershipMessage::Effect(outcome) => {
@@ -1159,8 +1153,9 @@ impl Component for OwnershipComponent {
 
     fn subscriptions(&self, _model: &Self::Model) -> Subscriptions<Self::Message> {
         Subscriptions::one(Subscription::source_with(
+            &self.input,
             SubscriptionId::new("input"),
-            self.input.clone(),
+            StreamDescriptor::named("ownership/input"),
             OwnershipMessage::Input,
         ))
     }
@@ -1171,17 +1166,19 @@ fn ownership_runtime() -> (ControlledRuntime, ComponentRef<OwnershipComponent>) 
     let port = builder.port::<EchoProtocol>(PortId::new("echo"));
     let provider = builder.component(ComponentId::new("provider"), EchoProvider { reply: false });
     builder.bind_port(&port, &provider);
-    let input = StreamDescriptor::named("ownership/input");
+    let effect = builder.effect::<ProbeEffect>();
+    let input = builder.source::<StreamDescriptor<u64>>();
     let component = builder.component(
         ComponentId::new("owner"),
         OwnershipComponent {
             port,
+            effect,
             input: input.clone(),
         },
     );
     let program = builder.build().unwrap();
     let runtime = ControlledRuntime::builder(program)
-        .control_stream(input)
+        .control_stream(&input)
         .control_effect::<ProbeEffect>()
         .build()
         .unwrap();
@@ -1225,6 +1222,7 @@ fn v9_controlled_cancel_leaves_zero_work() {
 
 struct CancellationProbe {
     mapper_calls: Arc<AtomicUsize>,
+    source: SourceCapability<StreamDescriptor<u64>>,
 }
 
 impl Component for CancellationProbe {
@@ -1242,6 +1240,7 @@ impl Component for CancellationProbe {
     fn subscriptions(&self, _model: &Self::Model) -> Subscriptions<Self::Message> {
         let mapper_calls = self.mapper_calls.clone();
         Subscriptions::one(Subscription::source_with(
+            &self.source,
             SubscriptionId::new("cancellation-probe"),
             StreamDescriptor::<u64>::named("cancellation-probe"),
             move |_event| {
@@ -1255,10 +1254,12 @@ impl Component for CancellationProbe {
 fn v9_source_cancellation_emits_no_unpromised_event() {
     let mapper_calls = Arc::new(AtomicUsize::new(0));
     let mut builder = Program::builder();
+    let source = builder.source::<StreamDescriptor<u64>>();
     let _component = builder.component(
         ComponentId::new("cancellation-probe"),
         CancellationProbe {
             mapper_calls: mapper_calls.clone(),
+            source,
         },
     );
     let program = builder.build().unwrap();

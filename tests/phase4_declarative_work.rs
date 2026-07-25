@@ -31,7 +31,9 @@ enum EffectMessage {
 
 #[test]
 fn v3_effect_command_exposes_descriptor_and_maps_one_outcome() {
-    let command = Command::effect_with(PersistValue { value: 41 }, |outcome| {
+    let mut program = Program::builder();
+    let persist = program.effect::<PersistValue>();
+    let command = Command::effect_with(&persist, PersistValue { value: 41 }, |outcome| {
         EffectMessage::Persisted {
             request: 41,
             outcome,
@@ -56,7 +58,9 @@ fn v3_effect_command_exposes_descriptor_and_maps_one_outcome() {
 
 #[test]
 fn v3_all_effect_outcomes_remain_typed_message_input() {
-    let failed = Command::effect_with(PersistValue { value: 5 }, |outcome| {
+    let mut program = Program::builder();
+    let persist = program.effect::<PersistValue>();
+    let failed = Command::effect_with(&persist, PersistValue { value: 5 }, |outcome| {
         EffectMessage::Persisted {
             request: 5,
             outcome,
@@ -64,7 +68,7 @@ fn v3_all_effect_outcomes_remain_typed_message_input() {
     })
     .map_effect_outcome::<PersistValue>(EffectOutcome::Failed(PersistError))
     .unwrap_or_else(|_| panic!("failure descriptor should match"));
-    let cancelled = Command::effect_with(PersistValue { value: 6 }, |outcome| {
+    let cancelled = Command::effect_with(&persist, PersistValue { value: 6 }, |outcome| {
         EffectMessage::Persisted {
             request: 6,
             outcome,
@@ -91,14 +95,16 @@ fn v3_all_effect_outcomes_remain_typed_message_input() {
 
 #[test]
 fn v3_equal_effect_descriptors_remain_distinct_command_occurrences() {
+    let mut program = Program::builder();
+    let persist = program.effect::<PersistValue>();
     let command: Command<EffectMessage> = Command::batch([
-        Command::effect_with(PersistValue { value: 7 }, |outcome| {
+        Command::effect_with(&persist, PersistValue { value: 7 }, |outcome| {
             EffectMessage::Persisted {
                 request: 1,
                 outcome,
             }
         }),
-        Command::effect_with(PersistValue { value: 7 }, |outcome| {
+        Command::effect_with(&persist, PersistValue { value: 7 }, |outcome| {
             EffectMessage::Persisted {
                 request: 2,
                 outcome,
@@ -145,7 +151,10 @@ enum StreamMessage {
 
 #[test]
 fn v4_source_event_mapper_is_reusable_before_delivery() {
+    let mut program = Program::builder();
+    let input = program.source::<StreamDescriptor<u64>>();
     let subscription = Subscription::source_with(
+        &input,
         SubscriptionId::new("input"),
         StreamDescriptor::<u64>::named("phase4/input"),
         StreamMessage::Input,
@@ -326,6 +335,8 @@ fn framed_layers_compose_without_profile_binding() {
 
 #[test]
 fn v4_framed_source_events_map_into_component_messages() {
+    let mut program = Program::builder();
+    let socket = program.source::<FramedChunks>();
     let descriptor = FramedChunks::new(
         RawChunks {
             endpoint: "telemetry:7000",
@@ -334,6 +345,7 @@ fn v4_framed_source_events_map_into_component_messages() {
     );
     let mut layer = descriptor.clone().into_layer();
     let subscription = Subscription::source_with(
+        &socket,
         SubscriptionId::new("socket"),
         descriptor,
         FrameMessage::Socket,

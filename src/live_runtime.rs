@@ -27,11 +27,12 @@ use crate::controlled_runtime::{
     ErasedCommand, ErasedRuntimeSubscription, ErasedSubscriptionChange,
 };
 use crate::{
-    BoxFuture, Command, CommandKind, ComponentId, DriverStopped, EffectDescriptor, EffectDriver,
-    EffectOutcome, ErasedRequestMapper, ErasedSourceEvent, HttpError, HttpRequest, HttpResponse,
-    Notification, Port, PortId, PrintStderr, PrintStdout, Program, Protocol, ReplyTo, Request,
-    RuntimeError, Shutdown, ShutdownReport, SourceDescriptor, SourceDriver, SourceEvent,
-    SourcePlan, SourceSink, StreamDescriptor, SubscriptionId, TcpBytes, TcpError, TraceId,
+    BoxFuture, CapabilityToken, Command, CommandKind, ComponentId, DriverStopped, EffectDescriptor,
+    EffectDriver, EffectOutcome, ErasedRequestMapper, ErasedSourceEvent, HttpError, HttpRequest,
+    HttpResponse, Notification, Port, PortId, PrintStderr, PrintStdout, Program, Protocol, ReplyTo,
+    Request, RuntimeError, Shutdown, ShutdownReport, SourceCapability, SourceDescriptor,
+    SourceDriver, SourceEvent, SourcePlan, SourceRequirement, SourceSink, StreamDescriptor,
+    StreamSourceDescriptor, SubscriptionId, TcpBytes, TcpError, TraceId,
 };
 
 type ErasedValue = Box<dyn Any + Send>;
@@ -120,7 +121,9 @@ pub(crate) trait ErasedSourceBinding: Send + Sync {
     fn descriptor_type(&self) -> TypeId;
     fn descriptor_type_name(&self) -> &'static str;
     fn is_type_wide(&self) -> bool;
-    fn matches(&self, descriptor: &dyn Any) -> bool;
+    fn exact_capability(&self) -> Option<&CapabilityToken>;
+    fn matches(&self, plan: &SourcePlan) -> bool;
+    fn satisfies(&self, requirement: &SourceRequirement) -> bool;
     fn conflicts(&self, other: &dyn ErasedSourceBinding) -> bool;
     fn run(
         &self,
@@ -151,8 +154,16 @@ where
         true
     }
 
-    fn matches(&self, descriptor: &dyn Any) -> bool {
-        descriptor.is::<D>()
+    fn exact_capability(&self) -> Option<&CapabilityToken> {
+        None
+    }
+
+    fn matches(&self, plan: &SourcePlan) -> bool {
+        plan.terminal_type_id() == TypeId::of::<D>()
+    }
+
+    fn satisfies(&self, requirement: &SourceRequirement) -> bool {
+        requirement.terminal_type == TypeId::of::<D>()
     }
 
     fn conflicts(&self, other: &dyn ErasedSourceBinding) -> bool {
@@ -179,7 +190,7 @@ where
 }
 
 struct MpscBinding<T> {
-    descriptor: StreamDescriptor<T>,
+    capability: CapabilityToken,
     receiver: Arc<Mutex<Option<mpsc::Receiver<T>>>>,
 }
 
@@ -196,15 +207,28 @@ impl<T: Send + 'static> ErasedSourceBinding for MpscBinding<T> {
         false
     }
 
-    fn matches(&self, descriptor: &dyn Any) -> bool {
-        descriptor.downcast_ref::<StreamDescriptor<T>>() == Some(&self.descriptor)
+    fn exact_capability(&self) -> Option<&CapabilityToken> {
+        Some(&self.capability)
+    }
+
+    fn matches(&self, plan: &SourcePlan) -> bool {
+        plan.terminal_type_id() == TypeId::of::<StreamDescriptor<T>>()
+            && self.capability.same_as(plan.capability())
+    }
+
+    fn satisfies(&self, requirement: &SourceRequirement) -> bool {
+        requirement.terminal_type == TypeId::of::<StreamDescriptor<T>>()
+            && self.capability.same_as(&requirement.token)
     }
 
     fn conflicts(&self, other: &dyn ErasedSourceBinding) -> bool {
         if other.descriptor_type() != TypeId::of::<StreamDescriptor<T>>() {
             return false;
         }
-        other.is_type_wide() || other.matches(&self.descriptor)
+        other.is_type_wide()
+            || other
+                .exact_capability()
+                .is_some_and(|capability| capability.same_as(&self.capability))
     }
 
     fn run(
@@ -212,7 +236,7 @@ impl<T: Send + 'static> ErasedSourceBinding for MpscBinding<T> {
         descriptor: &dyn Any,
         sink: Arc<SourceSinkCore>,
     ) -> BoxFuture<Result<(), Arc<str>>> {
-        let matches = descriptor.downcast_ref::<StreamDescriptor<T>>() == Some(&self.descriptor);
+        let matches = descriptor.is::<StreamDescriptor<T>>();
         let receiver = matches.then(|| lock(&self.receiver).take()).flatten();
         Box::pin(async move {
             if !matches {
@@ -439,13 +463,15 @@ impl LiveBindings {
         }));
     }
 
-    pub(crate) fn bind_mpsc<T: Send + 'static>(
+    pub(crate) fn bind_mpsc<S>(
         &mut self,
-        descriptor: StreamDescriptor<T>,
-        receiver: mpsc::Receiver<T>,
-    ) {
-        self.sources.push(Arc::new(MpscBinding {
-            descriptor,
+        capability: &SourceCapability<S>,
+        receiver: mpsc::Receiver<S::StreamItem>,
+    ) where
+        S: StreamSourceDescriptor,
+    {
+        self.sources.push(Arc::new(MpscBinding::<S::StreamItem> {
+            capability: capability.token.clone(),
             receiver: Arc::new(Mutex::new(Some(receiver))),
         }));
     }
@@ -463,7 +489,7 @@ impl LiveBindings {
         self.bind_effect::<PrintStderr, _>(TokioPrintStderrDriver::new());
     }
 
-    pub(crate) fn validate(&self) -> Result<(), RuntimeError> {
+    pub(crate) fn validate(&self, program: &Program) -> Result<(), RuntimeError> {
         let mut effect_types = HashSet::new();
         for binding in &self.effects {
             if !effect_types.insert(binding.descriptor_type()) {
@@ -483,76 +509,59 @@ impl LiveBindings {
                     binding.descriptor_type_name()
                 )));
             }
-        }
-        Ok(())
-    }
 
-    pub(crate) fn validate_initial<Message>(
-        &self,
-        component: &ComponentId,
-        command: Option<&Command<Message>>,
-        subscriptions: &crate::Subscriptions<Message>,
-    ) -> Result<(), RuntimeError>
-    where
-        Message: Send + 'static,
-    {
-        fn validate_command<Message>(
-            bindings: &LiveBindings,
-            component: &ComponentId,
-            command: &Command<Message>,
-        ) -> Result<(), RuntimeError>
-        where
-            Message: Send + 'static,
-        {
-            match &command.0 {
-                CommandKind::None
-                | CommandKind::Send(_)
-                | CommandKind::Notify(_)
-                | CommandKind::Request(_)
-                | CommandKind::Reply(_)
-                | CommandKind::After { .. } => Ok(()),
-                CommandKind::Effect(effect) => {
-                    let descriptor_type = effect.intent().type_id();
-                    bindings.effect(descriptor_type).map(|_| ()).ok_or_else(|| {
-                        RuntimeError::harness(format!(
-                            "Component {component:?} has an initial Effect {} with no live binding",
-                            effect.intent_type_name()
-                        ))
-                    })
+            if let Some(capability) = binding.exact_capability() {
+                if !capability.belongs_to(&program.program) {
+                    return Err(RuntimeError::harness(format!(
+                        "exact live Source binding for {} uses a capability from another Program",
+                        binding.descriptor_type_name()
+                    )));
                 }
-                CommandKind::Batch(commands) => {
-                    for command in commands {
-                        validate_command(bindings, component, command)?;
-                    }
-                    Ok(())
+                let Some(requirement) = program
+                    .source_requirements
+                    .iter()
+                    .find(|requirement| requirement.token.same_as(capability))
+                else {
+                    return Err(RuntimeError::harness(format!(
+                        "exact live Source binding for {} has no declared Program capability",
+                        binding.descriptor_type_name()
+                    )));
+                };
+                if requirement.terminal_type != binding.descriptor_type() {
+                    return Err(RuntimeError::harness(format!(
+                        "exact live Source binding for {} does not match declared terminal {}",
+                        binding.descriptor_type_name(),
+                        requirement.terminal_type_name
+                    )));
                 }
             }
         }
 
-        if let Some(command) = command {
-            validate_command(self, component, command)?;
+        for requirement in &program.effect_requirements {
+            let count = self
+                .effects
+                .iter()
+                .filter(|binding| binding.descriptor_type() == requirement.descriptor_type)
+                .count();
+            if count != 1 {
+                return Err(RuntimeError::harness(format!(
+                    "declared Effect capability for {} has {count} live bindings; expected exactly one",
+                    requirement.descriptor_type_name
+                )));
+            }
         }
-        let mut ids = HashSet::new();
-        for subscription in subscriptions.iter() {
-            if !ids.insert(subscription.id().clone()) {
+        for requirement in &program.source_requirements {
+            let count = self
+                .sources
+                .iter()
+                .filter(|binding| binding.satisfies(requirement))
+                .count();
+            if count != 1 {
                 return Err(RuntimeError::harness(format!(
-                    "Component {component:?} initially desires duplicate Subscription {:?}",
-                    subscription.id()
+                    "declared Source capability for {} (terminal {}) has {count} live bindings; expected exactly one",
+                    requirement.descriptor_type_name, requirement.terminal_type_name
                 )));
             }
-            let plan = subscription.source_plan();
-            if !plan.accepts_output_event_type(subscription.source_event_type_id()) {
-                return Err(RuntimeError::harness(format!(
-                    "Component {component:?} has an invalid initial SourcePlan for {}",
-                    plan.terminal_type_name()
-                )));
-            }
-            self.source(&plan).map_err(|reason| {
-                RuntimeError::harness(format!(
-                    "Component {component:?} has initial Source {}: {reason}",
-                    plan.terminal_type_name()
-                ))
-            })?;
         }
         Ok(())
     }
@@ -568,7 +577,7 @@ impl LiveBindings {
         let matches = self
             .sources
             .iter()
-            .filter(|binding| binding.matches(plan.terminal_descriptor()))
+            .filter(|binding| binding.matches(plan))
             .cloned()
             .collect::<Vec<_>>();
         match matches.as_slice() {
@@ -1145,6 +1154,18 @@ impl LiveCore {
                 "SourcePlan output does not match its Subscription event type",
             ));
         }
+        if !self.program.declares_source_plan(
+            plan.capability(),
+            subscription.descriptor().type_id(),
+            plan.terminal_type_id(),
+        ) {
+            return Err(self.runtime_fault(
+                component.clone(),
+                Some(plan.terminal_type_name()),
+                work,
+                "Source capability belongs to another Program or has inconsistent terminal metadata",
+            ));
+        }
         let binding = self.bindings.source(&plan).map_err(|reason| {
             self.runtime_fault(
                 component.clone(),
@@ -1273,6 +1294,17 @@ impl LiveCore {
                 CommandKind::Effect(command) => {
                     let descriptor_type = command.intent().type_id();
                     let descriptor_type_name = command.intent_type_name();
+                    if !self
+                        .program
+                        .declares_effect(command.capability(), descriptor_type)
+                    {
+                        return Err(self.runtime_fault(
+                            component.clone(),
+                            Some(descriptor_type_name),
+                            work,
+                            "Effect capability belongs to another Program",
+                        ));
+                    }
                     let binding = self.bindings.effect(descriptor_type).ok_or_else(|| {
                         self.runtime_fault(
                             component.clone(),
@@ -2078,12 +2110,14 @@ impl LiveCore {
 }
 
 /// Creates a first-party exact one-shot mpsc binding.
-pub(crate) fn bind_mpsc<T: Send + 'static>(
+pub(crate) fn bind_mpsc<S>(
     bindings: &mut LiveBindings,
-    descriptor: StreamDescriptor<T>,
-    receiver: mpsc::Receiver<T>,
-) {
-    bindings.bind_mpsc(descriptor, receiver);
+    capability: &SourceCapability<S>,
+    receiver: mpsc::Receiver<S::StreamItem>,
+) where
+    S: StreamSourceDescriptor,
+{
+    bindings.bind_mpsc(capability, receiver);
 }
 
 /// Registers the first-party Tokio TCP terminal Driver.
@@ -2142,7 +2176,9 @@ mod tests {
         Outcome,
     }
 
-    struct CutoffComponent;
+    struct CutoffComponent {
+        effect: crate::EffectCapability<CutoffIntent>,
+    }
 
     impl Component for CutoffComponent {
         type Model = bool;
@@ -2160,7 +2196,7 @@ mod tests {
             match message {
                 CutoffMessage::Start => {
                     *started = true;
-                    Command::effect_with(CutoffIntent, |_| CutoffMessage::Outcome)
+                    Command::effect_with(&self.effect, CutoffIntent, |_| CutoffMessage::Outcome)
                 }
                 CutoffMessage::Outcome => Command::none(),
             }
@@ -2186,7 +2222,9 @@ mod tests {
         items: Vec<u64>,
     }
 
-    struct GenerationComponent;
+    struct GenerationComponent {
+        source: crate::SourceCapability<GenerationSource>,
+    }
 
     impl Component for GenerationComponent {
         type Model = GenerationModel;
@@ -2215,6 +2253,7 @@ mod tests {
 
         fn subscriptions(&self, model: &Self::Model) -> Subscriptions<Self::Message> {
             Subscriptions::one(Subscription::source_with(
+                &self.source,
                 SubscriptionId::new("generation"),
                 GenerationSource(model.generation),
                 GenerationMessage::Event,
@@ -2266,6 +2305,7 @@ mod tests {
     }
 
     struct FramedDrainComponent {
+        source: crate::SourceCapability<Framed<GenerationSource, DrainFailDecoder>>,
         decoder: DrainFailDecoder,
     }
 
@@ -2287,6 +2327,7 @@ mod tests {
 
         fn subscriptions(&self, _model: &Self::Model) -> Subscriptions<Self::Message> {
             Subscriptions::one(Subscription::source_with(
+                &self.source,
                 SubscriptionId::new("framed-drain"),
                 Framed::new(GenerationSource(1), self.decoder.clone()),
                 std::convert::identity,
@@ -2335,7 +2376,11 @@ mod tests {
 
     fn generation_core() -> GenerationFixture {
         let mut builder = Program::builder();
-        let component = builder.component(ComponentId::new("generation"), GenerationComponent);
+        let source = builder.source::<GenerationSource>();
+        let component = builder.component(
+            ComponentId::new("generation"),
+            GenerationComponent { source },
+        );
         let program = builder.build().expect("valid generation Program");
         let id = component.id().clone();
         let sinks = Arc::new(Mutex::new(Vec::new()));
@@ -2400,7 +2445,11 @@ mod tests {
     #[tokio::test]
     async fn phase6_cancel_cutoff_starts_no_work_from_a_committed_transition() {
         let mut builder = Program::builder();
-        let component = builder.component(ComponentId::new("cancel-cutoff"), CutoffComponent);
+        let effect = builder.effect::<CutoffIntent>();
+        let component = builder.component(
+            ComponentId::new("cancel-cutoff"),
+            CutoffComponent { effect },
+        );
         let program = builder.build().expect("valid cutoff Program");
         let id = component.id().clone();
         let (sender, receiver) = mpsc::unbounded_channel();
@@ -2527,9 +2576,11 @@ mod tests {
     async fn phase6_drain_does_not_finalize_after_an_earlier_decode_failure() {
         let finish_calls = Arc::new(AtomicUsize::new(0));
         let mut builder = Program::builder();
+        let source = builder.source::<Framed<GenerationSource, DrainFailDecoder>>();
         let _ = builder.component(
             ComponentId::new("framed-drain"),
             FramedDrainComponent {
+                source,
                 decoder: DrainFailDecoder {
                     finish_calls: finish_calls.clone(),
                 },
@@ -2585,7 +2636,11 @@ mod tests {
     #[tokio::test]
     async fn phase6_drain_preserves_a_source_panic_completed_before_cutoff() {
         let mut builder = Program::builder();
-        let component = builder.component(ComponentId::new("drain-panic"), GenerationComponent);
+        let source = builder.source::<GenerationSource>();
+        let component = builder.component(
+            ComponentId::new("drain-panic"),
+            GenerationComponent { source },
+        );
         let program = builder.build().expect("valid Source panic Program");
         let (entered, entered_rx) = tokio::sync::oneshot::channel();
         let mut bindings = LiveBindings::new();
@@ -2778,10 +2833,12 @@ mod tests {
 
     #[tokio::test]
     async fn phase6_mpsc_receiver_is_consumed_at_activation_not_first_poll() {
+        let mut builder = crate::Program::builder();
+        let capability = builder.source::<StreamDescriptor<u8>>();
         let descriptor = StreamDescriptor::<u8>::named("activation/one-shot");
-        let (_sender, receiver) = mpsc::channel(1);
+        let (_sender, receiver) = mpsc::channel::<u8>(1);
         let binding = MpscBinding {
-            descriptor: descriptor.clone(),
+            capability: capability.token,
             receiver: Arc::new(Mutex::new(Some(receiver))),
         };
         let (sender, _events) = mpsc::unbounded_channel();

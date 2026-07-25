@@ -403,6 +403,12 @@ struct StoreError(String);
 struct Telemetry {
     /// Named protocol dependency, independent of the provider's message enum.
     health: Port<HealthProtocol>,
+
+    /// Declared finite storage boundary.
+    storage: EffectCapability<StoreFrame>,
+
+    /// Declared composed socket source, lowered to terminal `TcpBytes`.
+    socket: SourceCapability<TelemetryFeed>,
 }
 
 /// Builds the pure continuation for one asynchronous health request.
@@ -446,7 +452,11 @@ impl Component for Telemetry {
                 // performing either operation inline.
                 Command::batch([
                     Command::notify(self.health.clone(), FrameSeen),
-                    Command::effect_with(StoreFrame { frame }, TelemetryMessage::Stored),
+                    Command::effect_with(
+                        &self.storage,
+                        StoreFrame { frame },
+                        TelemetryMessage::Stored,
+                    ),
                 ])
             }
             TelemetryMessage::Socket(SourceEvent::Failed(error)) => {
@@ -503,6 +513,7 @@ impl Component for Telemetry {
         // descriptor replaces it while keeping the logical subscription
         // identity.
         Subscriptions::one(Subscription::source_with(
+            &self.socket,
             SubscriptionId::new(SOCKET),
             Framed::new(
                 TcpBytes {
@@ -558,6 +569,8 @@ struct AppRefs {
 /// than asking Components to discover dependencies dynamically.
 fn program() -> (Program, AppRefs) {
     let mut program = Program::builder();
+    let storage = program.effect::<StoreFrame>();
+    let socket = program.source::<TelemetryFeed>();
 
     // A named Port permits multiple independently bound instances of the same
     // protocol; the protocol's Rust type alone is not a global service key.
@@ -572,6 +585,8 @@ fn program() -> (Program, AppRefs) {
         ComponentId::new("telemetry"),
         Telemetry {
             health: health_port.clone(),
+            storage,
+            socket,
         },
     );
 
@@ -781,7 +796,11 @@ mod tests {
     fn same_subscription_identity_exposes_changed_configuration() {
         let mut builder = Program::builder();
         let health = builder.port(PortId::new(HEALTH));
-        let component = Telemetry { health };
+        let component = Telemetry {
+            health,
+            storage: builder.effect::<StoreFrame>(),
+            socket: builder.source::<TelemetryFeed>(),
+        };
         let mut model = component.init().model;
         let id = SubscriptionId::new(SOCKET);
 
@@ -827,7 +846,11 @@ mod tests {
     fn telemetry_emits_protocol_notifications_without_provider_messages() {
         let mut builder = Program::builder();
         let health = builder.port(PortId::new(HEALTH));
-        let component = Telemetry { health };
+        let component = Telemetry {
+            health,
+            storage: builder.effect::<StoreFrame>(),
+            socket: builder.source::<TelemetryFeed>(),
+        };
         let mut model = component.init().model;
 
         let command =
@@ -851,7 +874,11 @@ mod tests {
 
         let mut builder = Program::builder();
         let health = builder.port(PortId::new(HEALTH));
-        let component = Telemetry { health };
+        let component = Telemetry {
+            health,
+            storage: builder.effect::<StoreFrame>(),
+            socket: builder.source::<TelemetryFeed>(),
+        };
         let mut model = component.init().model;
 
         let command = component.update(
