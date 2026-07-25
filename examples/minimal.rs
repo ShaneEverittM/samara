@@ -85,7 +85,7 @@ impl Component for Counter {
             return Subscriptions::none();
         }
 
-        Subscriptions::one(Subscription::source(
+        Subscriptions::one(Subscription::source_with(
             SubscriptionId::new(INCREMENT_SUBSCRIPTION),
             self.increments.clone(),
             |event| match event {

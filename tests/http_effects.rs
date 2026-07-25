@@ -72,7 +72,7 @@ impl Component for HttpSequence {
 
     fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
         match message {
-            HttpMessage::Start => Command::effect(
+            HttpMessage::Start => Command::effect_with(
                 self.requests
                     .first()
                     .expect("nonempty test sequence")
@@ -86,9 +86,9 @@ impl Component for HttpSequence {
                     EffectOutcome::Cancelled(_) => SeenHttp::Cancelled,
                 });
                 if let Some(request) = self.requests.get(model.seen.len()) {
-                    Command::effect(request.clone(), HttpMessage::Finished)
+                    Command::effect_with(request.clone(), HttpMessage::Finished)
                 } else {
-                    Command::effect(ObserveHttp(model.seen.clone()), |_| HttpMessage::Observed)
+                    Command::effect_with(ObserveHttp(model.seen.clone()), |_| HttpMessage::Observed)
                 }
             }
             HttpMessage::Observed => Command::none(),

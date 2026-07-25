@@ -47,7 +47,7 @@ impl Component for CliTimeServer {
                     .on_response()
                     .require_success()
                     .json::<TimeResponse>()
-                    .into_command(Message::from);
+                    .into_command();
                 let tick = Command::after(Duration::from_secs(1), Message::GetTime);
                 Command::batch([get_time, tick])
             }

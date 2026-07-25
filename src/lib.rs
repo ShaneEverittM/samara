@@ -1242,7 +1242,7 @@ where
     ///     type Error = ();
     /// }
     ///
-    /// let invocation = Command::effect(Read, |_| ())
+    /// let invocation = Command::effect_with(Read, |_| ())
     ///     .into_effect::<Read>()
     ///     .ok()
     ///     .unwrap();
@@ -1325,7 +1325,21 @@ impl<Message> Command<Message> {
         Self(CommandKind::None)
     }
 
-    /// Combines a typed effect intent with its pure message mapper.
+    /// Combines a typed effect intent with its canonical Message conversion.
+    ///
+    /// This short form uses `Message: From<EffectOutcome<...>>`. Use
+    /// [`Command::effect_with`] when this occurrence must capture domain
+    /// context or map the same outcome type differently from another call
+    /// site.
+    pub fn effect<E>(effect: E) -> Self
+    where
+        Message: From<EffectOutcome<E::Output, E::Error>> + Send + 'static,
+        E: EffectDescriptor,
+    {
+        Self::effect_with(effect, Message::from)
+    }
+
+    /// Combines a typed effect intent with an explicit pure message mapper.
     ///
     /// Live execution passes `effect` to the registered [`EffectDriver<E>`].
     /// Controlled execution exposes it through
@@ -1338,7 +1352,7 @@ impl<Message> Command<Message> {
     /// use samara::Command;
     ///
     /// struct HiddenWork;
-    /// let _: Command<()> = Command::effect(HiddenWork, |_| ());
+    /// let _: Command<()> = Command::effect_with(HiddenWork, |_| ());
     /// ```
     ///
     /// The message mapper is synchronous application logic rather than async
@@ -1353,9 +1367,9 @@ impl<Message> Command<Message> {
     ///     type Error = ();
     /// }
     ///
-    /// let _: Command<()> = Command::effect(Read, |_| async {});
+    /// let _: Command<()> = Command::effect_with(Read, |_| async {});
     /// ```
-    pub fn effect<E, Map>(effect: E, map: Map) -> Self
+    pub fn effect_with<E, Map>(effect: E, map: Map) -> Self
     where
         Message: Send + 'static,
         E: EffectDescriptor,
@@ -1410,7 +1424,22 @@ impl<Message> Command<Message> {
         Self(CommandKind::Notify(Box::new(Notify { port, notification })))
     }
 
-    /// Sends a correlated request through a named provider-neutral [`Port`].
+    /// Sends a correlated request using its canonical Message conversion.
+    ///
+    /// This short form uses `Message: From<RequestOutcome<R::Reply>>`. Use
+    /// [`Command::request_with`] when this request occurrence must capture
+    /// domain correlation or map the same reply type differently from another
+    /// call site.
+    pub fn request<P, R>(port: Port<P>, request: R) -> Self
+    where
+        Message: From<RequestOutcome<R::Reply>> + Send + 'static,
+        P: Protocol,
+        R: Request<P>,
+    {
+        Self::request_with(port, request, Message::from)
+    }
+
+    /// Sends a correlated request with an explicit pure continuation.
     ///
     /// Interpreting the command creates a one-shot [`ReplyTo<R::Reply>`] and
     /// converts the request through [`Request::into_message`]. A successful
@@ -1423,7 +1452,7 @@ impl<Message> Command<Message> {
     ///
     /// This candidate intentionally does not yet choose a default deadline or
     /// cancellation policy for requests.
-    pub fn request<P, R, Map>(port: Port<P>, request: R, map: Map) -> Self
+    pub fn request_with<P, R, Map>(port: Port<P>, request: R, map: Map) -> Self
     where
         Message: Send + 'static,
         P: Protocol,
@@ -1788,12 +1817,27 @@ pub struct Subscription<Message> {
 }
 
 impl<Message> Subscription<Message> {
-    /// Declares a typed source and its pure event-to-message mapping.
+    /// Declares a typed source using its canonical Message conversion.
+    ///
+    /// This short form uses `Message: From<SourceEvent<...>>`. Use
+    /// [`Subscription::source_with`] when this Subscription identity must
+    /// capture domain context or map the same event type differently from
+    /// another Source.
+    pub fn source<S>(id: SubscriptionId, descriptor: S) -> Self
+    where
+        Message: From<SourceEvent<S::Item, S::Error>> + Send + 'static,
+        S: SourceDescriptor,
+    {
+        Self::source_with(id, descriptor, Message::from)
+    }
+
+    /// Declares a typed source with an explicit pure event-to-message mapping.
     ///
     /// Constructing this value starts no task and touches no external resource.
     /// `Map` is called repeatedly for the lifetime of an active source, so it is
-    /// `Fn` rather than the one-shot `FnOnce` accepted by [`Command::effect`].
-    pub fn source<S, Map>(id: SubscriptionId, descriptor: S, map: Map) -> Self
+    /// `Fn` rather than the one-shot `FnOnce` accepted by
+    /// [`Command::effect_with`].
+    pub fn source_with<S, Map>(id: SubscriptionId, descriptor: S, map: Map) -> Self
     where
         Message: Send + 'static,
         S: SourceDescriptor,
@@ -2185,7 +2229,8 @@ type HttpResponseTransform<Output, ResponseError> = Box<
 /// Inert, ordered pure handling for one owned [`HttpRequest`] response.
 ///
 /// This value performs no I/O and is not a separately bound or traced effect.
-/// [`HttpResponsePipeline::into_command`] lowers it to the original raw
+/// [`HttpResponsePipeline::into_command`] or
+/// [`HttpResponsePipeline::into_command_with`] lowers it to the original raw
 /// request plus one composed, one-shot message mapper. It intentionally does
 /// not implement `Clone`: the request and every declared transform are owned
 /// and may be consumed only once.
@@ -2226,19 +2271,32 @@ where
         }
     }
 
-    /// Lowers this pure pipeline to one ordinary raw HTTP effect Command.
+    /// Lowers this pipeline using its canonical Message conversion.
+    ///
+    /// This short form uses `Message: From<EffectOutcome<Output,
+    /// ResponseError>>`. Use [`HttpResponsePipeline::into_command_with`] when
+    /// this endpoint occurrence needs captured context or a distinct Message
+    /// projection.
+    pub fn into_command<Message>(self) -> Command<Message>
+    where
+        Message: From<EffectOutcome<Output, ResponseError>> + Send + 'static,
+    {
+        self.into_command_with(Message::from)
+    }
+
+    /// Lowers this pure pipeline with an explicit Message mapper.
     ///
     /// Live execution still selects the [`HttpRequest`] Driver and controlled
     /// execution still intercepts `next_effect::<HttpRequest>()`. The response
     /// transforms and `map` run synchronously and at most once after that raw
     /// terminal outcome is accepted.
-    pub fn into_command<Message, Map>(self, map: Map) -> Command<Message>
+    pub fn into_command_with<Message, Map>(self, map: Map) -> Command<Message>
     where
         Message: Send + 'static,
         Map: FnOnce(EffectOutcome<Output, ResponseError>) -> Message + Send + 'static,
     {
         let Self { request, transform } = self;
-        Command::effect(request, move |outcome| map(transform(outcome)))
+        Command::effect_with(request, move |outcome| map(transform(outcome)))
     }
 }
 

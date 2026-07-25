@@ -36,7 +36,7 @@ where
     HttpRequest::get("https://example.test/value")
         .on_response()
         .json::<T>()
-        .into_command(|outcome| outcome)
+        .into_command_with(|outcome| outcome)
 }
 
 fn successful_json_command<T>() -> Command<EffectOutcome<T, HttpResponseError>>
@@ -47,7 +47,7 @@ where
         .on_response()
         .require_success()
         .json::<T>()
-        .into_command(|outcome| outcome)
+        .into_command_with(|outcome| outcome)
 }
 
 #[test]
@@ -59,7 +59,7 @@ fn http_response_pipeline_preserves_the_owned_raw_request_boundary() {
         )
         .with_body(Bytes::from_static(b"owned request"))
         .on_response()
-        .into_command(|_| ());
+        .into_command_with(|_| ());
 
     let invocation = command
         .into_effect::<HttpRequest>()
@@ -112,7 +112,7 @@ impl Component for PipelineComponent {
                 .on_response()
                 .require_success()
                 .json::<Payload>()
-                .into_command(PipelineMessage::Finished),
+                .into_command_with(PipelineMessage::Finished),
             PipelineMessage::Finished(outcome) => {
                 let result = match outcome {
                     EffectOutcome::Succeeded(payload) => PipelineResult::Succeeded(payload.value),
@@ -127,7 +127,7 @@ impl Component for PipelineComponent {
                     EffectOutcome::Cancelled(reason) => PipelineResult::Cancelled(reason),
                 };
                 model.result = Some(result.clone());
-                Command::effect(ObservePipelineResult(result), |_| PipelineMessage::Observed)
+                Command::effect_with(ObservePipelineResult(result), |_| PipelineMessage::Observed)
             }
             PipelineMessage::Observed => Command::none(),
         }
@@ -323,7 +323,7 @@ fn http_pipeline_transforms_and_maps_at_most_once() {
         .on_response()
         .require_success()
         .json::<OnceDecoded>()
-        .into_command(move |outcome| {
+        .into_command_with(move |outcome| {
             counted_mapper_calls.fetch_add(1, Ordering::SeqCst);
             outcome
         });

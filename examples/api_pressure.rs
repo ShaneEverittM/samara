@@ -217,7 +217,7 @@ impl Component for Counter {
                 // granted. `CounterMessage::Reserved` is the explicit continuation:
                 // the runtime maps this request's eventual terminal outcome back
                 // into the requester's ordinary message stream.
-                Command::request(
+                Command::request_with(
                     self.quota.clone(),
                     Reserve { amount },
                     CounterMessage::Reserved,
@@ -230,7 +230,7 @@ impl Component for Counter {
                 let command = match &outcome {
                     RequestOutcome::Replied(Reservation::Granted { amount }) => {
                         model.count += amount;
-                        Command::effect(
+                        Command::effect_with(
                             PersistCount { value: model.count },
                             CounterMessage::Persisted,
                         )
@@ -264,7 +264,7 @@ impl Component for Counter {
         // Subscriptions describe ongoing demand. The stable ID lets the runtime
         // reconcile this desired source across transitions without exposing a
         // task, receiver, or cancellation handle to the Component.
-        Subscriptions::one(Subscription::source(
+        Subscriptions::one(Subscription::source_with(
             SubscriptionId::new(INCREMENT_SUBSCRIPTION),
             self.increments.clone(),
             |event| match event {

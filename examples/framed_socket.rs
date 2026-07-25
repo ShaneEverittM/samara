@@ -446,7 +446,7 @@ impl Component for Telemetry {
                 // performing either operation inline.
                 Command::batch([
                     Command::notify(self.health.clone(), FrameSeen),
-                    Command::effect(StoreFrame { frame }, TelemetryMessage::Stored),
+                    Command::effect_with(StoreFrame { frame }, TelemetryMessage::Stored),
                 ])
             }
             TelemetryMessage::Socket(SourceEvent::Failed(error)) => {
@@ -479,7 +479,7 @@ impl Component for Telemetry {
                 // order is intentionally not assumed; each pure mapper captures
                 // the domain key needed to interpret its eventual reply.
                 Command::batch(probes.map(|probe| {
-                    Command::request(self.health.clone(), Read, move |event| {
+                    Command::request_with(self.health.clone(), Read, move |event| {
                         TelemetryMessage::HealthChecked { probe, event }
                     })
                 }))
@@ -502,7 +502,7 @@ impl Component for Telemetry {
         // absence stops it, an equal descriptor preserves it, and a changed
         // descriptor replaces it while keeping the logical subscription
         // identity.
-        Subscriptions::one(Subscription::source(
+        Subscriptions::one(Subscription::source_with(
             SubscriptionId::new(SOCKET),
             Framed::new(
                 TcpBytes {

@@ -149,7 +149,7 @@ mod tests {
     }
 
     fn desired(binding: &'static str) -> Subscriptions<Message> {
-        Subscriptions::one(Subscription::source(
+        Subscriptions::one(Subscription::source_with(
             SubscriptionId::new("input"),
             StreamDescriptor::<u64>::named(binding),
             Message::Old,
@@ -187,7 +187,7 @@ mod tests {
 
         fn subscriptions(&self, model: &Self::Model) -> Subscriptions<Self::Message> {
             match model {
-                Some(binding) => Subscriptions::one(Subscription::source(
+                Some(binding) => Subscriptions::one(Subscription::source_with(
                     SubscriptionId::new("input"),
                     StreamDescriptor::<u64>::named(*binding),
                     DesiredMessage::Input,
@@ -200,13 +200,13 @@ mod tests {
     #[test]
     fn v3_batched_effect_occurrences_keep_distinct_one_shot_mappers() {
         let command = Command::batch([
-            Command::effect(Write(7), |outcome| {
+            Command::effect_with(Write(7), |outcome| {
                 let EffectOutcome::Succeeded(output) = outcome else {
                     unreachable!("the fixture supplies success")
                 };
                 Written { request: 1, output }
             }),
-            Command::effect(Write(7), |outcome| {
+            Command::effect_with(Write(7), |outcome| {
                 let EffectOutcome::Succeeded(output) = outcome else {
                     unreachable!("the fixture supplies success")
                 };
@@ -340,12 +340,12 @@ mod tests {
     fn duplicate_desired_identity_is_rejected_before_bookkeeping_changes() {
         let mut reconciler = SubscriptionReconciler::new(ComponentId::new("alpha"));
         let duplicate = vec![
-            Subscription::source(
+            Subscription::source_with(
                 SubscriptionId::new("input"),
                 StreamDescriptor::<u64>::named("one"),
                 Message::Old,
             ),
-            Subscription::source(
+            Subscription::source_with(
                 SubscriptionId::new("input"),
                 StreamDescriptor::<u64>::named("two"),
                 Message::New,
@@ -372,7 +372,7 @@ mod tests {
         let mut reconciler = SubscriptionReconciler::new(ComponentId::new("alpha"));
         let _ = reconciler.reconcile(desired("one")).expect("valid desires");
         let changes = reconciler
-            .reconcile(Subscriptions::one(Subscription::source(
+            .reconcile(Subscriptions::one(Subscription::source_with(
                 SubscriptionId::new("input"),
                 StreamDescriptor::<u64>::named("one"),
                 Message::New,

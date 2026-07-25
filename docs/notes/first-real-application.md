@@ -177,7 +177,7 @@ then scheduling another timer whenever the tick Message is handled. The ongoing
 desire to receive periodic ticks is a natural Subscription:
 
 ```rust,ignore
-Subscription::source(
+Subscription::source_with(
     SubscriptionId::new("refresh-time"),
     Interval::every(Duration::from_secs(1)),
     |_| Message::RefreshDue,

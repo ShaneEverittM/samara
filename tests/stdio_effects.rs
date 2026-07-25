@@ -51,8 +51,8 @@ impl Component for OutputProbe {
     fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
         match message {
             OutputMessage::Start => Command::batch([
-                Command::effect(PrintStdout::text(""), OutputMessage::Finished),
-                Command::effect(PrintStderr::text(""), OutputMessage::Finished),
+                Command::effect_with(PrintStdout::text(""), OutputMessage::Finished),
+                Command::effect_with(PrintStderr::text(""), OutputMessage::Finished),
             ]),
             OutputMessage::Finished(outcome) => {
                 let succeeded = match outcome {
@@ -67,7 +67,7 @@ impl Component for OutputProbe {
                     }
                 };
                 if self.observe {
-                    Command::effect(ObserveOutput(succeeded), |_| OutputMessage::Observed)
+                    Command::effect_with(ObserveOutput(succeeded), |_| OutputMessage::Observed)
                 } else {
                     Command::none()
                 }

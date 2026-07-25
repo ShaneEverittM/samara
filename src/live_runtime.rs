@@ -1851,7 +1851,7 @@ mod tests {
             match message {
                 CutoffMessage::Start => {
                     *started = true;
-                    Command::effect(CutoffIntent, |_| CutoffMessage::Outcome)
+                    Command::effect_with(CutoffIntent, |_| CutoffMessage::Outcome)
                 }
                 CutoffMessage::Outcome => Command::none(),
             }
@@ -1905,7 +1905,7 @@ mod tests {
         }
 
         fn subscriptions(&self, model: &Self::Model) -> Subscriptions<Self::Message> {
-            Subscriptions::one(Subscription::source(
+            Subscriptions::one(Subscription::source_with(
                 SubscriptionId::new("generation"),
                 GenerationSource(model.generation),
                 GenerationMessage::Event,
@@ -1977,7 +1977,7 @@ mod tests {
         }
 
         fn subscriptions(&self, _model: &Self::Model) -> Subscriptions<Self::Message> {
-            Subscriptions::one(Subscription::source(
+            Subscriptions::one(Subscription::source_with(
                 SubscriptionId::new("framed-drain"),
                 Framed::new(GenerationSource(1), self.decoder.clone()),
                 std::convert::identity,

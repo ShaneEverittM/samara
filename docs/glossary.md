@@ -1,7 +1,7 @@
 # Samara Glossary
 
 - Status: Draft
-- Date: July 23, 2026
+- Date: July 25, 2026
 - Scope: Canonical project vocabulary and important distinctions
 
 This document defines how Samara currently uses its growing vocabulary. It is a
@@ -101,14 +101,15 @@ not be comparable or cloneable.
 
 **EffectOutcome** — The single terminal completion of an effect invocation: a
 typed success, a failure carrying typed Error data, or cancellation as defined
-by that effect's contract. A Command normally supplies a one-shot mapper that
-transforms it into a Component Message; a Command may instead explicitly
-discard the outcome when no terminal application reaction is meaningful. That
-mode remains runtime-owned finite work rather than "fire and forget". Aborting
-the entire live runtime scope under ADR-0004 is ownership cleanup rather than
-an effect-contract cancellation: the live future is dropped or cancelled and
-no EffectOutcome or mapped Message is manufactured for an application that is
-ending.
+by that effect's contract. `Command::effect(effect)` supplies the one-shot
+mapper through `Message: From<EffectOutcome<Output, Error>>`, while
+`Command::effect_with(effect, mapper)` supplies it explicitly. A Command may
+instead explicitly discard the outcome when no terminal application reaction
+is meaningful. That mode remains runtime-owned finite work rather than "fire
+and forget". Aborting the entire live runtime scope under ADR-0004 is ownership
+cleanup rather than an effect-contract cancellation: the live future is
+dropped or cancelled and no EffectOutcome or mapped Message is manufactured
+for an application that is ending.
 
 **HttpRequest** — The first-party terminal EffectDescriptor for one raw finite
 HTTP interaction. It owns method, URL text, headers, and body bytes; it is not
@@ -124,9 +125,11 @@ remote endpoint.
 
 **HttpResponsePipeline** — An inert, must-use, one-shot pure continuation
 created when `HttpRequest::on_response` consumes a request. It declares ordered
-response policy and decoding, then lowers through `into_command` to the same raw
-HttpRequest Effect plus a composed Message mapper. It is not a Driver, runtime
-Layer, or separately traced Effect.
+response policy and decoding, then lowers through `into_command()` using the
+Component Message's canonical `From` conversion or through
+`into_command_with(mapper)` using an explicit conversion. Both produce the same
+raw HttpRequest Effect plus a composed Message mapper. It is not a Driver,
+runtime Layer, or separately traced Effect.
 
 **HttpResponseError** — The non-exhaustive response-pipeline error algebra
 distinguishing a raw configuration/transport HttpError, an explicitly selected
@@ -173,7 +176,10 @@ behavior only for the terminal descriptor.
 **Subscription / `Subscription<Message>`** — A Component's declarative desire
 to maintain a Source matching a SourceDescriptor under a stable,
 Component-local identity, plus a message mapper from SourceEvents to Component
-Messages. Declaring a Subscription does not itself start work.
+Messages. `Subscription::source(id, descriptor)` obtains that mapper through
+`Message: From<SourceEvent<Item, Error>>`; `Subscription::source_with` accepts
+it explicitly. Declaring a Subscription does not itself start work, and the
+constructor spelling does not affect reconciliation.
 
 **Source** — The runtime-scoped ongoing realization executing behind a
 SourceDescriptor. It may contain operational resources such as tasks, sockets,
@@ -218,7 +224,11 @@ Source-generation cutover.
 data into a Component Message. EffectOutcome and request-outcome mappers are
 one-shot and may be represented by `FnOnce`; SourceEvent and protocol-binding
 mappers are reusable and may be represented by `Fn`. Mapper object identity is
-not itself part of Command or Subscription semantics.
+not itself part of Command or Subscription semantics. Continuation-bearing APIs
+use the short method when `Message: From<BoundaryValue>` expresses one
+canonical conversion and a `_with` method for an explicit call-site mapper.
+These are two ways to supply the same semantic mapper, not different runtime
+operations.
 
 **Adapter** — The conceptual umbrella for code that translates or realizes a
 declared boundary. It is useful in architecture and user-guide prose, but
@@ -350,10 +360,12 @@ sent through `Command::notify`. It has no correlated terminal outcome for the
 sender. Notification delivery-failure policy remains unresolved.
 
 **Request** — A Protocol operation/value implementing `Request<P>` with a
-statically associated `Reply` type. `Command::request` issues it as finite
-correlated work. Its eventual typed RequestOutcome is transformed by a request
-continuation into an ordinary requester Component Message; the requester does
-not await inside `update`.
+statically associated `Reply` type. `Command::request(port, request)` issues it
+as finite correlated work using
+`Message: From<RequestOutcome<Reply>>`; `Command::request_with` accepts an
+explicit continuation. Its eventual typed RequestOutcome is transformed into
+an ordinary requester Component Message; the requester does not await inside
+`update`.
 
 **RequestInvocation** — One dynamic Request occurrence delivered to the
 provider. It contains the Request value and a one-shot `ReplyTo` authority. The
@@ -376,8 +388,11 @@ terminal error data. Domain-level negative replies remain ordinary Reply
 values.
 
 **Request continuation** — The one-shot message mapper attached to a Request
-invocation. It states what the separated RequestOutcome means to the requester,
-may capture domain context, and produces the requester's Component Message.
+invocation. The default `Command::request` form obtains it through the
+requester's canonical `From<RequestOutcome<Reply>>` conversion. The explicit
+`Command::request_with` form may capture domain context or assign
+call-site-specific meaning. Both produce the requester's Component Message
+through the same runtime lifecycle.
 
 **Transport correlation** — Opaque runtime bookkeeping that distinguishes one
 dynamic RequestInvocation from every other invocation. Components neither
@@ -537,7 +552,7 @@ to hold.
 | Component Message and Protocol Message | A Component Message is private transition input; a Protocol Message is the provider-neutral vocabulary crossing a Port. |
 | Request and RequestInvocation | A Request is the typed operation/value; a RequestInvocation is one dynamic occurrence carrying Request and `ReplyTo`. |
 | Port and provider | A Port is an inert dependency; the provider is the Component selected during assembly. |
-| Notification and Request | `Notification<P>` is one-way input issued by `Command::notify`; `Request<P>` has an associated Reply and is issued by `Command::request` with a continuation. |
+| Notification and Request | `Notification<P>` is one-way input issued by `Command::notify`; `Request<P>` has an associated Reply and is issued by `Command::request` with a canonical continuation or `Command::request_with` with an explicit one. |
 | Protocol and wire protocol | A Samara Protocol is a typed Component boundary; a wire protocol defines external data exchange. |
 | Message and event | Boundary events and outcomes are mapped into Component Messages; trace events remain out of band. |
 | Per-Component serialization and ordering | Non-overlapping transitions do not create a global order or imply unspecified FIFO behavior. |

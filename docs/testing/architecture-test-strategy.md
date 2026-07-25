@@ -2,7 +2,7 @@
 
 ## Status
 - Phase: Phase 6 live-runtime implementation complete; audit ready.
-- Date: July 23, 2026.
+- Date: July 25, 2026.
 
 ## Purpose
 Define required test layers and acceptance gates for the strict TEA + Tokio
@@ -160,9 +160,10 @@ architecture before each implementation slice begins.
   data, including Driver panic, unavailable dynamic binding, and exhausted
   one-shot `mpsc`, must instead close admission, cancel/join owned work, and
   surface `RuntimeError` through the host boundary.
-- Component interaction coverage for `Command::notify` (one-way) and
-  `Command::request` (request/reply). Phase 5 activates only the successful
-  Request/Reply path; dropped-reply policy remains deferred.
+- Component interaction coverage for `Command::notify` (one-way) and the
+  `Command::request` / `Command::request_with` request/reply pair. Phase 5
+  activates only the successful Request/Reply path; dropped-reply policy
+  remains deferred.
 - Typed request coverage for `Request<P>` associated Reply mappings and
   `RequestOutcome` runtime flows.
 - Protocol coverage proving `Protocol::Message` is provider-neutral, concrete
@@ -174,8 +175,8 @@ architecture before each implementation slice begins.
   transitions emit `Command::reply` rather than using a live reply channel.
 - Port/protocol binding coverage for provider swapping (`real` vs `mock`) without consumer code changes.
 - Port interaction coverage for the `Notification<P>` / `Command::notify` and
-  `Request<P>` / `Command::request` symmetry, opaque correlation, message mapping,
-  and runtime-owned reply resolution.
+  `Request<P>` / `Command::request` symmetry, canonical and explicit message
+  mapping, opaque correlation, and runtime-owned reply resolution.
 - When the deferred Request lifecycle tranche is activated, Reply-obligation
   coverage must demonstrate that:
   - consuming `ReplyTo` into an interpreted `Command::reply` produces exactly one
@@ -212,6 +213,11 @@ architecture before each implementation slice begins.
   unanswered Phase 5 Request remains a `pending_later` obligation until then
   and does not synthesize a deferred failure, timeout, or cancellation outcome.
 - Cancellation behavior for long-running and short-running commands.
+- Standard-continuation tests must cover the default `From` conversion and the
+  explicit `_with` mapper for Effects, Requests, Subscriptions, and HTTP
+  response pipelines. Evidence must include reusable Source conversion,
+  one-shot finite continuations, captured call-site context, and the reflexive
+  standard-library `From<T> for T` identity case.
 - First-party bridge coverage for one-shot `mpsc` normal closure and explicit
   duplicate/reactivation fault, plus one-connection TCP Bytes, connect/read
   failure, peer EOF, cancellation closure, and absence of hidden

@@ -2,7 +2,8 @@
 
 - Status: Accepted
 - Date: July 24, 2026
-- Amended: July 25, 2026 (pure fluent response pipeline)
+- Amended: July 25, 2026 (pure fluent response pipeline and paired
+  continuation API)
 - Decision owners: Samara maintainers
 - Extends: [ADR 0004](0004-initial-live-runtime-semantics.md)
 
@@ -95,13 +96,18 @@ are:
 A future request-side JSON encoder is reserved for a name such as
 `with_json_body`; response-side `json::<T>()` remains unambiguously decoding.
 
-The resulting `HttpResponsePipeline` becomes work only through
-`into_command(mapper)`. Lowering produces exactly one ordinary
-`Command::effect(HttpRequest, mapper)`. The terminal Driver and controlled
-boundary therefore remain the raw `HttpRequest`; status checks and JSON
-decoding run once as deterministic, synchronous mapper behavior after the raw
-outcome. They do not create additional runtime events or change the trace's
-terminal outcome kind.
+The resulting `HttpResponsePipeline` becomes work only through one of two
+paired APIs. `into_command()` uses the canonical standard conversion
+`Message: From<EffectOutcome<Output, ResponseError>>`;
+`into_command_with(mapper)` accepts an explicit pure mapper when a call site
+must capture context or assign a different meaning to the same outcome type.
+Both lower to exactly one ordinary Effect Command with one composed mapper,
+equivalent to `Command::effect_with(HttpRequest, mapper)`. The terminal Driver
+and controlled boundary therefore remain the raw `HttpRequest`; status checks
+and JSON decoding run once as deterministic, synchronous mapper behavior after
+the raw outcome. They do not create additional runtime events or change the
+trace's terminal outcome kind. This is an API-spelling convention, not a new
+runtime behavior or Command kind.
 
 `HttpResponseError` keeps configuration/transport `HttpError`, selected status
 policy, and JSON decoding failures distinct. `EffectOutcome::Cancelled`
@@ -155,6 +161,9 @@ decoding, while `json::<T>()` alone may successfully decode a non-2xx response.
   discarded outcomes, Drain, Cancel, and structured ownership.
 - The response phase consumes the request, and request modifiers are absent
   from the resulting type.
+- `into_command()` uses the Component Message's canonical `From` conversion,
+  while `into_command_with` supports an explicit call-site mapper; both retain
+  the same one-shot lowering and runtime behavior.
 - Controlled execution still intercepts the exact raw request when a fluent
   pipeline is lowered.
 - Valid JSON succeeds for 2xx and, without `require_success`, non-2xx responses.

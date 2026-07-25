@@ -191,7 +191,7 @@ impl Component for EffectComponent {
             EffectMessage::Start => {
                 model.starts += 1;
                 let mapper_calls = self.mapper_calls.clone();
-                Command::effect(ProbeEffect(41), move |outcome| {
+                Command::effect_with(ProbeEffect(41), move |outcome| {
                     mapper_calls.fetch_add(1, Ordering::SeqCst);
                     EffectMessage::Finished(outcome)
                 })
@@ -398,7 +398,7 @@ impl Component for MappingComponent {
 
     fn subscriptions(&self, model: &Self::Model) -> Subscriptions<Self::Message> {
         let mapper = model.mapper_version;
-        Subscriptions::one(Subscription::source(
+        Subscriptions::one(Subscription::source_with(
             SubscriptionId::new("input"),
             StreamDescriptor::<u64>::named(model.binding),
             move |event| match event {
@@ -659,7 +659,7 @@ impl Component for FramedComponent {
     }
 
     fn subscriptions(&self, _model: &Self::Model) -> Subscriptions<Self::Message> {
-        Subscriptions::one(Subscription::source(
+        Subscriptions::one(Subscription::source_with(
             SubscriptionId::new("framed"),
             Framed::new(Framed::new(RawBytes, LengthPrefix), LengthPrefix),
             FramedMessage::Event,
@@ -1138,8 +1138,8 @@ impl Component for OwnershipComponent {
     fn update(&self, _model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
         match message {
             OwnershipMessage::Kick => Command::batch([
-                Command::effect(ProbeEffect(1), OwnershipMessage::Effect),
-                Command::request(self.port.clone(), Echo(1), OwnershipMessage::Request),
+                Command::effect_with(ProbeEffect(1), OwnershipMessage::Effect),
+                Command::request_with(self.port.clone(), Echo(1), OwnershipMessage::Request),
             ]),
             OwnershipMessage::Effect(outcome) => {
                 let _ = outcome;
@@ -1158,7 +1158,7 @@ impl Component for OwnershipComponent {
     }
 
     fn subscriptions(&self, _model: &Self::Model) -> Subscriptions<Self::Message> {
-        Subscriptions::one(Subscription::source(
+        Subscriptions::one(Subscription::source_with(
             SubscriptionId::new("input"),
             self.input.clone(),
             OwnershipMessage::Input,
@@ -1241,7 +1241,7 @@ impl Component for CancellationProbe {
 
     fn subscriptions(&self, _model: &Self::Model) -> Subscriptions<Self::Message> {
         let mapper_calls = self.mapper_calls.clone();
-        Subscriptions::one(Subscription::source(
+        Subscriptions::one(Subscription::source_with(
             SubscriptionId::new("cancellation-probe"),
             StreamDescriptor::<u64>::named("cancellation-probe"),
             move |_event| {
@@ -1380,7 +1380,7 @@ impl Component for EchoRequester {
     fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
         match message {
             EchoRequesterMessage::Start => Command::batch((0..self.requests).map(|slot| {
-                Command::request(self.port.clone(), Echo(7), move |outcome| {
+                Command::request_with(self.port.clone(), Echo(7), move |outcome| {
                     EchoRequesterMessage::Replied { slot, outcome }
                 })
             })),

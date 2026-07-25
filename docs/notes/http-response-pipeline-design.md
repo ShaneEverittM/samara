@@ -1,8 +1,10 @@
 # Exploratory Design: Fluent HTTP Response Handling
 
 Status: the narrow HTTP continuation-builder recommendation was accepted on
-July 25, 2026 and is specified by ADR-0005. The general `EffectPlan` sketches
-in this note remain exploratory and are not architecture contracts.
+July 25, 2026 and is specified by ADR-0005. Its API now follows Samara's paired
+continuation convention: `into_command()` uses `Message: From<BoundaryValue>`,
+while `into_command_with` accepts an explicit mapper. The general `EffectPlan`
+sketches in this note remain exploratory and are not architecture contracts.
 
 ## Decision resolution
 
@@ -17,19 +19,26 @@ Layer API are deferred until concrete evidence requires them.
 
 ## Recommendation
 
-For the next slice, add a narrow, typed `HttpResponsePipeline` that compiles to
+The accepted slice uses a narrow, typed `HttpResponsePipeline` that compiles to
 the existing raw `HttpRequest` EffectDescriptor and its existing pure one-shot
 Command mapper. Do **not** introduce a general runtime-owned `EffectPlan` yet.
 
-The intended spelling is:
+With a canonical
+`From<EffectOutcome<TimeResponse, HttpResponseError>> for Message` conversion,
+the intended default spelling is:
 
 ```rust
 HttpRequest::get("https://api.coinbase.com/v2/time")
     .on_response()
     .require_success()
     .json::<TimeResponse>()
-    .into_command(Message::TimeRequestFinished)
+    .into_command()
 ```
+
+When the same outcome type has call-site-specific meaning or the continuation
+must capture domain context, the explicit spelling is
+`into_command_with(mapper)`. Both forms build the same Command representation;
+the difference is only how the final pure conversion to Message is supplied.
 
 `on_response()` is the explicit request-to-response phase boundary. It consumes
 the `HttpRequest` and returns a different type. Request modifiers therefore do
@@ -65,7 +74,7 @@ Request-building methods should consistently use `with_*`: `with_header`,
 the policy or transformation directly: `require_success`, `json`, and
 potentially later `text` or `require_header`.
 
-## Proposed next-slice types
+## Accepted public shape
 
 The public type can hide a boxed one-shot transformer so users see only the
 meaningful output and error types:
@@ -109,7 +118,11 @@ where
     Output: Send + 'static,
     ResponseError: Send + 'static,
 {
-    pub fn into_command<Message, Map>(self, map: Map) -> Command<Message>
+    pub fn into_command<Message>(self) -> Command<Message>
+    where
+        Message: From<EffectOutcome<Output, ResponseError>> + Send + 'static;
+
+    pub fn into_command_with<Message, Map>(self, map: Map) -> Command<Message>
     where
         Message: Send + 'static,
         Map: FnOnce(EffectOutcome<Output, ResponseError>) -> Message
@@ -139,8 +152,11 @@ response metadata.
 
 ## The final value and complete transition shapes
 
-The final fluent value remains inert. `into_command` is the explicit point at
-which it becomes finite work for the runtime.
+The final fluent value remains inert. `into_command` and `into_command_with`
+are the explicit points at which it becomes finite work for the runtime. The
+default form uses the standard `From` conversion; the `_with` form preserves an
+explicit mapper. This API distinction adds no runtime lookup or new execution
+semantics.
 
 ### Keep the complete typed outcome in one Message
 
@@ -152,6 +168,12 @@ enum Message {
     ),
 }
 
+impl From<EffectOutcome<TimeResponse, HttpResponseError>> for Message {
+    fn from(outcome: EffectOutcome<TimeResponse, HttpResponseError>) -> Self {
+        Self::TimeRequestFinished(outcome)
+    }
+}
+
 fn update(&self, model: &mut Model, message: Message) -> Command<Message> {
     match message {
         Message::GetTime => {
@@ -159,7 +181,7 @@ fn update(&self, model: &mut Model, message: Message) -> Command<Message> {
                 .on_response()
                 .require_success()
                 .json::<TimeResponse>()
-                .into_command(Message::TimeRequestFinished)
+                .into_command()
         }
         Message::TimeRequestFinished(EffectOutcome::Succeeded(response)) => {
             model.current_time = Some(response.data.iso);
@@ -184,7 +206,7 @@ match message {
             .on_response()
             .require_success()
             .json::<TimeResponse>()
-            .into_command(|outcome| match outcome {
+            .into_command_with(|outcome| match outcome {
                 EffectOutcome::Succeeded(response) => {
                     Message::TimeRetrieved(response.data.iso)
                 }
@@ -209,7 +231,8 @@ match message {
 ### Decode a useful non-success response deliberately
 
 `json()` by itself decodes any HTTP status. It does not silently insert a 2xx
-policy:
+policy. Assuming the decoded outcome has a canonical `From` conversion into
+`Message`:
 
 ```rust
 match message {
@@ -217,7 +240,7 @@ match message {
         HttpRequest::get(REJECTION_URL)
             .on_response()
             .json::<ApiRejection>()
-            .into_command(Message::RejectionDecoded)
+            .into_command()
     }
     Message::RejectionDecoded(outcome) => {
         // A valid JSON body from a 400 response can be Succeeded here.
@@ -228,6 +251,9 @@ match message {
 ```
 
 ### Configure a raw request before response handling
+
+Assuming the raw response-pipeline outcome has a canonical `From` conversion
+into `Message`:
 
 ```rust
 match message {
@@ -240,7 +266,7 @@ match message {
             .with_body(encoded)
             .on_response()
             .require_success()
-            .into_command(Message::SubmitFinished)
+            .into_command()
     }
     Message::SubmitFinished(outcome) => {
         apply_submit_outcome(model, outcome);
@@ -304,12 +330,19 @@ The operations occur in declaration order:
 This preserves the distinction among transport failure, selected application
 status policy, decoding failure, and cancellation.
 
-## Recommended lowering for the next slice
+## Accepted lowering
 
-`HttpResponsePipeline::into_command` should be approximately:
+The paired methods are approximately:
 
 ```rust
-pub fn into_command<Message, Map>(self, map: Map) -> Command<Message>
+pub fn into_command<Message>(self) -> Command<Message>
+where
+    Message: From<EffectOutcome<Output, ResponseError>> + Send + 'static,
+{
+    self.into_command_with(Message::from)
+}
+
+pub fn into_command_with<Message, Map>(self, map: Map) -> Command<Message>
 where
     Message: Send + 'static,
     Map: FnOnce(EffectOutcome<Output, ResponseError>) -> Message
@@ -317,7 +350,7 @@ where
         + 'static,
 {
     let Self { request, transform } = self;
-    Command::effect(request, move |raw_outcome| {
+    Command::effect_with(request, move |raw_outcome| {
         map(transform(raw_outcome))
     })
 }
@@ -473,14 +506,15 @@ first slice. A caller that genuinely ignores an HTTP response can continue to
 use `Command::effect_discarding_outcome(HttpRequest::get(...))`; decoding a
 value and then discarding it has no demonstrated ergonomic use yet.
 
-## Conformance evidence for the recommended slice
+## Conformance evidence for the accepted slice
 
 The implementation should be test-first around these observable claims:
 
 1. `on_response()` is pure, consumes the request, and a compile-fail example
    proves request modifiers are unavailable afterward.
-2. `into_command` still exposes the exact raw request through
-   `next_effect::<HttpRequest>()`; no new controlled or live binding is needed.
+2. `into_command` and `into_command_with` still expose the exact raw request
+   through `next_effect::<HttpRequest>()`; no new controlled or live binding is
+   needed.
 3. A 2xx valid JSON response produces `Succeeded(T)` in controlled execution.
 4. A non-2xx valid JSON response succeeds under `json::<T>()` alone.
 5. The same response fails with `Status` under
@@ -488,7 +522,9 @@ The implementation should be test-first around these observable claims:
 6. A 2xx invalid body fails with `Json` and retains the raw response.
 7. Configuration/transport `HttpError` and `Cancelled` pass through their
    distinct channels.
-8. A mapper and each response operation execute at most once.
+8. The default `From` continuation, an explicit `_with` mapper, and each
+   response operation execute at most once; equivalent conversions produce
+   equivalent Messages.
 9. A local live response and an equivalent controlled fixture produce the same
    Component Message and model state after the raw boundary.
 10. Existing raw HTTP, generic Effect, discarded-outcome, Drain, Cancel, and

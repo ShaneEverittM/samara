@@ -1,7 +1,7 @@
 # Samara v0 Acceptance Matrix
 
 - Status: Phase 6 live-runtime implementation complete; audit scenarios active
-- Date: July 23, 2026
+- Date: July 25, 2026
 - Scope: Traceability from vision requirements to topology-neutral evidence
 
 ## How to Read This Matrix
@@ -180,6 +180,13 @@ Driver lifecycle and faults:
 - `phase6_source_cutover_suppresses_late_terminal`
 - `phase6_source_delivery_preserves_fifo_through_eof`
 - `phase6_driver_panic_faults_and_cleans_scope`
+
+Standard `From` continuations:
+
+- `effect_default_uses_from_and_effect_with_preserves_context`
+- `request_default_uses_from_and_request_with_preserves_context`
+- `source_default_is_reusable_and_source_with_preserves_context`
+- `http_pipeline_default_uses_from_and_into_command_with_is_explicit`
 
 Pressure and first-party bridges:
 

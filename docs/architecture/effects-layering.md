@@ -3,7 +3,7 @@
 ## Status
 
 - Phase: Phase 6 live Driver implementation complete; audit ready.
-- Date: July 23, 2026.
+- Date: July 25, 2026.
 - API names are provisional; semantic roles follow `docs/glossary.md`.
 
 ## Purpose
@@ -34,6 +34,12 @@ An `EffectDescriptor` describes one finite world-facing interaction. A Command
 combines it with either a pure one-shot message mapper or an explicit
 discarded-outcome mode.
 
+`Command::effect(effect)` uses the standard
+`Message: From<EffectOutcome<Output, Error>>` conversion as its mapper;
+`Command::effect_with(effect, mapper)` accepts an explicit call-site mapper.
+The two spellings compile to the same effect obligation and differ only in how
+the pure continuation is supplied.
+
 ```text
 Command + EffectDescriptor
     -> zero or more Layers
@@ -53,6 +59,11 @@ invocations. EffectDescriptors therefore need not be comparable or cloneable.
 A `SourceDescriptor` describes ongoing event production and is comparable for
 Subscription reconciliation. A Subscription adds stable Component-local identity and a
 reusable message mapper. A Source is the runtime-scoped realization.
+
+`Subscription::source(id, descriptor)` uses the standard
+`Message: From<SourceEvent<Item, Error>>` conversion;
+`Subscription::source_with(id, descriptor, mapper)` supplies the reusable
+mapper explicitly. This API choice does not affect reconciliation identity.
 
 ```text
 Subscription(identity + SourceDescriptor + message mapper)
@@ -171,7 +182,7 @@ an apparently primitive operation.
 These examples are schematic, not frozen Rust APIs.
 
 ```text
-Command::effect(
+Command::effect_with(
     PersistFrame { frame },             // EffectDescriptor
     TelemetryMessage::Persisted,        // one-shot message mapper
 )
@@ -185,10 +196,10 @@ When no terminal application reaction exists, the Command may instead use
 the runtime continues to own, supervise, and account for the invocation.
 
 ```text
-Subscription(
-    identity = "socket-frames",
-    descriptor = Framed(TcpBytes { endpoint }, U16LengthDelimited),
-    map = TelemetryMessage::Socket,
+Subscription::source_with(
+    "socket-frames",
+    Framed(TcpBytes { endpoint }, U16LengthDelimited),
+    TelemetryMessage::Socket,
 )
 ```
 
@@ -204,6 +215,9 @@ application binds neither `Framed` nor its Layer separately.
 - Drivers must remain terminal, narrow, runtime-scoped, and profile-selected.
 - All world-facing side effects must cross a declared terminal descriptor boundary.
 - Behaviorally relevant EffectOutcomes and SourceEvents return through message mappers.
+- Default `effect` and `source` constructors obtain those mappers through the
+  standard `From` trait; `_with` constructors accept explicit mappers without
+  changing runtime semantics.
 - Missing controlled behavior fails explicitly rather than falling through to a live
   Driver. Reaching an unhandled terminal descriptor faults the controlled run before a
   message mapper is invoked; state and trace remain inspectable and cancellation remains

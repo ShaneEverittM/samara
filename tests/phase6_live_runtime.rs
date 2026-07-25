@@ -67,7 +67,7 @@ impl Component for Counter {
         match message {
             CounterMessage::Input(SourceEvent::Item(value)) | CounterMessage::Add(value) => {
                 model.total += value;
-                Command::effect(Record(model.total), |_| CounterMessage::Recorded)
+                Command::effect_with(Record(model.total), |_| CounterMessage::Recorded)
             }
             CounterMessage::Input(SourceEvent::Ended) => {
                 model.closed = true;
@@ -82,7 +82,7 @@ impl Component for Counter {
         if model.closed {
             Subscriptions::none()
         } else {
-            Subscriptions::one(Subscription::source(
+            Subscriptions::one(Subscription::source_with(
                 SubscriptionId::new("input"),
                 self.input.clone(),
                 CounterMessage::Input,
@@ -188,7 +188,7 @@ impl Component for CancelProbe {
         match message {
             CancelMessage::Start => {
                 let mapper_calls = self.mapper_calls.clone();
-                Command::effect(Hang, move |_| {
+                Command::effect_with(Hang, move |_| {
                     mapper_calls.fetch_add(1, Ordering::SeqCst);
                     CancelMessage::UnexpectedOutcome
                 })
@@ -296,7 +296,7 @@ impl Component for InitialCancelProbe {
 
     fn init(&self) -> Init<Self::Model, Self::Message> {
         let mapper_calls = self.mapper_calls.clone();
-        Init::new(()).with_command(Command::effect(Hang, move |_| {
+        Init::new(()).with_command(Command::effect_with(Hang, move |_| {
             mapper_calls.fetch_add(1, Ordering::SeqCst);
         }))
     }
@@ -375,7 +375,7 @@ impl Component for PanicProbe {
     }
 
     fn update(&self, _model: &mut Self::Model, (): ()) -> Command<Self::Message> {
-        Command::effect(PanicEffect, |_| ())
+        Command::effect_with(PanicEffect, |_| ())
     }
 }
 
@@ -504,7 +504,7 @@ impl Component for SourceProbe {
                 Command::none()
             }
             SourceMessage::Event(SourceEvent::Failed(error)) => {
-                Command::effect(Observe(Observation::Failed(error)), |_| {
+                Command::effect_with(Observe(Observation::Failed(error)), |_| {
                     SourceMessage::Observed
                 })
             }
@@ -514,7 +514,7 @@ impl Component for SourceProbe {
                 } else {
                     Observation::ItemsThenEnded(model.items.clone())
                 };
-                Command::effect(Observe(observation), |_| SourceMessage::Observed)
+                Command::effect_with(Observe(observation), |_| SourceMessage::Observed)
             }
             SourceMessage::Replace(generation) => {
                 model.generation = Some(generation);
@@ -525,7 +525,7 @@ impl Component for SourceProbe {
                 Command::none()
             }
             SourceMessage::Timer(value) => {
-                Command::effect(Observe(Observation::Timer(value)), |_| {
+                Command::effect_with(Observe(Observation::Timer(value)), |_| {
                     SourceMessage::Observed
                 })
             }
@@ -537,7 +537,7 @@ impl Component for SourceProbe {
         model
             .generation
             .map_or_else(Subscriptions::none, |generation| {
-                Subscriptions::one(Subscription::source(
+                Subscriptions::one(Subscription::source_with(
                     SubscriptionId::new("scripted"),
                     ScriptedSource { generation },
                     SourceMessage::Event,
@@ -865,7 +865,7 @@ impl Component for AdmissionProbe {
         match message {
             AdmissionMessage::Add => {
                 *model += 1;
-                Command::effect(Record(*model), |_| AdmissionMessage::Recorded)
+                Command::effect_with(Record(*model), |_| AdmissionMessage::Recorded)
             }
             AdmissionMessage::Recorded => Command::none(),
         }
@@ -953,7 +953,7 @@ impl Component for InitialEffectComponent {
     type Message = ();
 
     fn init(&self) -> Init<Self::Model, Self::Message> {
-        Init::new(()).with_command(Command::effect(InitialEffect, |_| ()))
+        Init::new(()).with_command(Command::effect_with(InitialEffect, |_| ()))
     }
 
     fn update(&self, _model: &mut Self::Model, (): ()) -> Command<Self::Message> {
@@ -1051,7 +1051,9 @@ impl Component for DynamicProbe {
 
     fn update(&self, _model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
         match message {
-            DynamicMessage::Trigger => Command::effect(DynamicEffect, |_| DynamicMessage::Mapped),
+            DynamicMessage::Trigger => {
+                Command::effect_with(DynamicEffect, |_| DynamicMessage::Mapped)
+            }
             DynamicMessage::Mapped => panic!("a missing binding must not invoke its mapper"),
         }
     }
@@ -1170,23 +1172,23 @@ impl Component for QueryProbe {
                 let success_calls = self.mapper_calls.clone();
                 let failure_calls = self.mapper_calls.clone();
                 Command::batch([
-                    Command::effect(Query { fail: false }, move |outcome| {
+                    Command::effect_with(Query { fail: false }, move |outcome| {
                         success_calls.fetch_add(1, Ordering::SeqCst);
                         QueryMessage::Outcome(outcome)
                     }),
-                    Command::effect(Query { fail: true }, move |outcome| {
+                    Command::effect_with(Query { fail: true }, move |outcome| {
                         failure_calls.fetch_add(1, Ordering::SeqCst);
                         QueryMessage::Outcome(outcome)
                     }),
                 ])
             }
             QueryMessage::Outcome(EffectOutcome::Succeeded(value)) => {
-                Command::effect(ObserveQuery(QueryObservation::Succeeded(value)), |_| {
+                Command::effect_with(ObserveQuery(QueryObservation::Succeeded(value)), |_| {
                     QueryMessage::Observed
                 })
             }
             QueryMessage::Outcome(EffectOutcome::Failed(error)) => {
-                Command::effect(ObserveQuery(QueryObservation::Failed(error)), |_| {
+                Command::effect_with(ObserveQuery(QueryObservation::Failed(error)), |_| {
                     QueryMessage::Observed
                 })
             }
@@ -1288,11 +1290,11 @@ impl Component for DrainGateProbe {
     fn update(&self, desired: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
         match message {
             DrainGateMessage::Trigger => {
-                Command::effect(GateEffect, |_| DrainGateMessage::WantSource)
+                Command::effect_with(GateEffect, |_| DrainGateMessage::WantSource)
             }
             DrainGateMessage::WantSource => {
                 *desired = true;
-                Command::effect(Observe(Observation::Timer(99)), |_| {
+                Command::effect_with(Observe(Observation::Timer(99)), |_| {
                     DrainGateMessage::Observed
                 })
             }
@@ -1302,7 +1304,7 @@ impl Component for DrainGateProbe {
 
     fn subscriptions(&self, desired: &Self::Model) -> Subscriptions<Self::Message> {
         if *desired {
-            Subscriptions::one(Subscription::source(
+            Subscriptions::one(Subscription::source_with(
                 SubscriptionId::new("late-source"),
                 ScriptedSource { generation: 1 },
                 |_| DrainGateMessage::Noop,
@@ -1443,7 +1445,7 @@ impl Component for EchoProvider {
                 if self.reply {
                     Command::reply(invocation.reply_to, invocation.request.0)
                 } else {
-                    Command::effect(ProviderSeen, |_| EchoProviderMessage::Seen)
+                    Command::effect_with(ProviderSeen, |_| EchoProviderMessage::Seen)
                 }
             }
             EchoProviderMessage::Seen => Command::none(),
@@ -1496,13 +1498,13 @@ impl Component for EchoRequester {
         match message {
             EchoRequesterMessage::Start => {
                 let continuation_calls = self.continuation_calls.clone();
-                Command::request(self.echo.clone(), Echo(42), move |outcome| {
+                Command::request_with(self.echo.clone(), Echo(42), move |outcome| {
                     continuation_calls.fetch_add(1, Ordering::SeqCst);
                     EchoRequesterMessage::Outcome(outcome)
                 })
             }
             EchoRequesterMessage::Outcome(RequestOutcome::Replied(value)) => {
-                Command::effect(ObserveReply(value), |_| EchoRequesterMessage::Observed)
+                Command::effect_with(ObserveReply(value), |_| EchoRequesterMessage::Observed)
             }
             EchoRequesterMessage::Outcome(_) => {
                 panic!("Phase 6 does not manufacture deferred Request outcomes")
@@ -1640,11 +1642,11 @@ impl Component for IndependentProbe {
     fn update(&self, _model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
         match message {
             IndependentMessage::Start => Command::batch([
-                Command::effect(Independent('A'), IndependentMessage::Completed),
-                Command::effect(Independent('B'), IndependentMessage::Completed),
+                Command::effect_with(Independent('A'), IndependentMessage::Completed),
+                Command::effect_with(Independent('B'), IndependentMessage::Completed),
             ]),
             IndependentMessage::Completed(EffectOutcome::Succeeded(label)) => {
-                Command::effect(RecordOrder(label), |_| IndependentMessage::Recorded)
+                Command::effect_with(RecordOrder(label), |_| IndependentMessage::Recorded)
             }
             IndependentMessage::Completed(EffectOutcome::Failed(never)) => match never {},
             IndependentMessage::Completed(EffectOutcome::Cancelled(_)) => {

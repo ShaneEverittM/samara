@@ -69,7 +69,7 @@ impl Component for ContractComponent {
         match message {
             ContractMessage::Add(amount) => {
                 model.total += amount;
-                Command::effect(SaveTotal { value: model.total }, ContractMessage::Saved)
+                Command::effect_with(SaveTotal { value: model.total }, ContractMessage::Saved)
             }
             ContractMessage::Input(SourceEvent::Item(amount)) => {
                 model.total += amount;
@@ -92,7 +92,7 @@ impl Component for ContractComponent {
             return Subscriptions::none();
         }
 
-        Subscriptions::one(Subscription::source(
+        Subscriptions::one(Subscription::source_with(
             SubscriptionId::new(INPUT_SUBSCRIPTION),
             self.input.clone(),
             ContractMessage::Input,

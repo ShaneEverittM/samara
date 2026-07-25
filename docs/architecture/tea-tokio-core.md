@@ -2,7 +2,7 @@
 
 ## Status
 - Phase: Phase 6 live-runtime implementation complete; audit ready.
-- Date: July 23, 2026.
+- Date: July 25, 2026.
 - Library scope: `samara` is library-first.
 
 ## Goals
@@ -82,6 +82,12 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
   declaration that the Component discards the outcome. Discarding the outcome
   removes only the application continuation; it does not detach the effect
   from runtime ownership.
+- `Command::effect(effect)` obtains that mapper from
+  `Message: From<EffectOutcome<Output, Error>>` when the outcome type has one
+  canonical Message meaning. `Command::effect_with(effect, mapper)` accepts an
+  explicit mapper for call-site-specific meaning or captured domain context.
+  Both forms create the same runtime-owned effect obligation and stored
+  one-shot continuation.
 - In live execution, an `EffectDriver<D>` is the terminal Adapter that realizes
   terminal descriptor type `D` against the surrounding world under runtime
   supervision. A non-terminal descriptor first passes through one or more
@@ -106,6 +112,10 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
 - A `Subscription` combines a stable Component-local identity, a
   SourceDescriptor, and a pure reusable message mapper from `SourceEvent` to the
   owning Component's Message. Declaring one starts no work.
+- `Subscription::source(id, descriptor)` obtains that mapper from
+  `Message: From<SourceEvent<Item, Error>>`; `Subscription::source_with` accepts
+  an explicit reusable mapper. This constructor choice does not participate in
+  reconciliation identity or alter Source lifecycle semantics.
 - In live execution, a `SourceDriver<D>` is the terminal Adapter that realizes
   terminal descriptor type `D` against the surrounding world under runtime
   supervision. A non-terminal descriptor first passes through one or more
@@ -186,10 +196,13 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
   - A value implementing `Notification<P>` is issued through `Command::notify` for
     one-way delivery.
   - A value implementing `Request<P>` declares one associated `Reply` type and
-    is issued through `Command::request` for a correlated terminal outcome.
-- `Command::request` includes a pure, one-shot message mapper from
-  `RequestOutcome<Reply>` to the requester's ordinary Component Message. This
-  request continuation may capture application-owned domain correlation.
+    is issued through `Command::request` or `Command::request_with` for a
+    correlated terminal outcome.
+- `Command::request(port, request)` obtains its pure one-shot continuation from
+  `Message: From<RequestOutcome<Reply>>`. `Command::request_with(port, request,
+  mapper)` accepts an explicit continuation, including one that captures
+  application-owned domain correlation. Both forms create the same Request
+  obligation and runtime-owned transport correlation.
 - The runtime owns transport correlation and creates an opaque, typed
   `ReplyTo<Reply>` when it interprets a request. Components do not allocate,
   compare, or retain transport correlation identifiers.
@@ -230,9 +243,10 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
   absent Component is diagnosed when interpreted.
 - Swapping a real, mock, or controlled provider does not require consumer
   transition changes.
-- Notification values and Request values use the symmetric `Command::notify` and
-  `Command::request` entry points; only Requests add an associated Reply and
-  continuation.
+- Notification values and Request values use the symmetric `Command::notify`
+  and `Command::request` entry points; only Requests add an associated Reply and
+  continuation. `Command::request_with` is the explicit-mapper spelling of the
+  same Request operation.
 - Runtime-owned routing and reply resolution must preserve the delivery,
   causality, and failure semantics promised by the interaction contract without
   exposing runtime topology.
@@ -390,10 +404,13 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
 - `require_success` adds only an explicit 2xx policy. `json::<T>` adds only
   owned JSON decoding and never implies that policy. Both retain the complete
   raw response in their typed error data; JSON errors also retain their source.
-- `into_command` lowers the pipeline to the original terminal `HttpRequest`
-  plus one composed `FnOnce` mapper. Live and controlled execution therefore
-  share the same deterministic status/decoding behavior without a new Driver,
-  controlled boundary, runtime event, or trace outcome.
+- `into_command()` uses
+  `Message: From<EffectOutcome<Output, ResponseError>>` for the final
+  conversion; `into_command_with(mapper)` accepts an explicit call-site mapper.
+  Each lowers the pipeline to the original terminal `HttpRequest` plus one
+  composed `FnOnce` mapper. Live and controlled execution therefore share the
+  same deterministic status/decoding behavior without a new Driver, controlled
+  boundary, runtime event, Command kind, or trace outcome.
 - Raw configuration/transport failure and runtime cancellation bypass response
   operations. Cancellation remains cancellation rather than response Error
   data.

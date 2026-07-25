@@ -1,7 +1,7 @@
 # Samara Vision
 
 - Status: Draft
-- Date: July 23, 2026
+- Date: July 25, 2026
 - Scope: Enduring product direction and observable semantics
 
 ## Headline
@@ -173,6 +173,14 @@ A `Command<Message>` is an inert typed description of finite work. For a world-f
 interaction, it composes an explicit `EffectDescriptor` with a deterministic one-shot
 message mapper.
 
+When an EffectOutcome type has one canonical meaning for the Component,
+`Command::effect(effect)` obtains that mapper through the standard
+`Message: From<EffectOutcome<Output, Error>>` relationship. When meaning is
+specific to the call site or captures domain context,
+`Command::effect_with(effect, mapper)` supplies it explicitly. This paired API
+is only a Rust spelling choice; both forms declare the same finite work and
+runtime-owned continuation.
+
 The EffectDescriptor must remain separately identifiable and interceptable by the
 runtime. A Command must not hide world interaction inside an arbitrary async closure.
 
@@ -180,7 +188,7 @@ Pure synchronous closures or function pointers may transform typed EffectOutcome
 Component Messages. For example:
 
 ```text
-Command::effect(
+Command::effect_with(
     SocketRead { socket },
     bytes -> SocketMessage::Frames(decode(bytes)),
 )
@@ -207,6 +215,12 @@ Commands describe finite work. A `Subscription<Message>` declaratively describes
 Component's desire to maintain ongoing event production. It combines a stable
 Component-local identity, a comparable SourceDescriptor, and a reusable message mapper
 from SourceEvents to Component Messages.
+
+`Subscription::source(id, descriptor)` obtains the canonical mapper through
+`Message: From<SourceEvent<Item, Error>>`;
+`Subscription::source_with(id, descriptor, mapper)` supplies an explicit
+reusable mapper. The choice does not affect reconciliation identity or Source
+lifecycle.
 
 Subscriptions are derived purely from current Component state. Deriving a subscription
 does not start work; it describes the work the Component currently wants the runtime to
@@ -489,10 +503,10 @@ Conceptually:
 
 ```text
 Component:
-    Subscription(
-        identity = "packets",
-        descriptor = packet_input,
-        map = PacketMessage::Received,
+    Subscription::source_with(
+        "packets",
+        packet_input,
+        PacketMessage::Received,
     )
 
 Live profile:

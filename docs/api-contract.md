@@ -1,7 +1,7 @@
 # Samara v0 Milestone API Contract
 
 - Status: Phase 6 live-runtime implementation complete; audit ready
-- Date: July 23, 2026
+- Date: July 25, 2026
 - Scope: Change-controlled public API slices for staged implementation
 
 ## Purpose
@@ -101,6 +101,24 @@ particular:
   inert until a runtime profile supplies terminal behavior.
 - `Framed` Layers are profile-independent and may carry deterministic
   runtime-scoped decoder state without performing ambient I/O.
+
+The July 25 API revision adopts one consistent continuation convention without
+changing these lifecycle semantics or the concrete
+`Component::update(...) -> Command<Message>` boundary:
+
+- `Command::effect(effect)`, `Command::request(port, request)`,
+  `Subscription::source(id, descriptor)`, and
+  `HttpResponsePipeline::into_command()` use the standard
+  `Message: From<BoundaryValue>` conversion as their default mapper.
+- Their `effect_with`, `request_with`, `source_with`, and
+  `into_command_with` counterparts accept an explicit pure mapper.
+- The default is appropriate only when one boundary type has one canonical
+  Message meaning. Captured domain correlation or call-site-specific meaning
+  remains explicit through the `_with` form.
+- No runtime lookup, reflection, implicit return conversion, or new Command
+  kind is introduced. Both forms lower to the same stored mapper and therefore
+  preserve controlled/live equivalence, tracing, and at-most-once or reusable
+  mapper semantics as appropriate.
 
 The accepted Phase 4 implementation had no Decoder EOF/finalization hook.
 [ADR-0004](adr/0004-initial-live-runtime-semantics.md) resolved that Phase 6
@@ -287,9 +305,11 @@ modifies the request.
 The non-exhaustive `HttpResponseError` distinguishes raw `HttpError`,
 status-policy rejection, and JSON decoding while leaving room for later
 explicit response operations. Cancellation remains `EffectOutcome::Cancelled`
-rather than becoming response-error data. `into_command(mapper)` lowers the
-complete chain to `Command::effect` for the original `HttpRequest`; the pure
-response steps and application mapper each run at most once after the raw
+rather than becoming response-error data. `into_command()` uses the canonical
+`Message: From<EffectOutcome<...>>` conversion, while `into_command_with`
+accepts an explicit mapper. Both lower the complete chain to one ordinary
+Effect Command for the original `HttpRequest`; the pure response steps and
+application mapper each run at most once after the raw
 terminal outcome.
 
 Consequently, live assembly still binds only `HttpRequest`, controlled tests

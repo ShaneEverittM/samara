@@ -1,7 +1,7 @@
 # Samara API Guidance
 
 - Status: Draft
-- Date: July 23, 2026
+- Date: July 25, 2026
 - Scope: Consumer-facing API design rationale
 
 This document is a durable FAQ for people designing and implementing Samara's
@@ -31,6 +31,51 @@ indirect when hidden behavior forces readers to infer semantically important
 facts. Good Samara APIs name the state, event, effect, ongoing source, or
 Component interaction that matters while keeping tasks, channels, correlation
 tables, and other execution machinery behind the runtime boundary.
+
+## When Should Samara Reuse Built-In Rust Traits and Patterns?
+
+Lean on built-in Rust traits, naming conventions, and control-flow patterns
+when their established meaning matches Samara's semantic contract. Do not
+invent a Samara-specific conversion trait when `From`, `Into`, `Iterator`, or
+another standard abstraction already says the same thing. Familiar Rust makes
+the application easier to read, improves compiler diagnostics, and reduces the
+amount of Samara-specific vocabulary a user must learn.
+
+This is not a mandate to force unlike concepts into superficial symmetry. A
+standard trait should be used only when its full contract fits. In particular,
+`From<BoundaryValue> for Message` is a natural spelling for one total,
+canonical conversion from an `EffectOutcome`, `RequestOutcome`, or
+`SourceEvent` into a Component Message. Following standard Rust guidance,
+applications implement `From`; the standard library supplies the reciprocal
+`Into` implementation automatically.
+
+Continuation-bearing APIs therefore use a paired convention:
+
+- the short method uses `Message: From<BoundaryValue>` as the default
+  continuation; and
+- a `_with` method accepts an explicit mapper when the call site must capture
+  context or distinguish this occurrence from another occurrence with the same
+  boundary type.
+
+For example, `Command::effect(effect)` uses `Message::from`, while
+`Command::effect_with(effect, mapper)` preserves an explicit continuation.
+The same convention applies to Requests, Subscriptions, and pure HTTP response
+pipelines where their lifecycle semantics permit it.
+
+The Component method's concrete `Command<Message>` or
+`Subscriptions<Message>` return context normally lets Rust infer the
+destination Message type. An isolated local expression may need an ordinary
+type annotation. This is compile-time trait selection, not runtime detection.
+As with an explicit closure, implementing `From` does not mechanically enforce
+purity or determinism; that remains part of Component conformance.
+
+`From` expresses one canonical meaning for one source and destination type. It
+cannot and should not erase the irreducible distinction between two physical
+call sites that interpret the same outcome differently. Those sites use the
+explicit `_with` form. Samara also keeps
+`Component::update(...) -> Command<Message>` concrete: Rust performs no
+implicit conversion on return, and generalizing the return type would obscure
+the Command boundary without allowing heterogeneous branch types.
 
 ## Where Does Each Kind of State Belong?
 
@@ -77,8 +122,9 @@ This mode should not be called *fire and forget*. Samara still owns the effect,
 controlled execution still exposes and traces it, Drain still waits for it,
 Cancel still aborts it, and Driver or runtime faults still surface. Only the
 application continuation is absent. If any terminal outcome should affect the
-Model or cause another Command, use `Command::effect` and map that outcome to a
-Message instead.
+Model or cause another Command, use `Command::effect` when the Message has the
+canonical `From<EffectOutcome<...>>` conversion, or `Command::effect_with` for
+an explicit mapper.
 
 ## Why Distinguish Error Data from Failure?
 
@@ -199,14 +245,14 @@ irreducible information is likely hiding magic or discarding semantics.
 The two Port interaction forms should teach each other. `Command::notify` accepts a
 value implementing `Notification<P>` and requests one-way delivery through a
 `Port<P>`. `Command::request` accepts a value implementing `Request<P>`, whose
-associated Reply type defines the successful result, plus a request
-continuation that turns the eventual `RequestOutcome` into the requester's
-Component Message.
+associated Reply type defines the successful result, and uses the requester's
+canonical `From<RequestOutcome<...>>` conversion. `Command::request_with`
+accepts an explicit continuation instead.
 
 This naming states the relevant intent in the same vocabulary at both layers:
-notification values are notified, and request values are requested. The extra
-continuation on `Command::request` is meaningful request/reply information, not
-incidental transport ceremony.
+notification values are notified, and request values are requested. An
+explicit continuation on `Command::request_with` is meaningful request/reply
+information, not incidental transport ceremony.
 
 ## Which Parts of Request Correlation Belong to Whom?
 
@@ -364,7 +410,8 @@ all runtime ownership. Because the application is ending, it does not fabricate
 EffectOutcomes, SourceEvents, RequestOutcomes, or Messages solely to announce
 that abort. This differs from an explicit effect-contract cancellation outcome,
 which is typed data and completes the effect exactly once when accepted: it
-invokes the mapper for `Command::effect` or schedules no Message for
+invokes the canonical or explicit mapper for `Command::effect` or
+`Command::effect_with`, or schedules no Message for
 `Command::effect_discarding_outcome`.
 
 Successful shutdown always means no runtime-owned task or semantic obligation

@@ -57,13 +57,13 @@ impl Component for StreamProbe {
     fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
         match message {
             StreamMessage::Event(SourceEvent::Item(value)) => {
-                Command::effect(ObserveStream(StreamObservation::Item(value)), |_| {
+                Command::effect_with(ObserveStream(StreamObservation::Item(value)), |_| {
                     StreamMessage::Observed
                 })
             }
             StreamMessage::Event(SourceEvent::Ended) => {
                 model.desired = false;
-                Command::effect(ObserveStream(StreamObservation::Ended), |_| {
+                Command::effect_with(ObserveStream(StreamObservation::Ended), |_| {
                     StreamMessage::Observed
                 })
             }
@@ -78,7 +78,7 @@ impl Component for StreamProbe {
 
     fn subscriptions(&self, model: &Self::Model) -> Subscriptions<Self::Message> {
         if model.desired {
-            Subscriptions::one(Subscription::source(
+            Subscriptions::one(Subscription::source_with(
                 SubscriptionId::new("stream"),
                 self.stream.clone(),
                 StreamMessage::Event,
@@ -264,12 +264,12 @@ impl Component for TcpProbe {
             }
             TcpMessage::Observed => return Command::none(),
         };
-        Command::effect(ObserveTcp(observation), |_| TcpMessage::Observed)
+        Command::effect_with(ObserveTcp(observation), |_| TcpMessage::Observed)
     }
 
     fn subscriptions(&self, active: &Self::Model) -> Subscriptions<Self::Message> {
         if *active {
-            Subscriptions::one(Subscription::source(
+            Subscriptions::one(Subscription::source_with(
                 SubscriptionId::new("tcp"),
                 self.tcp.clone(),
                 TcpMessage::Event,
