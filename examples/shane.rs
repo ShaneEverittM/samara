@@ -3,8 +3,6 @@ use futures_util::{FutureExt, TryFutureExt};
 use reqwest::{Client, Response};
 use samara::prelude::*;
 use serde::Deserialize;
-use std::error::Error;
-use std::fmt::{Display, Formatter};
 use std::time::Duration;
 
 type Time = chrono::DateTime<chrono::Utc>;
@@ -13,7 +11,6 @@ enum Message {
     GetTime,
     TimeRetrieved(Time),
     FailedToGetTime,
-    OutputFinished(EffectOutcome<(), std::convert::Infallible>),
 }
 
 #[derive(Default)]
@@ -45,15 +42,10 @@ impl Component for CliTimeServer {
             }
 
             Message::TimeRetrieved(time) => {
-                let output = PrintStdout::line(format!("Got time: {time}"));
                 model.current_time = Some(time);
-                Command::effect(output, Message::OutputFinished)
+                samara::println!("Got time: {time}")
             }
-            Message::FailedToGetTime => Command::effect(
-                PrintStderr::line("Failed to get time from server"),
-                Message::OutputFinished,
-            ),
-            Message::OutputFinished(_outcome) => Command::none(),
+            Message::FailedToGetTime => samara::eprintln!("Failed to get time from server"),
         }
     }
 }
@@ -61,29 +53,9 @@ impl Component for CliTimeServer {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct GetTime;
 
-#[derive(Debug)]
-struct GetTimeError {
-    message: String,
-}
-
-impl GetTimeError {
-    fn from_err<E>(error: E) -> GetTimeError
-    where
-        E: Display,
-    {
-        Self {
-            message: format!("{}", error),
-        }
-    }
-}
-
-impl Display for GetTimeError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.message)
-    }
-}
-
-impl Error for GetTimeError {}
+#[derive(Debug, thiserror::Error)]
+#[error("Error getting time: '{0}'")]
+struct GetTimeError(#[from] reqwest::Error);
 
 impl EffectDescriptor for GetTime {
     type Output = Time;
@@ -110,7 +82,7 @@ impl EffectDriver<GetTime> for CliTimeServer {
             .send()
             .and_then(Response::json::<TimeResponse>)
             .map_ok(|response| response.data.iso)
-            .map_err(GetTimeError::from_err)
+            .map_err(GetTimeError::from)
             .boxed()
     }
 }

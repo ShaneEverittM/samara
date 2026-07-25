@@ -785,11 +785,11 @@ mod tests {
         let mut model = component.init().model;
         let id = SubscriptionId::new(SOCKET);
 
-        component.update(&mut model, TelemetryMessage::Connect(config("one:7000", 1)));
+        let _ = component.update(&mut model, TelemetryMessage::Connect(config("one:7000", 1)));
         let first = component.subscriptions(&model);
         let first = first.find::<TelemetryFeed>(&id).unwrap();
 
-        component.update(&mut model, TelemetryMessage::Connect(config("two:7000", 2)));
+        let _ = component.update(&mut model, TelemetryMessage::Connect(config("two:7000", 2)));
         let second = component.subscriptions(&model);
         let second = second.find::<TelemetryFeed>(&id).unwrap();
 
@@ -876,8 +876,8 @@ mod tests {
         let first = health_checked(ProbeId(17))(RequestOutcome::Replied(snapshot.clone()));
         let second = health_checked(ProbeId(29))(RequestOutcome::TimedOut);
 
-        component.update(&mut model, second);
-        component.update(&mut model, first);
+        let _ = component.update(&mut model, second);
+        let _ = component.update(&mut model, first);
         assert_eq!(
             model.health_checks,
             vec![

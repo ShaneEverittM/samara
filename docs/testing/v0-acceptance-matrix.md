@@ -58,8 +58,11 @@ The following evidence must pass before the Phase 2 audit:
   association.
 - Rustdoc compile-fail cases validate that an arbitrary value cannot be passed
   as an EffectDescriptor, an async closure cannot replace a synchronous message
-  mapper, and discarding `ReplyTo` violates its `#[must_use]` contract when the
-  lint is denied.
+  mapper, and discarding either `ReplyTo` or `Command` violates its
+  `#[must_use]` contract when the lint is denied.
+- Discarded-outcome conformance tests prove controlled outcomes remain traced
+  without scheduling a Message and live Drain/Cancel retain structured
+  ownership of the effect.
 
 The demanding controlled example functions that were staged in Phase 2 became
 active tests in Phase 5. Their live counterparts are implemented and passing

@@ -120,11 +120,20 @@ A normally returning `EffectDriver` result maps exactly once:
 - `Ok(output)` becomes `EffectOutcome::Succeeded(output)`; and
 - `Err(error)` becomes `EffectOutcome::Failed(error)`.
 
-The originating one-shot mapper is then invoked exactly once and its Message
-re-enters runtime-managed delivery. Whole-scope shutdown cancellation follows
-the no-mapper rule above instead. Completion racing a scope abort resolves at
-one boundary: a Driver result accepted first maps exactly once, while an abort
-that wins first cancels the future without an outcome.
+For `Command::effect`, the originating one-shot mapper is then invoked exactly
+once and its Message re-enters runtime-managed delivery. For
+`Command::effect_discarding_outcome`, the runtime accepts the same terminal
+outcome and closes the same finite obligation, but deliberately schedules no
+Message.
+
+The discarded-outcome mode is not detached execution. Drain waits for it and
+retains finite work causally emitted before it just as for any other effect.
+Cancel aborts its Driver future and joins or aborts the runtime-owned task.
+Missing bindings, Driver panics, and runtime mechanism faults still surface to
+the host. Whole-scope shutdown cancellation manufactures no outcome in either
+mode. Completion racing a scope abort resolves at one boundary: a Driver result
+accepted first completes the obligation according to its declared continuation
+mode, while an abort that wins first cancels the future without an outcome.
 
 ### Source Terminal State Is Exactly Once
 
@@ -312,8 +321,9 @@ Before Phase 6 can be accepted, executable evidence must demonstrate:
   ended and leaves no task or semantic obligation owned;
 - successful shutdown reports zero `remaining`, `pending_now`, and
   `pending_later` without asserting exact completed/cancelled counts;
-- EffectDriver success and failure each map exactly once, while scope
-  cancellation does not map;
+- EffectDriver success and failure complete each effect exactly once: mapped
+  effects invoke their mapper once, discarded-outcome effects schedule no
+  Message, and scope cancellation does neither;
 - explicit Source terminal calls and implicit normal return each terminate
   exactly once, and cancellation/removal/replacement produce no unpromised
   SourceEvent;

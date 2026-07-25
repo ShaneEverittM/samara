@@ -177,7 +177,7 @@ mod tests {
         assert_eq!(model.total, 2);
         assert!(command.is_none());
 
-        counter.update(&mut model, CounterMessage::InputClosed);
+        let _ = counter.update(&mut model, CounterMessage::InputClosed);
         assert!(model.input_closed);
         assert_eq!(counter.subscriptions(&model).iter().count(), 0);
     }

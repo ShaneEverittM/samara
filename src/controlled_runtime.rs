@@ -627,8 +627,10 @@ impl ControlledCore {
                         ));
                     }
                     let (descriptor, mapper) = command.into_parts();
-                    let mapper: ErasedMessageMapper =
-                        Box::new(move |outcome| Box::new(mapper(outcome)));
+                    let mapper: Option<ErasedMessageMapper> = mapper.map(|mapper| {
+                        Box::new(move |outcome| Box::new(mapper(outcome)) as ErasedValue)
+                            as ErasedMessageMapper
+                    });
                     let id = self.next_effect;
                     self.next_effect += 1;
                     self.effects.push(PendingEffectEntry {
@@ -637,7 +639,7 @@ impl ControlledCore {
                         descriptor_type,
                         descriptor_type_name,
                         descriptor: Some(descriptor),
-                        mapper: Some(mapper),
+                        mapper,
                         request_trace: work,
                         message_type: TypeId::of::<Message>(),
                         message_type_name: std::any::type_name::<Message>(),
@@ -1120,22 +1122,20 @@ impl ControlledCore {
             effect_type: effect.descriptor_type_name,
             outcome: outcome_kind,
         });
-        let mapper = effect
-            .mapper
-            .take()
-            .expect("a pending effect owns one mapper");
-        self.schedule_message(
-            QueuedMessage {
-                target: effect.component,
-                target_message_type: effect.message_type,
-                message_type_name: effect.message_type_name,
-                message: mapper(Box::new(outcome)),
-                cause: outcome_trace,
-                source: None,
-                delivery: DeliveryKind::Message,
-            },
-            self.now,
-        );
+        if let Some(mapper) = effect.mapper.take() {
+            self.schedule_message(
+                QueuedMessage {
+                    target: effect.component,
+                    target_message_type: effect.message_type,
+                    message_type_name: effect.message_type_name,
+                    message: mapper(Box::new(outcome)),
+                    cause: outcome_trace,
+                    source: None,
+                    delivery: DeliveryKind::Message,
+                },
+                self.now,
+            );
+        }
         Ok(())
     }
 

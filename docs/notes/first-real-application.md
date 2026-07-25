@@ -259,3 +259,10 @@ Effects. This removes the example's need for ambient `println!`/`eprintln!`
 without turning Samara into a logging framework. A future lower-level exact
 byte-write API can expose `std::io::Error` when an application genuinely needs
 to react to output failure.
+
+The ergonomic follow-through is a root-qualified family of Samara formatting
+macros. `samara::println!` and its stdout/stderr, line/no-line counterparts
+produce discarded-outcome Commands: the runtime still owns and waits for the
+print effect, but the Component does not need an artificial "printing
+finished" Message. They remain visibly distinct from Rust's ambient,
+unqualified `println!`.

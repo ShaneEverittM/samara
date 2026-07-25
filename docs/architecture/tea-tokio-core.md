@@ -48,9 +48,9 @@
 ### Command Contract
 - A `Command` is an inert value describing finite work requested by a
   transition; it never performs that work itself.
-- Commands may carry an EffectDescriptor and one-shot message mapper, schedule
-  a Message, communicate with another Component, issue a correlated Request, or
-  emit a Reply.
+- Commands may carry an EffectDescriptor with a one-shot message mapper or an
+  explicit discarded-outcome mode, schedule a Message, communicate with
+  another Component, issue a correlated Request, or emit a Reply.
 - Command intent must remain explicit, inspectable, and testable in isolation.
 - Command and EffectDescriptor are not synonyms: a Command is the broader
   finite-work envelope.
@@ -77,21 +77,26 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
   interaction. It need not be cloneable or comparable.
 - An EffectDescriptor cannot hide execution in an opaque async closure; the
   terminal world interaction remains separately identifiable to the runtime.
-- A Command combines an EffectDescriptor with a pure, one-shot message mapper
-  from `EffectOutcome` to the owning Component's Message.
+- A Command combines an EffectDescriptor with either a pure, one-shot message
+  mapper from `EffectOutcome` to the owning Component's Message or an explicit
+  declaration that the Component discards the outcome. Discarding the outcome
+  removes only the application continuation; it does not detach the effect
+  from runtime ownership.
 - In live execution, an `EffectDriver<D>` is the terminal Adapter that realizes
   terminal descriptor type `D` against the surrounding world under runtime
   supervision. A non-terminal descriptor first passes through one or more
   Layers.
 - Controlled execution supplies deterministic behavior for the same descriptor
   without invoking a live Driver or silently falling back to the live world.
-- Each EffectOutcome actually accepted by a running scope invokes its one-shot
-  message mapper exactly once and returns the resulting Message through
-  runtime-managed delivery. A normally returning EffectDriver produces exactly
-  one `Succeeded` or `Failed` outcome. ADR-0004 classifies whole-scope
-  Cancel or runtime-fault cleanup as an abort instead: the future is cancelled,
-  no EffectOutcome is manufactured, and no mapper is invoked. Drain never
-  cancels an eligible finite effect merely to finish sooner.
+- Each EffectOutcome actually accepted by a running scope either invokes its
+  declared one-shot message mapper exactly once and returns the resulting
+  Message through runtime-managed delivery, or closes an explicitly
+  discarded-outcome obligation without scheduling a Message. A normally
+  returning EffectDriver produces exactly one `Succeeded` or `Failed` outcome.
+  ADR-0004 classifies whole-scope Cancel or runtime-fault cleanup as an abort
+  instead: the future is cancelled, no EffectOutcome is manufactured, and no
+  mapper is invoked. Drain never cancels an eligible finite effect merely to
+  finish sooner.
 - The exact Rust shape used to bind profile-specific Drivers and controlled
   behavior remains an API decision.
 
@@ -352,6 +357,11 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
   policy and create no ordering guarantee between otherwise independent
   effects.
 - A future fallible exact-byte write boundary is a separate, lower-level API.
+- Root-qualified `samara::print!`, `samara::println!`, `samara::eprint!`, and
+  `samara::eprintln!` own their formatted UTF-8 text in the matching descriptor
+  and return an ordinary discarded-outcome Command. They are not re-exported
+  by the prelude. Rust's unqualified `print!` and `println!` remain immediate
+  ambient I/O and are not valid inside a pure `update`.
 
 ### Decoder EOF Contract
 
@@ -387,9 +397,10 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
 4. The runtime interprets emitted Commands and reconciles desired Subscriptions.
 5. An EffectDescriptor passes through zero or more Layers. Its terminal
    descriptor reaches a live EffectDriver or controlled behavior. Every
-   accepted EffectOutcome passes through the composed path exactly once and its
-   one-shot mapper produces one Component Message. Whole-scope live abort may
-   instead cancel the Driver without manufacturing an outcome.
+   accepted EffectOutcome passes through the composed path exactly once. A
+   mapped effect invokes its one-shot mapper to produce one Component Message;
+   an explicitly discarded outcome schedules no Message. Whole-scope live abort
+   may instead cancel the Driver without manufacturing an outcome.
 6. A desired SourceDescriptor passes through zero or more Layers. Its terminal
    descriptor, ordered Layers, and mapper compile into a SourcePlan. The
    terminal descriptor reaches a live SourceDriver or controlled behavior,

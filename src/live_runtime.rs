@@ -1072,8 +1072,10 @@ impl LiveCore {
                         )
                     })?;
                     let (descriptor, mapper) = command.into_parts();
-                    let mapper: ErasedMessageMapper =
-                        Box::new(move |outcome| Box::new(mapper(outcome)));
+                    let mapper: Option<ErasedMessageMapper> = mapper.map(|mapper| {
+                        Box::new(move |outcome| Box::new(mapper(outcome)) as ErasedValue)
+                            as ErasedMessageMapper
+                    });
                     let id = self.next_effect;
                     self.next_effect += 1;
                     let scope = self.scope.clone();
@@ -1098,7 +1100,7 @@ impl LiveCore {
                         id,
                         component: component.clone(),
                         descriptor_type_name,
-                        mapper: Some(mapper),
+                        mapper,
                         message_type: TypeId::of::<Message>(),
                         message_type_name: std::any::type_name::<Message>(),
                         task,
@@ -1416,10 +1418,9 @@ impl LiveCore {
             return Ok(());
         };
         let mut effect = self.effects.remove(index);
-        let mapper = effect
-            .mapper
-            .take()
-            .expect("a pending effect owns one mapper");
+        let Some(mapper) = effect.mapper.take() else {
+            return Ok(());
+        };
         let work = self.work();
         let message = catch_unwind(AssertUnwindSafe(|| mapper(outcome))).map_err(|_| {
             self.runtime_fault(

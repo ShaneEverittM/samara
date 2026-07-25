@@ -66,6 +66,20 @@ Pure synchronous closures or function pointers may still map an EffectOutcome
 to a Component Message. They transform data and do not perform the effect
 themselves.
 
+## When Should an Effect Discard Its Outcome?
+
+Use `Command::effect_discarding_outcome` when the Component deliberately has no
+behavioral reaction to success, typed failure, or effect-contract cancellation.
+Best-effort printing is the motivating case: an artificial "print finished"
+Message would communicate no application intent.
+
+This mode should not be called *fire and forget*. Samara still owns the effect,
+controlled execution still exposes and traces it, Drain still waits for it,
+Cancel still aborts it, and Driver or runtime faults still surface. Only the
+application continuation is absent. If any terminal outcome should affect the
+Model or cause another Command, use `Command::effect` and map that outcome to a
+Message instead.
+
 ## Why Distinguish Error Data from Failure?
 
 An Error is typed data that explains what went wrong. A failure is the semantic
@@ -79,12 +93,13 @@ automatically a failure.
 
 A Command describes finite work requested by one transition. An
 EffectDescriptor inside that Command normally produces one terminal
-EffectOutcome; every outcome accepted by a running scope maps exactly once.
-Whole-scope live abort may instead cancel the Driver without
-manufacturing an outcome for an application that is ending. A Subscription
-declaratively describes an ongoing Source the current Model wants maintained:
-it combines stable identity, a comparable SourceDescriptor, and a reusable
-message mapper for SourceEvents.
+EffectOutcome; every outcome accepted by a running scope either maps exactly
+once or closes an explicitly discarded-outcome obligation without a Message.
+Whole-scope live abort may instead cancel the Driver without manufacturing an
+outcome for an application that is ending. A Subscription declaratively
+describes an ongoing Source the current Model wants maintained: it combines
+stable identity, a comparable SourceDescriptor, and a reusable message mapper
+for SourceEvents.
 
 Keeping them distinct makes lifecycle, cancellation, and reconciliation
 explicit instead of disguising long-lived work as a one-shot effect. The
@@ -348,7 +363,9 @@ driving, cancels queued and deferred obligations and Driver tasks, and closes
 all runtime ownership. Because the application is ending, it does not fabricate
 EffectOutcomes, SourceEvents, RequestOutcomes, or Messages solely to announce
 that abort. This differs from an explicit effect-contract cancellation outcome,
-which is typed data and still maps exactly once when accepted.
+which is typed data and completes the effect exactly once when accepted: it
+invokes the mapper for `Command::effect` or schedules no Message for
+`Command::effect_discarding_outcome`.
 
 Successful shutdown always means no runtime-owned task or semantic obligation
 remains. `completed` and `cancelled` describe semantic obligations rather than

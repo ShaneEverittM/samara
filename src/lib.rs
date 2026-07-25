@@ -68,6 +68,90 @@ pub mod prelude {
     };
 }
 
+/// Returns a deferred best-effort standard-output [`Command`] using familiar
+/// Rust formatting syntax.
+///
+/// The returned Command owns the formatted text and deliberately discards the
+/// print outcome. It must still be returned from the transition or included in
+/// [`Command::batch`]. This macro performs no immediate I/O and is intentionally
+/// not re-exported by [`prelude`].
+#[macro_export]
+macro_rules! print {
+    () => {
+        $crate::Command::effect_discarding_outcome($crate::PrintStdout::text(
+            ::std::string::String::new(),
+        ))
+    };
+    ($($argument:tt)+) => {
+        $crate::Command::effect_discarding_outcome(
+            $crate::PrintStdout::text(::std::format!($($argument)+))
+        )
+    };
+}
+
+/// Returns a deferred best-effort standard-output-line [`Command`] using
+/// familiar Rust formatting syntax.
+///
+/// Exactly one newline is appended after the formatted text. The returned
+/// Command owns that text, schedules no completion Message, and must still be
+/// returned or batched. This macro is distinct from Rust's ambient,
+/// unqualified `println!`.
+#[macro_export]
+macro_rules! println {
+    () => {
+        $crate::Command::effect_discarding_outcome($crate::PrintStdout::line(
+            ::std::string::String::new(),
+        ))
+    };
+    ($($argument:tt)+) => {
+        $crate::Command::effect_discarding_outcome(
+            $crate::PrintStdout::line(::std::format!($($argument)+))
+        )
+    };
+}
+
+/// Returns a deferred best-effort standard-error [`Command`] using familiar
+/// Rust formatting syntax.
+///
+/// The returned Command owns the formatted text and deliberately discards the
+/// print outcome. It must still be returned from the transition or included in
+/// [`Command::batch`]. This macro performs no immediate I/O and is intentionally
+/// not re-exported by [`prelude`].
+#[macro_export]
+macro_rules! eprint {
+    () => {
+        $crate::Command::effect_discarding_outcome($crate::PrintStderr::text(
+            ::std::string::String::new(),
+        ))
+    };
+    ($($argument:tt)+) => {
+        $crate::Command::effect_discarding_outcome(
+            $crate::PrintStderr::text(::std::format!($($argument)+))
+        )
+    };
+}
+
+/// Returns a deferred best-effort standard-error-line [`Command`] using
+/// familiar Rust formatting syntax.
+///
+/// Exactly one newline is appended after the formatted text. The returned
+/// Command owns that text, schedules no completion Message, and must still be
+/// returned or batched. This macro is distinct from Rust's ambient,
+/// unqualified `eprintln!`.
+#[macro_export]
+macro_rules! eprintln {
+    () => {
+        $crate::Command::effect_discarding_outcome($crate::PrintStderr::line(
+            ::std::string::String::new(),
+        ))
+    };
+    ($($argument:tt)+) => {
+        $crate::Command::effect_discarding_outcome(
+            $crate::PrintStderr::line(::std::format!($($argument)+))
+        )
+    };
+}
+
 /// A boxed, sendable future returned by a live effect or source Driver.
 ///
 /// Returning the future to Samara transfers lifecycle ownership to the runtime;
@@ -851,8 +935,8 @@ macro_rules! protocol {
 trait ErasedEffectCommand<Message>: Send {
     fn intent(&self) -> &dyn Any;
     fn intent_type_name(&self) -> &'static str;
-    fn mapper_type_name(&self) -> &'static str;
-    fn into_parts(self: Box<Self>) -> (Box<dyn Any + Send>, ErasedEffectMapper<Message>);
+    fn maps_outcome(&self) -> bool;
+    fn into_parts(self: Box<Self>) -> (Box<dyn Any + Send>, Option<ErasedEffectMapper<Message>>);
 }
 
 type ErasedEffectMapper<Message> = Box<dyn FnOnce(Box<dyn Any + Send>) -> Message + Send + 'static>;
@@ -884,11 +968,11 @@ where
         std::any::type_name::<E>()
     }
 
-    fn mapper_type_name(&self) -> &'static str {
-        std::any::type_name::<Map>()
+    fn maps_outcome(&self) -> bool {
+        true
     }
 
-    fn into_parts(self: Box<Self>) -> (Box<dyn Any + Send>, ErasedEffectMapper<Message>) {
+    fn into_parts(self: Box<Self>) -> (Box<dyn Any + Send>, Option<ErasedEffectMapper<Message>>) {
         let Self { effect, map } = *self;
         let mapper = Box::new(move |outcome: Box<dyn Any + Send>| {
             let outcome = match outcome.downcast::<EffectOutcome<E::Output, E::Error>>() {
@@ -900,7 +984,32 @@ where
             map(outcome)
         });
 
-        (Box::new(effect), mapper)
+        (Box::new(effect), Some(mapper))
+    }
+}
+
+struct PerformDiscardingOutcome<E> {
+    effect: E,
+}
+
+impl<Message, E> ErasedEffectCommand<Message> for PerformDiscardingOutcome<E>
+where
+    E: EffectDescriptor,
+{
+    fn intent(&self) -> &dyn Any {
+        &self.effect
+    }
+
+    fn intent_type_name(&self) -> &'static str {
+        std::any::type_name::<E>()
+    }
+
+    fn maps_outcome(&self) -> bool {
+        false
+    }
+
+    fn into_parts(self: Box<Self>) -> (Box<dyn Any + Send>, Option<ErasedEffectMapper<Message>>) {
+        (Box::new(self.effect), None)
     }
 }
 
@@ -1099,7 +1208,9 @@ struct Reply<Reply> {
 /// cloneable and retains the matching one-shot Message mapper. Creating this
 /// value performs no world interaction. A later execution profile can move the
 /// descriptor to terminal behavior while retaining the mapper under
-/// runtime-owned correlation.
+/// runtime-owned correlation. Effects created by
+/// [`Command::effect_discarding_outcome`] have no mapper and are inspected
+/// through [`Command::effect_intent`] instead.
 pub struct EffectInvocation<E, Message>
 where
     E: EffectDescriptor,
@@ -1180,6 +1291,20 @@ where
 /// [`Command::notification_intents`], and [`Command::request_intents`].
 /// [`Command::into_effect`] then exposes the owned descriptor and its mapper for
 /// direct conformance tests.
+///
+/// Discarding a Command is a diagnostic violation when `unused_must_use` is
+/// denied because constructing inert intent does not submit it to a runtime:
+///
+/// ```compile_fail
+/// #![deny(unused_must_use)]
+/// use samara::Command;
+///
+/// fn discard() {
+///     let command: Command<()> = Command::none();
+///     command;
+/// }
+/// ```
+#[must_use = "commands are inert declarations; return, batch, or interpret this Command for it to take effect"]
 pub struct Command<Message>(CommandKind<Message>);
 
 enum CommandKind<Message> {
@@ -1236,6 +1361,23 @@ impl<Message> Command<Message> {
         Map: FnOnce(EffectOutcome<E::Output, E::Error>) -> Message + Send + 'static,
     {
         Self(CommandKind::Effect(Box::new(Perform { effect, map })))
+    }
+
+    /// Requests a typed finite effect without an application continuation.
+    ///
+    /// This discards only the terminal [`EffectOutcome`]; it does not detach
+    /// the work. Live Drain still waits for the Driver, Cancel still aborts its
+    /// runtime-owned task, and controlled execution still exposes the
+    /// descriptor through [`ControlledRuntime::next_effect`] until the harness
+    /// completes or cancels it. Accepted outcomes remain structurally traced
+    /// but schedule no Message.
+    pub fn effect_discarding_outcome<E>(effect: E) -> Self
+    where
+        E: EffectDescriptor,
+    {
+        Self(CommandKind::Effect(Box::new(PerformDiscardingOutcome {
+            effect,
+        })))
     }
 
     /// Requests one-way delivery to another Component.
@@ -1378,7 +1520,8 @@ impl<Message> Command<Message> {
     /// This is a pure inspection and conformance hook: it supplies typed data
     /// directly and never invokes a Driver or either execution profile. The
     /// Command is consumed so its `FnOnce` mapper cannot be called twice. A
-    /// non-effect Command or mismatched descriptor type is returned unchanged.
+    /// non-effect Command, mismatched descriptor type, or effect that explicitly
+    /// discards its outcome is returned unchanged.
     pub fn map_effect_outcome<E>(
         self,
         outcome: EffectOutcome<E::Output, E::Error>,
@@ -1405,12 +1548,15 @@ impl<Message> Command<Message> {
         E: EffectDescriptor,
     {
         match self.0 {
-            CommandKind::Effect(command) if command.intent().is::<E>() => {
+            CommandKind::Effect(command)
+                if command.intent().is::<E>() && command.maps_outcome() =>
+            {
                 let (descriptor, mapper) = command.into_parts();
                 let descriptor = match descriptor.downcast::<E>() {
                     Ok(descriptor) => *descriptor,
                     Err(_) => unreachable!("the descriptor type was checked before interception"),
                 };
+                let mapper = mapper.expect("mapped effects retain one outcome mapper");
                 let mapper = Box::new(move |outcome| mapper(Box::new(outcome)));
                 Ok(EffectInvocation { descriptor, mapper })
             }
@@ -3164,8 +3310,11 @@ impl ControlledRuntime {
 
     /// Supplies a terminal outcome for a previously intercepted effect.
     ///
-    /// Completion invokes the command's pure mapper and enqueues the resulting
-    /// message; it never executes a live [`EffectDriver`].
+    /// For [`Command::effect`], completion invokes the command's pure mapper and
+    /// enqueues the resulting Message. For
+    /// [`Command::effect_discarding_outcome`], it records the outcome and closes
+    /// the obligation without scheduling a Message. Neither mode executes a
+    /// live [`EffectDriver`].
     pub fn complete<E: EffectDescriptor>(
         &mut self,
         pending: PendingEffect<E>,

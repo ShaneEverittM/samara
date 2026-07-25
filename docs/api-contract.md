@@ -91,6 +91,9 @@ particular:
 
 - EffectDescriptors remain separately interceptable from their pure one-shot
   message mappers and need not be `Clone` or comparable.
+- `Command::effect_discarding_outcome` removes only the application Message
+  continuation. The effect remains a runtime-owned, controllable, traceable
+  finite obligation subject to ordinary Drain, Cancel, and fault behavior.
 - Each Command occurrence is distinct even when descriptor values look equal.
 - Subscription reconciliation compares Component-local identity and typed
   SourceDescriptor equality, never mapper object identity.
@@ -163,8 +166,10 @@ The ADR specifies:
   `remaining`, `pending_now`, and `pending_later`; completed and cancelled refer
   to semantic obligations rather than runtime mechanics, while their exact
   diagnostic counts remain non-normative;
-- normal EffectDriver success and failure map exactly once, while whole-scope
-  abort maps no outcome; the first accepted Source terminal call or active
+- normal EffectDriver success and failure complete each effect exactly once:
+  mapped effects invoke their mapper once, discarded-outcome effects schedule
+  no Message, and whole-scope abort produces no outcome; the first accepted
+  Source terminal call or active
   SourceDriver return terminates a live generation exactly once while
   cancellation, removal, replacement, shutdown, and runtime fault winning first
   emit no unpromised SourceEvent;
@@ -214,6 +219,16 @@ Controlled execution uses the ordinary `control_effect::<PrintStdout>()` and
 `control_effect::<PrintStderr>()` boundaries and never touches the host process
 streams. These descriptors add no formatting, logging, buffering, routing, or
 retry policy to the runtime.
+
+The root-qualified `samara::print!`, `samara::println!`, `samara::eprint!`, and
+`samara::eprintln!` macros accept familiar Rust formatting syntax, own the
+resulting `String` in the matching descriptor, and return an ordinary
+`Command::effect_discarding_outcome`. They are deliberately absent from
+`samara::prelude`; qualification makes the deferred Samara effect visible at
+the call site. The returned `Command` remains `#[must_use]` because dropping it
+requests no output. By contrast, Rust's unqualified `print!` and `println!`
+perform ambient process I/O immediately and must not be used inside a pure
+Component transition.
 
 A future lower-level exact-byte API may use names such as `WriteStdout` and
 `WriteStderr`, expose `std::io::Error`, and make partial-write behavior part of

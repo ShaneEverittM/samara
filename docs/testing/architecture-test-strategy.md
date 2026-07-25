@@ -29,12 +29,14 @@ architecture before each implementation slice begins.
   opaque async closure for an identifiable EffectDescriptor.
 - Validate each terminal EffectDescriptor reaches the matching live
   EffectDriver or controlled behavior. Every EffectOutcome actually accepted
-  by the running scope invokes its one-shot mapper exactly once and emits the
-  expected Component Message.
+  by the running scope completes the obligation exactly once: mapped effects
+  invoke their one-shot mapper and emit the expected Component Message, while
+  discarded-outcome effects emit no Message.
 - Validate normal EffectDriver success and failure produce one outcome, while
   whole-scope Cancel or runtime-fault cleanup aborts the live future
   without manufacturing an outcome or invoking its mapper. Preserve
-  exactly-once mapping for explicitly accepted cancellation outcomes.
+  the declared mapper-or-discard behavior for explicitly accepted cancellation
+  outcomes.
 - Validate SourceDescriptor equality has the promised reconciliation meaning
   and each terminal SourceDescriptor reaches the matching live SourceDriver or
   controlled behavior to realize a runtime-owned Source.
@@ -189,6 +191,12 @@ architecture before each implementation slice begins.
 - Public API lint checks must verify that discarding a `ReplyTo`-valued
   expression triggers its `#[must_use]` diagnostic without claiming that the
   lint proves eventual consumption.
+- Public API lint checks must likewise verify that discarding a `Command`
+  triggers its `#[must_use]` diagnostic; a discarded-outcome effect means no
+  completion Message, not that the inert Command value itself may be dropped.
+- Discarded-outcome effect tests must cover typed controlled interception,
+  terminal-outcome tracing without a resulting Message transition, ordinary
+  missing-binding faults, live Drain retention, and live Cancel cleanup.
 - Runtime drive-loop tests should prefer `run_until(...)` / `run_until_predicate(...)` / `run_until_idle()` over hard-coded sleep durations.
 - Controlled trace tests must verify the common record envelope, one immediate
   causal parent for every non-root, roots with no parent, logical time, Source

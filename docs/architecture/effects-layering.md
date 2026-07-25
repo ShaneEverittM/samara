@@ -30,8 +30,9 @@ universal `Adapter` trait.
 
 ### EffectDescriptor and EffectDriver
 
-An `EffectDescriptor` describes one finite world-facing interaction. A Command combines
-it with a pure one-shot message mapper.
+An `EffectDescriptor` describes one finite world-facing interaction. A Command
+combines it with either a pure one-shot message mapper or an explicit
+discarded-outcome mode.
 
 ```text
 Command + EffectDescriptor
@@ -40,8 +41,8 @@ Command + EffectDescriptor
     -> live EffectDriver<D>, or controlled behavior
     -> EffectOutcome exactly once on normal completion
        (whole-scope abort may produce none)
-    -> one-shot message mapper
-    -> Component Message
+    -> one-shot message mapper -> Component Message,
+       or explicitly discard outcome -> no Message
 ```
 
 Two identical-looking descriptors issued by different Commands are separate effect
@@ -131,10 +132,12 @@ Controlled execution need not implement or call those live Driver traits. The ex
 shape of live and controlled profile bindings remains open.
 
 Under ADR-0004, a normally returning EffectDriver result becomes exactly one
-Succeeded or Failed EffectOutcome and invokes its mapper once. Whole-scope Cancel or
-runtime-fault cleanup is an abort instead: it cancels the Driver future without
-manufacturing an outcome for an application that is ending. Explicitly accepted
-per-effect cancellation outcomes remain ordinary exactly-once typed outcomes.
+Succeeded or Failed EffectOutcome. A mapped effect invokes its mapper once; an
+explicitly discarded outcome schedules no Message. Whole-scope Cancel or runtime-fault
+cleanup is an abort instead: it cancels the Driver future without manufacturing an
+outcome for an application that is ending. Explicitly accepted per-effect cancellation
+outcomes remain ordinary exactly-once typed outcomes and follow the same mapper-or-discard
+branch.
 
 For a live Source, successful sink calls preserve acceptance order. The first accepted
 `end`, accepted `fail`, or active silent SourceDriver return wins one terminal event.
@@ -176,6 +179,10 @@ Command::effect(
 
 Live execution terminates `PersistFrame` through its `EffectDriver`; controlled execution
 provides the typed EffectOutcome directly.
+
+When no terminal application reaction exists, the Command may instead use
+`effect_discarding_outcome`. That removes only the mapper branch shown above;
+the runtime continues to own, supervise, and account for the invocation.
 
 ```text
 Subscription(

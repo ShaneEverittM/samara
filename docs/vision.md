@@ -538,10 +538,13 @@ only through declared messages and protocols.
 
 ### V3. Interceptable Effect Descriptor
 
-Given a Command containing a typed EffectDescriptor and a pure one-shot message mapper,
-controlled execution can observe the descriptor, apply the same declarative Layers,
-provide an EffectOutcome without invoking a live terminal EffectDriver, and cause the
-mapped Message to enter the target Component.
+Given a Command containing a typed EffectDescriptor and either a pure one-shot
+message mapper or an explicit declaration that its outcome is discarded,
+controlled execution can observe the descriptor, apply the same declarative
+Layers, and provide an EffectOutcome without invoking a live terminal
+EffectDriver. A mapped outcome enters the target Component as a Message; a
+discarded outcome remains traceable but schedules no Message. Both forms remain
+runtime-owned finite work.
 
 ### V4. Declarative Subscription Lifecycle
 

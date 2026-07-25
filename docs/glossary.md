@@ -90,7 +90,9 @@ specific observable property is deliberately promised.
 **Command / `Command<Message>`** — An inert value describing finite work
 requested by a transition. A Command may request an EffectDescriptor, schedule
 a Message, communicate with another Component, issue a correlated Request, or
-emit a Reply. *Command* and *effect* are therefore not synonyms.
+emit a Reply. Commands are must-use declarations: merely constructing and
+discarding one requests no work. *Command* and *effect* are therefore not
+synonyms.
 
 **EffectDescriptor** — An inert, typed description of one finite world-facing
 interaction. Each Command occurrence creates a distinct effect invocation,
@@ -99,11 +101,14 @@ not be comparable or cloneable.
 
 **EffectOutcome** — The single terminal completion of an effect invocation: a
 typed success, a failure carrying typed Error data, or cancellation as defined
-by that effect's contract. A one-shot message mapper transforms it into a
-Component Message. Aborting the entire live runtime scope under
-ADR-0004 is ownership cleanup rather than an effect-contract cancellation: the
-live future is dropped or cancelled and no EffectOutcome or mapped Message is
-manufactured for an application that is ending.
+by that effect's contract. A Command normally supplies a one-shot mapper that
+transforms it into a Component Message; a Command may instead explicitly
+discard the outcome when no terminal application reaction is meaningful. That
+mode remains runtime-owned finite work rather than "fire and forget". Aborting
+the entire live runtime scope under ADR-0004 is ownership cleanup rather than
+an effect-contract cancellation: the live future is dropped or cancelled and
+no EffectOutcome or mapped Message is manufactured for an application that is
+ending.
 
 **Error** — Typed data explaining why an operation could not complete as
 intended, such as `TcpError`, `DecodeError`, or `RequestError`. Concrete payload
@@ -227,8 +232,8 @@ Command + EffectDescriptor
     -> terminal EffectDriver in live execution, or controlled behavior
     -> EffectOutcome exactly once on normal completion
        (whole-scope abort may produce none)
-    -> one-shot message mapper
-    -> Component Message
+    -> one-shot message mapper -> Component Message,
+       or explicitly discard outcome -> no Message
 
 Subscription(identity + SourceDescriptor + message mapper)
     -> reconciliation

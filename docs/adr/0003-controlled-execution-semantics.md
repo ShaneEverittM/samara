@@ -165,6 +165,25 @@ controlled-world setup and start a fresh run. The exact taxonomy and
 ergonomics of harness calls that fail before entering program execution remain
 implementation and audit details.
 
+### An Effect May Deliberately Discard Its Outcome
+
+`Command::effect_discarding_outcome` declares the same finite typed effect
+obligation as `Command::effect`, but deliberately installs no application
+continuation. This is one-way intent from the Component, not detached work.
+
+Controlled execution still exposes the descriptor through `next_effect`,
+counts it as pending work, and requires the harness either to complete it with
+one typed `EffectOutcome` or to cancel the controlled scope. Supplying an
+outcome removes the obligation and records the ordinary structural
+`EffectOutcome` trace entry, but schedules no Message and therefore causes no
+Component transition. Supplying `EffectOutcome::Cancelled` follows the same
+rule. Whole-scope controlled cancellation continues to clear the obligation
+without manufacturing an outcome.
+
+Missing controlled behavior remains a runtime fault even when the outcome
+would have been discarded. Discarding an application continuation does not
+discard Driver or runtime diagnostics.
+
 ### Pending Work Counts Semantic Obligations
 
 Work accounting does not count runtime implementation machinery separately.
