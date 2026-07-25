@@ -57,14 +57,15 @@ pub mod prelude {
     pub use crate::{
         BoxFuture, CancelReason, Command, Component, ComponentHandle, ComponentId, ComponentRef,
         ControlledRuntime, Decoder, DriverStopped, EffectDescriptor, EffectDriver,
-        EffectInvocation, EffectOutcome, EffectOutcomeKind, Framed, FramedError, FramedLayer, Init,
-        LiveRuntime, LogicalTime, Notification, PendingEffect, PendingWork, Port, PortId,
-        PrintStderr, PrintStdout, Program, ProgramBuildError, ProgramBuilder, Protocol, ReplyTo,
-        Request, RequestError, RequestInvocation, RequestOutcome, RunReport, RuntimeError,
-        RuntimeTask, Shutdown, ShutdownReport, SourceDescriptor, SourceDriver, SourceEvent,
-        SourceEventKind, SourceSink, StreamDescriptor, Subscription, SubscriptionAction,
-        SubscriptionId, Subscriptions, TcpBytes, TcpError, TcpErrorKind, TraceCommandKind,
-        TraceEvent, TraceId, TraceRecord, protocol,
+        EffectInvocation, EffectOutcome, EffectOutcomeKind, Framed, FramedError, FramedLayer,
+        HttpError, HttpErrorKind, HttpJsonError, HttpRequest, HttpResponse, HttpResponseError,
+        HttpStatusError, Init, LiveRuntime, LogicalTime, Notification, PendingEffect, PendingWork,
+        Port, PortId, PrintStderr, PrintStdout, Program, ProgramBuildError, ProgramBuilder,
+        Protocol, ReplyTo, Request, RequestError, RequestInvocation, RequestOutcome, RunReport,
+        RuntimeError, RuntimeTask, Shutdown, ShutdownReport, SourceDescriptor, SourceDriver,
+        SourceEvent, SourceEventKind, SourceSink, StreamDescriptor, Subscription,
+        SubscriptionAction, SubscriptionId, Subscriptions, TcpBytes, TcpError, TcpErrorKind,
+        TraceCommandKind, TraceEvent, TraceId, TraceRecord, protocol,
     };
 }
 
@@ -1962,6 +1963,459 @@ impl<T: Send + 'static> SourceDescriptor for StreamDescriptor<T> {
     type Error = std::convert::Infallible;
 }
 
+/// Inert description of one finite HTTP request.
+///
+/// The descriptor owns its method, URL text, headers, and body. Constructing it
+/// performs no parsing, DNS lookup, socket access, or other I/O. Live execution
+/// realizes it through [`LiveRuntimeBuilder::bind_http`], while controlled
+/// execution intercepts it through
+/// [`ControlledRuntimeBuilder::control_effect`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HttpRequest {
+    method: http::Method,
+    url: Arc<str>,
+    headers: http::HeaderMap,
+    body: bytes::Bytes,
+}
+
+impl HttpRequest {
+    /// Describes a request with an empty header map and body.
+    ///
+    /// URL validation is deliberately deferred to the terminal Driver so
+    /// invalid or unsupported live configuration becomes a typed [`HttpError`].
+    pub fn new(method: http::Method, url: impl Into<Arc<str>>) -> Self {
+        Self {
+            method,
+            url: url.into(),
+            headers: http::HeaderMap::new(),
+            body: bytes::Bytes::new(),
+        }
+    }
+
+    /// Describes a `GET` request with an empty header map and body.
+    pub fn get(url: impl Into<Arc<str>>) -> Self {
+        Self::new(http::Method::GET, url)
+    }
+
+    /// Returns the declared HTTP method.
+    pub fn method(&self) -> &http::Method {
+        &self.method
+    }
+
+    /// Returns the exact URL text supplied by the application.
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+
+    /// Returns the declared request headers.
+    pub fn headers(&self) -> &http::HeaderMap {
+        &self.headers
+    }
+
+    /// Returns mutable access to the declared request headers.
+    ///
+    /// `HeaderMap::append` can be used when repeated field values must be
+    /// preserved.
+    pub fn headers_mut(&mut self) -> &mut http::HeaderMap {
+        &mut self.headers
+    }
+
+    /// Appends one request header and returns the updated descriptor.
+    ///
+    /// Appending, rather than replacing, preserves repeated field values.
+    pub fn with_header(mut self, name: http::HeaderName, value: http::HeaderValue) -> Self {
+        self.headers.append(name, value);
+        self
+    }
+
+    /// Returns the complete owned request body.
+    pub fn body(&self) -> &bytes::Bytes {
+        &self.body
+    }
+
+    /// Replaces the request body.
+    pub fn with_body(mut self, body: impl Into<bytes::Bytes>) -> Self {
+        self.body = body.into();
+        self
+    }
+
+    /// Crosses from request construction into pure response handling.
+    ///
+    /// This consumes the request and returns a distinct, inert type. Request
+    /// modifiers are deliberately unavailable after the boundary:
+    ///
+    /// ```compile_fail
+    /// use samara::HttpRequest;
+    ///
+    /// HttpRequest::get("https://example.test")
+    ///     .on_response()
+    ///     .with_body("too late");
+    /// ```
+    pub fn on_response(self) -> HttpResponsePipeline<HttpResponse, HttpError> {
+        HttpResponsePipeline {
+            request: self,
+            transform: Box::new(|outcome| outcome),
+        }
+    }
+
+    pub(crate) fn into_parts(self) -> (http::Method, Arc<str>, http::HeaderMap, bytes::Bytes) {
+        (self.method, self.url, self.headers, self.body)
+    }
+}
+
+impl EffectDescriptor for HttpRequest {
+    type Output = HttpResponse;
+    type Error = HttpError;
+}
+
+/// Complete raw output of one first-party [`HttpRequest`] effect.
+///
+/// Every HTTP status is a successful response value. The terminal Driver does
+/// not interpret redirects, 4xx or 5xx statuses, content types, or body bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HttpResponse {
+    status: http::StatusCode,
+    version: http::Version,
+    headers: http::HeaderMap,
+    body: bytes::Bytes,
+}
+
+impl HttpResponse {
+    /// Constructs a complete raw response, including for controlled fixtures.
+    pub fn new(
+        status: http::StatusCode,
+        version: http::Version,
+        headers: http::HeaderMap,
+        body: impl Into<bytes::Bytes>,
+    ) -> Self {
+        Self {
+            status,
+            version,
+            headers,
+            body: body.into(),
+        }
+    }
+
+    /// Returns the raw HTTP status without applying success policy.
+    pub fn status(&self) -> http::StatusCode {
+        self.status
+    }
+
+    /// Returns the HTTP protocol version reported by the server.
+    pub fn version(&self) -> http::Version {
+        self.version
+    }
+
+    /// Returns all response headers.
+    pub fn headers(&self) -> &http::HeaderMap {
+        &self.headers
+    }
+
+    /// Returns the fully buffered response body.
+    pub fn body(&self) -> &bytes::Bytes {
+        &self.body
+    }
+
+    /// Consumes the response and returns its fully buffered body.
+    pub fn into_body(self) -> bytes::Bytes {
+        self.body
+    }
+}
+
+/// Stage at which a first-party HTTP effect failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HttpErrorKind {
+    /// The client or request could not be configured from the descriptor.
+    Configuration,
+    /// Sending the request or receiving its complete response failed.
+    Transport,
+}
+
+/// Typed explanatory data for a first-party HTTP effect failure.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HttpError {
+    kind: HttpErrorKind,
+    message: Arc<str>,
+}
+
+impl HttpError {
+    /// Creates a typed HTTP failure for controlled execution and fixtures.
+    ///
+    /// Live execution constructs this value from its HTTP client diagnostics.
+    pub fn new(kind: HttpErrorKind, message: impl Into<Arc<str>>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn configuration(error: impl fmt::Display) -> Self {
+        Self::new(HttpErrorKind::Configuration, error.to_string())
+    }
+
+    pub(crate) fn transport(error: impl fmt::Display) -> Self {
+        Self::new(HttpErrorKind::Transport, error.to_string())
+    }
+
+    /// Returns whether configuration or transport failed.
+    pub fn kind(&self) -> HttpErrorKind {
+        self.kind
+    }
+
+    /// Returns the underlying client diagnostic as explanatory text.
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+}
+
+impl fmt::Display for HttpError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "HTTP {:?} error: {}", self.kind, self.message)
+    }
+}
+
+impl Error for HttpError {}
+
+type HttpResponseTransform<Output, ResponseError> = Box<
+    dyn FnOnce(EffectOutcome<HttpResponse, HttpError>) -> EffectOutcome<Output, ResponseError>
+        + Send
+        + 'static,
+>;
+
+/// Inert, ordered pure handling for one owned [`HttpRequest`] response.
+///
+/// This value performs no I/O and is not a separately bound or traced effect.
+/// [`HttpResponsePipeline::into_command`] lowers it to the original raw
+/// request plus one composed, one-shot message mapper. It intentionally does
+/// not implement `Clone`: the request and every declared transform are owned
+/// and may be consumed only once.
+///
+/// ```compile_fail
+/// use samara::HttpRequest;
+///
+/// let pipeline = HttpRequest::get("https://example.test").on_response();
+/// let duplicate = pipeline.clone();
+/// # drop(duplicate);
+/// ```
+#[must_use = "an HTTP response pipeline is inert until converted into a Command"]
+pub struct HttpResponsePipeline<Output, ResponseError> {
+    request: HttpRequest,
+    transform: HttpResponseTransform<Output, ResponseError>,
+}
+
+impl<Output, ResponseError> HttpResponsePipeline<Output, ResponseError>
+where
+    Output: Send + 'static,
+    ResponseError: Send + 'static,
+{
+    fn then<NextOutput, NextError, Transform>(
+        self,
+        transform_next: Transform,
+    ) -> HttpResponsePipeline<NextOutput, NextError>
+    where
+        NextOutput: Send + 'static,
+        NextError: Send + 'static,
+        Transform: FnOnce(EffectOutcome<Output, ResponseError>) -> EffectOutcome<NextOutput, NextError>
+            + Send
+            + 'static,
+    {
+        let Self { request, transform } = self;
+        HttpResponsePipeline {
+            request,
+            transform: Box::new(move |outcome| transform_next(transform(outcome))),
+        }
+    }
+
+    /// Lowers this pure pipeline to one ordinary raw HTTP effect Command.
+    ///
+    /// Live execution still selects the [`HttpRequest`] Driver and controlled
+    /// execution still intercepts `next_effect::<HttpRequest>()`. The response
+    /// transforms and `map` run synchronously and at most once after that raw
+    /// terminal outcome is accepted.
+    pub fn into_command<Message, Map>(self, map: Map) -> Command<Message>
+    where
+        Message: Send + 'static,
+        Map: FnOnce(EffectOutcome<Output, ResponseError>) -> Message + Send + 'static,
+    {
+        let Self { request, transform } = self;
+        Command::effect(request, move |outcome| map(transform(outcome)))
+    }
+}
+
+impl HttpResponsePipeline<HttpResponse, HttpError> {
+    /// Requires the response status to be in the inclusive 200–299 range.
+    ///
+    /// Any other status becomes [`HttpResponseError::Status`] and retains the
+    /// complete response. Later transforms do not run for a rejected response.
+    /// Apply this before body decoding; after `json::<T>()`, the pipeline no
+    /// longer carries a raw response:
+    ///
+    /// ```compile_fail
+    /// use samara::HttpRequest;
+    /// use serde::Deserialize;
+    ///
+    /// #[derive(Deserialize)]
+    /// struct Reply { value: u64 }
+    ///
+    /// HttpRequest::get("https://example.test")
+    ///     .on_response()
+    ///     .json::<Reply>()
+    ///     .require_success();
+    /// ```
+    pub fn require_success(self) -> HttpResponsePipeline<HttpResponse, HttpResponseError> {
+        self.then(|outcome| match outcome {
+            EffectOutcome::Succeeded(response) if response.status().is_success() => {
+                EffectOutcome::Succeeded(response)
+            }
+            EffectOutcome::Succeeded(response) => {
+                EffectOutcome::Failed(HttpStatusError::new(response).into())
+            }
+            EffectOutcome::Failed(error) => EffectOutcome::Failed(error.into()),
+            EffectOutcome::Cancelled(reason) => EffectOutcome::Cancelled(reason),
+        })
+    }
+}
+
+impl<ResponseError> HttpResponsePipeline<HttpResponse, ResponseError>
+where
+    ResponseError: Into<HttpResponseError> + Send + 'static,
+{
+    /// Decodes the complete owned response body as JSON.
+    ///
+    /// This operation adds no status policy. In particular, a valid JSON body
+    /// on a 4xx or 5xx response succeeds unless [`Self::require_success`] was
+    /// explicitly applied first. A decoding failure retains both the complete
+    /// raw response and the original [`serde_json::Error`].
+    pub fn json<T>(self) -> HttpResponsePipeline<T, HttpResponseError>
+    where
+        T: serde::de::DeserializeOwned + Send + 'static,
+    {
+        self.then(|outcome| match outcome {
+            EffectOutcome::Succeeded(response) => {
+                let decoded = serde_json::from_slice(response.body());
+                match decoded {
+                    Ok(output) => EffectOutcome::Succeeded(output),
+                    Err(source) => {
+                        EffectOutcome::Failed(HttpJsonError::new(source, response).into())
+                    }
+                }
+            }
+            EffectOutcome::Failed(error) => EffectOutcome::Failed(error.into()),
+            EffectOutcome::Cancelled(reason) => EffectOutcome::Cancelled(reason),
+        })
+    }
+}
+
+/// Typed response-pipeline failures after a raw HTTP terminal outcome.
+///
+/// Runtime cancellation is deliberately absent: it remains the separate
+/// [`EffectOutcome::Cancelled`] terminal condition.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum HttpResponseError {
+    /// The raw request could not be configured or transported.
+    #[error(transparent)]
+    Http(#[from] HttpError),
+    /// An explicit success-status policy rejected the complete response.
+    #[error(transparent)]
+    Status(#[from] HttpStatusError),
+    /// The complete response body could not be decoded as JSON.
+    #[error(transparent)]
+    Json(#[from] HttpJsonError),
+}
+
+impl HttpResponseError {
+    /// Returns the raw HTTP error when configuration or transport failed.
+    pub fn http_error(&self) -> Option<&HttpError> {
+        match self {
+            Self::Http(error) => Some(error),
+            Self::Status(_) | Self::Json(_) => None,
+        }
+    }
+
+    /// Returns the retained response for status-policy or JSON failures.
+    pub fn response(&self) -> Option<&HttpResponse> {
+        match self {
+            Self::Http(_) => None,
+            Self::Status(error) => Some(error.response()),
+            Self::Json(error) => Some(error.response()),
+        }
+    }
+}
+
+/// A complete non-2xx response rejected by [`HttpResponsePipeline::require_success`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HttpStatusError {
+    response: HttpResponse,
+}
+
+impl HttpStatusError {
+    fn new(response: HttpResponse) -> Self {
+        Self { response }
+    }
+
+    /// Returns the rejected status code.
+    pub fn status(&self) -> http::StatusCode {
+        self.response.status()
+    }
+
+    /// Borrows the complete rejected response.
+    pub fn response(&self) -> &HttpResponse {
+        &self.response
+    }
+
+    /// Consumes the error and returns the complete rejected response.
+    pub fn into_response(self) -> HttpResponse {
+        self.response
+    }
+}
+
+impl fmt::Display for HttpStatusError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "HTTP response status {} is outside the required 2xx range",
+            self.status()
+        )
+    }
+}
+
+impl Error for HttpStatusError {}
+
+/// JSON decoding failure retaining its source and complete raw response.
+#[derive(Debug, thiserror::Error)]
+#[error("failed to decode HTTP response body as JSON: {source}")]
+pub struct HttpJsonError {
+    source: serde_json::Error,
+    response: HttpResponse,
+}
+
+impl HttpJsonError {
+    fn new(source: serde_json::Error, response: HttpResponse) -> Self {
+        Self { source, response }
+    }
+
+    /// Returns the original JSON decoder error.
+    pub fn source(&self) -> &serde_json::Error {
+        &self.source
+    }
+
+    /// Borrows the complete response whose body failed to decode.
+    pub fn response(&self) -> &HttpResponse {
+        &self.response
+    }
+
+    /// Consumes the error and returns the complete response.
+    pub fn into_response(self) -> HttpResponse {
+        self.response
+    }
+
+    /// Consumes the error and returns both decoder source and raw response.
+    pub fn into_parts(self) -> (serde_json::Error, HttpResponse) {
+        (self.source, self.response)
+    }
+}
+
 /// Inert description of one finite best-effort print to process standard output.
 ///
 /// Constructing this value performs no I/O. Live execution realizes it through
@@ -3038,6 +3492,21 @@ impl LiveRuntimeBuilder {
     /// The live Driver performs no DNS, retry, reconnect, or framing.
     pub fn bind_tcp(mut self) -> Self {
         live_runtime::bind_tcp(&mut self.bindings);
+        self
+    }
+
+    /// Registers Samara's first-party pooled HTTP Effect Driver.
+    ///
+    /// Components issue raw [`HttpRequest`] descriptors and receive complete
+    /// [`HttpResponse`] values or typed [`HttpError`] data. One reusable client
+    /// and connection pool are retained by this binding. The v0 Driver follows
+    /// no redirects, performs no retries, uses no system proxy, performs no
+    /// automatic content decompression, and applies no status or body-decoding
+    /// policy. It supplies `Accept: */*` only when the descriptor omits
+    /// `Accept`. Controlled execution uses the same descriptor through
+    /// `control_effect::<HttpRequest>()` without network access.
+    pub fn bind_http(mut self) -> Self {
+        live_runtime::bind_http(&mut self.bindings);
         self
     }
 

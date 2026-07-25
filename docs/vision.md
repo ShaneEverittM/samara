@@ -479,6 +479,12 @@ connection per Source realization, `bytes::Bytes` chunks, typed connect/read fai
 peer EOF, and cancellation closure, with framing, retry, and reconnect left outside the
 terminal Driver.
 
+ADR-0005 adds one narrow raw HTTP Effect: owned method, URL, headers, and body;
+a pooled live client with redirects, retries, proxies, and automatic content
+decompression disabled; raw response status, headers, and body; and ordinary
+controlled interception. Decoding and endpoint policy remain outside the
+terminal Driver.
+
 Conceptually:
 
 ```text
@@ -668,7 +674,7 @@ The following questions remain intentionally open:
 - Shutdown deadlines, grace periods, escalation, host-signal behavior, and exact
   diagnostic accounting beyond accepted Drain and Cancel.
 - The initial first-party Layer and Driver catalog beyond the canonical `mpsc`
-  bridge and accepted narrow TCP byte Source.
+  bridge, accepted narrow TCP byte Source, and accepted raw HTTP Effect.
 - Domain-payload trace capture, typed trace projections, a public live observer, durable
   trace storage, and replay tooling.
 - Request failure, timeout, abandonment, late-Reply, delegation, and in-band cancellation

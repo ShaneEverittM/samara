@@ -235,6 +235,70 @@ A future lower-level exact-byte API may use names such as `WriteStdout` and
 its contract. That fallible boundary is not implied by the high-level print
 effects.
 
+## Example-Driven Extension: First-Party HTTP Effect
+
+[ADR-0005](adr/0005-first-party-http-effect.md) adds one narrow raw HTTP
+terminal EffectDescriptor:
+
+- `HttpRequest` owns an `http::Method`, exact URL text, `http::HeaderMap`, and
+  `bytes::Bytes` body.
+- `HttpResponse` owns status, HTTP version, headers, and a fully buffered
+  `bytes::Bytes` body.
+- `HttpError` carries an `HttpErrorKind` distinguishing `Configuration` from
+  `Transport`, plus explanatory text that controlled fixtures can construct.
+
+`LiveRuntimeBuilder::bind_http()` installs one Driver retaining one reusable
+reqwest client and connection pool. The Driver explicitly follows no redirects,
+performs no protocol retries, discovers no system proxy, and performs no
+automatic content decompression. It supplies no Samara request timeout. All
+HTTP statuses—including 3xx, 4xx, and 5xx—produce a successful `HttpResponse`;
+status interpretation belongs in the pure response pipeline, another future
+pure Layer, or application logic.
+
+If a descriptor omits `Accept`, the live Driver supplies `Accept: */*` as an
+explicit no-preference transport default; a declared `Accept` value is
+preserved. The Driver invents no other application-level request header.
+
+The v0 Driver buffers the complete response body. It performs no JSON, text,
+form, or content decoding; status conversion; authentication; cookies;
+logging; retry; redirect; or application-specific header policy. Streaming,
+limits, configurable clients, and those higher-level policies remain
+deliberately unfrozen.
+
+Controlled execution uses ordinary `control_effect::<HttpRequest>()`, exposes
+the complete inert descriptor, and never constructs a live client or touches
+the network. Mapped and discarded outcomes, Drain, Cancel, trace, and work
+accounting retain the generic Effect semantics.
+
+`HttpRequest::on_response()` consumes the request and returns a distinct
+must-use `HttpResponsePipeline`. Request modifiers use `with_*` names and are
+not available after that boundary. The response pipeline currently offers:
+
+- `require_success()`, an explicit 2xx-only policy that retains the complete
+  response in `HttpStatusError`; and
+- `json::<T>()`, owned JSON decoding that does not imply status success and
+  retains both the complete response and `serde_json::Error` in
+  `HttpJsonError`.
+
+A future request-side JSON encoder is reserved for a `with_json_body`-style
+name. The response-side `json::<T>()` method always means decoding and never
+modifies the request.
+
+The non-exhaustive `HttpResponseError` distinguishes raw `HttpError`,
+status-policy rejection, and JSON decoding while leaving room for later
+explicit response operations. Cancellation remains `EffectOutcome::Cancelled`
+rather than becoming response-error data. `into_command(mapper)` lowers the
+complete chain to `Command::effect` for the original `HttpRequest`; the pure
+response steps and application mapper each run at most once after the raw
+terminal outcome.
+
+Consequently, live assembly still binds only `HttpRequest`, controlled tests
+still claim `next_effect::<HttpRequest>()`, and the generic trace records only
+that terminal raw outcome. Status and JSON failures are deterministic mapper
+behavior delivered through the resulting Component Message, not additional
+runtime-traced Effect failures. A general `EffectPlan` and outer-outcome
+tracing remain deferred.
+
 ## Deliberately Unfrozen Surfaces
 
 The following decisions remain explicit gates or deferrals rather than

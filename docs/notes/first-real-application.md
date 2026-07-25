@@ -3,7 +3,7 @@
 - Status: Exploratory notes
 - Date: July 24, 2026
 - Evidence: [`examples/shane.rs`](../../examples/shane.rs)
-- Contract impact: None yet; architecture changes require an ADR
+- Contract impact: Follow-through accepted by ADR-0005; remaining notes are exploratory
 
 ## Purpose
 
@@ -23,8 +23,9 @@ The application's central shape is good:
 
 - `CliTimeModel` is the single source of mutable application truth.
 - Messages name the inputs that can change that Model.
-- Fetching network time is an explicit, typed `EffectDescriptor`.
-- The HTTP future lives behind an `EffectDriver`; it cannot mutate the Model.
+- Fetching network time is an explicit, first-party `HttpRequest` EffectDescriptor.
+- The pooled HTTP client lives behind Samara's runtime-owned Driver; it cannot
+  mutate the Model.
 - The effect's terminal outcome returns through a pure Message mapper.
 - Live assembly names the Component and its world binding explicitly.
 
@@ -32,19 +33,23 @@ The flow from a refresh event, through a finite HTTP interaction, back to a
 state-changing Message is visible in one short `update` branch. That is the
 kind of direct expression Samara is intended to enable.
 
+The accepted fluent response pipeline now lets the example state its response
+intent directly as `on_response().require_success().json::<TimeResponse>()`.
+Those steps are pure mapper behavior over the same raw HttpRequest outcome;
+they do not move status or decoding policy into the terminal Driver or runtime.
+
 The first draft exposed two places to improve:
 
 - `println!` and `eprintln!` are side effects inside `update`. Reporting to the
   terminal belongs behind another explicit effect or a deliberately designed
   host-output boundary. The first follow-through below now replaces those
   calls with standard-output Effects.
-- `FailedToGetTime` discards the typed error. The Message should normally carry
-  error data when the Component or operator can use it.
+- The first draft's `FailedToGetTime` discarded the typed error. The current
+  Message carries application-level HTTP, status, decode, or cancellation data.
 
-Using `CliTimeServer` as both the Component and the `GetTime` Driver is legal,
-but those are two separately constructed instances playing different roles.
-Names such as `TimePoller` and `CoinbaseTimeDriver` would teach the ownership
-boundary more clearly once the example grows beyond a compact experiment.
+The first-party HTTP binding also removes the first draft's confusing reuse of
+`CliTimeServer` as both Component and separately constructed `GetTime` Driver.
+The Component now owns only its application behavior and request intent.
 
 ## 1. Host Lifecycle and `run_forever`
 
@@ -69,7 +74,7 @@ public live observer previously deferred beyond v0.
 
 ## 2. Validate Effect Bindings During `LiveRuntimeBuilder::build`
 
-The application initially omitted its `GetTime` Driver binding. Because the
+The application initially omitted its HTTP Effect Driver binding. Because the
 effect first appeared after a timer Message rather than in `init`, the runtime
 spawned successfully and faulted only when that branch of `update` issued the
 effect.
@@ -85,7 +90,7 @@ separated from issuing the Command. A typed effect capability, dependency
 token, or related Port-like construction mechanism is one candidate:
 
 ```rust,ignore
-let network_time = program.effect::<GetTime>();
+let network_time = program.effect::<HttpRequest>();
 program.component(
     ComponentId::new("time-display"),
     TimeDisplay { network_time },
@@ -94,7 +99,7 @@ program.component(
 
 If constructing `Command::effect` requires that registered capability, the
 Program can retain the requirement and live `build()` can validate it. Merely
-adding an optional `uses_effect::<GetTime>()` annotation would be weaker because
+adding an optional `uses_effect::<HttpRequest>()` annotation would be weaker because
 the author could forget both the annotation and the binding.
 
 This revisits ADR-0004's accepted allowance for dynamically discovered missing
@@ -121,22 +126,24 @@ examples before adoption.
 
 ## 4. More First-Party World Boundaries
 
-### HTTP Effect and Driver
+### HTTP Effect and Driver — Implemented First Cut
 
-A basic HTTP request currently requires the application to provide its own
-descriptor, error wrapper, descriptor implementation, response types, Driver,
-client construction, and live binding. A first-party HTTP effect would remove
-incidental machinery while preserving the important intent as typed data.
+[ADR-0005](../adr/0005-first-party-http-effect.md) resolves the narrow first
+cut. `HttpRequest` owns method, URL text, headers, and body bytes;
+`HttpResponse` owns raw status, version, headers, and fully buffered body bytes;
+and `HttpError` distinguishes configuration from transport failure.
 
-The likely boundary is a finite `HttpRequest` EffectDescriptor interpreted by a
-first-party `HttpDriver`. The Driver, rather than the protocol-neutral runtime
-core, should own a reusable HTTP client and its connection pool. Response
-decoding and application policy must remain explicit, pure Layers or
-application logic rather than hidden Driver behavior.
+`bind_http()` retains one reqwest client and connection pool for its runtime
+binding. It explicitly disables redirects, protocol retries, and system proxy
+discovery, as well as automatic content decompression. HTTP statuses—including
+3xx, 4xx, and 5xx—remain successful raw responses. The Coinbase status check
+and JSON decoding stay in the example's pure response pipeline rather than
+becoming hidden Driver policy. The only synthesized request header is the
+no-preference transport default `Accept: */*` when the descriptor omits one.
 
-Open design questions include request and response body types, header and
-status representation, redirect and timeout policy, controlled outcomes, and
-which pieces belong in compositional Layers.
+This is deliberately not a mature HTTP stack. Streaming bodies, body limits,
+timeouts, authentication, configurable pools, redirect/retry Layers, and typed
+endpoint helpers remain future design work driven by additional applications.
 
 ### Persistent State in Manual Effect Drivers
 
@@ -147,11 +154,10 @@ lifetime and can hold such state. However, `execute(&self)` returns an owned
 `'static` future, so custom Drivers commonly need cloneable handles or
 `Arc`-backed interior state to move access into that future.
 
-For HTTP, the first experiment should simply construct a
-`CoinbaseTimeDriver { client: reqwest::Client }` once and bind that instance.
-Reqwest's cloneable client already retains its connection pool. That will tell
-us whether documentation is the missing affordance before Samara grows a new
-state-store abstraction.
+The first-party HTTP Driver now provides concrete evidence for this model: one
+registered Driver instance retains a cloneable reqwest client, and sequential
+effects reuse its pool. No additional runtime-owned state-store abstraction was
+needed for that case.
 
 We should determine whether this existing persistent Driver instance is a
 sufficient escape hatch once documented and exemplified, or whether manual
@@ -193,24 +199,26 @@ more direct spelling for delay-after-completion polling.
 
 ## 5. Effect Declaration Ceremony
 
-In the example, most of the block beginning at `GetTime` exists merely to say
-that one finite effect produces `Time` or `GetTimeError`. The semantic value of
-a named descriptor and typed outcome is real, but the current ratio of intent
-to scaffolding is too low for such a small interaction.
+The first draft's block beginning at `GetTime` mostly existed to say that one
+finite HTTP effect produces a response or error. The first-party descriptor
+removes that protocol scaffolding while preserving the typed intent and
+outcome. The remaining `GetTimeError` is useful application policy: it explains
+transport failure, non-success status, JSON decoding, or cancellation.
 
 Possible pressure-release points include:
 
-- first-party descriptors and Drivers for common boundaries such as HTTP;
+- first-party descriptors and Drivers for common boundaries such as HTTP
+  (implemented for the raw first cut);
 - a derive or small macro for declaring a descriptor's Output and Error types;
 - less boilerplate for explanatory error wrappers; and
 - examples showing the shortest honest custom Driver, including persistent
   state.
 
-Some ceremony in this particular example is optional already:
-`EffectDescriptor::Error` only requires `Send + 'static`, so `GetTime` could use
-`reqwest::Error` directly and omit the hand-written string error wrapper. A
-custom domain error becomes worthwhile when it deliberately hides transport
-choice or adds application meaning, not merely to satisfy the trait.
+The experiment also initially conflated ordinary Rust error-modeling ceremony
+with Samara-specific ceremony. `thiserror` makes an intentional domain error
+compact, and `EffectDescriptor::Error` only requires `Send + 'static`; a custom
+wrapper is not required merely to satisfy Samara. The descriptor impl itself is
+proportionate enough that a derive or macro should wait for more evidence.
 
 Any shorthand must keep the descriptor, output, error, and live/controlled
 boundary visible. "Ergonomic, but not magic" remains the constraint.
@@ -220,7 +228,8 @@ boundary visible. "Ergonomic, but not magic" remains the constraint.
 For this application the split is:
 
 - **Effect:** one HTTP request for the current time is finite and has exactly
-  one terminal outcome. `GetTime` is correctly an EffectDescriptor.
+  one terminal outcome. `HttpRequest` is the correct first-party
+  EffectDescriptor; decoding its response is application logic.
 - **Subscription:** the Component's ongoing desire for periodic refresh events
   is naturally an interval Subscription. Each tick can issue one HTTP effect.
 - **Port:** no Port is needed while this Component directly owns the use case.
@@ -241,13 +250,9 @@ misuse of Component communication.
    live build without duplicating intent?
 3. Is persistent state on the Driver instance sufficient, and how should
    concurrent invocation be expressed?
-4. What is the smallest useful first-party HTTP descriptor without importing
-   application policy into its Driver?
-5. Which interval semantics deserve the first-party name `Interval`?
-6. How much custom-effect ceremony can a derive or macro remove while keeping
-   the boundary readable?
-7. What explicit terminal-output effect should replace printing inside
-   `update`?
+4. Which interval semantics deserve the first-party name `Interval`?
+5. Does another real custom Effect reveal enough repeated declaration ceremony
+   to justify a derive or macro?
 
 ## First Follow-Through: Standard Output
 
@@ -266,3 +271,14 @@ produce discarded-outcome Commands: the runtime still owns and waits for the
 print effect, but the Component does not need an artificial "printing
 finished" Message. They remain visibly distinct from Rust's ambient,
 unqualified `println!`.
+
+## Second Follow-Through: Raw HTTP
+
+The second follow-through is the pooled first-party HTTP effect specified by
+[ADR-0005](../adr/0005-first-party-http-effect.md). The example now reads as a
+raw `HttpRequest`, an explicit pure response pipeline, and `.bind_http()`. Its
+custom descriptor, reqwest future, Driver, manual status/JSON helper, and
+per-request client construction are gone. Loopback conformance evidence
+verifies raw status handling, owned request data, controlled interception,
+duplicate-binding rejection, and reuse of one HTTP/1.1 connection by
+sequential effects.

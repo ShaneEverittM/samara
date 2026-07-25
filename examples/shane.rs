@@ -1,6 +1,4 @@
 use anyhow::Result;
-use futures_util::{FutureExt, TryFutureExt};
-use reqwest::{Client, Response};
 use samara::prelude::*;
 use serde::Deserialize;
 use std::time::Duration;
@@ -10,7 +8,19 @@ type Time = chrono::DateTime<chrono::Utc>;
 enum Message {
     GetTime,
     TimeRetrieved(Time),
-    FailedToGetTime,
+    FailedToGetTime(GetTimeError),
+}
+
+impl From<EffectOutcome<TimeResponse, HttpResponseError>> for Message {
+    fn from(outcome: EffectOutcome<TimeResponse, HttpResponseError>) -> Self {
+        match outcome {
+            EffectOutcome::Succeeded(response) => Message::TimeRetrieved(response.data.iso),
+            EffectOutcome::Failed(error) => Message::FailedToGetTime(error.into()),
+            EffectOutcome::Cancelled(reason) => {
+                Message::FailedToGetTime(GetTimeError::Cancelled(reason))
+            }
+        }
+    }
 }
 
 #[derive(Default)]
@@ -33,10 +43,11 @@ impl Component for CliTimeServer {
     fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
         match message {
             Message::GetTime => {
-                let get_time = Command::effect(GetTime, |outcome| match outcome {
-                    EffectOutcome::Succeeded(data) => Message::TimeRetrieved(data),
-                    _ => Message::FailedToGetTime,
-                });
+                let get_time = HttpRequest::get("https://api.coinbase.com/v2/time")
+                    .on_response()
+                    .require_success()
+                    .json::<TimeResponse>()
+                    .into_command(Message::from);
                 let tick = Command::after(Duration::from_secs(1), Message::GetTime);
                 Command::batch([get_time, tick])
             }
@@ -45,46 +56,29 @@ impl Component for CliTimeServer {
                 model.current_time = Some(time);
                 samara::println!("Got time: {time}")
             }
-            Message::FailedToGetTime => samara::eprintln!("Failed to get time from server"),
+            Message::FailedToGetTime(error) => {
+                samara::eprintln!("Failed to get time from server: {error}")
+            }
         }
     }
 }
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct GetTime;
 
 #[derive(Debug, thiserror::Error)]
-#[error("Error getting time: '{0}'")]
-struct GetTimeError(#[from] reqwest::Error);
-
-impl EffectDescriptor for GetTime {
-    type Output = Time;
-    type Error = GetTimeError;
+enum GetTimeError {
+    #[error(transparent)]
+    Response(#[from] HttpResponseError),
+    #[error("request was cancelled: {0:?}")]
+    Cancelled(CancelReason),
 }
 
-impl EffectDriver<GetTime> for CliTimeServer {
-    fn execute(&self, _: GetTime) -> BoxFuture<Result<Time, GetTimeError>> {
-        #[derive(Deserialize)]
-        struct TimeResponseData {
-            iso: Time,
-        }
+#[derive(Deserialize)]
+struct TimeResponseData {
+    iso: Time,
+}
 
-        #[derive(Deserialize)]
-        struct TimeResponse {
-            data: TimeResponseData,
-        }
-
-        // This is neat we can do this, but perhaps it should a built-in, runtime-owned effect
-        // descriptor for HTTP like we have for TCP. Though custom effects are just first-party
-        // effects that we haven't built yet.
-        Client::new()
-            .get("https://api.coinbase.com/v2/time")
-            .send()
-            .and_then(Response::json::<TimeResponse>)
-            .map_ok(|response| response.data.iso)
-            .map_err(GetTimeError::from)
-            .boxed()
-    }
+#[derive(Deserialize)]
+struct TimeResponse {
+    data: TimeResponseData,
 }
 
 #[tokio::main]
@@ -94,7 +88,7 @@ async fn main() -> Result<()> {
     let program = builder.build()?;
 
     let runtime = LiveRuntime::builder(program)
-        .bind_effect::<GetTime, _>(CliTimeServer)
+        .bind_http()
         .bind_stdio()
         .build()?;
     let handle = runtime.spawn();

@@ -362,8 +362,9 @@ This ADR does not settle:
   fault boundary;
 - automatic Source retry or restart;
 - restartable, shareable, broadcast, or multi-consumer channel bridges;
-- DNS, TLS, write-side TCP effects, socket tuning, reconnect, or protocol
-  framing policy;
+- DNS or TLS configuration for the first-party TCP Source, write-side TCP
+  effects, socket tuning, reconnect, or protocol framing policy (the separate
+  raw HTTP Effect is governed by ADR-0005);
 - a public live observer, payload-complete trace, durable storage, or replay;
   and
 - the exact general Rust abstraction for live profile bindings and downstream

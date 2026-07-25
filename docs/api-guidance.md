@@ -423,5 +423,7 @@ Driver recovery, restartable or shared bridges, the broader first-party Tokio
 module organization, the Rust shape of general Layer/profile bindings, Request
 lifecycle policy, notification delivery failures, public live and
 domain-payload trace APIs, and runtime topology remain separate decisions.
+ADR-0005 additionally freezes only its narrow raw, pooled, no-redirect,
+no-retry HTTP Effect; it does not settle higher-level endpoint or client policy.
 Those choices should follow the guidance above rather than being inferred from
 the first implementation.

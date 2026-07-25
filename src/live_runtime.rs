@@ -28,9 +28,10 @@ use crate::controlled_runtime::{
 };
 use crate::{
     BoxFuture, Command, CommandKind, ComponentId, DriverStopped, EffectDescriptor, EffectDriver,
-    EffectOutcome, ErasedRequestMapper, ErasedSourceEvent, PortId, PrintStderr, PrintStdout,
-    Program, RuntimeError, Shutdown, ShutdownReport, SourceDescriptor, SourceDriver, SourceEvent,
-    SourcePlan, SourceSink, StreamDescriptor, SubscriptionId, TcpBytes, TcpError, TraceId,
+    EffectOutcome, ErasedRequestMapper, ErasedSourceEvent, HttpError, HttpRequest, HttpResponse,
+    PortId, PrintStderr, PrintStdout, Program, RuntimeError, Shutdown, ShutdownReport,
+    SourceDescriptor, SourceDriver, SourceEvent, SourcePlan, SourceSink, StreamDescriptor,
+    SubscriptionId, TcpBytes, TcpError, TraceId,
 };
 
 type ErasedValue = Box<dyn Any + Send>;
@@ -239,6 +240,64 @@ impl<T: Send + 'static> ErasedSourceBinding for MpscBinding<T> {
 
 struct TokioTcpDriver;
 
+struct TokioHttpDriver {
+    client: Result<reqwest::Client, HttpError>,
+}
+
+impl TokioHttpDriver {
+    fn new() -> Self {
+        let builder = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .retry(reqwest::retry::never())
+            .no_proxy()
+            .referer(false)
+            .no_gzip()
+            .no_brotli()
+            .no_deflate()
+            .no_zstd()
+            .tcp_keepalive(None::<std::time::Duration>);
+        #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+        let builder = builder.tcp_user_timeout(None::<std::time::Duration>);
+        let client = builder.build().map_err(HttpError::configuration);
+        Self { client }
+    }
+}
+
+impl EffectDriver<HttpRequest> for TokioHttpDriver {
+    fn execute(&self, descriptor: HttpRequest) -> BoxFuture<Result<HttpResponse, HttpError>> {
+        let client = match &self.client {
+            Ok(client) => client.clone(),
+            Err(error) => {
+                let error = error.clone();
+                return Box::pin(async move { Err(error) });
+            }
+        };
+        let (method, url, mut headers, body) = descriptor.into_parts();
+        Box::pin(async move {
+            if !headers.contains_key(http::header::ACCEPT) {
+                // Make reqwest's no-preference wire default explicit rather
+                // than inheriting it as accidental hidden behavior.
+                headers.insert(http::header::ACCEPT, http::HeaderValue::from_static("*/*"));
+            }
+            let request = client
+                .request(method, url.as_ref())
+                .headers(headers)
+                .body(body)
+                .build()
+                .map_err(HttpError::configuration)?;
+            let response = client
+                .execute(request)
+                .await
+                .map_err(HttpError::transport)?;
+            let status = response.status();
+            let version = response.version();
+            let headers = response.headers().clone();
+            let body = response.bytes().await.map_err(HttpError::transport)?;
+            Ok(HttpResponse::new(status, version, headers, body))
+        })
+    }
+}
+
 struct TokioPrintStdoutDriver {
     output: Arc<tokio::sync::Mutex<tokio::io::Stdout>>,
 }
@@ -391,6 +450,10 @@ impl LiveBindings {
 
     pub(crate) fn bind_tcp(&mut self) {
         self.bind_source::<TcpBytes, _>(TokioTcpDriver);
+    }
+
+    pub(crate) fn bind_http(&mut self) {
+        self.bind_effect::<HttpRequest, _>(TokioHttpDriver::new());
     }
 
     pub(crate) fn bind_stdio(&mut self) {
@@ -1717,6 +1780,11 @@ pub(crate) fn bind_mpsc<T: Send + 'static>(
 /// Registers the first-party Tokio TCP terminal Driver.
 pub(crate) fn bind_tcp(bindings: &mut LiveBindings) {
     bindings.bind_tcp();
+}
+
+/// Registers the first-party pooled HTTP terminal Driver.
+pub(crate) fn bind_http(bindings: &mut LiveBindings) {
+    bindings.bind_http();
 }
 
 /// Registers the first-party Tokio standard-output terminal Drivers.

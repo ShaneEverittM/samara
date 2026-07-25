@@ -363,6 +363,43 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
   by the prelude. Rust's unqualified `print!` and `println!` remain immediate
   ambient I/O and are not valid inside a pure `update`.
 
+### First-Party HTTP Effect
+
+- [ADR-0005](../adr/0005-first-party-http-effect.md) defines `HttpRequest` as a
+  finite terminal EffectDescriptor containing owned method, URL text, headers,
+  and body bytes.
+- Its raw `HttpResponse` output contains status, version, headers, and a fully
+  buffered body. Every HTTP status is an output; the Driver does not turn 3xx,
+  4xx, or 5xx into failure.
+- `HttpError` distinguishes descriptor/client configuration from live
+  transport failure. Controlled fixtures can construct the same typed value.
+- `bind_http` owns one reusable reqwest client and pool for the binding. It
+  disables redirects, retries, system proxies, and automatic content
+  decompression and supplies no request timeout.
+- The live Driver supplies the no-preference transport default `Accept: */*`
+  only when the descriptor omits `Accept`; an explicit value is preserved.
+- JSON decoding, status policy, authentication, retry, redirect, logging,
+  streaming, and application header behavior do not belong in this terminal
+  Driver. The pure response pipeline, future Layers, or application logic may
+  add those semantics explicitly.
+- Controlled execution intercepts `HttpRequest` through the normal typed effect
+  boundary and never falls through to the live network.
+- `on_response` is an explicit consuming phase boundary from request
+  construction to a must-use pure response pipeline. Request `with_*` methods
+  are not part of the response-pipeline type.
+- `require_success` adds only an explicit 2xx policy. `json::<T>` adds only
+  owned JSON decoding and never implies that policy. Both retain the complete
+  raw response in their typed error data; JSON errors also retain their source.
+- `into_command` lowers the pipeline to the original terminal `HttpRequest`
+  plus one composed `FnOnce` mapper. Live and controlled execution therefore
+  share the same deterministic status/decoding behavior without a new Driver,
+  controlled boundary, runtime event, or trace outcome.
+- Raw configuration/transport failure and runtime cancellation bypass response
+  operations. Cancellation remains cancellation rather than response Error
+  data.
+- A general EffectPlan, user-defined response transforms, and runtime tracing
+  of the composed outer result remain deferred.
+
 ### Decoder EOF Contract
 
 - ADR-0004 adds one required pure Decoder finalization operation.

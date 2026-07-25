@@ -216,6 +216,19 @@ architecture before each implementation slice begins.
   duplicate/reactivation fault, plus one-connection TCP Bytes, connect/read
   failure, peer EOF, cancellation closure, and absence of hidden
   retry/reconnect/framing.
+- First-party HTTP coverage for descriptor fidelity, controlled interception,
+  typed configuration and transport failure, duplicate binding, raw
+  status/headers/body, redirect non-following, and sequential connection-pool
+  reuse against a local server. Generic finite-effect tests continue to own
+  Drain, Cancel, mapped and discarded outcomes, and structured lifecycle
+  evidence.
+- Fluent HTTP response-pipeline coverage for the consuming request/response
+  phase boundary, unchanged raw controlled interception, explicit versus absent
+  status policy, owned JSON success and failure, retained response/source
+  diagnostics, raw failure and cancellation passthrough, at-most-once pure
+  transforms, and equivalent Component results for live and controlled raw
+  responses. Trace assertions must continue to describe only the raw terminal
+  HttpRequest outcome.
 - Pressure characterization under burst and sustained load without a stable
   threshold promise.
 - Recovery behavior after Driver and runtime failures without prescribing the

@@ -110,6 +110,36 @@ an effect-contract cancellation: the live future is dropped or cancelled and
 no EffectOutcome or mapped Message is manufactured for an application that is
 ending.
 
+**HttpRequest** — The first-party terminal EffectDescriptor for one raw finite
+HTTP interaction. It owns method, URL text, headers, and body bytes; it is not
+an executing client or a typed application endpoint.
+
+**HttpResponse** — The complete raw output of one HttpRequest: status, version,
+headers, and fully buffered body bytes. An HTTP error status is still an
+HttpResponse; application status policy is distinct from transport failure.
+
+**HttpError** — Typed explanatory data for failure to configure or transport a
+first-party HttpRequest. It does not represent an HTTP status selected by the
+remote endpoint.
+
+**HttpResponsePipeline** — An inert, must-use, one-shot pure continuation
+created when `HttpRequest::on_response` consumes a request. It declares ordered
+response policy and decoding, then lowers through `into_command` to the same raw
+HttpRequest Effect plus a composed Message mapper. It is not a Driver, runtime
+Layer, or separately traced Effect.
+
+**HttpResponseError** — The non-exhaustive response-pipeline error algebra
+distinguishing a raw configuration/transport HttpError, an explicitly selected
+status-policy rejection, and JSON decoding failure. Runtime cancellation is
+not a variant; it remains `EffectOutcome::Cancelled`.
+
+**HttpStatusError** — A non-2xx HttpResponse rejected by an explicit
+`require_success` policy. It retains the complete raw response, including
+headers and diagnostic body.
+
+**HttpJsonError** — Failure to decode an owned HttpResponse body as JSON. It
+retains both the complete raw response and the original `serde_json::Error`.
+
 **Error** — Typed data explaining why an operation could not complete as
 intended, such as `TcpError`, `DecodeError`, or `RequestError`. Concrete payload
 types use the `Error` noun rather than `Failure`.
