@@ -220,7 +220,7 @@ persistent data migration or replay recovery step.
 | `cargo clippy --all-targets --all-features -- -D warnings` | Pass |
 | `RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --all-features` | Pass |
 | `git diff --check` | Pass |
-| `cargo run --example minimal`, `api_pressure`, and `framed_socket` | Pass: all three example binaries build and run; their test targets separately exercise both runtime profiles |
+| `cargo run --manifest-path examples/<name>/Cargo.toml` for `minimal`, `api_pressure`, and `framed_socket` | Pass: all three standalone example binaries build and run; their test targets separately exercise both runtime profiles |
 | Governing-contract scan | No ADR or accepted semantic rule changed; Phase 6 implements ADR-0004's bounded slice |
 | Topology scan | No public queue, dispatcher, task, worker, or independent-event total order exposed |
 | Public observer scan | No public live trace, callback, scheduler hook, or Component-readable observer added |

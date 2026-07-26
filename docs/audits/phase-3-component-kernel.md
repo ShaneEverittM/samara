@@ -86,13 +86,13 @@ promoted into delivery semantics without a later contract decision.
 The three reference Components continue to compile unchanged against the
 frozen public Component API:
 
-- `examples/minimal.rs` keeps the shallow boundary: immutable
+- `examples/minimal/src/main.rs` keeps the shallow boundary: immutable
   `StreamDescriptor` configuration, one small Model, typed Messages, and a
   direct synchronous transition.
-- `examples/api_pressure.rs` demonstrates that startup timer intent remains an
-  inert Command rather than being executed by Component initialization.
+- `examples/api_pressure/src/main.rs` demonstrates that startup timer intent
+  remains an inert Command rather than being executed by Component initialization.
   Request, effect, and Subscription interpretation remain staged.
-- `examples/framed_socket.rs` continues to separate immutable Port wiring from
+- `examples/framed_socket/src/main.rs` continues to separate immutable Port wiring from
   mutable telemetry state and operational Driver/Layer resources.
 
 No public type or method was added for the kernel. `ComponentRef` remains an

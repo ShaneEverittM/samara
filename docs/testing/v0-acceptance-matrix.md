@@ -61,11 +61,11 @@ The following evidence must pass before the Phase 2 audit:
 - `tests/phase2_contract.rs` exercises V1 direct transition equivalence, V3
   typed effect inspection, V4 subscription identity/descriptor separation, and
   a non-`Sync` Component configuration accepted by the kernel contract.
-- `examples/minimal.rs` compiles the V11 onboarding shape and directly tests its
-  transition and subscription projection.
-- `examples/api_pressure.rs` compiles handwritten Protocol/Request, Port,
+- `examples/minimal/src/main.rs` compiles the V11 onboarding shape and directly
+  tests its transition and subscription projection.
+- `examples/api_pressure/src/main.rs` compiles handwritten Protocol/Request, Port,
   EffectDescriptor, timer, live assembly, and controlled assembly shapes.
-- `examples/framed_socket.rs` compiles the Layer/Driver, generated Protocol,
+- `examples/framed_socket/src/main.rs` compiles the Layer/Driver, generated Protocol,
   provider conversion, request-continuation, and subscription-replacement
   shapes. Its direct tests cover the pure decoder and command intent.
 - Library unit tests validate the `protocol!` expansion and typed Request reply

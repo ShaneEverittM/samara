@@ -2,7 +2,7 @@
 
 - Status: Exploratory notes
 - Date: July 25, 2026
-- Evidence: [`examples/shane.rs`](../../examples/shane.rs)
+- Evidence: [`examples/time`](../../examples/time/src/main.rs)
 - Contract impact: Follow-through accepted by ADR-0005 through ADR-0009;
   remaining notes are exploratory
 

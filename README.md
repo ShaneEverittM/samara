@@ -37,22 +37,28 @@ The earlier Actor proof of concept remains available in Git history at commit
 - [Phase 5 audit packet](docs/audits/phase-5-controlled-execution.md)
 - [Phase 6 audit packet](docs/audits/phase-6-live-tokio-runtime.md)
 
-## Reference Components
+## Standalone Examples
 
-- [`examples/minimal.rs`](examples/minimal.rs) — the shallow Tokio
+Each example is its own workspace package, so its application dependencies and
+Samara boundary are visible without sharing the library crate's development
+setup. The root validation commands still cover every example package.
+
+- [`examples/minimal`](examples/minimal/src/main.rs) — the shallow Tokio
   `mpsc -> Component Message` onboarding path.
-- [`examples/api_pressure.rs`](examples/api_pressure.rs) — Ports, correlated
+- [`examples/api_pressure`](examples/api_pressure/src/main.rs) — Ports, correlated
   requests, effects, subscriptions, and logical time.
-- [`examples/framed_socket.rs`](examples/framed_socket.rs) — source layering,
+- [`examples/framed_socket`](examples/framed_socket/src/main.rs) — source layering,
   TCP Driver shape, provider-neutral Protocols, failures, and structured
   shutdown.
+- [`examples/time`](examples/time/src/main.rs) — a live HTTP time service and
+  stdin-driven CLI using first-party HTTP, stdio, and terminal-input facilities.
 
 ## Validate the Contract
 
 ```sh
 cargo fmt --all -- --check
-cargo test --all-targets
-cargo test --doc
-cargo clippy --all-targets --all-features -- -D warnings
-RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --all-features
+cargo test --workspace --all-targets
+cargo test --workspace --doc
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --all-features
 ```

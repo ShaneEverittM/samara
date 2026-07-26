@@ -1,3 +1,19 @@
+[workspace]
+resolver = "3"
+members = [
+    "examples/api_pressure",
+    "examples/framed_socket",
+    "examples/minimal",
+    "examples/time",
+]
+default-members = [
+    ".",
+    "examples/api_pressure",
+    "examples/framed_socket",
+    "examples/minimal",
+    "examples/time",
+]
+
 [package]
 name = "samara"
 version = "0.1.0"
@@ -14,12 +30,7 @@ thiserror = "2.0.19"
 tokio = { version = "1.45.1", features = ["io-std", "io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "time"] }
 
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.30.1", default-features = false, features = ["poll"] }
+nix = { version = "0.31.3", default-features = false, features = ["poll"] }
 
 [dev-dependencies]
-anyhow = "1.0.104"
 serde = { version = "1.0.229", features = ["derive"] }
-chrono = { version = "0.4.45", features = ["serde"] }
-# Compile-check the host-owned Ctrl-C policy in `examples/shane.rs` without
-# making Tokio signal handling part of Samara's library dependency surface.
-tokio = { version = "1.45.1", features = ["signal"] }

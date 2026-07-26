@@ -129,11 +129,12 @@ Review these in order:
    Unfrozen Surfaces.”
 2. `docs/testing/v0-acceptance-matrix.md` — confirm scenario ownership and the
    decision gates match the intended vision.
-3. `examples/minimal.rs` — verify the onboarding path still feels shallow.
-4. `examples/api_pressure.rs` — verify handwritten Protocol and request flow
-   remain direct.
-5. `examples/framed_socket.rs` — verify the demanding end state still reads as
-   the intended application.
+3. `examples/minimal/src/main.rs` — verify the onboarding path still feels
+   shallow.
+4. `examples/api_pressure/src/main.rs` — verify handwritten Protocol and
+   request flow remain direct.
+5. `examples/framed_socket/src/main.rs` — verify the demanding end state still
+   reads as the intended application.
 
 Acceptance marks the final Phase 2 checkbox and authorizes Phase 3. Any later
 disagreement must revise the frozen contract explicitly rather than changing it

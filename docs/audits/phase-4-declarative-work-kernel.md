@@ -131,14 +131,15 @@ composed descriptor and Component Message logic.
 
 ## Reference Component and Public API Audit
 
-- `examples/minimal.rs` keeps the shallow StreamDescriptor-to-Message shape.
+- `examples/minimal/src/main.rs` keeps the shallow
+  StreamDescriptor-to-Message shape.
   Its direct Component test remains runtime-free, while the controlled
   end-to-end test remains visibly staged.
-- `examples/api_pressure.rs` now intercepts its actual `PersistCount`
-  descriptor and drives the stored mapper with typed data before feeding the
-  resulting Message through an ordinary direct transition. It invokes no
-  persistence Driver.
-- `examples/framed_socket.rs` now instantiates `FramedLayer` from the actual
+- `examples/api_pressure/src/main.rs` now intercepts its actual
+  `PersistCount` descriptor and drives the stored mapper with typed data before
+  feeding the resulting Message through an ordinary direct transition. It
+  invokes no persistence Driver.
+- `examples/framed_socket/src/main.rs` now instantiates `FramedLayer` from the actual
   `TelemetryFeed` descriptor and maps split/coalesced chunks plus transport
   failure without selecting `TokioTcpBytes` or controlled behavior.
 - The accepted Phase 3 `Component`, `Init`, `ComponentRef`, identity, ownership,

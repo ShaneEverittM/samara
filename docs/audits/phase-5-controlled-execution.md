@@ -118,7 +118,7 @@ contract, acceptance matrix, or test strategy.
 | V8 causality | Direct sends and successful Requests assert explicit trace edges without naming a mailbox, task, worker, or live total order. |
 | V9 structured ownership | Tests separately observe due Messages/timers, effects, future timers, Sources, Requests, and zero-work cancellation. |
 | V10 non-influential trace | Trace reads are immutable; root and non-root causation, logical time, and stale-generation diagnostics are executable assertions. |
-| V11 onboarding | `examples/minimal.rs` runs its declared stream through controlled execution; both larger reference Components also run end to end. |
+| V11 onboarding | `examples/minimal/src/main.rs` runs its declared stream through controlled execution; both larger reference Components also run end to end. |
 
 ## Public API Scope Audit
 
