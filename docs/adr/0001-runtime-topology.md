@@ -1,6 +1,6 @@
 # ADR 0001: Runtime Topology for Tokio + TEA
 
-- Status: Accepted
+- Status: Superseded by [ADR 0002](0002-runtime-topology-and-ordering.md)
 - Date: February 28, 2026
 - Decision owners: Samara maintainers
 

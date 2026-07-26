@@ -1,10 +1,15 @@
 # Thin Slice of Value: API Sketch and Runtime Options
 
+## Status
+
+Historical proof-of-concept sketch. Its Option A topology recommendation was
+superseded by ADR-0002 and is not a current implementation mandate.
+
 ## Goal
 Define a minimal proof of concept that exercises:
 - One actor.
 - Two effects.
-- Strict TEA boundaries with Option A runtime semantics.
+- Strict TEA boundaries using the then-selected Option A runtime semantics.
 
 This is an API-shape comparison document, not implementation code.
 
@@ -162,9 +167,9 @@ Why not:
 - Keep all non-effect handlers synchronous in v0.
 - If compute is expensive, emit a command and execute in a Tokio task (or `spawn_blocking`) instead of making `update` async.
 
-## 3) Option A Runtime Implementation Shapes
+## 3) Historical Option A Runtime Implementation Shapes
 
-All options below preserve:
+These historical sketches all preserve:
 - Single mailbox loop.
 - Global total order for message processing in the runtime loop.
 
@@ -340,7 +345,7 @@ pub struct DeadLetter {
 Why O2 fits this repository:
 - Keeps public sending API type-safe (`Addr<M>::send(M)`).
 - Keeps runtime extensible with open-set actor/message registration.
-- Preserves Option A single-mailbox semantics while allowing plugin-like growth.
+- Preserved the proof of concept's then-selected Option A semantics while allowing plugin-like growth.
 
 Risk and mitigation:
 - Risk: internal type erasure can hide mistakes.
@@ -385,7 +390,8 @@ Each adapter may use shared primitive runtime capabilities while preserving inde
   - Domain model/message/command types explicit and strongly typed.
   - Use `Addr<M>` for typed sends and `Envelope`+registry internally for open-set routing.
 - Runtime shape:
-  - Start with **R2 JoinSet-supervised Option A loop**.
+  - Historical recommendation: start with **R2 JoinSet-supervised Option A loop**.
+  - Current implementations are instead governed by ADR-0002's observable semantics.
 - Effects to include in first PoC:
   - `PersistCount(u64)` (simulated async persistence).
   - `ScheduleTick(Duration)` (timer-based message emission).
