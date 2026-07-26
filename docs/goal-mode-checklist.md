@@ -25,6 +25,7 @@ Governing documents:
 - [ADR-0003: Controlled Execution Semantics](adr/0003-controlled-execution-semantics.md)
 - [ADR-0004: Initial Live Runtime Semantics](adr/0004-initial-live-runtime-semantics.md)
 - [ADR-0008: Closed Program Capabilities](adr/0008-closed-program-capabilities.md)
+- [ADR-0009: First-Party Standard-Input Line Source](adr/0009-first-party-stdin-lines.md)
 - [Architecture Test Strategy](testing/architecture-test-strategy.md)
 - [v0 Acceptance Matrix](testing/v0-acceptance-matrix.md)
 

@@ -245,6 +245,50 @@ the application-visible composed capability.
 A future bridge module may add neighboring bindings without changing the
 descriptor's application-facing meaning.
 
+## Why Is Process Stdin an Exact Source Boundary?
+
+Terminal input is ongoing production, so `StdinLines` is a SourceDescriptor
+rather than an Effect or ambient read hidden inside `update`. A Component
+stores its `SourceCapability<StdinLines>`, declares `StdinLines::new()` under a
+stable Subscription identity, and maps line, failure, and EOF SourceEvents into
+its own Messages. Command parsing and the application meaning of EOF remain in
+the Component.
+
+The descriptor names a deliberately specific text contract. Each Item is one
+LF-delimited UTF-8 `String` with the LF and one immediately preceding CR
+removed. Empty lines are retained, and nonempty bytes at clean EOF form one
+final unterminated line. Read and invalid-UTF-8 failures are distinct
+`StdinErrorKind` values; either terminates the Source without a following
+`Ended`. This first cut imposes no line-length limit, so an application that
+needs bounded or byte-oriented acquisition should use a different descriptor
+rather than assuming an unstated stdin policy. A Layer over `StdinLines` can
+apply downstream policy only after a complete line has been acquired.
+
+Process stdin is one concrete resource, not an implementation that can realize
+arbitrarily many independent descriptors. Unix live assembly therefore uses
+`bind_stdin(&capability)` to name one exact capability whose terminal
+descriptor is `StdinLines`. The capability may expose `StdinLines` directly or
+place built-in Layers such as `Framed<StdinLines, D>` above it. A second
+binding fails assembly, and concurrent realization faults instead of racing,
+load-balancing, or broadcasting lines. First-party bindings in separate
+runtimes share the same process lease. After the active reader is released,
+that capability may realize a later Subscription at stdin's current position.
+Application and library code must not read process stdin alongside the
+binding.
+
+The Unix implementation waits on both stdin readiness and a private
+cancellation channel. Every cutover signals and joins its reader thread; no
+reader is detached and no terminal SourceEvent is fabricated merely because
+the Subscription or runtime ended. This is why Samara does not build the
+facility on Tokio's uncancellable stdin helper. The first-party live binding
+is not promised on non-Unix targets, although `StdinLines`, its typed errors,
+and ordinary controlled Source behavior remain portable.
+
+Controlled tests register `control_source::<StdinLines>()` and inject ordinary
+typed SourceEvents with `emit_source`. They do not open the process stream.
+Clean EOF ends the Source, not the whole Program; selecting Drain, Cancel, or
+continued execution remains explicit host and application lifecycle policy.
+
 ## Why Have Both Layers and Drivers?
 
 *Adapter* is the conceptual umbrella for boundary translation. The code-level

@@ -82,9 +82,9 @@ pub mod prelude {
         ProgramBuildError, ProgramBuilder, Protocol, ReplyTo, Request, RequestError,
         RequestInvocation, RequestOutcome, RunReport, RuntimeError, RuntimeTask, Shutdown,
         ShutdownReport, SourceCapability, SourceDescriptor, SourceDriver, SourceEvent,
-        SourceEventKind, SourceSink, StreamDescriptor, Subscription, SubscriptionAction,
-        SubscriptionId, Subscriptions, TcpBytes, TcpError, TcpErrorKind, TraceCommandKind,
-        TraceEvent, TraceId, TraceRecord, protocol,
+        SourceEventKind, SourceSink, StdinError, StdinErrorKind, StdinLines, StreamDescriptor,
+        Subscription, SubscriptionAction, SubscriptionId, Subscriptions, TcpBytes, TcpError,
+        TcpErrorKind, TraceCommandKind, TraceEvent, TraceId, TraceRecord, protocol,
     };
 }
 
@@ -354,6 +354,19 @@ pub trait StreamSourceDescriptor: SourceDescriptor + stream_source_private::Seal
     /// Item accepted by the terminal stream bridge before any Layers run.
     type StreamItem: Send + 'static;
 }
+
+mod stdin_source_private {
+    pub trait Sealed {}
+}
+
+/// Type-level evidence that a source descriptor lowers to [`StdinLines`].
+///
+/// This trait is sealed and used only by Samara's exact stdin binding. An
+/// application may bind either `StdinLines` directly or a built-in composition
+/// such as `Framed<StdinLines, D>` without exposing the terminal descriptor
+/// separately.
+#[doc(hidden)]
+pub trait StdinSourceDescriptor: SourceDescriptor + stdin_source_private::Sealed {}
 
 #[derive(Clone)]
 pub(crate) struct CapabilityToken {
@@ -2238,6 +2251,95 @@ impl<T: Send + 'static> StreamSourceDescriptor for StreamDescriptor<T> {
     type StreamItem = T;
 }
 
+/// Inert description of UTF-8 lines read from process standard input.
+///
+/// Live Unix execution binds this unique process resource through
+/// `LiveRuntimeBuilder::bind_stdin`. Controlled execution scripts the same
+/// line, failure, and EOF events through
+/// [`ControlledRuntimeBuilder::control_source`]. Each emitted [`String`] has
+/// its terminating LF and one immediately preceding CR removed; a final
+/// nonempty line is emitted at EOF even without an LF terminator.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StdinLines;
+
+impl StdinLines {
+    /// Describes process standard input as a stream of UTF-8 lines.
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl SourceDescriptor for StdinLines {
+    type Item = String;
+    type Error = StdinError;
+}
+
+impl stdin_source_private::Sealed for StdinLines {}
+
+impl StdinSourceDescriptor for StdinLines {}
+
+/// Class of terminal failure produced by [`StdinLines`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StdinErrorKind {
+    /// Reading bytes from process standard input failed.
+    Read,
+    /// One complete input line was not valid UTF-8.
+    InvalidUtf8,
+}
+
+/// Typed explanatory data for a first-party standard-input Source failure.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StdinError {
+    kind: StdinErrorKind,
+    message: Arc<str>,
+}
+
+impl StdinError {
+    /// Creates a typed stdin failure for controlled execution and fixtures.
+    ///
+    /// Live execution constructs this value from operating-system and UTF-8
+    /// errors. Controlled execution has no live error to wrap, so tests use
+    /// this constructor to supply the same explanatory boundary explicitly.
+    pub fn new(kind: StdinErrorKind, message: impl Into<Arc<str>>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn read(error: impl fmt::Display) -> Self {
+        Self::new(StdinErrorKind::Read, error.to_string())
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn invalid_utf8(error: impl fmt::Display) -> Self {
+        Self::new(StdinErrorKind::InvalidUtf8, error.to_string())
+    }
+
+    /// Returns whether byte acquisition or UTF-8 interpretation failed.
+    pub fn kind(&self) -> StdinErrorKind {
+        self.kind
+    }
+
+    /// Returns the underlying diagnostic without exposing it as policy.
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+}
+
+impl fmt::Display for StdinError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "standard-input {:?} error: {}",
+            self.kind, self.message
+        )
+    }
+}
+
+impl Error for StdinError {}
+
 /// Inert description of one finite HTTP request.
 ///
 /// The descriptor owns its method, URL text, headers, and body. Constructing it
@@ -3084,6 +3186,20 @@ where
     D: Decoder,
 {
     type StreamItem = S::StreamItem;
+}
+
+impl<S, D> stdin_source_private::Sealed for Framed<S, D>
+where
+    S: StdinSourceDescriptor<Item = D::Chunk>,
+    D: Decoder,
+{
+}
+
+impl<S, D> StdinSourceDescriptor for Framed<S, D>
+where
+    S: StdinSourceDescriptor<Item = D::Chunk>,
+    D: Decoder,
+{
 }
 
 impl<S, D> ErasedSourceLayer for FramedLayer<S, D>
@@ -4227,6 +4343,29 @@ impl LiveRuntimeBuilder {
         S: StreamSourceDescriptor,
     {
         live_runtime::bind_mpsc(&mut self.bindings, stream, receiver);
+        self
+    }
+
+    /// Binds process standard input to one exact capability whose terminal
+    /// descriptor is [`StdinLines`].
+    ///
+    /// This first-party binding is available on Unix, where the runtime owns
+    /// an interruptible line-reader thread for each active Source realization.
+    /// The capability may expose `StdinLines` directly or place built-in
+    /// [`Framed`] Layers above it.
+    /// Removing or replacing the Subscription and shutting down the runtime
+    /// cancel and join that thread without waiting for another input byte.
+    ///
+    /// Process stdin has one owner: a live runtime may contain only one stdin
+    /// binding, and first-party bindings in separate runtimes share the same
+    /// active process lease. A second concurrent realization faults the
+    /// runtime. Code outside Samara must not read stdin concurrently.
+    #[cfg(unix)]
+    pub fn bind_stdin<S>(mut self, stdin: &SourceCapability<S>) -> Self
+    where
+        S: StdinSourceDescriptor,
+    {
+        live_runtime::bind_stdin(&mut self.bindings, stdin);
         self
     }
 

@@ -1,7 +1,8 @@
 # Architecture Test Strategy (v0)
 
 ## Status
-- Phase: Phase 6 live-runtime implementation complete; ADR-0008 closed-capability evidence active.
+- Phase: Phase 6 live-runtime implementation complete; ADR-0008
+  closed-capability and ADR-0009 stdin evidence active.
 - Date: July 25, 2026.
 
 ## Purpose
@@ -69,6 +70,10 @@ architecture before each implementation slice begins.
   ambiguous, foreign, and type-incompatible cases.
 - Validate type-wide Drivers may satisfy multiple declared capabilities of one
   terminal type, while exact adapters select one SourceCapability identity.
+- Validate the exact first-party stdin adapter accepts direct and built-in
+  composed capabilities whose terminal descriptor is `StdinLines`, while
+  preserving typed line/read/UTF-8/EOF behavior across live and controlled
+  execution.
 - Validate changing only Source capability under an equal Subscription identity
   and descriptor replaces the Source.
 - Validate Drivers remain terminal, selected by live-profile assembly, and
@@ -145,6 +150,10 @@ architecture before each implementation slice begins.
 - Cancel a pending `run_forever` observation through an ordinary
   `tokio::select!`, then prove the same RuntimeTask still owns usable ingress
   and can perform explicitly selected Drain or Cancel cleanup.
+- On Unix, prove stdin removal, replacement, Drain, Cancel, and fault interrupt
+  and join the blocking reader without another input byte. Exercise a
+  multi-thread cutover, sequential lease reuse, and private mechanism failure
+  without fabricating a terminal Source event.
 
 ### L5: Backpressure and Load Tests
 - Validate live admission and work pressure behavior without assuming a

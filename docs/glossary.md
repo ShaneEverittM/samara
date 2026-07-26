@@ -156,6 +156,31 @@ headers and diagnostic body.
 **HttpJsonError** — Failure to decode an owned HttpResponse body as JSON. It
 retains both the complete raw response and the original `serde_json::Error`.
 
+**StdinLines** — The first-party terminal SourceDescriptor for UTF-8 lines from
+process standard input. Each Item is a `String` with its terminating LF and one
+immediately preceding CR removed. Empty lines are preserved; nonempty bytes at
+clean EOF form one final unterminated Item before `Ended`. The descriptor is
+platform-neutral, while Samara's first-party `bind_stdin` live realization is
+currently Unix-only.
+
+**StdinError / StdinErrorKind** — Typed explanatory data for terminal
+`StdinLines` failure. `Read` identifies failure to read process input, and
+`InvalidUtf8` identifies a line payload, including final unterminated input,
+that was not valid UTF-8.
+`StdinError::new` constructs the same boundary value in controlled fixtures.
+Either failure produces `SourceEvent::Failed` without a later `Ended`.
+
+**stdin live binding / `bind_stdin`** — The Unix-only first-party exact binding
+of process stdin to one capability whose terminal descriptor is `StdinLines`.
+The capability may be direct or place built-in Layers above that terminal
+descriptor. One live runtime has at most one such binding, and first-party
+bindings across runtimes share one process-wide active lease. Each realization
+owns an interruptible reader thread; removal, replacement, shutdown, fault,
+EOF, or failure joins it before releasing the Source. Code outside Samara must
+not read process stdin concurrently. Controlled execution uses ordinary
+type-wide `control_source::<StdinLines>()` behavior rather than this live
+binding.
+
 **Error** — Typed data explaining why an operation could not complete as
 intended, such as `TcpError`, `DecodeError`, or `RequestError`. Concrete payload
 types use the `Error` noun rather than `Failure`.
@@ -285,7 +310,9 @@ descriptor type.
 **Exact binding** — A profile binding associated with one private capability
 identity because it owns one concrete resource rather than an implementation
 for every value of a descriptor type. The first-party one-shot `mpsc` receiver
-bridge is the initial example.
+bridge selects one independently bindable receiver. Unix `bind_stdin` also
+selects one exact capability, but process stdin permits only one such binding
+in a live runtime even when the capabilities differ.
 
 Under ADR-0004, normal EffectDriver return maps success or failure
 exactly once. A SourceDriver that returns without an accepted terminal sink
@@ -295,7 +322,7 @@ faults the runtime and produces no fabricated typed application result.
 Controlled execution provides deterministic behavior for the same terminal
 descriptor contracts without silently invoking live Drivers. Normal Driver and
 controlled registrations are type-wide; exact resource bridges such as Tokio
-`mpsc` select one SourceCapability identity.
+`mpsc` and Unix process stdin select one SourceCapability identity.
 
 The finite and ongoing lifecycles are deliberately similar only where their
 semantics are actually similar:
@@ -359,6 +386,14 @@ The accepted first-party `mpsc` realization is one-shot because a Tokio
 receiver is a unique live resource. Channel closure ends its Source normally;
 duplicate activation or reactivation after consumption or cancellation faults
 explicitly rather than implying a recreated receiver.
+
+`StdinLines` directly names the intrinsic line-oriented intent, so it needs no
+`Descriptor` suffix. Unix `bind_stdin(&capability)` names the unique live
+process resource. It removes CRLF or LF framing, preserves empty lines, emits a
+final unterminated line before clean EOF, and reports read or UTF-8 failure as
+typed Source Error data. Private readiness, cancellation, and reader-thread
+failures remain runtime faults. Controlled execution scripts the same terminal
+event vocabulary without opening stdin.
 
 Application aliases for composed descriptors should use intrinsic domain
 language when it exists. Names such as `TelemetryFeed` in examples are domain

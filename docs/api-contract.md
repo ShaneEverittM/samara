@@ -1,7 +1,7 @@
 # Samara v0 Milestone API Contract
 
 - Status: Phase 6 live-runtime implementation complete; ADR-0008
-  closed-capability contract accepted for implementation
+  closed-capability and ADR-0009 stdin contracts accepted for implementation
 - Date: July 25, 2026
 - Scope: Change-controlled public API slices for staged implementation
 
@@ -323,6 +323,51 @@ A future lower-level exact-byte API may use names such as `WriteStdout` and
 its contract. That fallible boundary is not implied by the high-level print
 effects.
 
+## Accepted and Implemented Contract: First-Party Standard Input Lines
+
+[ADR-0009](adr/0009-first-party-stdin-lines.md) defines `StdinLines` as the
+first-party terminal SourceDescriptor for process standard input. It is inert,
+cloneable, and comparable; its Item is `String`, and its Error is
+`StdinError`. `StdinErrorKind` distinguishes an operating-system `Read`
+failure from `InvalidUtf8`, while `StdinError::new` lets controlled fixtures
+construct either typed failure without touching the live process stream.
+
+The descriptor emits one Item for each LF-delimited line. It removes the LF
+and one immediately preceding CR, preserves empty lines, and emits nonempty
+bytes before EOF as one final unterminated line. A read error or invalid UTF-8
+terminates the Source with `SourceEvent::Failed` after any earlier complete
+lines; clean EOF emits `SourceEvent::Ended` after the optional final Item. A
+failure is not followed by `Ended`. The initial descriptor has no line-length
+limit. Bounded or byte-oriented acquisition therefore requires another
+terminal descriptor; a Layer above `StdinLines` sees only complete lines.
+
+On Unix, `LiveRuntimeBuilder::bind_stdin(&capability)` binds process stdin to
+one exact capability whose terminal descriptor is `StdinLines`. The capability
+may be direct or a built-in composition such as
+`SourceCapability<Framed<StdinLines, D>>`. A live runtime may contain only one
+such binding, even for distinct capability values, and a second concurrent
+realization faults rather than racing for lines or inventing broadcast
+semantics. First-party bindings in separate live runtimes share that active
+process lease. Once a realization releases the process reader, the same bound
+capability may activate again at stdin's then-current position. Conforming host
+code must not read process stdin concurrently with this binding.
+
+Each active Unix realization owns an interruptible reader thread. Subscription
+removal or replacement, Drain, Cancel, runtime fault, EOF, and typed failure
+all cause that reader to be joined before its Source work is released. A
+cutover that wins does not synthesize `Ended` or `Failed`. The live binding is
+not claimed for non-Unix targets; the descriptor and controlled contract remain
+portable, and another target may supply a custom Driver.
+
+Input read and UTF-8 failures are typed Source failures. Failures in Samara's
+private readiness, cancellation, or reader-thread mechanism instead fault the
+runtime and cannot be mistaken for application input.
+
+Controlled execution uses ordinary `control_source::<StdinLines>()` and
+`emit_source` calls carrying `SourceEvent::Item`, `SourceEvent::Failed`, or
+`SourceEvent::Ended`. It invokes no live stdin mechanism. EOF ends this Source;
+it does not by itself choose whole-program shutdown policy.
+
 ## Example-Driven Extension: First-Party HTTP Effect
 
 [ADR-0005](adr/0005-first-party-http-effect.md) adds one narrow raw HTTP
@@ -425,7 +470,9 @@ exact Source capability through `bind_mpsc(&capability, receiver)` and
 operations select that same exact capability. These exact APIs also accept a
 composed capability such as `SourceCapability<Framed<StreamDescriptor<T>, D>>`;
 raw items and ending enter at the terminal stream and traverse the declared
-Layers.
+Layers. ADR-0009's Unix `bind_stdin(&capability)` is another exact live
+binding, but it is unique across the process-input descriptor type rather than
+one of several independently bindable receivers.
 
 Raw descriptors cannot construct Commands or Subscriptions. HTTP pipeline
 lowering, standard-output macros, and Source bridge helpers also require their

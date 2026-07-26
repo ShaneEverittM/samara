@@ -13,8 +13,26 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 
+#[cfg(all(unix, target_vendor = "apple"))]
+use std::os::fd::AsRawFd;
+#[cfg(unix)]
+use std::{
+    os::{fd::AsFd, unix::net::UnixStream},
+    sync::{
+        Condvar, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread::{self, JoinHandle},
+};
+
 use bytes::{Bytes, BytesMut};
 use futures_util::FutureExt;
+#[cfg(unix)]
+use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
+#[cfg(all(unix, target_vendor = "apple"))]
+use nix::sys::select::{FdSet, select};
+#[cfg(unix)]
+use nix::{errno::Errno, unistd::read};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::TcpStream,
@@ -33,6 +51,8 @@ use crate::{
     SourceDriver, SourceEvent, SourcePlan, SourceRequirement, SourceSink, StreamDescriptor,
     StreamSourceDescriptor, SubscriptionId, TcpBytes, TcpError, TraceId,
 };
+#[cfg(unix)]
+use crate::{StdinError, StdinLines, StdinSourceDescriptor};
 
 type ErasedValue = Box<dyn Any + Send>;
 type ErasedMessageMapper = Box<dyn FnOnce(ErasedValue) -> ErasedValue + Send + 'static>;
@@ -263,6 +283,492 @@ impl<T: Send + 'static> ErasedSourceBinding for MpscBinding<T> {
     }
 }
 
+#[cfg(unix)]
+struct StdinBinding {
+    capability: CapabilityToken,
+    active: Arc<AtomicBool>,
+}
+
+#[cfg(unix)]
+fn process_stdin_lease() -> Arc<AtomicBool> {
+    static ACTIVE: OnceLock<Arc<AtomicBool>> = OnceLock::new();
+    ACTIVE
+        .get_or_init(|| Arc::new(AtomicBool::new(false)))
+        .clone()
+}
+
+#[cfg(unix)]
+impl StdinBinding {
+    fn acquire<Input>(&self, input: Input) -> Result<StdinReader, Arc<str>>
+    where
+        Input: AsFd + Send + 'static,
+    {
+        if self
+            .active
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Err(Arc::from(
+                "process standard input already has an active Source realization",
+            ));
+        }
+        match StdinReader::spawn(input, self.active.clone()) {
+            Ok(reader) => Ok(reader),
+            Err(error) => {
+                self.active.store(false, Ordering::Release);
+                Err(error)
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+impl ErasedSourceBinding for StdinBinding {
+    fn descriptor_type(&self) -> TypeId {
+        TypeId::of::<StdinLines>()
+    }
+
+    fn descriptor_type_name(&self) -> &'static str {
+        std::any::type_name::<StdinLines>()
+    }
+
+    fn is_type_wide(&self) -> bool {
+        false
+    }
+
+    fn exact_capability(&self) -> Option<&CapabilityToken> {
+        Some(&self.capability)
+    }
+
+    fn matches(&self, plan: &SourcePlan) -> bool {
+        plan.terminal_type_id() == TypeId::of::<StdinLines>()
+            && self.capability.same_as(plan.capability())
+    }
+
+    fn satisfies(&self, requirement: &SourceRequirement) -> bool {
+        requirement.terminal_type == TypeId::of::<StdinLines>()
+            && self.capability.same_as(&requirement.token)
+    }
+
+    fn conflicts(&self, other: &dyn ErasedSourceBinding) -> bool {
+        other.descriptor_type() == TypeId::of::<StdinLines>()
+    }
+
+    fn run(
+        &self,
+        descriptor: &dyn Any,
+        sink: Arc<SourceSinkCore>,
+    ) -> BoxFuture<Result<(), Arc<str>>> {
+        if !descriptor.is::<StdinLines>() {
+            return Box::pin(async { Err(Arc::from("stdin binding descriptor mismatch")) });
+        }
+        let reader = match self.acquire(std::io::stdin()) {
+            Ok(reader) => reader,
+            Err(error) => return Box::pin(async move { Err(error) }),
+        };
+        let control = reader.control.clone();
+        let installed = sink.gate.install_stop_hook(move || control.stop_and_join());
+        match installed {
+            Ok(true) => {}
+            Ok(false) => return Box::pin(async { Ok(()) }),
+            Err(error) => return Box::pin(async move { Err(error) }),
+        }
+        Box::pin(run_stdin_reader(reader, sink))
+    }
+}
+
+#[cfg(unix)]
+#[derive(Debug, PartialEq, Eq)]
+enum StdinReaderEvent {
+    Line(String),
+    Failed(StdinError),
+    Ended,
+    Cancelled,
+}
+
+#[cfg(unix)]
+enum StdinReadiness {
+    Input,
+    Cancelled,
+}
+
+#[cfg(unix)]
+enum StdinReadinessError {
+    Input(StdinError),
+    Mechanism(Arc<str>),
+}
+
+#[cfg(unix)]
+#[derive(Default)]
+struct StdinLineDecoder {
+    pending: Vec<u8>,
+}
+
+#[cfg(unix)]
+impl StdinLineDecoder {
+    fn push(&mut self, bytes: &[u8]) -> Vec<StdinReaderEvent> {
+        let previously_buffered = self.pending.len();
+        self.pending.extend_from_slice(bytes);
+        let Some(last_newline) = self.pending[previously_buffered..]
+            .iter()
+            .rposition(|byte| *byte == b'\n')
+            .map(|index| previously_buffered + index)
+        else {
+            return Vec::new();
+        };
+        let complete = self.pending.drain(..=last_newline).collect::<Vec<_>>();
+        let mut events = Vec::new();
+        for encoded in complete.split_inclusive(|byte| *byte == b'\n') {
+            let without_lf = &encoded[..encoded.len() - 1];
+            let line = without_lf.strip_suffix(b"\r").unwrap_or(without_lf);
+            match String::from_utf8(line.to_vec()) {
+                Ok(line) => events.push(StdinReaderEvent::Line(line)),
+                Err(error) => {
+                    self.pending.clear();
+                    events.push(StdinReaderEvent::Failed(StdinError::invalid_utf8(error)));
+                    break;
+                }
+            }
+        }
+        events
+    }
+
+    fn finish(&mut self) -> Vec<StdinReaderEvent> {
+        if self.pending.is_empty() {
+            return vec![StdinReaderEvent::Ended];
+        }
+        let encoded = std::mem::take(&mut self.pending);
+        match String::from_utf8(encoded) {
+            Ok(line) => vec![StdinReaderEvent::Line(line), StdinReaderEvent::Ended],
+            Err(error) => vec![StdinReaderEvent::Failed(StdinError::invalid_utf8(error))],
+        }
+    }
+}
+
+#[cfg(unix)]
+struct StdinReader {
+    events: mpsc::UnboundedReceiver<StdinReaderEvent>,
+    control: Arc<StdinReaderControl>,
+}
+
+#[cfg(unix)]
+struct StdinReaderControl {
+    state: Mutex<StdinReaderControlState>,
+    stopped: Condvar,
+}
+
+#[cfg(unix)]
+enum StdinReaderControlState {
+    Running {
+        cancel: UnixStream,
+        thread: JoinHandle<Result<(), Arc<str>>>,
+        active: Arc<AtomicBool>,
+    },
+    Stopping,
+    Stopped(Result<(), Arc<str>>),
+}
+
+#[cfg(unix)]
+impl StdinReaderControl {
+    fn stop_and_join(&self) -> Result<(), Arc<str>> {
+        let (cancel, thread, active) = {
+            let mut state = lock(&self.state);
+            loop {
+                match &*state {
+                    StdinReaderControlState::Running { .. } => {
+                        let StdinReaderControlState::Running {
+                            cancel,
+                            thread,
+                            active,
+                        } = std::mem::replace(&mut *state, StdinReaderControlState::Stopping)
+                        else {
+                            unreachable!("the reader state was just matched as running")
+                        };
+                        break (cancel, thread, active);
+                    }
+                    StdinReaderControlState::Stopping => {
+                        state = self
+                            .stopped
+                            .wait(state)
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    }
+                    StdinReaderControlState::Stopped(result) => return result.clone(),
+                }
+            }
+        };
+
+        let _ = cancel.shutdown(std::net::Shutdown::Both);
+        let result = thread
+            .join()
+            .map_err(|_| Arc::from("standard-input reader thread panicked"))
+            .and_then(std::convert::identity);
+        active.store(false, Ordering::Release);
+
+        let mut state = lock(&self.state);
+        *state = StdinReaderControlState::Stopped(result.clone());
+        self.stopped.notify_all();
+        result
+    }
+}
+
+#[cfg(unix)]
+impl StdinReader {
+    fn spawn<Input>(input: Input, active: Arc<AtomicBool>) -> Result<Self, Arc<str>>
+    where
+        Input: AsFd + Send + 'static,
+    {
+        let (cancel_read, cancel_write) = UnixStream::pair().map_err(|error| {
+            Arc::from(format!(
+                "could not create stdin cancellation channel: {error}"
+            ))
+        })?;
+        let (sender, events) = mpsc::unbounded_channel();
+        let thread = thread::Builder::new()
+            .name("samara-stdin-lines".to_owned())
+            .spawn(move || drive_stdin_reader(input, cancel_read, sender))
+            .map_err(|error| Arc::from(format!("could not start stdin reader thread: {error}")))?;
+        Ok(Self {
+            events,
+            control: Arc::new(StdinReaderControl {
+                state: Mutex::new(StdinReaderControlState::Running {
+                    cancel: cancel_write,
+                    thread,
+                    active,
+                }),
+                stopped: Condvar::new(),
+            }),
+        })
+    }
+
+    fn stop_and_join(&self) -> Result<(), Arc<str>> {
+        self.control.stop_and_join()
+    }
+}
+
+#[cfg(unix)]
+impl Drop for StdinReader {
+    fn drop(&mut self) {
+        let _ = self.stop_and_join();
+    }
+}
+
+#[cfg(unix)]
+fn drive_stdin_reader<Input>(
+    input: Input,
+    cancel: UnixStream,
+    sender: mpsc::UnboundedSender<StdinReaderEvent>,
+) -> Result<(), Arc<str>>
+where
+    Input: AsFd,
+{
+    let mut decoder = StdinLineDecoder::default();
+    let mut buffer = [0_u8; 8 * 1024];
+    loop {
+        match wait_for_stdin(&input, &cancel) {
+            Ok(StdinReadiness::Cancelled) => {
+                let _ = sender.send(StdinReaderEvent::Cancelled);
+                return Ok(());
+            }
+            Ok(StdinReadiness::Input) => {}
+            Err(StdinReadinessError::Input(error)) => {
+                let _ = sender.send(StdinReaderEvent::Failed(error));
+                return Ok(());
+            }
+            Err(StdinReadinessError::Mechanism(error)) => {
+                return Err(error);
+            }
+        }
+        match read(&input, &mut buffer) {
+            Err(Errno::EINTR | Errno::EAGAIN) => continue,
+            Err(error) => {
+                let _ = sender.send(StdinReaderEvent::Failed(StdinError::read(error)));
+                return Ok(());
+            }
+            Ok(0) => {
+                send_stdin_events(&sender, decoder.finish());
+                return Ok(());
+            }
+            Ok(length) => {
+                if !send_stdin_events(&sender, decoder.push(&buffer[..length])) {
+                    return Ok(());
+                }
+            }
+        }
+    }
+}
+
+#[cfg(all(unix, target_vendor = "apple"))]
+fn wait_for_stdin<Input>(
+    input: &Input,
+    cancel: &UnixStream,
+) -> Result<StdinReadiness, StdinReadinessError>
+where
+    Input: AsFd,
+{
+    loop {
+        let input_fd = input.as_fd();
+        let cancel_fd = cancel.as_fd();
+        if [input_fd.as_raw_fd(), cancel_fd.as_raw_fd()]
+            .into_iter()
+            .any(|fd| fd < 0 || fd as usize >= nix::sys::select::FD_SETSIZE)
+        {
+            return Err(StdinReadinessError::Mechanism(Arc::from(
+                "standard-input readiness file descriptor exceeds the Unix select limit",
+            )));
+        }
+        let mut readable = FdSet::new();
+        readable.insert(input_fd);
+        readable.insert(cancel_fd);
+        match select(None, Some(&mut readable), None, None, None) {
+            Err(Errno::EINTR) => continue,
+            Err(error) => {
+                return Err(StdinReadinessError::Mechanism(Arc::from(format!(
+                    "standard-input readiness mechanism failed: {error}"
+                ))));
+            }
+            Ok(_) if readable.contains(cancel_fd) => {
+                // Cutover wins whenever both descriptors are observed ready.
+                return Ok(StdinReadiness::Cancelled);
+            }
+            Ok(_) if readable.contains(input_fd) => return Ok(StdinReadiness::Input),
+            Ok(_) => continue,
+        }
+    }
+}
+
+#[cfg(all(unix, not(target_vendor = "apple")))]
+fn wait_for_stdin<Input>(
+    input: &Input,
+    cancel: &UnixStream,
+) -> Result<StdinReadiness, StdinReadinessError>
+where
+    Input: AsFd,
+{
+    wait_for_stdin_with_poll(input, cancel)
+}
+
+#[cfg(unix)]
+#[cfg_attr(target_vendor = "apple", allow(dead_code))]
+fn wait_for_stdin_with_poll<Input>(
+    input: &Input,
+    cancel: &UnixStream,
+) -> Result<StdinReadiness, StdinReadinessError>
+where
+    Input: AsFd,
+{
+    const CANCEL_READY: PollFlags =
+        PollFlags::from_bits_retain(PollFlags::POLLIN.bits() | PollFlags::POLLHUP.bits());
+    const CANCEL_ERROR: PollFlags =
+        PollFlags::from_bits_retain(PollFlags::POLLERR.bits() | PollFlags::POLLNVAL.bits());
+    const INPUT_READY: PollFlags = PollFlags::from_bits_retain(
+        PollFlags::POLLIN.bits() | PollFlags::POLLHUP.bits() | PollFlags::POLLERR.bits(),
+    );
+    loop {
+        let mut descriptors = [
+            PollFd::new(input.as_fd(), PollFlags::POLLIN),
+            PollFd::new(cancel.as_fd(), PollFlags::POLLIN),
+        ];
+        match poll(&mut descriptors, PollTimeout::NONE) {
+            Err(Errno::EINTR) => continue,
+            Err(error) => {
+                return Err(StdinReadinessError::Mechanism(Arc::from(format!(
+                    "standard-input readiness mechanism failed: {error}"
+                ))));
+            }
+            Ok(_) => {}
+        }
+        let cancel_events = descriptors[1].revents().unwrap_or_else(PollFlags::empty);
+        if cancel_events.intersects(CANCEL_ERROR) {
+            return Err(StdinReadinessError::Mechanism(Arc::from(format!(
+                "standard-input cancellation channel failed: {cancel_events:?}"
+            ))));
+        }
+        if cancel_events.intersects(CANCEL_READY) {
+            return Ok(StdinReadiness::Cancelled);
+        }
+        if !cancel_events.is_empty() {
+            return Err(StdinReadinessError::Mechanism(Arc::from(format!(
+                "unexpected stdin cancellation readiness flags: {cancel_events:?}"
+            ))));
+        }
+
+        let input_events = descriptors[0].revents().unwrap_or_else(PollFlags::empty);
+        if input_events.contains(PollFlags::POLLNVAL) {
+            return Err(StdinReadinessError::Input(StdinError::new(
+                crate::StdinErrorKind::Read,
+                "standard-input file descriptor is invalid",
+            )));
+        }
+        if input_events.intersects(INPUT_READY) {
+            return Ok(StdinReadiness::Input);
+        }
+        if !input_events.is_empty() {
+            return Err(StdinReadinessError::Input(StdinError::new(
+                crate::StdinErrorKind::Read,
+                format!("unexpected standard-input readiness flags: {input_events:?}"),
+            )));
+        }
+    }
+}
+
+#[cfg(unix)]
+fn send_stdin_events(
+    sender: &mpsc::UnboundedSender<StdinReaderEvent>,
+    events: Vec<StdinReaderEvent>,
+) -> bool {
+    for event in events {
+        let terminal = matches!(event, StdinReaderEvent::Failed(_) | StdinReaderEvent::Ended);
+        if sender.send(event).is_err() || terminal {
+            return false;
+        }
+    }
+    true
+}
+
+#[cfg(unix)]
+async fn run_stdin_reader(
+    mut reader: StdinReader,
+    sink: Arc<SourceSinkCore>,
+) -> Result<(), Arc<str>> {
+    let outcome = loop {
+        let Some(event) = reader.events.recv().await else {
+            break Err(Arc::from(
+                "standard-input reader stopped without a terminal event",
+            ));
+        };
+        match event {
+            StdinReaderEvent::Line(line) => {
+                if sink
+                    .send(
+                        ErasedSourceEvent::typed::<StdinLines>(SourceEvent::Item(line)),
+                        false,
+                    )
+                    .is_err()
+                {
+                    break Ok(());
+                }
+            }
+            StdinReaderEvent::Failed(error) => {
+                let _ = sink.send(
+                    ErasedSourceEvent::typed::<StdinLines>(SourceEvent::Failed(error)),
+                    true,
+                );
+                break Ok(());
+            }
+            StdinReaderEvent::Ended => {
+                let _ = sink.implicit_end::<StdinLines>();
+                break Ok(());
+            }
+            StdinReaderEvent::Cancelled => break Ok(()),
+        }
+    };
+    let joined = reader.stop_and_join();
+    match joined {
+        Ok(()) => outcome,
+        Err(error) => Err(error),
+    }
+}
+
 struct TokioTcpDriver;
 
 struct TokioHttpDriver {
@@ -475,6 +981,17 @@ impl LiveBindings {
         }));
     }
 
+    #[cfg(unix)]
+    pub(crate) fn bind_stdin<S>(&mut self, capability: &SourceCapability<S>)
+    where
+        S: StdinSourceDescriptor,
+    {
+        self.sources.push(Arc::new(StdinBinding {
+            capability: capability.token.clone(),
+            active: process_stdin_lease(),
+        }));
+    }
+
     pub(crate) fn bind_tcp(&mut self) {
         self.bind_source::<TcpBytes, _>(TokioTcpDriver);
     }
@@ -602,13 +1119,26 @@ enum SourceGateState {
 }
 
 struct SourceGate {
-    state: Mutex<SourceGateState>,
+    inner: Mutex<SourceGateInner>,
+}
+
+#[cfg(unix)]
+type SourceStopHook = Box<dyn FnOnce() -> Result<(), Arc<str>> + Send + 'static>;
+
+struct SourceGateInner {
+    state: SourceGateState,
+    #[cfg(unix)]
+    stop_hook: Option<SourceStopHook>,
 }
 
 impl SourceGate {
     fn new() -> Self {
         Self {
-            state: Mutex::new(SourceGateState::Active),
+            inner: Mutex::new(SourceGateInner {
+                state: SourceGateState::Active,
+                #[cfg(unix)]
+                stop_hook: None,
+            }),
         }
     }
 
@@ -618,19 +1148,60 @@ impl SourceGate {
         event: LiveEvent,
         terminal: bool,
     ) -> Result<(), DriverStopped> {
-        let mut state = lock(&self.state);
-        if *state != SourceGateState::Active {
+        let mut inner = lock(&self.inner);
+        if inner.state != SourceGateState::Active {
             return Err(DriverStopped);
         }
         scope.accept_source(event)?;
         if terminal {
-            *state = SourceGateState::TerminalAccepted;
+            inner.state = SourceGateState::TerminalAccepted;
         }
         Ok(())
     }
 
-    fn stop(&self) {
-        *lock(&self.state) = SourceGateState::Stopped;
+    fn stop(&self) -> Result<(), Arc<str>> {
+        #[cfg(unix)]
+        let hook = {
+            let mut inner = lock(&self.inner);
+            inner.state = SourceGateState::Stopped;
+            inner.stop_hook.take()
+        };
+        #[cfg(not(unix))]
+        {
+            lock(&self.inner).state = SourceGateState::Stopped;
+            Ok(())
+        }
+        #[cfg(unix)]
+        {
+            hook.map_or(Ok(()), |hook| hook())
+        }
+    }
+
+    #[cfg(unix)]
+    fn install_stop_hook(
+        &self,
+        hook: impl FnOnce() -> Result<(), Arc<str>> + Send + 'static,
+    ) -> Result<bool, Arc<str>> {
+        let mut hook = Some(Box::new(hook) as SourceStopHook);
+        let run_now = {
+            let mut inner = lock(&self.inner);
+            if inner.state == SourceGateState::Stopped {
+                true
+            } else {
+                assert!(
+                    inner.stop_hook.is_none(),
+                    "a Source realization may install at most one stop hook"
+                );
+                inner.stop_hook = hook.take();
+                false
+            }
+        };
+        if run_now {
+            hook.expect("a stopped gate retains the uninstalled hook")()?;
+            Ok(false)
+        } else {
+            Ok(true)
+        }
     }
 }
 
@@ -1092,7 +1663,7 @@ impl LiveCore {
     }
 
     fn initialize(&mut self) -> Result<(), RuntimeError> {
-        self.observe_drain_cutoff();
+        self.observe_drain_cutoff()?;
         let mut order = (0..self.program.components.len()).collect::<Vec<_>>();
         order.sort_by(|left, right| {
             self.program.components[*left]
@@ -1123,7 +1694,7 @@ impl LiveCore {
             if self.scope.is_cancelling() {
                 return Ok(());
             }
-            self.observe_drain_cutoff();
+            self.observe_drain_cutoff()?;
             self.apply_subscription_changes(&component, changes, work)?;
             if let Some(command) = command {
                 if self.scope.is_cancelling() {
@@ -1216,12 +1787,25 @@ impl LiveCore {
         Ok(())
     }
 
-    fn stop_source(&mut self, index: usize, retain_for_drain: bool) {
-        let source = &mut self.sources[index];
-        source.gate.stop();
-        source.task.abort();
-        source.running = false;
-        source.drain_retained |= retain_for_drain;
+    fn stop_source(
+        &mut self,
+        index: usize,
+        retain_for_drain: bool,
+        work: TraceId,
+    ) -> Result<(), RuntimeError> {
+        let (stopped, component, descriptor_type) = {
+            let source = &mut self.sources[index];
+            let stopped = source.gate.stop();
+            source.task.abort();
+            source.running = false;
+            source.drain_retained |= retain_for_drain;
+            (
+                stopped,
+                source.stamp.component.clone(),
+                source.plan.terminal_type_name(),
+            )
+        };
+        stopped.map_err(|reason| self.runtime_fault(component, Some(descriptor_type), work, reason))
     }
 
     fn apply_subscription_changes(
@@ -1232,7 +1816,7 @@ impl LiveCore {
     ) -> Result<(), RuntimeError> {
         changes.sort_by(|left, right| left.id().cmp(right.id()));
         for change in changes {
-            self.observe_drain_cutoff();
+            self.observe_drain_cutoff()?;
             match change {
                 ErasedSubscriptionChange::Start(subscription) => {
                     self.activate_source(component, subscription, work)?;
@@ -1248,7 +1832,7 @@ impl LiveCore {
                         if self.draining && self.sources[index].drain_retained {
                             continue;
                         }
-                        self.stop_source(index, false);
+                        self.stop_source(index, false, work)?;
                         self.sources.remove(index);
                     }
                     self.activate_source(component, subscription, work)?;
@@ -1258,7 +1842,7 @@ impl LiveCore {
                         if self.draining && self.sources[index].drain_retained {
                             continue;
                         }
-                        self.stop_source(index, false);
+                        self.stop_source(index, false, work)?;
                         self.sources.remove(index);
                     }
                 }
@@ -1284,7 +1868,7 @@ impl LiveCore {
             if self.scope.is_cancelling() {
                 return Ok(());
             }
-            self.observe_drain_cutoff();
+            self.observe_drain_cutoff()?;
             let work = self.work();
             match declaration.0 {
                 CommandKind::None | CommandKind::Batch(_) => {
@@ -1585,7 +2169,7 @@ impl LiveCore {
         if self.scope.is_cancelling() {
             return Ok(());
         }
-        self.observe_drain_cutoff();
+        self.observe_drain_cutoff()?;
         let changes = self.program.components[index]
             .reconcile_subscriptions_erased()
             .map_err(|duplicate| {
@@ -1599,7 +2183,7 @@ impl LiveCore {
         if self.scope.is_cancelling() {
             return Ok(());
         }
-        self.observe_drain_cutoff();
+        self.observe_drain_cutoff()?;
         self.apply_subscription_changes(target, changes, work)?;
         if self.scope.is_cancelling() {
             return Ok(());
@@ -1655,8 +2239,11 @@ impl LiveCore {
             self.sources[index].terminal_observed = true;
             self.sources[index].running = false;
             if !self.sources[index].drain_retained {
-                self.sources[index].gate.stop();
+                let stopped = self.sources[index].gate.stop();
                 self.sources[index].task.abort();
+                stopped.map_err(|reason| {
+                    self.runtime_fault(stamp.component.clone(), Some(terminal_name), work, reason)
+                })?;
             }
         }
         for message in mapped {
@@ -1842,30 +2429,33 @@ impl LiveCore {
         Ok(())
     }
 
-    fn begin_drain(&mut self) {
+    fn begin_drain(&mut self) -> Result<(), RuntimeError> {
         if self.draining {
-            return;
+            return Ok(());
         }
         self.draining = true;
         for index in 0..self.sources.len() {
-            self.stop_source(index, true);
+            let work = self.work();
+            self.stop_source(index, true, work)?;
         }
+        Ok(())
     }
 
-    fn observe_drain_cutoff(&mut self) {
+    fn observe_drain_cutoff(&mut self) -> Result<(), RuntimeError> {
         if !self.draining && self.scope.is_draining() {
             // The host changes scope admission atomically. Observe that phase
             // directly instead of waiting for the queued shutdown marker to
             // work through an arbitrary pre-cutoff backlog. This stops live
             // Source tasks promptly while their already accepted stamped
             // deliveries remain available for causal Drain processing.
-            self.begin_drain();
+            self.begin_drain()?;
         }
+        Ok(())
     }
 
     async fn cleanup_abort(&mut self) {
         for source in &self.sources {
-            source.gate.stop();
+            let _ = source.gate.stop();
         }
         for effect in &self.effects {
             effect.task.abort();
@@ -1958,6 +2548,19 @@ impl LiveCore {
             }
         }
 
+        // A terminal Source may own synchronous shutdown mechanism outside
+        // its async task (stdin's interruptible reader thread is one example).
+        // Observe those hooks before aborting tasks so a mechanism failure
+        // completed before the Cancel cutoff cannot be hidden by cancellation.
+        for index in 0..self.sources.len() {
+            let work = self.work();
+            if let Err(error) = self.stop_source(index, false, work) {
+                self.scope.fault(error.clone());
+                self.cleanup_abort().await;
+                return Err(error);
+            }
+        }
+
         self.cleanup_abort().await;
         self.scope.close();
         Ok(Self::clean_report())
@@ -2023,7 +2626,11 @@ impl LiveCore {
             if self.scope.is_cancelling() {
                 return self.finish_cancel(None).await;
             }
-            self.observe_drain_cutoff();
+            if let Err(error) = self.observe_drain_cutoff() {
+                self.scope.fault(error.clone());
+                self.cleanup_abort().await;
+                return Err(error);
+            }
             if self.drain_finished() {
                 self.sources.clear();
                 self.scope.close();
@@ -2089,10 +2696,7 @@ impl LiveCore {
                                 Ok(())
                             }
                         }
-                        LiveEvent::Shutdown(Shutdown::Drain) => {
-                            self.begin_drain();
-                            Ok(())
-                        }
+                        LiveEvent::Shutdown(Shutdown::Drain) => self.begin_drain(),
                         LiveEvent::Shutdown(Shutdown::Cancel) => {
                             return self.finish_cancel(None).await;
                         }
@@ -2117,6 +2721,15 @@ pub(crate) fn bind_mpsc<S>(
     S: StreamSourceDescriptor,
 {
     bindings.bind_mpsc(capability, receiver);
+}
+
+/// Creates the first-party exact process-standard-input binding.
+#[cfg(unix)]
+pub(crate) fn bind_stdin<S>(bindings: &mut LiveBindings, capability: &SourceCapability<S>)
+where
+    S: StdinSourceDescriptor,
+{
+    bindings.bind_stdin(capability);
 }
 
 /// Registers the first-party Tokio TCP terminal Driver.
@@ -2562,7 +3175,7 @@ mod tests {
         // without waiting for either item to traverse that backlog.
         assert!(!core.draining);
         assert_eq!(core.receiver.len(), 2);
-        core.observe_drain_cutoff();
+        core.observe_drain_cutoff().expect("Drain starts cleanly");
         assert!(core.draining);
         assert!(!core.sources[0].running);
         assert!(core.sources[0].drain_retained);
@@ -2609,7 +3222,7 @@ mod tests {
         scope
             .begin_shutdown(Shutdown::Drain)
             .expect("Drain cutoff accepted");
-        core.observe_drain_cutoff();
+        core.observe_drain_cutoff().expect("Drain starts cleanly");
 
         for expected in ["decode-failing item", "queued EOF"] {
             let LiveEvent::SourceEvent {
@@ -2657,7 +3270,7 @@ mod tests {
         scope
             .begin_shutdown(Shutdown::Drain)
             .expect("Drain cutoff accepted");
-        core.observe_drain_cutoff();
+        core.observe_drain_cutoff().expect("Drain starts cleanly");
         let exit = core
             .tasks
             .join_next()
@@ -2830,6 +3443,38 @@ mod tests {
         assert_eq!(mapper_calls.load(Ordering::SeqCst), 1);
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn phase6_cancel_preserves_a_synchronous_source_stop_failure() {
+        let GenerationFixture {
+            mut core,
+            scope,
+            id,
+            ..
+        } = generation_core();
+        assert!(
+            core.sources[0]
+                .gate
+                .install_stop_hook(|| Err(Arc::from("fixture Source stop mechanism failed")))
+                .expect("install fixture stop hook")
+        );
+        scope
+            .begin_shutdown(Shutdown::Cancel)
+            .expect("Cancel cutoff accepted");
+
+        let error = core
+            .finish_cancel(None)
+            .await
+            .expect_err("a completed stop failure must win over Cancel cleanup");
+
+        assert_eq!(error.component(), Some(&id));
+        assert_eq!(
+            error.descriptor_type(),
+            Some(std::any::type_name::<GenerationSource>())
+        );
+        assert!(error.to_string().contains("stop mechanism failed"));
+    }
+
     #[tokio::test]
     async fn phase6_mpsc_receiver_is_consumed_at_activation_not_first_poll() {
         let mut builder = crate::Program::builder();
@@ -2910,5 +3555,272 @@ mod tests {
             ]
         );
         assert!(receiver.try_recv().is_err());
+    }
+
+    #[cfg(unix)]
+    fn stdin_test_sink() -> (Arc<SourceSinkCore>, mpsc::UnboundedReceiver<LiveEvent>) {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        let scope = Arc::new(LiveScope::new(sender));
+        let sink = Arc::new(SourceSinkCore {
+            scope,
+            gate: Arc::new(SourceGate::new()),
+            stamp: SourceStamp {
+                component: ComponentId::new("stdin-reader"),
+                subscription: SubscriptionId::new("stdin"),
+                generation: 1,
+            },
+            terminal_type: TypeId::of::<StdinLines>(),
+        });
+        (sink, receiver)
+    }
+
+    #[cfg(unix)]
+    fn take_stdin_events(
+        receiver: &mut mpsc::UnboundedReceiver<LiveEvent>,
+    ) -> Vec<SourceEvent<String, StdinError>> {
+        let mut typed = Vec::new();
+        while let Ok(event) = receiver.try_recv() {
+            let LiveEvent::SourceEvent { event, .. } = event else {
+                panic!("stdin Source emitted a non-Source event");
+            };
+            typed.push(
+                *event
+                    .value
+                    .downcast::<SourceEvent<String, StdinError>>()
+                    .expect("typed stdin event"),
+            );
+        }
+        typed
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stdin_line_decoder_handles_chunking_crlf_empty_and_unterminated_lines() {
+        let mut decoder = StdinLineDecoder::default();
+        for _ in 0..32 {
+            assert!(decoder.push(b"long chunk ").is_empty());
+        }
+        assert_eq!(
+            decoder.push(b"\n"),
+            vec![StdinReaderEvent::Line("long chunk ".repeat(32))]
+        );
+        assert!(decoder.push(b"first\r").is_empty());
+        assert_eq!(
+            decoder.push(b"\n\nunterminated"),
+            vec![
+                StdinReaderEvent::Line("first".to_owned()),
+                StdinReaderEvent::Line(String::new()),
+            ]
+        );
+        assert_eq!(
+            decoder.finish(),
+            vec![
+                StdinReaderEvent::Line("unterminated".to_owned()),
+                StdinReaderEvent::Ended,
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stdin_reader_delivers_framed_lines_then_eof_from_injected_stream() {
+        use std::{io::Write as _, sync::atomic::AtomicBool};
+
+        let active = Arc::new(AtomicBool::new(true));
+        let (input, mut world) = UnixStream::pair().expect("injected stdin stream");
+        let reader = StdinReader::spawn(input, active.clone()).expect("stdin reader");
+        let (sink, mut events) = stdin_test_sink();
+        world
+            .write_all(b"first\r\n\nlast without newline")
+            .expect("write injected stdin");
+        world
+            .shutdown(std::net::Shutdown::Write)
+            .expect("end injected stdin");
+
+        run_stdin_reader(reader, sink)
+            .await
+            .expect("reader ended normally");
+
+        assert_eq!(
+            take_stdin_events(&mut events),
+            vec![
+                SourceEvent::Item("first".to_owned()),
+                SourceEvent::Item(String::new()),
+                SourceEvent::Item("last without newline".to_owned()),
+                SourceEvent::Ended,
+            ]
+        );
+        assert!(!active.load(Ordering::Acquire));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stdin_reader_stops_at_invalid_utf8_without_synthesizing_eof() {
+        use std::{io::Write as _, sync::atomic::AtomicBool};
+
+        let active = Arc::new(AtomicBool::new(true));
+        let (input, mut world) = UnixStream::pair().expect("injected stdin stream");
+        let reader = StdinReader::spawn(input, active.clone()).expect("stdin reader");
+        let (sink, mut events) = stdin_test_sink();
+        world
+            .write_all(b"valid\n\xff\nignored\n")
+            .expect("write invalid injected stdin");
+        world
+            .shutdown(std::net::Shutdown::Write)
+            .expect("end injected stdin");
+
+        run_stdin_reader(reader, sink)
+            .await
+            .expect("typed failure is not a Driver fault");
+
+        let events = take_stdin_events(&mut events);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0], SourceEvent::Item("valid".to_owned()));
+        let SourceEvent::Failed(error) = &events[1] else {
+            panic!("invalid UTF-8 must terminate with a typed failure");
+        };
+        assert_eq!(error.kind(), crate::StdinErrorKind::InvalidUtf8);
+        assert!(!active.load(Ordering::Acquire));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stdin_reader_reports_private_mechanism_failure_as_runtime_work_failure() {
+        let (sender, events) = mpsc::unbounded_channel();
+        drop(sender);
+        let reader = StdinReader {
+            events,
+            control: Arc::new(StdinReaderControl {
+                state: Mutex::new(StdinReaderControlState::Stopped(Err(Arc::from(
+                    "fixture cancellation channel failure",
+                )))),
+                stopped: Condvar::new(),
+            }),
+        };
+        let (sink, mut emitted) = stdin_test_sink();
+
+        let error = run_stdin_reader(reader, sink)
+            .await
+            .expect_err("private mechanism failure must leave the Source task");
+
+        assert_eq!(&*error, "fixture cancellation channel failure");
+        assert!(
+            emitted.try_recv().is_err(),
+            "mechanism failure must not masquerade as a typed Source failure"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stdin_cutover_is_normal_when_reader_and_owner_run_concurrently() {
+        let active = Arc::new(AtomicBool::new(true));
+        let (input, _world) = UnixStream::pair().expect("injected stdin stream");
+        let reader = StdinReader::spawn(input, active.clone()).expect("stdin reader");
+        let (sink, mut emitted) = stdin_test_sink();
+        let gate = sink.gate.clone();
+        let control = reader.control.clone();
+        assert!(
+            gate.install_stop_hook(move || control.stop_and_join())
+                .expect("install synchronous stdin cutover")
+        );
+        let task = tokio::spawn(run_stdin_reader(reader, sink));
+        tokio::task::yield_now().await;
+
+        gate.stop().expect("normal cutover joins the reader");
+        task.await
+            .expect("stdin Source task remains supervised")
+            .expect("normal cutover is not a mechanism failure");
+
+        assert!(!active.load(Ordering::Acquire));
+        assert!(
+            emitted.try_recv().is_err(),
+            "cutover must not fabricate a terminal Source event"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dropping_idle_stdin_reader_interrupts_and_joins_its_thread() {
+        use std::{
+            sync::{atomic::AtomicBool, mpsc as std_mpsc},
+            time::{Duration, Instant},
+        };
+
+        let active = Arc::new(AtomicBool::new(true));
+        let (input, world) = UnixStream::pair().expect("injected stdin stream");
+        let reader = StdinReader::spawn(input, active.clone()).expect("stdin reader");
+        let (finished, rescue) = std_mpsc::channel();
+        let rescue_thread = thread::spawn(move || {
+            if rescue.recv_timeout(Duration::from_secs(2)).is_err() {
+                let _ = world.shutdown(std::net::Shutdown::Both);
+            }
+        });
+
+        let started = Instant::now();
+        drop(reader);
+        let elapsed = started.elapsed();
+        let _ = finished.send(());
+        rescue_thread.join().expect("cancellation watchdog");
+
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "idle reader took {elapsed:?} to cancel"
+        );
+        assert!(!active.load(Ordering::Acquire));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stdin_binding_rejects_concurrent_then_allows_sequential_realization() {
+        let mut builder = crate::Program::builder();
+        let capability = builder.source::<StdinLines>();
+        let active = Arc::new(AtomicBool::new(false));
+        let binding = StdinBinding {
+            capability: capability.token.clone(),
+            active: active.clone(),
+        };
+        let competing_binding = StdinBinding {
+            capability: capability.token,
+            active,
+        };
+        let (first_input, _first_world) = UnixStream::pair().expect("first stdin stream");
+        let first = binding.acquire(first_input).expect("first realization");
+        let (second_input, _second_world) = UnixStream::pair().expect("second stdin stream");
+        let error = match competing_binding.acquire(second_input) {
+            Ok(_) => panic!("concurrent realization must be rejected"),
+            Err(error) => error,
+        };
+        assert!(error.contains("already has an active Source"));
+
+        let gate = SourceGate::new();
+        let control = first.control.clone();
+        assert!(
+            gate.install_stop_hook(move || control.stop_and_join())
+                .expect("install synchronous stdin cutover")
+        );
+        gate.stop()
+            .expect("Source cutover joins and releases first realization");
+        let (third_input, _third_world) = UnixStream::pair().expect("third stdin stream");
+        let third = competing_binding
+            .acquire(third_input)
+            .expect("sequential realization after release");
+
+        // Dropping the already-released first guard must not clear the newer
+        // realization's process lease.
+        drop(first);
+        let (fourth_input, _fourth_world) = UnixStream::pair().expect("fourth stdin stream");
+        let error = match binding.acquire(fourth_input) {
+            Ok(_) => panic!("an old guard must not release the current realization"),
+            Err(error) => error,
+        };
+        assert!(error.contains("already has an active Source"));
+
+        drop(third);
+        let (fifth_input, _fifth_world) = UnixStream::pair().expect("fifth stdin stream");
+        drop(
+            binding
+                .acquire(fifth_input)
+                .expect("lease is reusable after the current owner releases it"),
+        );
     }
 }

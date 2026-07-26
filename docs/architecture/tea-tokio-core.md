@@ -2,7 +2,7 @@
 
 ## Status
 - Phase: Phase 6 live-runtime implementation complete; ADR-0008 closed Program
-  capabilities accepted for implementation.
+  capabilities and ADR-0009 first-party stdin accepted for implementation.
 - Date: July 25, 2026.
 - Library scope: `samara` is library-first.
 
@@ -92,7 +92,9 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
   requirement set synchronously. Missing, duplicate, ambiguous, foreign, and
   type-incompatible bindings fail before execution.
 - Normal Driver and controlled registrations are type-wide. Exact resource
-  bridges such as one-shot Tokio `mpsc` bind one SourceCapability identity.
+  bridges such as one-shot Tokio `mpsc` and Unix process stdin bind one
+  SourceCapability identity. Process stdin additionally permits only one live
+  binding across capabilities.
 - The closed inventory does not imply field reflection or static analysis of
   every behavior-dependent message edge. A deliberately hidden foreign
   capability faults before Driver or controlled behavior when first observed;
@@ -444,6 +446,41 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
 - Exact first-party public module/type names remain implementation-review
   details where the accepted API has not already frozen them.
 
+### First-Party Standard Input Line Source
+
+- [ADR-0009](../adr/0009-first-party-stdin-lines.md) defines `StdinLines` as a
+  terminal SourceDescriptor with `String` Items and `StdinError` failures.
+  `StdinErrorKind` distinguishes operating-system `Read` failure from
+  `InvalidUtf8`; controlled fixtures can construct either typed value.
+- One Item represents one LF-delimited line. The LF and one immediately
+  preceding CR are removed, empty lines are preserved, and nonempty bytes at
+  clean EOF produce one final unterminated Item before `Ended`.
+- Read or UTF-8 failure terminates the Source with `Failed` after any earlier
+  complete valid lines and is not followed by `Ended`. The v0 descriptor has
+  no line-length limit.
+- On Unix, `bind_stdin(&capability)` is an exact live binding for one capability
+  whose terminal descriptor is `StdinLines`. Direct and built-in composed
+  capabilities such as `Framed<StdinLines, D>` use the same terminal binding.
+  A runtime accepts only one stdin binding even for distinct capabilities, and
+  bindings in separate live runtimes share the process-wide active lease. A
+  second concurrent realization faults rather than sharing or broadcasting
+  the process stream; a later sequential realization may resume at stdin's
+  current position.
+- Conforming code outside Samara does not read process stdin concurrently with
+  this binding. The first-party live realization is not promised on non-Unix
+  targets; the descriptor and controlled event contract remain
+  platform-neutral.
+- Each active Unix realization owns an interruptible reader thread. Removal,
+  replacement, Drain, Cancel, runtime fault, EOF, and typed failure signal and
+  join that reader before releasing the Source. A cutover emits no synthetic
+  terminal event.
+- Input read and UTF-8 errors are typed Source failures; failures in the private
+  readiness, cancellation, or reader-thread mechanism are runtime faults.
+- Controlled execution uses ordinary `control_source::<StdinLines>()` and
+  `emit_source` with typed `SourceEvent` values. It neither opens process stdin
+  nor invokes the live reader. EOF ends this Source but does not implicitly
+  shut down the Program.
+
 ### First-Party Standard Output Effects
 
 - `PrintStdout` and `PrintStderr` are finite terminal EffectDescriptors, not
@@ -519,7 +556,8 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
   `bytes::BytesMut`.
 
 ## Error Channel Design
-- Error names typed explanatory data, such as `TcpError` or `RequestError`.
+- Error names typed explanatory data, such as `TcpError`, `StdinError`, or
+  `RequestError`.
   Failure names the semantic occurrence carrying Error data. Normal Source
   ending and cancellation are distinct terminal conditions, not failures.
 - Expected behaviorally relevant failures for which a boundary contract defines

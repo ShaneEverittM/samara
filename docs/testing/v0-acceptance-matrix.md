@@ -1,6 +1,6 @@
 # Samara v0 Acceptance Matrix
 
-- Status: Phase 6 live-runtime implementation complete; ADR-0008 closed-capability scenarios active
+- Status: Phase 6 live-runtime implementation complete; ADR-0008 and ADR-0009 scenarios active
 - Date: July 25, 2026
 - Scope: Traceability from vision requirements to topology-neutral evidence
 
@@ -32,7 +32,10 @@ terminal owner observation and its composition with host shutdown futures.
 Accepted [ADR-0008](../adr/0008-closed-program-capabilities.md) supersedes the
 earlier open Effect/Source dependency qualification: both profiles now validate
 the complete Program-declared `EffectCapability<D>` and `SourceCapability<S>`
-set before execution.
+set before execution. Accepted
+[ADR-0009](../adr/0009-first-party-stdin-lines.md) defines the first-party
+standard-input line Source, its exact Unix live binding, and structured reader
+cutover.
 
 ## Vision Traceability
 
@@ -46,10 +49,10 @@ set before execution.
 | V6 Program-Wide Controlled Determinism | `v6_identical_controlled_runs_have_equal_structural_trace_and_final_state`; `v6_equal_final_state_with_different_structural_trace_is_not_equivalent`; `v6_typed_descriptor_payload_is_compared_by_direct_intent_test` | ADR-0003 defines structural trace equivalence and keeps typed domain-payload comparison in direct intent tests rather than requiring generic trace payload capture. | Phase 5 |
 | V7 Controlled Time Progression | `v7_manual_advance_uses_no_wall_sleep`; `v7_automatic_advance_reaches_next_instant`; `v7_equal_time_uses_deterministic_causal_insertion_order`; `v7_equivalent_schedules_are_repeatable`; `v7_initial_work_uses_component_id_not_registration_order` | ADR-0003 fixes the v0 scheduler key as logical deadline plus deterministic insertion ticket, and the active Phase 5 runtime exercises every listed scenario. | Phase 5 |
 | V8 Causal Semantics Without Global Order | `v8_causal_edges_are_preserved`; `v8_component_transitions_do_not_overlap`; `v8_independent_live_events_accept_either_order`; `v8_live_port_request_preserves_request_reply_causality`; `v8_conformance_compares_partial_order_not_scheduler_sequence` | Controlled causal edges and Component serialization are active. Phase 6 tests exercise both valid independent live orders and reverse-completion Port request correlation without ordering independent handle calls. | Phase 3 serialization, Phase 5 controlled causality, implemented Phase 6 live independence and Port ingress, final audit Phase 7 |
-| V9 Structured Work Ownership | `v9_drive_reports_semantic_pending_work`; `v9_pending_now_counts_ready_messages_and_due_timers`; `v9_pending_later_counts_effects_future_timers_sources_and_requests`; `v9_controlled_cancel_leaves_zero_work`; `v9_live_shutdown_leaves_zero_work`; `v9_effect_cancellation_has_one_outcome`; `v9_scope_cancel_maps_no_application_outcome`; `v9_source_cancellation_emits_no_unpromised_event`; `v9_dropped_host_waiter_does_not_cancel_request`; `run_forever_surfaces_dynamic_foreign_capability_before_live_driver`; `cancelled_run_forever_observation_preserves_owner_for_explicit_shutdown` | ADR-0003 defines controlled obligations and explicit controlled effect cancellation. Phase 6 distinguishes whole-scope abort from application outcomes, proves that dropping a host waiter cannot abandon admitted runtime work, and exposes owner termination without making observation cancellation an ownership cutoff. | Phase 5 controlled; implemented Phase 6 live, Port ingress, host lifecycle, and ADR-0008 provenance fault fixture; final audit Phase 7 |
+| V9 Structured Work Ownership | `v9_drive_reports_semantic_pending_work`; `v9_pending_now_counts_ready_messages_and_due_timers`; `v9_pending_later_counts_effects_future_timers_sources_and_requests`; `v9_controlled_cancel_leaves_zero_work`; `v9_live_shutdown_leaves_zero_work`; `v9_effect_cancellation_has_one_outcome`; `v9_scope_cancel_maps_no_application_outcome`; `v9_source_cancellation_emits_no_unpromised_event`; `v9_dropped_host_waiter_does_not_cancel_request`; `run_forever_surfaces_dynamic_foreign_capability_before_live_driver`; `cancelled_run_forever_observation_preserves_owner_for_explicit_shutdown`; `dropping_idle_stdin_reader_interrupts_and_joins_its_thread` | ADR-0003 defines controlled obligations and explicit controlled effect cancellation. Phase 6 distinguishes whole-scope abort from application outcomes, proves that dropping a host waiter cannot abandon admitted runtime work, and exposes owner termination without making observation cancellation an ownership cutoff. ADR-0009 proves that even an idle blocking stdin boundary remains interruptible and joined. | Phase 5 controlled; implemented Phase 6 live, Port ingress, host lifecycle, ADR-0008 provenance, and ADR-0009 stdin ownership; final audit Phase 7 |
 | V10 Non-Influential Semantic Trace | `v10_reading_controlled_trace_after_drive_has_no_feedback_path`; `v10_trace_explains_transitions_work_time_and_causation`; `v10_trace_records_stale_source_drops` | ADR-0003 requires always-collected, read-afterward controlled records with logical time, parentless roots, and exactly one immediate parent for every non-root. ADR-0004 explicitly defers a public live observer beyond v0. | Phase 5 controlled; public live observer deferred beyond v0 |
-| V11 Shallow Tokio Onboarding | `v11_minimal_tokio_mpsc_application_compiles`; `v11_minimal_component_runs_with_controlled_stream`; `v11_minimal_component_runs_with_live_mpsc` | The minimal example runs unchanged through controlled stream input and the live one-shot `mpsc` bridge. | Phase 5 controlled; implemented Phase 6 live pending audit |
-| V12 Closed Program Capability Assembly | `later_effect_dependency_fails_live_and_controlled_build_when_unbound`; `later_source_dependency_fails_live_and_controlled_build_when_unbound`; `raw_descriptors_cannot_issue_work`; `initially_visible_foreign_effect_capability_is_rejected_during_profile_build`; `dynamically_used_foreign_effect_capability_is_rejected_before_controlled_behavior`; `dynamically_used_foreign_effect_capability_is_rejected_before_live_driver`; `exact_stream_binding_rejects_a_foreign_capability_during_build`; `two_exact_stream_capabilities_of_one_type_bind_independently`; `exact_stream_input_is_disambiguated_by_capability_not_equal_descriptor`; `composed_source_capability_declares_only_its_terminal_requirement` | ADR-0008 compile contracts and `closed_program_capabilities` scenarios cover closed issuance, complete profile validation, provenance, exact identity, and composed terminal declaration. | ADR-0008 |
+| V11 Shallow Tokio Onboarding | `v11_minimal_tokio_mpsc_application_compiles`; `v11_minimal_component_runs_with_controlled_stream`; `v11_minimal_component_runs_with_live_mpsc`; `stdin_descriptor_and_errors_are_typed_fixture_data`; `controlled_stdin_delivers_lines_and_normal_eof`; `stdin_reader_delivers_framed_lines_then_eof_from_injected_stream` | The minimal example runs unchanged through controlled stream input and the live one-shot `mpsc` bridge. The expanded application uses the first-party `StdinLines` boundary without a host-owned reader thread or channel adapter. | Phase 5 controlled; implemented Phase 6 live and extended by ADR-0009 |
+| V12 Closed Program Capability Assembly | `later_effect_dependency_fails_live_and_controlled_build_when_unbound`; `later_source_dependency_fails_live_and_controlled_build_when_unbound`; `raw_descriptors_cannot_issue_work`; `initially_visible_foreign_effect_capability_is_rejected_during_profile_build`; `dynamically_used_foreign_effect_capability_is_rejected_before_controlled_behavior`; `dynamically_used_foreign_effect_capability_is_rejected_before_live_driver`; `exact_stream_binding_rejects_a_foreign_capability_during_build`; `two_exact_stream_capabilities_of_one_type_bind_independently`; `exact_stream_input_is_disambiguated_by_capability_not_equal_descriptor`; `composed_source_capability_declares_only_its_terminal_requirement`; `live_stdin_binding_is_exact_and_required`; `live_stdin_binding_accepts_a_composed_capability`; `live_stdin_rejects_duplicate_or_competing_process_bindings` | ADR-0008 compile contracts and `closed_program_capabilities` scenarios cover closed issuance, complete profile validation, provenance, exact identity, and composed terminal declaration. ADR-0009 extends exact binding evidence to the unique Unix process-input resource. | ADR-0008 and ADR-0009 |
 
 ## Active Phase 2 Evidence
 
@@ -277,6 +280,50 @@ without turning queue capacity, throughput, tail latency, or fairness into a
 stable conformance threshold. Tests of explicit controlled
 `EffectOutcome::Cancelled` remain valid: ADR-0004's no-mapper rule
 applies specifically to aborting the whole live runtime scope.
+
+## Active ADR-0009 Standard-Input Scenarios
+
+The cross-profile `stdin_source` suite exercises the public descriptor,
+controlled vocabulary, and exact Unix assembly boundary:
+
+- `stdin_descriptor_and_errors_are_typed_fixture_data`
+- `controlled_stdin_delivers_lines_and_normal_eof`
+- `controlled_stdin_delivers_typed_failure_without_live_fallback`
+- `live_stdin_binding_is_exact_and_required`
+- `live_stdin_binding_accepts_a_composed_capability`
+- `live_stdin_rejects_duplicate_or_competing_process_bindings`
+
+The first three scenarios are platform-neutral. They establish
+that `StdinLines` implements
+`SourceDescriptor<Item = String, Error = StdinError>`, constructible read/UTF-8
+error data, deterministic controlled line/failure/EOF delivery, and no
+live-world fallback. The last three are Unix-only and establish missing and
+foreign exact binding rejection, direct and composed exact binding, and
+rejection of duplicate or competing bindings even when capability identities
+differ.
+
+Unix live-runtime unit evidence exercises the terminal reader mechanism with
+an injected stream rather than ambient process input:
+
+- `stdin_line_decoder_handles_chunking_crlf_empty_and_unterminated_lines`
+- `stdin_reader_delivers_framed_lines_then_eof_from_injected_stream`
+- `stdin_reader_stops_at_invalid_utf8_without_synthesizing_eof`
+- `stdin_reader_reports_private_mechanism_failure_as_runtime_work_failure`
+- `stdin_cutover_is_normal_when_reader_and_owner_run_concurrently`
+- `dropping_idle_stdin_reader_interrupts_and_joins_its_thread`
+- `stdin_binding_rejects_concurrent_then_allows_sequential_realization`
+- `phase6_cancel_preserves_a_synchronous_source_stop_failure`
+
+Together these scenarios prove LF and CRLF removal across chunk boundaries,
+empty-line preservation, final unterminated-line ordering before EOF, typed
+invalid-UTF-8 termination without a later `Ended`, prompt cancellation and
+join while the reader is idle, mechanism-failure separation, synchronous
+lease release before reactivation, a normal multi-thread cutover without a
+fabricated terminal event, and preservation of an already-completed stop
+failure across Cancel. This live evidence and the first-party binding are
+Unix-only; no first-party live behavior is claimed for other targets. The
+application example separately demonstrates that Component logic stores
+`SourceCapability<StdinLines>` and needs no manual stdin thread or mpsc bridge.
 
 ## Active ADR-0007 Live Host-Lifecycle Scenarios
 
