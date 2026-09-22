@@ -4619,10 +4619,11 @@ impl<P: Protocol> PortHandle<P> {
 
 /// Ownership handle for a running live Samara program.
 ///
-/// [`RuntimeTask::shutdown`] closes and waits for the structured scope. Dropping
-/// the handle instead closes admission with Cancel semantics and aborts the
-/// owner; use `shutdown` when the host needs to await cleanup or inspect its
-/// [`ShutdownReport`]. Neither path leaves detached Samara-owned Driver work.
+/// [`RuntimeTask::shutdown`] closes and waits for the structured scope. To
+/// escalate Drain to Cancel, use [`RuntimeTask::request_shutdown`] and await
+/// [`RuntimeTask::run_forever`]. Dropping the handle instead closes admission
+/// with Cancel semantics and aborts the owner without awaiting cleanup.
+/// Neither path leaves detached Samara-owned Driver work.
 pub struct RuntimeTask {
     scope: Arc<live_runtime::LiveScope>,
     join: Option<tokio::task::JoinHandle<Result<ShutdownReport, RuntimeError>>>,
@@ -4630,6 +4631,45 @@ pub struct RuntimeTask {
 }
 
 impl RuntimeTask {
+    /// Requests shutdown without consuming the owner or waiting for cleanup.
+    ///
+    /// External ingress is closed before this method returns. Drain may later
+    /// be escalated to Cancel; repeated requests are harmless, and Drain cannot
+    /// reverse Cancel. Requests after fault or closure preserve the original
+    /// terminal result. Observe that result and joined cleanup through
+    /// [`Self::run_forever`] or [`Self::shutdown`].
+    ///
+    /// Cancelling a pending observation leaves ownership and the requested
+    /// shutdown state intact. A host can therefore choose its own grace period:
+    ///
+    /// ```no_run
+    /// use samara::{RuntimeError, RuntimeTask, Shutdown, ShutdownReport};
+    /// use std::time::Duration;
+    ///
+    /// # async fn stop(mut task: RuntimeTask, grace_period: Duration)
+    /// # -> Result<ShutdownReport, RuntimeError> {
+    /// task.request_shutdown(Shutdown::Drain);
+    /// match tokio::time::timeout(grace_period, task.run_forever()).await {
+    ///     Ok(result) => result,
+    ///     Err(_) => {
+    ///         task.request_shutdown(Shutdown::Cancel);
+    ///         task.run_forever().await
+    ///     }
+    /// }
+    /// # }
+    /// ```
+    ///
+    /// The grace period bounds waiting for Drain, not cleanup duration. This
+    /// method reports no completion or success; runtime faults and owner-task
+    /// failures remain observable through the terminal result.
+    pub fn request_shutdown(&mut self, mode: Shutdown) {
+        // A fault is preserved in the scope, and a closed event channel means
+        // the owner has ended. Its retained JoinHandle supplies the terminal
+        // result in both cases, so request submission needs no second error
+        // channel that could bypass awaiting cleanup.
+        let _ = self.scope.begin_shutdown(mode);
+    }
+
     /// Observes the running program until its owner terminates.
     ///
     /// This method does not initiate shutdown or choose between [`Shutdown::Drain`]
@@ -4640,23 +4680,22 @@ impl RuntimeTask {
     /// The mutable borrow is cancellation safe with respect to ownership. A host
     /// can select this future against Ctrl-C or another shutdown future; when the
     /// host future wins, cancelling this observation leaves the [`RuntimeTask`]
-    /// owning the live scope so the host can call [`RuntimeTask::shutdown`] with
-    /// an explicit policy.
+    /// owning the live scope so the host can call [`Self::request_shutdown`] or
+    /// [`Self::shutdown`] with an explicit policy. If shutdown has already been
+    /// requested, cancelling observation leaves that request in effect.
     pub async fn run_forever(&mut self) -> Result<ShutdownReport, RuntimeError> {
         self.await_completion().await
     }
 
     /// Ends the program using the requested shutdown policy and returns
     /// work-accounting evidence.
+    ///
+    /// Combines [`Self::request_shutdown`] and terminal observation. An earlier
+    /// Drain may be escalated to Cancel; a later Drain cannot weaken Cancel.
+    /// If completion was already observed, returns the same terminal result.
     pub async fn shutdown(mut self, mode: Shutdown) -> Result<ShutdownReport, RuntimeError> {
-        let cutoff = self.scope.begin_shutdown(mode);
-        match self.await_completion().await {
-            Ok(report) => {
-                cutoff?;
-                Ok(report)
-            }
-            Err(error) => Err(error),
-        }
+        self.request_shutdown(mode);
+        self.await_completion().await
     }
 
     async fn await_completion(&mut self) -> Result<ShutdownReport, RuntimeError> {

@@ -15,6 +15,10 @@
 
 ## Context
 
+[ADR-0010](0010-shutdown-escalation.md) adds explicit, idempotent shutdown
+requests and Drain-to-Cancel escalation while preserving the work and fault
+semantics below. Grace periods remain host policy.
+
 ADR-0002 defines topology-neutral ordering and ADR-0003 defines controlled
 execution, but Phase 6 cannot implement the live Tokio profile until its
 admission, shutdown, Driver completion, overload, framing, and first-party

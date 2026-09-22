@@ -1287,8 +1287,8 @@ impl LiveScope {
 
     pub(crate) fn begin_shutdown(&self, mode: Shutdown) -> Result<(), RuntimeError> {
         let mut state = lock(&self.state);
-        match &state.phase {
-            ScopePhase::Running => {
+        match (&state.phase, mode) {
+            (ScopePhase::Running, _) | (ScopePhase::Draining, Shutdown::Cancel) => {
                 state.phase = match mode {
                     Shutdown::Drain => ScopePhase::Draining,
                     Shutdown::Cancel => ScopePhase::Cancelling,
@@ -1298,10 +1298,10 @@ impl LiveScope {
                     .send(LiveEvent::Shutdown(mode))
                     .map_err(|_| RuntimeError::harness("live runtime task ended before shutdown"))
             }
-            ScopePhase::Faulted(error) => Err(error.clone()),
-            ScopePhase::Draining | ScopePhase::Cancelling | ScopePhase::Closed => Err(
-                RuntimeError::harness("live runtime shutdown already started"),
-            ),
+            (ScopePhase::Faulted(error), _) => Err(error.clone()),
+            // Requests only strengthen shutdown. Repetition neither queues
+            // another marker nor reopens admission after cancellation/closure.
+            (ScopePhase::Draining | ScopePhase::Cancelling | ScopePhase::Closed, _) => Ok(()),
         }
     }
 
@@ -2610,7 +2610,7 @@ impl LiveCore {
     }
 
     pub(crate) async fn run(mut self) -> Result<ShutdownReport, RuntimeError> {
-        // `RuntimeTask::shutdown(Cancel)` may win before Tokio first polls the
+        // A host Cancel request may win before Tokio first polls the
         // owner task. In that case no initial finite work is eligible to start:
         // Cancel is the application-driving cutoff, not merely an event the
         // dispatcher eventually observes.
@@ -3286,6 +3286,57 @@ mod tests {
             Some(std::any::type_name::<GenerationSource>())
         );
         core.cleanup_abort().await;
+    }
+
+    #[tokio::test]
+    async fn shutdown_escalation_preserves_source_fault_completed_before_cancel() {
+        for observe_drain in [false, true] {
+            let mut builder = Program::builder();
+            let source = builder.source::<GenerationSource>();
+            let component = builder.component(
+                ComponentId::new("escalation-panic"),
+                GenerationComponent { source },
+            );
+            let (entered, entered_rx) = tokio::sync::oneshot::channel();
+            let mut bindings = LiveBindings::new();
+            bindings.bind_source::<GenerationSource, _>(PanickingSourceAtCutoff {
+                entered: Mutex::new(Some(entered)),
+            });
+            let (sender, receiver) = mpsc::unbounded_channel();
+            let scope = Arc::new(LiveScope::new(sender));
+            let mut core = LiveCore::new(
+                builder.build().expect("valid program"),
+                bindings,
+                scope.clone(),
+                receiver,
+            );
+            core.initialize().expect("Source starts");
+            entered_rx.await.expect("Source completed its panic");
+
+            scope
+                .begin_shutdown(Shutdown::Drain)
+                .expect("Drain accepted");
+            if observe_drain {
+                core.observe_drain_cutoff()
+                    .expect("Sources stopped for Drain");
+            }
+            scope
+                .begin_shutdown(Shutdown::Cancel)
+                .expect("Cancel escalates");
+            assert!(scope.is_cancelling());
+            let error = core
+                .finish_cancel(None)
+                .await
+                .expect_err("escalation must preserve the completed Source fault");
+            assert_eq!(error.component(), Some(component.id()));
+            assert_eq!(
+                error.descriptor_type(),
+                Some(std::any::type_name::<GenerationSource>())
+            );
+            assert!(core.tasks.is_empty());
+            assert!(core.sources.is_empty());
+            assert_eq!(scope.request_ended_error(), error);
+        }
     }
 
     #[tokio::test]

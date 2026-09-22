@@ -304,8 +304,9 @@ Ownership is not optional. ADR-0004 gives the first live runtime two bounded
 meanings: Drain stops Sources and recursively processes accepted and causally emitted
 finite work, while Cancel aborts application driving and closes all owned work without
 manufacturing application results solely because the runtime is ending. Drain is
-deliberately unbounded in time; shutdown deadlines, escalation, and richer operational
-policy remain deferred.
+deliberately unbounded in time. ADR-0010 lets hosts request Drain, escalate to
+Cancel, and await cleanup through the same owner. Automatic shutdown deadlines
+and richer operational policy remain deferred.
 
 ## Execution Profiles
 
@@ -738,8 +739,8 @@ The following questions remain intentionally open:
 - Subscription restart and retry semantics.
 - Bounded delivery, backpressure, overload, coalescing, fairness, and shedding policies
   beyond v0 unbounded internal delivery.
-- Shutdown deadlines, grace periods, escalation, host-signal behavior, and exact
-  diagnostic accounting beyond accepted Drain and Cancel.
+- Automatic shutdown deadlines, grace periods, escalation policy, host-signal
+  behavior, and exact diagnostic accounting beyond ADR-0010's explicit requests.
 - The initial first-party Layer and Driver catalog beyond the canonical `mpsc`
   bridge, accepted narrow TCP byte Source, and accepted raw HTTP Effect.
 - Domain-payload trace capture, typed trace projections, a public live observer, durable

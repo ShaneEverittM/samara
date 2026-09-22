@@ -343,6 +343,26 @@ profile-build rejection. Deliberately non-conforming code hides a foreign
 Effect capability until a later Message; `run_forever` then surfaces the
 genuine post-build provenance fault, and the bound live Driver is never called.
 
+## Active ADR-0010 Shutdown-Escalation Scenarios
+
+The lifecycle and live-runtime suites cover the accepted contract:
+
+- `shutdown_grace_period_escalates_recurring_timer_and_joins` runs the host
+  grace-period composition and checks zero owned work after escalation.
+- `shutdown_escalation_joins_pending_effect_without_mapping` and
+  `shutdown_escalation_closes_unanswered_request_without_mapping` prove that
+  cancelling observation preserves ownership for escalation and joined cleanup,
+  without synthesizing application outcomes.
+- `shutdown_escalation_before_owner_poll_cannot_restart_work` verifies that
+  Drain cannot weaken Cancel or start initial work after that cutoff.
+- `shutdown_requests_close_ingress_and_preserve_completed_result` and
+  `shutdown_requests_preserve_completed_fault` cover synchronous admission
+  closure, repetition, and observation of the original terminal result.
+- Internal `shutdown_escalation_preserves_source_fault_completed_before_cancel`
+  checks a completed Source fault with Drain both observed and still queued.
+- The `RuntimeTask::request_shutdown` rustdoc example compile-checks the public
+  host pattern. Existing Drain, Cancel, and fault suites remain regression evidence.
+
 ## Active ADR-0006 Live Port-Ingress Scenarios
 
 The following scenarios are contractually accepted. The
@@ -401,8 +421,8 @@ among independent handle clones.
   external whole-scope closure error.
 - Notification delivery failure beyond accepted admission and whole-scope
   Cancel/fault cutovers.
-- Bounded pressure, overload controls, shutdown deadlines and escalation,
-  exact shutdown diagnostic counts, per-effect cancellation policy, Driver
+- Bounded pressure, overload controls, automatic shutdown deadlines and escalation
+  policy, exact shutdown diagnostic counts, per-effect cancellation policy, Driver
   recovery, automatic Source retry, and restartable or shared bridges beyond
   ADR-0004's simple first cut.
 - Exact public first-party module/type naming and general live Layer/profile

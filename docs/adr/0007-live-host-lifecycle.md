@@ -7,6 +7,10 @@
 
 ## Context
 
+[ADR-0010](0010-shutdown-escalation.md) extends this API with non-consuming
+shutdown requests, allowing hosts to escalate Drain to Cancel and await cleanup
+through the same owner. Automatic escalation remains outside the runtime.
+
 `RuntimeTask::shutdown` owns structured closure, but it is not an observation
 API. A long-running host currently has to delay for an arbitrary duration before
 calling it. A Driver or runtime fault that closes the owner during that delay is

@@ -278,6 +278,21 @@ This contract freezes terminal observation and its ownership-cancellation
 behavior. It does not add a live trace observer, default signal, default
 shutdown mode, deadline, or automatic Drain-to-Cancel policy.
 
+## Accepted and Implemented Contract: Shutdown Escalation
+
+[ADR-0010](adr/0010-shutdown-escalation.md) adds
+`RuntimeTask::request_shutdown(&mut self, Shutdown)`. It closes ingress
+synchronously without waiting for cleanup. Running accepts either mode;
+Draining may escalate to Cancelling. Repeated requests are harmless, Drain
+cannot reverse Cancel, and requests after fault or closure preserve the
+terminal result.
+
+`run_forever` remains cancellation-safe observation of the same owner.
+`shutdown(self, mode)` requests shutdown and awaits that same result, including
+after an earlier request or observation. Fault arbitration and zero-owned-work
+completion guarantees remain unchanged. Hosts choose grace periods; cancelling
+an observation never resets shutdown or detaches work.
+
 ## Example-Driven Extension: Standard Output Effects
 
 The first real-application experiment adds two narrow, high-level first-party

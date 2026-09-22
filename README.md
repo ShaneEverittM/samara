@@ -28,6 +28,7 @@ The earlier Actor proof of concept remains available in Git history at commit
 - [Runtime topology and ordering ADR](docs/adr/0002-runtime-topology-and-ordering.md)
 - [Controlled execution semantics ADR](docs/adr/0003-controlled-execution-semantics.md)
 - [Initial live runtime semantics ADR](docs/adr/0004-initial-live-runtime-semantics.md)
+- [Shutdown escalation ADR](docs/adr/0010-shutdown-escalation.md)
 - [Architecture test strategy](docs/testing/architecture-test-strategy.md)
 - [V1-V11 acceptance matrix](docs/testing/v0-acceptance-matrix.md)
 - [Goal-mode implementation checklist](docs/goal-mode-checklist.md)

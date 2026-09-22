@@ -558,6 +558,13 @@ policy is change-controlled because it changes what acceptance means.
 
 ## What Is the Difference Between Drain and Cancel?
 
+`RuntimeTask::request_shutdown(mode)` closes ingress synchronously and leaves
+the owner available for `run_forever`. Hosts may time out that observation,
+request Cancel after Drain, and await cleanup. Requests are idempotent and
+cannot weaken an existing Cancel or replace a terminal result. The consuming
+`shutdown(mode)` combines the request and wait. ADR-0010 defines this escalation
+mechanism; grace periods remain host policy.
+
 `Shutdown::Drain` atomically closes external ingress, disables new or
 restarted Sources, stops current Sources, then recursively processes Messages
 and Source deliveries accepted before that cutoff plus finite work causally
@@ -626,8 +633,8 @@ and controllable.
 
 The Phase 2 API contract freezes the Component-kernel signatures and records
 later slices separately. ADR-0004 selects only the simplest v0 live
-mechanisms. Bounded pressure and overload controls, shutdown deadlines and
-escalation, exact shutdown diagnostic counts, per-effect cancellation,
+mechanisms. Bounded pressure and overload controls, automatic shutdown deadlines
+and escalation policy, exact shutdown diagnostic counts, per-effect cancellation,
 Driver recovery, restartable or shared bridges, the broader first-party Tokio
 module organization, the Rust shape of general Layer/profile bindings, Request
 lifecycle policy, notification delivery failures, public live and

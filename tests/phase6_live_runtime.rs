@@ -316,6 +316,58 @@ struct InitialCancelProbe {
     effect: EffectCapability<Hang>,
 }
 
+#[tokio::test]
+async fn shutdown_escalation_joins_pending_effect_without_mapping() {
+    let mut program = Program::builder();
+    let mapper_calls = Arc::new(AtomicUsize::new(0));
+    let dropped = Arc::new(AtomicBool::new(false));
+    let (entered, entered_rx) = tokio::sync::oneshot::channel();
+    let effect = program.effect::<Hang>();
+    let probe = program.component(
+        ComponentId::new("escalation-effect"),
+        CancelProbe {
+            mapper_calls: mapper_calls.clone(),
+            effect,
+        },
+    );
+    let runtime = LiveRuntime::builder(program.build().expect("valid program"))
+        .bind_effect::<Hang, _>(HangingDriver {
+            entered: Mutex::new(Some(entered)),
+            dropped: dropped.clone(),
+        })
+        .build()
+        .expect("valid bindings");
+    let handle = runtime.handle(&probe).expect("live handle");
+    let mut task = runtime.spawn();
+    handle.send(CancelMessage::Start).await.expect("accepted");
+    entered_rx.await.expect("Driver started");
+
+    task.request_shutdown(Shutdown::Drain);
+    task.request_shutdown(Shutdown::Drain);
+    assert!(handle.send(CancelMessage::Start).await.is_err());
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(5), task.run_forever())
+            .await
+            .is_err()
+    );
+    assert!(!dropped.load(Ordering::SeqCst));
+
+    task.request_shutdown(Shutdown::Cancel);
+    task.request_shutdown(Shutdown::Drain);
+    let report = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        task.shutdown(Shutdown::Drain),
+    )
+    .await
+    .expect("Cancel cannot be reversed")
+    .expect("clean cancellation");
+    assert_eq!(report.remaining, 0);
+    assert_eq!(report.pending_now, 0);
+    assert_eq!(report.pending_later, 0);
+    assert!(dropped.load(Ordering::SeqCst), "cleanup was joined");
+    assert_eq!(mapper_calls.load(Ordering::SeqCst), 0);
+}
+
 impl Component for InitialCancelProbe {
     type Model = ();
     type Message = ();
@@ -376,6 +428,39 @@ async fn phase6_cancel_stops_driving_without_mapping_scope_abort() {
     assert_eq!(mapper_calls.load(Ordering::SeqCst), 0);
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn shutdown_escalation_before_owner_poll_cannot_restart_work() {
+    let mapper_calls = Arc::new(AtomicUsize::new(0));
+    let driver_calls = Arc::new(AtomicUsize::new(0));
+    let mut program = Program::builder();
+    let effect = program.effect::<Hang>();
+    program.component(
+        ComponentId::new("early-escalation"),
+        InitialCancelProbe {
+            mapper_calls: mapper_calls.clone(),
+            effect,
+        },
+    );
+    let mut task = LiveRuntime::builder(program.build().expect("valid program"))
+        .bind_effect::<Hang, _>(CountedHangingDriver {
+            calls: driver_calls.clone(),
+        })
+        .build()
+        .expect("valid bindings")
+        .spawn();
+
+    task.request_shutdown(Shutdown::Drain);
+    task.request_shutdown(Shutdown::Cancel);
+    task.request_shutdown(Shutdown::Drain);
+    let report = tokio::time::timeout(std::time::Duration::from_secs(1), task.run_forever())
+        .await
+        .expect("cancellation completes")
+        .expect("clean cancellation");
+    assert!(report.is_clean());
+    assert_eq!(driver_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(mapper_calls.load(Ordering::SeqCst), 0);
+}
+
 #[derive(Debug)]
 struct PanicEffect;
 
@@ -428,6 +513,29 @@ async fn phase6_driver_panic_faults_and_cleans_scope() {
         .expect_err("Driver panic must fault the runtime");
     assert_eq!(error.component(), Some(&ComponentId::new("panic-probe")));
     assert!(handle.send(()).await.is_err());
+}
+
+#[tokio::test]
+async fn shutdown_requests_preserve_completed_fault() {
+    let mut program = Program::builder();
+    let effect = program.effect::<PanicEffect>();
+    let probe = program.component(ComponentId::new("preserved-fault"), PanicProbe { effect });
+    let runtime = LiveRuntime::builder(program.build().expect("valid program"))
+        .bind_effect::<PanicEffect, _>(PanickingDriver)
+        .build()
+        .expect("valid bindings");
+    let handle = runtime.handle(&probe).expect("live handle");
+    let mut task = runtime.spawn();
+    handle.send(()).await.expect("accepted");
+    let error = task.run_forever().await.expect_err("Driver panicked");
+    assert_eq!(error.component(), Some(probe.id()));
+
+    for mode in [Shutdown::Drain, Shutdown::Cancel] {
+        task.request_shutdown(mode);
+        assert_eq!(task.run_forever().await, Err(error.clone()));
+        assert_eq!(handle.send(()).await, Err(error.clone()));
+    }
+    assert_eq!(task.shutdown(Shutdown::Drain).await, Err(error));
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1682,6 +1790,41 @@ async fn phase6_cancel_drops_unanswered_request_without_mapping() -> Result<(), 
     seen_rx.await.expect("provider accepted the Request");
     let report = task.shutdown(Shutdown::Cancel).await?;
     assert!(report.is_clean());
+    assert_eq!(continuation_calls.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn shutdown_escalation_closes_unanswered_request_without_mapping() -> Result<(), RuntimeError>
+{
+    let continuation_calls = Arc::new(AtomicUsize::new(0));
+    let (program, requester) = echo_program(false, continuation_calls.clone());
+    let (seen, seen_rx) = tokio::sync::oneshot::channel();
+    let (replies, _observed) = tokio::sync::mpsc::unbounded_channel();
+    let runtime = LiveRuntime::builder(program)
+        .bind_effect::<ProviderSeen, _>(ProviderSeenDriver {
+            seen: Mutex::new(Some(seen)),
+        })
+        .bind_effect::<ObserveReply, _>(ReplyObserver { replies })
+        .build()?;
+    let handle = runtime.handle(&requester)?;
+    let mut task = runtime.spawn();
+    handle.send(EchoRequesterMessage::Start).await?;
+    seen_rx.await.expect("provider accepted the Request");
+
+    task.request_shutdown(Shutdown::Drain);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(5), task.run_forever())
+            .await
+            .is_err()
+    );
+    task.request_shutdown(Shutdown::Cancel);
+    let report = tokio::time::timeout(std::time::Duration::from_secs(1), task.run_forever())
+        .await
+        .expect("Cancel closes the unanswered Request")?;
+    assert_eq!(report.remaining, 0);
+    assert_eq!(report.pending_now, 0);
+    assert_eq!(report.pending_later, 0);
     assert_eq!(continuation_calls.load(Ordering::SeqCst), 0);
     Ok(())
 }
