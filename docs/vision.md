@@ -745,8 +745,8 @@ The following questions remain intentionally open:
   bridge, accepted narrow TCP byte Source, and accepted raw HTTP Effect.
 - Domain-payload trace capture, typed trace projections, a public live observer, durable
   trace storage, and replay tooling.
-- Request failure, timeout, abandonment, late-Reply, delegation, and in-band cancellation
-  semantics beyond the Phase 5 successful Component Reply path and ADR-0006's narrow
+- Request failure, abandonment, delegation, and in-band cancellation beyond
+  [ADR-0011](adr/0011-request-timeouts.md)'s opt-in timeouts and ADR-0006's
   live-host whole-scope closure diagnostic.
 - Exact Decoder-finalization method spelling and first-party module/type naming, provided
   ADR-0004's accepted observable EOF and `bytes` semantics are preserved.

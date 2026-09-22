@@ -15,10 +15,10 @@ use crate::declarative_work::SubscriptionChange;
 use crate::{
     CapabilityToken, Command, CommandKind, Component, ComponentId, ComponentRef, EffectDescriptor,
     EffectOutcome, EffectOutcomeKind, ErasedRequestMapper, ErasedSourceEvent, LogicalTime,
-    PendingEffect, PendingWork, PortId, Program, RunReport, RuntimeError, ShutdownReport,
-    SourceCapability, SourceDescriptor, SourceEvent, SourcePlan, StreamDescriptor,
-    StreamSourceDescriptor, Subscription, SubscriptionAction, SubscriptionId, TraceCommandKind,
-    TraceEvent, TraceId, TraceRecord,
+    PendingEffect, PendingWork, PortId, Program, RequestOutcome, RequestOutcomeKind, RequestToken,
+    RunReport, RuntimeError, ShutdownReport, SourceCapability, SourceDescriptor, SourceEvent,
+    SourcePlan, StreamDescriptor, StreamSourceDescriptor, Subscription, SubscriptionAction,
+    SubscriptionId, TraceCommandKind, TraceEvent, TraceId, TraceRecord,
 };
 
 type ErasedValue = Box<dyn Any + Send>;
@@ -208,6 +208,7 @@ struct QueuedSourceEvent {
 }
 
 enum ScheduledKind {
+    RequestDeadline { correlation: u64 },
     Message(QueuedMessage),
     SourceEvent(QueuedSourceEvent),
 }
@@ -231,11 +232,13 @@ struct PendingEffectEntry {
 }
 
 struct OutstandingRequest {
-    correlation: u64,
+    token: Arc<RequestToken>,
+    deadline: Option<Duration>,
+    request_trace: TraceId,
     requester: ComponentId,
     reply_type: TypeId,
     reply_type_name: &'static str,
-    mapper: Option<ErasedMessageMapper>,
+    mapper: Option<ErasedRequestMapper<ErasedValue>>,
     message_type: TypeId,
     message_type_name: &'static str,
 }
@@ -845,11 +848,23 @@ impl ControlledCore {
                             "request Port has no runtime binding",
                         ));
                     };
+                    let deadline = match command.timeout() {
+                        Some(timeout) => Some(self.now.checked_add(timeout).ok_or_else(|| {
+                            self.set_fault(
+                                component.clone(),
+                                None,
+                                work,
+                                "request deadline is unrepresentable",
+                            )
+                        })?),
+                        None => None,
+                    };
                     let correlation = self.next_correlation;
                     self.next_correlation += 1;
+                    let token = RequestToken::new(correlation, self.program.program.clone());
                     let (protocol_message, mapper): (_, ErasedRequestMapper<Message>) =
-                        command.into_parts(correlation);
-                    let mapper: ErasedMessageMapper =
+                        command.into_parts(token.clone());
+                    let mapper: ErasedRequestMapper<ErasedValue> =
                         Box::new(move |reply| Box::new(mapper(reply)));
                     let (target, message_type, message_type_name, message) = {
                         let binding = &self.program.bindings[binding_index];
@@ -861,7 +876,9 @@ impl ControlledCore {
                         )
                     };
                     self.requests.push(OutstandingRequest {
-                        correlation,
+                        token,
+                        deadline,
+                        request_trace: work,
                         requester: component.clone(),
                         reply_type,
                         reply_type_name,
@@ -869,6 +886,9 @@ impl ControlledCore {
                         message_type: TypeId::of::<Message>(),
                         message_type_name: std::any::type_name::<Message>(),
                     });
+                    if let Some(deadline) = deadline {
+                        self.schedule(deadline, ScheduledKind::RequestDeadline { correlation });
+                    }
                     self.schedule_message(
                         QueuedMessage {
                             target,
@@ -893,50 +913,53 @@ impl ControlledCore {
                         None,
                         None,
                     );
-                    let (correlation, reply) = command.into_parts();
-                    let Some(index) = self
-                        .requests
-                        .iter()
-                        .position(|request| request.correlation == correlation)
-                    else {
+                    let (token, reply) = command.into_parts();
+                    if !Arc::ptr_eq(&token.program, &self.program.program) {
                         return Err(self.set_fault(
                             component.clone(),
                             None,
                             work,
-                            "ReplyTo no longer names an outstanding Request",
-                        ));
-                    };
-                    let mut request = self.requests.remove(index);
-                    if request.reply_type != reply_type {
-                        return Err(self.set_fault(
-                            component.clone(),
-                            None,
-                            work,
-                            "Reply type does not match its Request correlation",
+                            "ReplyTo belongs to another Program",
                         ));
                     }
-                    let outcome = self.push_child(
+                    if !token.is_expired() {
+                        let Some(index) = self
+                            .requests
+                            .iter()
+                            .position(|request| Arc::ptr_eq(&request.token, &token))
+                        else {
+                            return Err(self.set_fault(
+                                component.clone(),
+                                None,
+                                work,
+                                "ReplyTo no longer names an outstanding Request",
+                            ));
+                        };
+                        if self.requests[index].reply_type != reply_type {
+                            return Err(self.set_fault(
+                                component.clone(),
+                                None,
+                                work,
+                                "Reply type does not match its Request correlation",
+                            ));
+                        }
+                        if self.requests[index]
+                            .deadline
+                            .is_some_and(|deadline| self.now >= deadline)
+                        {
+                            let cause = self.requests[index].request_trace;
+                            self.complete_request(index, RequestOutcome::TimedOut, cause);
+                        } else {
+                            self.complete_request(index, RequestOutcome::Replied(reply), work);
+                            continue;
+                        }
+                    }
+                    self.push_child(
                         work,
-                        TraceEvent::RequestOutcome {
-                            component: request.requester.clone(),
-                            reply_type: request.reply_type_name,
+                        TraceEvent::LateReplyDropped {
+                            component: component.clone(),
+                            reply_type: reply_type_name,
                         },
-                    );
-                    let mapper = request
-                        .mapper
-                        .take()
-                        .expect("an outstanding Request owns one mapper");
-                    self.schedule_message(
-                        QueuedMessage {
-                            target: request.requester,
-                            target_message_type: request.message_type,
-                            message_type_name: request.message_type_name,
-                            message: mapper(reply),
-                            cause: outcome,
-                            source: None,
-                            delivery: DeliveryKind::Message,
-                        },
-                        self.now,
                     );
                 }
                 CommandKind::After { delay, message } => {
@@ -1257,6 +1280,49 @@ impl ControlledCore {
         Ok(())
     }
 
+    fn complete_request(
+        &mut self,
+        index: usize,
+        outcome: RequestOutcome<ErasedValue>,
+        cause: TraceId,
+    ) {
+        let mut request = self.requests.remove(index);
+        self.scheduled.retain(|work| !matches!(work.kind,
+            ScheduledKind::RequestDeadline { correlation } if correlation == request.token.correlation));
+        let kind = match &outcome {
+            RequestOutcome::Replied(_) => RequestOutcomeKind::Replied,
+            RequestOutcome::TimedOut => {
+                request.token.expire();
+                RequestOutcomeKind::TimedOut
+            }
+            _ => unreachable!("request settlement only produces replies or timeouts"),
+        };
+        let trace = self.push_child(
+            cause,
+            TraceEvent::RequestOutcome {
+                component: request.requester.clone(),
+                reply_type: request.reply_type_name,
+                outcome: kind,
+            },
+        );
+        let mapper = request
+            .mapper
+            .take()
+            .expect("an outstanding Request owns one mapper");
+        self.schedule_message(
+            QueuedMessage {
+                target: request.requester,
+                target_message_type: request.message_type,
+                message_type_name: request.message_type_name,
+                message: mapper(outcome),
+                cause: trace,
+                source: None,
+                delivery: DeliveryKind::Message,
+            },
+            self.now,
+        );
+    }
+
     fn pop_next_due(&mut self) -> Option<ScheduledWork> {
         let index = self
             .scheduled
@@ -1418,6 +1484,17 @@ impl ControlledCore {
             transitions += match work.kind {
                 ScheduledKind::Message(message) => self.process_message(message)?,
                 ScheduledKind::SourceEvent(event) => self.process_source_event(event)?,
+                ScheduledKind::RequestDeadline { correlation } => {
+                    if let Some(index) = self
+                        .requests
+                        .iter()
+                        .position(|request| request.token.correlation == correlation)
+                    {
+                        let cause = self.requests[index].request_trace;
+                        self.complete_request(index, RequestOutcome::TimedOut, cause);
+                    }
+                    0
+                }
             };
             self.ensure_not_faulted()?;
         }
@@ -1488,7 +1565,9 @@ impl ControlledCore {
                 .iter()
                 .fold((0, 0), |(pending_now, pending_later), work| {
                     match &work.kind {
-                        ScheduledKind::SourceEvent(_) => (pending_now, pending_later),
+                        ScheduledKind::SourceEvent(_) | ScheduledKind::RequestDeadline { .. } => {
+                            (pending_now, pending_later)
+                        }
                         ScheduledKind::Message(_) if work.deadline <= self.now => {
                             (pending_now + 1, pending_later)
                         }

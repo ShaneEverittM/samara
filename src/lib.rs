@@ -57,7 +57,10 @@ use std::{
     marker::PhantomData,
     net::SocketAddr,
     pin::Pin,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -80,11 +83,12 @@ pub mod prelude {
         HttpResponseError, HttpStatusError, Init, LiveRuntime, LogicalTime, Notification,
         PendingEffect, PendingWork, Port, PortHandle, PortId, PrintStderr, PrintStdout, Program,
         ProgramBuildError, ProgramBuilder, Protocol, ReplyTo, Request, RequestError,
-        RequestInvocation, RequestOutcome, RunReport, RuntimeError, RuntimeTask, Shutdown,
-        ShutdownReport, SourceCapability, SourceDescriptor, SourceDriver, SourceEvent,
-        SourceEventKind, SourceSink, StdinError, StdinErrorKind, StdinLines, StreamDescriptor,
-        Subscription, SubscriptionAction, SubscriptionId, Subscriptions, TcpBytes, TcpError,
-        TcpErrorKind, TraceCommandKind, TraceEvent, TraceId, TraceRecord, protocol,
+        RequestInvocation, RequestOutcome, RequestOutcomeKind, RunReport, RuntimeError,
+        RuntimeTask, Shutdown, ShutdownReport, SourceCapability, SourceDescriptor, SourceDriver,
+        SourceEvent, SourceEventKind, SourceSink, StdinError, StdinErrorKind, StdinLines,
+        StreamDescriptor, Subscription, SubscriptionAction, SubscriptionId, Subscriptions,
+        TcpBytes, TcpError, TcpErrorKind, TraceCommandKind, TraceEvent, TraceId, TraceRecord,
+        protocol,
     };
 }
 
@@ -678,19 +682,19 @@ pub trait Request<P: Protocol>: Send + 'static {
 
 /// Requester-visible terminal outcome of a correlated [`Command::request`].
 ///
-/// Samara's request path produces [`RequestOutcome::Replied`] when the provider
-/// replies. It applies no default deadline and does not emit the other variants.
-/// An unanswered Component request remains pending until its runtime scope is
-/// cancelled and can keep [`Shutdown::Drain`] from completing. A domain timer
-/// may change application state, but it does not cancel the runtime-owned
-/// request obligation.
+/// Requests have no default deadline. [`Command::request_timeout`] and
+/// [`PortHandle::request_timeout`] opt into [`RequestOutcome::TimedOut`]; a
+/// reply accepted before the deadline produces [`RequestOutcome::Replied`].
+/// Timeout releases the request obligation without cancelling provider work.
+/// Scope cancellation does not manufacture Component outcomes; host scope
+/// failures return [`RuntimeError`]. `Failed` and `Cancelled` remain reserved.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RequestOutcome<Reply> {
     /// The provider emitted a correctly typed reply.
     Replied(Reply),
     /// The request or reply could not complete for a runtime-visible reason.
     Failed(RequestError),
-    /// A configured or runtime-owned deadline expired before a reply arrived.
+    /// A runtime-owned deadline expired before a reply was accepted.
     TimedOut,
     /// Runtime ownership ended the request for a reason other than timeout.
     Cancelled,
@@ -721,8 +725,9 @@ pub enum RequestError {
 /// Discarding the authority is a diagnostic violation when `unused_must_use`
 /// is denied. The lint catches an immediately unused expression, but Rust
 /// cannot require a bound value to be consumed later. Dropping, storing, or
-/// forgetting a token without replying leaves the request unresolved; in
-/// particular, [`Shutdown::Drain`] may then wait indefinitely.
+/// forgetting a token without replying leaves the request unresolved until its
+/// optional timeout expires or its scope ends. Without a timeout,
+/// [`Shutdown::Drain`] may wait indefinitely.
 ///
 /// ```compile_fail
 /// #![deny(unused_must_use)]
@@ -734,26 +739,53 @@ pub enum RequestError {
 /// ```
 #[must_use = "a ReplyTo must be consumed by Command::reply"]
 pub struct ReplyTo<Reply> {
-    correlation: u64,
+    token: Arc<RequestToken>,
     marker: PhantomData<fn(Reply)>,
 }
 
-impl<Reply> ReplyTo<Reply> {
-    fn sketch(correlation: u64) -> Self {
-        Self {
+// Only runtime interpretation reads or changes this opaque correlation state.
+// An expired provider token retains no continuation or runtime handle, and the
+// runtime need not retain a tombstone if the provider never replies.
+struct RequestToken {
+    correlation: u64,
+    program: Arc<()>,
+    expired: AtomicBool,
+}
+
+impl RequestToken {
+    fn new(correlation: u64, program: Arc<()>) -> Arc<Self> {
+        Arc::new(Self {
             correlation,
-            marker: PhantomData,
-        }
+            program,
+            expired: AtomicBool::new(false),
+        })
     }
 
-    fn runtime(correlation: u64) -> Self {
-        Self::sketch(correlation)
+    fn expire(&self) {
+        self.expired.store(true, Ordering::Relaxed);
+    }
+
+    fn is_expired(&self) -> bool {
+        self.expired.load(Ordering::Relaxed)
+    }
+}
+
+impl<Reply> ReplyTo<Reply> {
+    #[cfg(test)]
+    fn sketch(correlation: u64) -> Self {
+        Self::runtime(RequestToken::new(correlation, Arc::new(())))
+    }
+
+    fn runtime(token: Arc<RequestToken>) -> Self {
+        Self {
+            token,
+            marker: PhantomData,
+        }
     }
 }
 
 impl<Reply> fmt::Debug for ReplyTo<Reply> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let _ = self.correlation;
         formatter.debug_tuple("ReplyTo").field(&"<opaque>").finish()
     }
 }
@@ -1274,6 +1306,7 @@ trait ErasedRequestCommand<Message>: Send {
     fn port(&self) -> &PortId;
     fn port_program(&self) -> &Arc<()>;
     fn request(&self) -> &dyn Any;
+    fn timeout(&self) -> Option<Duration>;
     fn request_type_name(&self) -> &'static str;
     fn reply_type_name(&self) -> &'static str;
     fn reply_type_id(&self) -> TypeId;
@@ -1282,12 +1315,27 @@ trait ErasedRequestCommand<Message>: Send {
     fn mapper_type_name(&self) -> &'static str;
     fn into_parts(
         self: Box<Self>,
-        correlation: u64,
+        token: Arc<RequestToken>,
     ) -> (Box<dyn Any + Send>, ErasedRequestMapper<Message>);
 }
 
 type ErasedRequestMapper<Message> =
-    Box<dyn FnOnce(Box<dyn Any + Send>) -> Message + Send + 'static>;
+    Box<dyn FnOnce(RequestOutcome<Box<dyn Any + Send>>) -> Message + Send + 'static>;
+
+fn typed_request_outcome<Reply: Send + 'static>(
+    outcome: RequestOutcome<Box<dyn Any + Send>>,
+) -> RequestOutcome<Reply> {
+    match outcome {
+        RequestOutcome::Replied(reply) => RequestOutcome::Replied(
+            *reply
+                .downcast::<Reply>()
+                .expect("Request couples correlation to its Reply type"),
+        ),
+        RequestOutcome::TimedOut => RequestOutcome::TimedOut,
+        RequestOutcome::Failed(error) => RequestOutcome::Failed(error),
+        RequestOutcome::Cancelled => RequestOutcome::Cancelled,
+    }
+}
 
 struct RequestCommand<P, R, Map>
 where
@@ -1296,6 +1344,7 @@ where
 {
     port: Port<P>,
     request: R,
+    timeout: Option<Duration>,
     map: Map,
 }
 
@@ -1316,6 +1365,10 @@ where
 
     fn request(&self) -> &dyn Any {
         &self.request
+    }
+
+    fn timeout(&self) -> Option<Duration> {
+        self.timeout
     }
 
     fn request_type_name(&self) -> &'static str {
@@ -1344,17 +1397,11 @@ where
 
     fn into_parts(
         self: Box<Self>,
-        correlation: u64,
+        token: Arc<RequestToken>,
     ) -> (Box<dyn Any + Send>, ErasedRequestMapper<Message>) {
         let Self { request, map, .. } = *self;
-        let message = request.into_message(ReplyTo::runtime(correlation));
-        let mapper = Box::new(move |reply: Box<dyn Any + Send>| {
-            let reply = match reply.downcast::<R::Reply>() {
-                Ok(reply) => *reply,
-                Err(_) => unreachable!("Request couples correlation to its Reply type"),
-            };
-            map(RequestOutcome::Replied(reply))
-        });
+        let message = request.into_message(ReplyTo::runtime(token));
+        let mapper = Box::new(move |outcome| map(typed_request_outcome::<R::Reply>(outcome)));
         (Box::new(message), mapper)
     }
 }
@@ -1363,7 +1410,7 @@ trait ErasedReplyCommand: Send {
     fn reply(&self) -> &dyn Any;
     fn reply_type_name(&self) -> &'static str;
     fn reply_type_id(&self) -> TypeId;
-    fn into_parts(self: Box<Self>) -> (u64, Box<dyn Any + Send>);
+    fn into_parts(self: Box<Self>) -> (Arc<RequestToken>, Box<dyn Any + Send>);
 }
 
 struct Reply<Reply> {
@@ -1444,8 +1491,8 @@ where
         TypeId::of::<ReplyValue>()
     }
 
-    fn into_parts(self: Box<Self>) -> (u64, Box<dyn Any + Send>) {
-        (self.reply_to.correlation, Box::new(self.reply))
+    fn into_parts(self: Box<Self>) -> (Arc<RequestToken>, Box<dyn Any + Send>) {
+        (self.reply_to.token, Box::new(self.reply))
     }
 }
 
@@ -1657,6 +1704,48 @@ impl<Message> Command<Message> {
         Self(CommandKind::Request(Box::new(RequestCommand {
             port,
             request,
+            timeout: None,
+            map,
+        })))
+    }
+
+    /// Sends a request with a runtime-owned timeout and canonical conversion.
+    ///
+    /// The duration starts when interpreted, using logical time in controlled
+    /// execution and Tokio time live. A reply must be interpreted strictly
+    /// before the deadline; zero always times out. Expiry produces one
+    /// [`RequestOutcome::TimedOut`] and discards late replies. Provider work
+    /// continues. An unrepresentable deadline faults the runtime explicitly.
+    pub fn request_timeout<P, R>(port: Port<P>, request: R, timeout: Duration) -> Self
+    where
+        Message: From<RequestOutcome<R::Reply>> + Send + 'static,
+        P: Protocol,
+        R: Request<P>,
+    {
+        Self::request_timeout_with(port, request, timeout, Message::from)
+    }
+
+    /// Sends a timed request with an explicit pure outcome-to-Message mapper.
+    ///
+    /// See [`Command::request_timeout`] for deadline and provider semantics.
+    /// The mapper may capture application correlation, as in
+    /// [`Command::request_with`], and runs once for reply or timeout.
+    pub fn request_timeout_with<P, R, Map>(
+        port: Port<P>,
+        request: R,
+        timeout: Duration,
+        map: Map,
+    ) -> Self
+    where
+        Message: Send + 'static,
+        P: Protocol,
+        R: Request<P>,
+        Map: FnOnce(RequestOutcome<R::Reply>) -> Message + Send + 'static,
+    {
+        Self(CommandKind::Request(Box::new(RequestCommand {
+            port,
+            request,
+            timeout: Some(timeout),
             map,
         })))
     }
@@ -4606,11 +4695,52 @@ impl<P: Protocol> PortHandle<P> {
     where
         R: Request<P>,
     {
+        match self.request_inner(request, None).await? {
+            RequestOutcome::Replied(reply) => Ok(reply),
+            _ => unreachable!("unbounded host requests only complete with a reply"),
+        }
+    }
+
+    /// Submits a request with a runtime-owned reply-acceptance deadline.
+    ///
+    /// The timeout starts at admission on first poll, including time queued
+    /// for the runtime. A reply interpreted at or after the deadline yields
+    /// [`RequestOutcome::TimedOut`]. Provider work continues and late replies
+    /// are discarded. Dropping this future does not cancel the request or its
+    /// deadline. Scope failures and unrepresentable deadlines return
+    /// [`RuntimeError`]; existing [`Self::request`] remains unbounded.
+    pub async fn request_timeout<R>(
+        &self,
+        request: R,
+        timeout: Duration,
+    ) -> Result<RequestOutcome<R::Reply>, RuntimeError>
+    where
+        R: Request<P>,
+    {
+        self.request_inner(request, Some(timeout)).await
+    }
+
+    async fn request_inner<R>(
+        &self,
+        request: R,
+        timeout: Option<Duration>,
+    ) -> Result<RequestOutcome<R::Reply>, RuntimeError>
+    where
+        R: Request<P>,
+    {
+        let deadline = timeout
+            .map(|timeout| {
+                tokio::time::Instant::now()
+                    .checked_add(timeout)
+                    .ok_or_else(|| RuntimeError::harness("request deadline is unrepresentable"))
+            })
+            .transpose()?;
         let (completion, reply) = tokio::sync::oneshot::channel();
         self.scope
             .accept_ingress(live_runtime::LiveEvent::port_request(
                 self.port.clone(),
                 request,
+                deadline,
                 completion,
             ))?;
         reply.await.map_err(|_| self.scope.request_ended_error())
@@ -5119,6 +5249,15 @@ pub enum EffectOutcomeKind {
     Cancelled,
 }
 
+/// Structural terminal shape of a runtime-settled request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RequestOutcomeKind {
+    /// A reply was accepted before any configured deadline.
+    Replied,
+    /// The runtime-owned deadline expired.
+    TimedOut,
+}
+
 /// Always-collected structural semantic event from controlled execution.
 ///
 /// The trace records concrete Rust types, targets, lifecycle, time, and
@@ -5210,9 +5349,18 @@ pub enum TraceEvent {
         /// Structural terminal outcome shape.
         outcome: EffectOutcomeKind,
     },
-    /// One successful correlated Request resolved to `Replied`.
+    /// One correlated Request settled with a reply or timeout.
     RequestOutcome {
         /// Requesting Component.
+        component: ComponentId,
+        /// Concrete Reply type.
+        reply_type: &'static str,
+        /// Structural terminal outcome shape.
+        outcome: RequestOutcomeKind,
+    },
+    /// An expired request's reply was discarded without another outcome.
+    LateReplyDropped {
+        /// Component emitting the late Reply.
         component: ComponentId,
         /// Concrete Reply type.
         reply_type: &'static str,
@@ -5300,7 +5448,7 @@ mod protocol_macro_tests {
         match message {
             MacroProtocolMessage::SnapshotRequest(invocation) => {
                 let SnapshotRequest = invocation.request;
-                assert_eq!(invocation.reply_to.correlation, 41);
+                assert_eq!(invocation.reply_to.token.correlation, 41);
                 let _: ReplyTo<Snapshot> = invocation.reply_to;
             }
             _ => panic!("request became a different operation"),
@@ -5324,7 +5472,7 @@ mod protocol_macro_tests {
         match message {
             MacroProtocolMessage::Lookup(invocation) => {
                 assert_eq!(invocation.request.0, 17);
-                assert_eq!(invocation.reply_to.correlation, 42);
+                assert_eq!(invocation.reply_to.token.correlation, 42);
             }
             _ => panic!("request became a different operation"),
         }
@@ -5409,5 +5557,56 @@ mod source_plan_tests {
         assert!(!plan.accepts_output_event_type(TypeId::of::<
             SourceEvent<Vec<u8>, FramedError<Infallible, Infallible>>,
         >()));
+    }
+}
+
+#[cfg(test)]
+mod request_authority_tests {
+    use super::*;
+
+    struct Replier;
+
+    impl Component for Replier {
+        type Model = ();
+        type Message = ReplyTo<u64>;
+
+        fn init(&self) -> Init<(), Self::Message> {
+            Init::default()
+        }
+
+        fn update(&self, _: &mut (), reply_to: Self::Message) -> Command<Self::Message> {
+            Command::reply(reply_to, 7)
+        }
+    }
+
+    fn fixture() -> (Program, ComponentRef<Replier>, ReplyTo<u64>) {
+        let mut builder = Program::builder();
+        let replier = builder.component(ComponentId::new("replier"), Replier);
+        let token = RequestToken::new(0, Arc::new(()));
+        token.expire();
+        (builder.build().unwrap(), replier, ReplyTo::runtime(token))
+    }
+
+    #[test]
+    fn controlled_foreign_expired_reply_still_faults() {
+        let (program, replier, foreign) = fixture();
+        let mut runtime = ControlledRuntime::builder(program).build().unwrap();
+        runtime.send(&replier, foreign).unwrap();
+        let error = runtime.run_until_idle().unwrap_err();
+        assert_eq!(error.component(), Some(replier.id()));
+        assert!(error.to_string().contains("another Program"));
+        assert!(runtime.cancel().unwrap().is_clean());
+    }
+
+    #[tokio::test]
+    async fn live_foreign_expired_reply_still_faults() {
+        let (program, replier, foreign) = fixture();
+        let runtime = LiveRuntime::builder(program).build().unwrap();
+        let handle = runtime.handle(&replier).unwrap();
+        let task = runtime.spawn();
+        handle.send(foreign).await.unwrap();
+        let error = task.shutdown(Shutdown::Drain).await.unwrap_err();
+        assert_eq!(error.component(), Some(replier.id()));
+        assert!(error.to_string().contains("another Program"));
     }
 }

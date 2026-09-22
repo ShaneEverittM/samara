@@ -93,12 +93,16 @@ architecture before each implementation slice begins.
   Messages rather than treated as the same vocabulary.
 - Confirm successful Requests use opaque runtime correlation, accept at most
   one Reply, map it to `RequestOutcome::Replied`, and preserve the causal chain.
+- Confirm opt-in Request deadlines settle once, remove their bookkeeping, and
+  discard late Replies while admitted provider work continues. Cover zero,
+  deadline equality, overflow, and host admission time in both relevant profiles.
 - Confirm live PortHandle Notifications and Requests enter through the exact
   built Port binding and ordinary provider Message path without directly
   invoking a Component or exposing its Model.
 - Confirm a host Request uses opaque runtime correlation and `ReplyTo` but
   resolves its waiter to `R::Reply` directly, without a requester Component
-  Message or RequestOutcome. Concurrent same-typed requests must remain distinct
+  Message. Its opt-in timed form returns RequestOutcome instead. Concurrent
+  same-typed requests must remain distinct
   when Replies complete in a different order.
 - Confirm `ProgramBuilder::build()` rejects logical assembly errors, closes the
   Program-issued capability inventory, and permits Port cycles without
@@ -253,8 +257,9 @@ architecture before each implementation slice begins.
     or same-named lookalike Port before spawn;
   - cloned-handle Notification admission, provider conversion, serialized
     delivery, post-cutoff rejection, and cutoff-race ownership;
-  - direct typed host Reply with no RequestOutcome or requester Component
-    Message, plus correlation across reverse-order concurrent Replies;
+  - direct typed host Reply for unbounded requests and RequestOutcome for
+    timed requests, with no requester Component Message; correlation across
+    reverse-order concurrent Replies;
   - Drain retention and possible indefinite wait for an unanswered Request;
   - Cancel and clean-closure wakeup through RuntimeError, fault identity
     preservation, and later-ingress rejection with that fault; and
@@ -300,8 +305,9 @@ architecture before each implementation slice begins.
   waiter is not a second work unit. Dropping that waiter does not change the
   count or ownership lifecycle.
 - Controlled cancellation tests reduce both pending counts to zero. An
-  unanswered Phase 5 Request remains a `pending_later` obligation until then
-  and does not synthesize a deferred failure, timeout, or cancellation outcome.
+  unanswered unbounded Request remains a `pending_later` obligation until then.
+  An opted-in deadline settles it to `TimedOut`; its timer is not a second
+  obligation. Scope cancellation manufactures no Request outcome.
 - Cancellation behavior for long-running and short-running commands.
 - Standard-continuation tests must cover the default `From` conversion and the
   explicit `_with` mapper for Effects, Requests, Subscriptions, and HTTP

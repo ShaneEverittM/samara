@@ -246,14 +246,16 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
   future, or runtime handle inside `update`.
 - The requester never awaits inside `update`; the mapped `RequestOutcome` returns
   through normal runtime-managed message delivery.
-- Phase 5 implements the successful path only: typed Port delivery, one opaque
-  transport-correlation token, at-most-once Reply, mapping to
-  `RequestOutcome::Replied`, causal tracing, and one outstanding-Request
-  obligation. An unanswered Request remains pending until controlled
-  cancellation cleans up runtime ownership.
-- Request failure, abandonment, timeout, cancellation, late-Reply, and
-  delegation semantics remain deferred; Phase 5 does not manufacture those
-  outcome variants.
+- Requests carry one opaque correlation authority and one runtime-owned
+  obligation. Unbounded forms wait until Reply or scope termination.
+- [ADR-0011](../adr/0011-request-timeouts.md) adds `request_timeout` and
+  `request_timeout_with`. Their duration starts at interpretation on logical or
+  Tokio time. Reply interpretation strictly before the deadline succeeds;
+  otherwise one `TimedOut` Message settles the obligation and its deadline.
+  Late Replies are discarded without retaining runtime tombstones. Admitted
+  provider work continues, and foreign reply authority still faults.
+- Failure, abandonment, explicit request cancellation, and delegation semantics
+  remain deferred. Scope termination does not manufacture those outcomes.
 - [ADR-0006](../adr/0006-live-port-ingress.md) adds a live-only host boundary.
   `LiveRuntime::port_handle` validates one exact built `Port<P>` binding and
   returns a cloneable `PortHandle<P>` with `notify` and `request` operations.
@@ -261,10 +263,10 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
   RequestInvocation, opaque transport correlation, and `Command::reply` path as
   Component-issued Port work. It cannot access the provider or Model and never
   invokes a transition directly.
-- A host Request awaits `Result<R::Reply, RuntimeError>` directly. It has no
-  Component Message continuation and does not construct RequestOutcome. This is
-  an external Tokio completion boundary, not a future available inside
-  `update`.
+- A host `request` awaits `Result<R::Reply, RuntimeError>` directly;
+  `request_timeout` awaits `Result<RequestOutcome<R::Reply>, RuntimeError>`.
+  Its duration starts at admission, including queued time. Both are external
+  Tokio completion boundaries with no Component Message continuation.
 - PortHandle is live-only. ControlledRuntime continues to expose deterministic
   input and drive operations rather than a live host handle.
 

@@ -452,14 +452,13 @@ outcome.
 A provider emits a value of that type using the invocation's `ReplyTo`
 authority.
 
-**Request outcome / `RequestOutcome`** — The Component-requester-visible single
-terminal outcome of a Request, provisionally a Reply, a failure carrying runtime
-Error data, timeout, or cancellation. The exact in-band failure and deadline
-policy is not yet settled. Phase 5 implements only `RequestOutcome::Replied`; an
-unanswered Request remains pending until controlled cancellation cleans up
-ownership without manufacturing the deferred outcome variants. ADR-0006's live
-host request returns `Reply` directly or a host-boundary `RuntimeError`; it does
-not manufacture a RequestOutcome.
+**Request outcome / `RequestOutcome`** — The single terminal result mapped to
+an ordinary requester Message. The runtime produces `Replied` or, for the
+opt-in timeout forms in ADR-0011, `TimedOut`. Deadline equality times out;
+late Replies are discarded and provider work continues. `Failed` and
+`Cancelled` remain reserved. Unbounded `PortHandle::request` returns Reply
+directly; `request_timeout` returns RequestOutcome. Host scope failures use
+`RuntimeError` without manufacturing Component outcomes.
 
 **`RequestError`** — The current provisional type for a Request's runtime-level
 terminal error data. Domain-level negative replies remain ordinary Reply
@@ -689,10 +688,8 @@ to hold.
 These questions are intentionally recorded rather than answered by the Phase 2
 Component-kernel freeze:
 
-- The exact RequestOutcome variants and the deadline, cancellation,
-  late-Reply, abandoned-Reply, and delegation policies beyond Phase 5's
-  successful Component Reply path and ADR-0006's live-host whole-scope closure
-  diagnostic.
+- Request failure, explicit cancellation, abandonment, and delegation policy
+  beyond ADR-0011's opt-in timeouts and ADR-0006's host scope diagnostics.
 - Notification delivery-failure semantics beyond accepted live admission and
   whole-scope Cancel/fault cutovers.
 - The initial code shape of Layer abstractions. Multiple Layer kinds are

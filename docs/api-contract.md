@@ -248,9 +248,37 @@ boundary to provider-neutral Ports:
   deterministic tests continue to use the existing controlled drive and
   inspection surfaces.
 
-This contract freezes host-boundary completion only. It does not activate
-`RequestOutcome::Failed`, `TimedOut`, or `Cancelled`, define per-Request
-cancellation, or settle late-Reply and abandonment policy for Components.
+ADR-0006 freezes the original unbounded host-boundary completion. ADR-0011
+below extends it with opt-in timeouts; `Failed`, `Cancelled`, and abandonment
+remain deferred.
+
+## Accepted and Implemented Contract: Request Timeouts
+
+[ADR-0011](adr/0011-request-timeouts.md) adds opt-in
+`Command::request_timeout`, `Command::request_timeout_with`, and
+`PortHandle::request_timeout`. Existing request forms remain unbounded.
+
+- Component durations start at Command interpretation; host durations start at
+  admission on first poll, including queued time. Controlled deadlines use
+  logical time; live deadlines use Tokio time. Overflow fails explicitly.
+- Only a Reply interpreted strictly before the deadline succeeds. At or after
+  it, including zero duration, `TimedOut` wins. Each request settles once.
+- Component outcomes pass through the normal Message mapper; timed host calls
+  return `Result<RequestOutcome<R::Reply>, RuntimeError>`.
+- Settlement removes both the request obligation and its deadline bookkeeping.
+  Expired reply authority is recognized without a runtime tombstone; its late
+  Reply is discarded. Foreign or invalid authority still faults.
+- Admitted provider Messages and their work remain owned. Timeout does not
+  imply provider cancellation or prevent its external actions.
+- Drain processes deadlines and their continuations. Cancel/fault clears them
+  under the existing scope policy; host failures remain `RuntimeError`.
+- Controlled traces distinguish reply, timeout, and late-Reply drop. Timeout's
+  causal parent is its Request, and its deadline adds no separate obligation.
+
+Failure, abandonment, explicit request cancellation, and default timeout
+policies remain deferred. Invariants, risks, and rollback are in ADR-0011;
+[acceptance evidence](testing/v0-acceptance-matrix.md#active-adr-0011-request-timeout-scenarios)
+covers both execution profiles.
 
 ## Accepted and Implemented Contract: Live Host Lifecycle
 

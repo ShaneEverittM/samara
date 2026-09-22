@@ -10,6 +10,10 @@
 > runtime discovery of missing controlled behavior. The scheduling, trace,
 > Source-cutover, and work-accounting decisions below remain in force.
 
+> Extension note (September 22, 2026): [ADR-0011](0011-request-timeouts.md)
+> adds opt-in Request timeouts and harmless late Replies. Successful-only and
+> deferred-timeout statements below describe the original unbounded forms.
+
 ## Context
 
 ADR-0002 requires deterministic controlled execution without making its chosen

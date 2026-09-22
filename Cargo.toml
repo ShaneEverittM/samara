@@ -34,3 +34,4 @@ nix = { version = "0.31.3", default-features = false, features = ["poll"] }
 
 [dev-dependencies]
 serde = { version = "1.0.229", features = ["derive"] }
+tokio = { version = "1.45.1", features = ["test-util"] }

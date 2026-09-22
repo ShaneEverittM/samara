@@ -47,17 +47,18 @@ use crate::{
     BoxFuture, CapabilityToken, Command, CommandKind, ComponentId, DriverStopped, EffectDescriptor,
     EffectDriver, EffectOutcome, ErasedRequestMapper, ErasedSourceEvent, HttpError, HttpRequest,
     HttpResponse, Notification, Port, PortId, PrintStderr, PrintStdout, Program, Protocol, ReplyTo,
-    Request, RuntimeError, Shutdown, ShutdownReport, SourceCapability, SourceDescriptor,
-    SourceDriver, SourceEvent, SourcePlan, SourceRequirement, SourceSink, StreamDescriptor,
-    StreamSourceDescriptor, SubscriptionId, TcpBytes, TcpError, TraceId,
+    Request, RequestOutcome, RequestToken, RuntimeError, Shutdown, ShutdownReport,
+    SourceCapability, SourceDescriptor, SourceDriver, SourceEvent, SourcePlan, SourceRequirement,
+    SourceSink, StreamDescriptor, StreamSourceDescriptor, SubscriptionId, TcpBytes, TcpError,
+    TraceId,
 };
 #[cfg(unix)]
 use crate::{StdinError, StdinLines, StdinSourceDescriptor};
 
 type ErasedValue = Box<dyn Any + Send>;
 type ErasedMessageMapper = Box<dyn FnOnce(ErasedValue) -> ErasedValue + Send + 'static>;
-type HostReplyCompletion = Box<dyn FnOnce(ErasedValue) + Send + 'static>;
-type ProtocolRequestConversion = Box<dyn FnOnce(u64) -> ErasedValue + Send + 'static>;
+type HostReplyCompletion = Box<dyn FnOnce(RequestOutcome<ErasedValue>) + Send + 'static>;
+type ProtocolRequestConversion = Box<dyn FnOnce(Arc<RequestToken>) -> ErasedValue + Send + 'static>;
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
@@ -1341,6 +1342,7 @@ pub(crate) trait ErasedLivePortRequest: Send {
     fn port_program(&self) -> &Arc<()>;
     fn protocol_type(&self) -> TypeId;
     fn reply_type(&self) -> TypeId;
+    fn deadline(&self) -> Option<tokio::time::Instant>;
     fn into_conversion(self: Box<Self>) -> (ProtocolRequestConversion, HostReplyCompletion);
 }
 
@@ -1382,7 +1384,8 @@ where
 {
     port: Port<P>,
     request: R,
-    completion: oneshot::Sender<R::Reply>,
+    deadline: Option<tokio::time::Instant>,
+    completion: oneshot::Sender<RequestOutcome<R::Reply>>,
 }
 
 impl<P, R> ErasedLivePortRequest for TypedLivePortRequest<P, R>
@@ -1406,20 +1409,20 @@ where
         TypeId::of::<R::Reply>()
     }
 
+    fn deadline(&self) -> Option<tokio::time::Instant> {
+        self.deadline
+    }
+
     fn into_conversion(self: Box<Self>) -> (ProtocolRequestConversion, HostReplyCompletion) {
         let Self {
             request,
             completion,
             ..
         } = *self;
-        let conversion: ProtocolRequestConversion = Box::new(move |correlation| {
-            Box::new(request.into_message(ReplyTo::runtime(correlation)))
-        });
-        let completion: HostReplyCompletion = Box::new(move |reply: ErasedValue| {
-            let reply = *reply
-                .downcast::<R::Reply>()
-                .expect("a host Request completion is selected by reply TypeId");
-            let _ = completion.send(reply);
+        let conversion: ProtocolRequestConversion =
+            Box::new(move |token| Box::new(request.into_message(ReplyTo::runtime(token))));
+        let completion: HostReplyCompletion = Box::new(move |outcome| {
+            let _ = completion.send(crate::typed_request_outcome::<R::Reply>(outcome));
         });
         (conversion, completion)
     }
@@ -1440,6 +1443,9 @@ pub(crate) enum LiveEvent {
     TimerFired {
         timer: u64,
         message: QueuedMessage,
+    },
+    RequestTimedOut {
+        correlation: u64,
     },
     Shutdown(Shutdown),
 }
@@ -1468,7 +1474,8 @@ impl LiveEvent {
     pub(crate) fn port_request<P, R>(
         port: Port<P>,
         request: R,
-        completion: oneshot::Sender<R::Reply>,
+        deadline: Option<tokio::time::Instant>,
+        completion: oneshot::Sender<RequestOutcome<R::Reply>>,
     ) -> Self
     where
         P: Protocol,
@@ -1477,6 +1484,7 @@ impl LiveEvent {
         Self::PortIngress(LivePortIngress::Request(Box::new(TypedLivePortRequest {
             port,
             request,
+            deadline,
             completion,
         })))
     }
@@ -1514,7 +1522,7 @@ struct PendingEffect {
 enum RequestContinuation {
     Component {
         requester: ComponentId,
-        mapper: ErasedMessageMapper,
+        mapper: ErasedRequestMapper<ErasedValue>,
         message_type: TypeId,
         message_type_name: &'static str,
     },
@@ -1522,7 +1530,11 @@ enum RequestContinuation {
 }
 
 struct OutstandingRequest {
-    correlation: u64,
+    token: Arc<RequestToken>,
+    deadline: Option<tokio::time::Instant>,
+    deadline_task: Option<AbortHandle>,
+    owner: ComponentId,
+    work: TraceId,
     reply_type: TypeId,
     continuation: RequestContinuation,
 }
@@ -2001,12 +2013,28 @@ impl LiveCore {
                             "request Port has no runtime binding",
                         ));
                     };
+                    let deadline = match command.timeout() {
+                        Some(timeout) => Some(
+                            tokio::time::Instant::now()
+                                .checked_add(timeout)
+                                .ok_or_else(|| {
+                                    self.runtime_fault(
+                                        component.clone(),
+                                        None,
+                                        work,
+                                        "request deadline is unrepresentable",
+                                    )
+                                })?,
+                        ),
+                        None => None,
+                    };
                     let correlation = self.next_request;
                     self.next_request += 1;
                     let reply_type = command.reply_type_id();
+                    let token = RequestToken::new(correlation, self.program.program.clone());
                     let (protocol_message, mapper): (_, ErasedRequestMapper<Message>) =
-                        command.into_parts(correlation);
-                    let mapper: ErasedMessageMapper =
+                        command.into_parts(token.clone());
+                    let mapper: ErasedRequestMapper<ErasedValue> =
                         Box::new(move |reply| Box::new(mapper(reply)));
                     let binding = &self.program.bindings[binding_index];
                     let message = QueuedMessage {
@@ -2016,8 +2044,14 @@ impl LiveCore {
                         message: binding.convert(protocol_message),
                         source: None,
                     };
+                    let deadline_task =
+                        self.schedule_request_deadline(correlation, deadline, component, work);
                     self.requests.push(OutstandingRequest {
-                        correlation,
+                        token,
+                        deadline,
+                        deadline_task,
+                        owner: component.clone(),
+                        work,
                         reply_type,
                         continuation: RequestContinuation::Component {
                             requester: component.clone(),
@@ -2030,11 +2064,22 @@ impl LiveCore {
                 }
                 CommandKind::Reply(command) => {
                     let reply_type = command.reply_type_id();
-                    let (correlation, reply) = command.into_parts();
+                    let (token, reply) = command.into_parts();
+                    if !Arc::ptr_eq(&token.program, &self.program.program) {
+                        return Err(self.runtime_fault(
+                            component.clone(),
+                            None,
+                            work,
+                            "ReplyTo belongs to another Program",
+                        ));
+                    }
+                    if token.is_expired() {
+                        continue;
+                    }
                     let Some(index) = self
                         .requests
                         .iter()
-                        .position(|request| request.correlation == correlation)
+                        .position(|request| Arc::ptr_eq(&request.token, &token))
                     else {
                         return Err(self.runtime_fault(
                             component.clone(),
@@ -2043,8 +2088,7 @@ impl LiveCore {
                             "ReplyTo no longer names an outstanding Request",
                         ));
                     };
-                    let request = self.requests.remove(index);
-                    if request.reply_type != reply_type {
+                    if self.requests[index].reply_type != reply_type {
                         return Err(self.runtime_fault(
                             component.clone(),
                             None,
@@ -2052,40 +2096,13 @@ impl LiveCore {
                             "Reply type does not match its Request correlation",
                         ));
                     }
-                    match request.continuation {
-                        RequestContinuation::Component {
-                            requester,
-                            mapper,
-                            message_type,
-                            message_type_name,
-                        } => {
-                            let mapped =
-                                catch_unwind(AssertUnwindSafe(|| mapper(reply))).map_err(|_| {
-                                    self.runtime_fault(
-                                        component.clone(),
-                                        None,
-                                        work,
-                                        "Request continuation panicked",
-                                    )
-                                })?;
-                            let _ = self.scope.accept_finite(LiveEvent::Message(QueuedMessage {
-                                target: requester,
-                                target_message_type: message_type,
-                                message_type_name,
-                                message: mapped,
-                                source: None,
-                            }));
-                        }
-                        RequestContinuation::Host(completion) => {
-                            catch_unwind(AssertUnwindSafe(|| completion(reply))).map_err(|_| {
-                                self.runtime_fault(
-                                    component.clone(),
-                                    None,
-                                    work,
-                                    "host Request continuation panicked",
-                                )
-                            })?;
-                        }
+                    if self.requests[index]
+                        .deadline
+                        .is_some_and(|deadline| tokio::time::Instant::now() >= deadline)
+                    {
+                        self.complete_request(index, RequestOutcome::TimedOut)?;
+                    } else {
+                        self.complete_request(index, RequestOutcome::Replied(reply))?;
                     }
                 }
                 CommandKind::After { delay, message } => {
@@ -2381,24 +2398,32 @@ impl LiveCore {
                 let correlation = self.next_request;
                 self.next_request += 1;
                 let reply_type = request.reply_type();
+                let deadline = request.deadline();
+                let token = RequestToken::new(correlation, self.program.program.clone());
+                let owner = ComponentId::new("<external-port>");
+                let deadline_task =
+                    self.schedule_request_deadline(correlation, deadline, &owner, work);
                 let (conversion, completion) = request.into_conversion();
                 self.requests.push(OutstandingRequest {
-                    correlation,
+                    token: token.clone(),
+                    deadline,
+                    deadline_task,
+                    owner,
+                    work,
                     reply_type,
                     continuation: RequestContinuation::Host(completion),
                 });
-                let protocol_message =
-                    match catch_unwind(AssertUnwindSafe(|| conversion(correlation))) {
-                        Ok(message) => message,
-                        Err(_) => {
-                            return Err(self.runtime_fault(
-                                provider,
-                                None,
-                                work,
-                                "external Request protocol conversion panicked",
-                            ));
-                        }
-                    };
+                let protocol_message = match catch_unwind(AssertUnwindSafe(|| conversion(token))) {
+                    Ok(message) => message,
+                    Err(_) => {
+                        return Err(self.runtime_fault(
+                            provider,
+                            None,
+                            work,
+                            "external Request protocol conversion panicked",
+                        ));
+                    }
+                };
                 let provider_message = {
                     let binding = &self.program.bindings[binding_index];
                     catch_unwind(AssertUnwindSafe(|| binding.convert(protocol_message)))
@@ -2421,10 +2446,96 @@ impl LiveCore {
                     message: provider_message,
                     source: None,
                 };
-                if !self.scope.accept_finite(LiveEvent::Message(message)) {
-                    self.requests.pop();
+                if !self.scope.accept_finite(LiveEvent::Message(message))
+                    && let Some(request) = self.requests.pop()
+                    && let Some(task) = request.deadline_task
+                {
+                    task.abort();
                 }
             }
+        }
+        Ok(())
+    }
+
+    fn schedule_request_deadline(
+        &mut self,
+        correlation: u64,
+        deadline: Option<tokio::time::Instant>,
+        component: &ComponentId,
+        work: TraceId,
+    ) -> Option<AbortHandle> {
+        deadline.map(|deadline| {
+            let scope = self.scope.clone();
+            self.spawn_owned(
+                TaskContext::Timer {
+                    component: component.clone(),
+                    work,
+                },
+                async move {
+                    tokio::time::sleep_until(deadline).await;
+                    let _ = scope.accept_finite(LiveEvent::RequestTimedOut { correlation });
+                    Ok(())
+                },
+            )
+        })
+    }
+
+    fn complete_request(
+        &mut self,
+        index: usize,
+        outcome: RequestOutcome<ErasedValue>,
+    ) -> Result<(), RuntimeError> {
+        let request = self.requests.remove(index);
+        if let Some(task) = request.deadline_task {
+            task.abort();
+        }
+        if matches!(outcome, RequestOutcome::TimedOut) {
+            request.token.expire();
+        }
+        match request.continuation {
+            RequestContinuation::Component {
+                requester,
+                mapper,
+                message_type,
+                message_type_name,
+            } => {
+                let mapped = catch_unwind(AssertUnwindSafe(|| mapper(outcome))).map_err(|_| {
+                    self.runtime_fault(
+                        request.owner.clone(),
+                        None,
+                        request.work,
+                        "Request continuation panicked",
+                    )
+                })?;
+                let _ = self.scope.accept_finite(LiveEvent::Message(QueuedMessage {
+                    target: requester,
+                    target_message_type: message_type,
+                    message_type_name,
+                    message: mapped,
+                    source: None,
+                }));
+            }
+            RequestContinuation::Host(completion) => {
+                catch_unwind(AssertUnwindSafe(|| completion(outcome))).map_err(|_| {
+                    self.runtime_fault(
+                        request.owner,
+                        None,
+                        request.work,
+                        "host Request continuation panicked",
+                    )
+                })?;
+            }
+        }
+        Ok(())
+    }
+
+    fn process_request_timeout(&mut self, correlation: u64) -> Result<(), RuntimeError> {
+        if let Some(index) = self
+            .requests
+            .iter()
+            .position(|request| request.token.correlation == correlation)
+        {
+            self.complete_request(index, RequestOutcome::TimedOut)?;
         }
         Ok(())
     }
@@ -2696,6 +2807,7 @@ impl LiveCore {
                                 Ok(())
                             }
                         }
+                        LiveEvent::RequestTimedOut { correlation } => self.process_request_timeout(correlation),
                         LiveEvent::Shutdown(Shutdown::Drain) => self.begin_drain(),
                         LiveEvent::Shutdown(Shutdown::Cancel) => {
                             return self.finish_cancel(None).await;

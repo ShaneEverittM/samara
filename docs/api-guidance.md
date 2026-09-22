@@ -398,15 +398,35 @@ checks:
   such as `RequestError::ReplyAbandoned`; correctness must never depend on a
   destructor running.
 
-Phase 5 implements only successful `RequestOutcome::Replied`. An unanswered
-Component Request remains runtime-owned and pending until controlled
-cancellation; it does not yet manufacture failure, timeout, cancellation, or
-abandonment outcomes. ADR-0006 separately defines only the live host boundary:
-whole-scope closure wakes an external waiter with `RuntimeError`, not a
-RequestOutcome. A normal Component request might require a reply from the
-provider's handling transition, while a future explicit delegation mechanism
-might transfer the obligation and relax ordering guarantees. That choice
-changes observable request semantics and should be made explicitly.
+Unbounded requests remain pending until a Reply or scope termination.
+[ADR-0011](adr/0011-request-timeouts.md) adds explicit timeouts; abandonment
+and per-request cancellation remain deferred. Whole-scope closure wakes a host
+waiter with `RuntimeError` without manufacturing a Component outcome.
+
+## How Do I Bound a Request's Lifetime?
+
+Use `Command::request_timeout(port, request, duration)` for the canonical
+`From<RequestOutcome<Reply>>` conversion, or
+`Command::request_timeout_with(port, request, duration, mapper)` to capture
+application context. The runtime starts the duration when interpreting the
+Command, using logical time in controlled execution and Tokio time live.
+
+A Reply succeeds only if interpreted strictly before the deadline; otherwise
+one `TimedOut` Message releases the request obligation. Zero always times out.
+Late Replies are discarded. The deadline is removed on either outcome, so a
+successful request does not leave a timer holding Drain open.
+
+Hosts use `port_handle.request_timeout(request, duration).await`, returning
+`Result<RequestOutcome<Reply>, RuntimeError>`. This duration includes time
+queued after admission on first poll. Dropping the waiter leaves the request
+and deadline owned by the runtime. Wrapping an unbounded `request` in
+`tokio::time::timeout` only stops host observation; it does not release Samara's
+outstanding request.
+
+Timeout bounds reply acceptance, not provider work or wall-clock response
+latency. The provider still receives an admitted Message and may finish effects
+after the requester has timed out. Stopping it or retrying safely needs an
+explicit application protocol. `request` and `request_with` remain unbounded.
 
 ## Why Do Component Request Outcomes Return as Messages Rather Than Futures?
 

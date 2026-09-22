@@ -13,6 +13,10 @@
 > internally inconsistent capabilities may now reach that defense-in-depth
 > fault path.
 
+> Extension note (September 22, 2026): [ADR-0011](0011-request-timeouts.md)
+> adds opt-in Request timeouts and harmless late Replies. Successful-only and
+> deferred-timeout statements below describe the original unbounded forms.
+
 ## Context
 
 [ADR-0010](0010-shutdown-escalation.md) adds explicit, idempotent shutdown

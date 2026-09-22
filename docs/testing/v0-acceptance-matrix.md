@@ -410,15 +410,37 @@ classification, and zero work after successful Cancel. They must not assert an
 internal channel, oneshot, correlation-table layout, global event order, or FIFO
 among independent handle clones.
 
+## Active ADR-0011 Request-Timeout Scenarios
+
+[`request_timeouts.rs`](../../tests/request_timeouts.rs) covers the contract in
+[ADR-0011](../adr/0011-request-timeouts.md):
+
+| Contract | Evidence |
+| --- | --- |
+| Reply removes deadline; Drain does not wait for it | `controlled_reply_removes_unused_deadline`; `live_reply_cancels_deadline_task_without_delaying_drain` |
+| No reply settles once; one obligation; deterministic causal trace | `controlled_timeout_is_one_obligation_with_repeatable_causal_trace` |
+| Late reply is harmless; provider work continues | `controlled_late_reply_does_not_repeat_outcome_or_cancel_provider_work`; `live_component_timeout_and_late_reply_drain_cleanly` |
+| Zero duration and deadline equality time out | `controlled_zero_and_equal_deadlines_timeout`; `live_zero_and_equal_deadlines_timeout` |
+| Occurrence correlation and mapper context | `controlled_concurrent_requests_preserve_explicit_mapper_context`; `live_concurrent_host_timeouts_keep_correlation` |
+| Host deadline includes queued time and survives dropped observation | `host_timeout_includes_time_queued_before_owner_starts`; `dropped_host_waiter_keeps_deadline_and_drain_releases_unanswered_request` |
+| Scope Cancel preserves abort semantics | `controlled_unbounded_requests_and_scope_cancel_keep_existing_semantics`; `live_scope_cancel_does_not_manufacture_timeout` |
+| Overflow and runtime faults remain explicit | `controlled_deadline_overflow_faults_explicitly`; `live_timeout_preserves_runtime_fault_and_rejects_overflow` |
+
+`request_authority_tests` additionally proves both profiles reject foreign
+expired reply authority instead of accepting it as a harmless late Reply.
+
+Live timeout tests use paused Tokio time; controlled tests advance logical time.
+Neither depends on wall-clock sleeps or incidental task order.
+
 ## Remaining Deferrals
 
 - Descriptor/message payload capture, typed trace projections, a public live
   observer, durable trace storage, and replay. In particular,
   `v10_live_observer_has_no_feedback_path` is deferred beyond final v0
   conformance rather than staged for Phase 6.
-- Request failure, timeout, provider-visible or per-Request cancellation,
-  abandonment, late-Reply, and delegation semantics beyond ADR-0006's narrow
-  external whole-scope closure error.
+- Request failure, provider-visible or per-Request cancellation, abandonment,
+  and delegation beyond ADR-0011's opt-in timeouts and ADR-0006's external
+  whole-scope closure error.
 - Notification delivery failure beyond accepted admission and whole-scope
   Cancel/fault cutovers.
 - Bounded pressure, overload controls, automatic shutdown deadlines and escalation

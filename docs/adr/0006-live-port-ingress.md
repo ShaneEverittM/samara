@@ -5,6 +5,10 @@
 - Decision owners: Samara maintainers
 - Extends: [ADR 0004](0004-initial-live-runtime-semantics.md)
 
+> Extension note (September 22, 2026): [ADR-0011](0011-request-timeouts.md)
+> adds opt-in Request timeouts and harmless late Replies. Successful-only and
+> deferred-timeout statements below describe the original unbounded forms.
+
 ## Context
 
 ADR-0004 introduced `ComponentHandle<C>` as a live capability for surrounding
