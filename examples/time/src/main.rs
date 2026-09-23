@@ -15,22 +15,19 @@ enum HttpTimeMessage {
     // Received when we are asked for our current time.
     GetTime(RequestInvocation<TimeServerProtocol, GetCurrentTime>),
 
-    // Received when our time requests finish.
-    TimeRetrieved(DateTime<Utc>),
-
-    // Received when our time requests fail.
-    FailedToGetTime(GetTimeError),
+    // One terminal Message keeps poll cleanup common to every outcome.
+    PollFinished(Result<DateTime<Utc>, GetTimeError>),
 }
 
 impl From<EffectOutcome<TimeResponse, HttpResponseError>> for HttpTimeMessage {
     fn from(outcome: EffectOutcome<TimeResponse, HttpResponseError>) -> Self {
-        use self::{EffectOutcome::*, HttpTimeMessage::*};
+        use EffectOutcome::*;
 
-        match outcome {
-            Succeeded(response) => TimeRetrieved(response.data.iso),
-            Failed(error) => FailedToGetTime(GetTimeError::Response(error)),
-            Cancelled(reason) => FailedToGetTime(GetTimeError::Cancelled(reason)),
-        }
+        Self::PollFinished(match outcome {
+            Succeeded(response) => Ok(response.data.iso),
+            Failed(error) => Err(GetTimeError::Response(error)),
+            Cancelled(reason) => Err(GetTimeError::Cancelled(reason)),
+        })
     }
 }
 
@@ -42,9 +39,17 @@ impl From<TimeServerProtocolMessage> for HttpTimeMessage {
     }
 }
 
-#[derive(Default)]
-struct HttpTimeModel {
-    current_time: Option<DateTime<Utc>>,
+#[derive(Debug, PartialEq, Eq)]
+enum HttpTimeModel {
+    Idle { current_time: Option<DateTime<Utc>> },
+    Polling { current_time: Option<DateTime<Utc>> },
+}
+
+impl HttpTimeModel {
+    fn current_time(&self) -> Option<DateTime<Utc>> {
+        let (Self::Idle { current_time } | Self::Polling { current_time }) = self;
+        *current_time
+    }
 }
 
 /// HTTP-backed implementation of the provider-neutral time protocol.
@@ -53,46 +58,61 @@ struct HttpTimeServer {
     stderr: EffectCapability<PrintStderr>,
 }
 
+impl HttpTimeServer {
+    const TICK: Command<HttpTimeMessage> =
+        Command::after(Duration::from_secs(1), HttpTimeMessage::Tick);
+}
+
 impl Component for HttpTimeServer {
     type Model = HttpTimeModel;
     type Message = HttpTimeMessage;
 
     fn init(&self) -> Init<Self::Model, Self::Message> {
-        Init::default().with_command(Command::after(
+        Init::new(HttpTimeModel::Idle { current_time: None }).with_command(Command::after(
             Duration::from_secs(1),
             HttpTimeMessage::Tick,
         ))
     }
 
     fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
-        match message {
-            // Got a tick, get the time and schedule the next tick.
-            HttpTimeMessage::Tick => {
+        use HttpTimeMessage::{GetTime, PollFinished, Tick};
+        use HttpTimeModel::{Idle, Polling};
+
+        match (model, message) {
+            (state @ Idle { .. }, Tick) => {
+                *state = Polling {
+                    current_time: state.current_time(),
+                };
+
                 let get = HttpRequest::get("https://api.coinbase.com/v2/time")
                     .on_response()
                     .require_success()
                     .json::<TimeResponse>()
                     .into_command(&self.http);
-                let tick = Command::after(Duration::from_secs(1), HttpTimeMessage::Tick);
 
-                Command::batch([get, tick])
+                Command::batch([get, Self::TICK])
             }
 
-            // Someone wants to know our conception of time.
-            HttpTimeMessage::GetTime(request) => {
-                Command::reply(request.reply_to, model.current_time)
+            // Keep ticking while busy, without issuing another HTTP poll.
+            (Polling { .. }, Tick) => Self::TICK,
+
+            (state @ Polling { .. }, PollFinished(result)) => {
+                let (current_time, command) = match result {
+                    Ok(time) => (Some(time), Command::none()),
+                    Err(error) => (
+                        state.current_time(),
+                        samara::eprintln!(&self.stderr, "Failed to get time: {error}"),
+                    ),
+                };
+                *state = Idle { current_time };
+                command
             }
 
-            // Got the time, save it. Consumers decide how to present it.
-            HttpTimeMessage::TimeRetrieved(time) => {
-                model.current_time = Some(time);
-                Command::none()
-            }
+            // There is no active poll for this completion to settle.
+            (Idle { .. }, PollFinished(_)) => Command::none(),
 
-            // Couldn't get the time, request an error be printed.
-            HttpTimeMessage::FailedToGetTime(error) => {
-                samara::eprintln!(&self.stderr, "Failed to get time: {error}")
-            }
+            // Cached reads are available in either state.
+            (state, GetTime(request)) => Command::reply(request.reply_to, state.current_time()),
         }
     }
 }
@@ -157,9 +177,10 @@ struct CliModel {
 /// Interactive Component that translates terminal commands into Samara intent.
 struct Cli {
     input: SourceCapability<StdinLines>,
-    time_server: Port<TimeServerProtocol>,
     stdout: EffectCapability<PrintStdout>,
     stderr: EffectCapability<PrintStderr>,
+
+    time_server: Port<TimeServerProtocol>,
 }
 
 impl Component for Cli {
@@ -338,6 +359,9 @@ async fn main() -> Result<()> {
 fn main() -> Result<()> {
     anyhow::bail!("the first-party live StdinLines binding currently requires Unix")
 }
+
+#[cfg(test)]
+mod polling_tests;
 
 #[cfg(test)]
 mod tests {

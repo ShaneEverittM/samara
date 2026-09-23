@@ -337,6 +337,34 @@ continuation and any domain context exactly once while Samara owns transport
 correlation and lifecycle bookkeeping. An API that claims to eliminate this
 irreducible information is likely hiding magic or discarding semantics.
 
+## How Do I Poll Without Overlapping Effects?
+
+`Command::batch([http, Command::after(interval, Tick)])` schedules independent
+work. The timer can fire before HTTP completes; per-Component serialization
+does not prevent that overlap or an older response arriving last.
+
+Choose the application policy explicitly:
+
+| Intended behavior                                             | Model and Command pattern                                                                                                                                           |
+|---------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Keep ticking; skip polls while busy                           | Use Idle/Polling Model states. Each tick schedules the next; only Idle issues HTTP. A terminal outcome returns Polling to Idle.                                     |
+| Wait an interval after each completion                        | Schedule the next tick from the terminal-outcome transition, covering both success and failure.                                                                     |
+| Allow overlap; keep only the newest issued operation's result | Capture a Model-owned generation with an explicit `_with` mapper and reject outcomes from obsolete generations. This still needs a separate outstanding-work bound. |
+
+The [time example](../examples/time/src/main.rs) uses the first policy with an
+enum Model and a match on `(model, message)`. Both states retain the cached
+observation. One `PollFinished` Message returns `Polling` to `Idle` for either
+success or error; a completion in `Idle` is an explicit no-op. Skipped ticks create no backlog, cached reads
+remain available, and a sequential response with an earlier clock value is
+still valid. A hung HTTP Effect blocks new polls; Component Request timeouts do
+not bound HTTP Effects.
+
+Test delayed completion and both tick/completion orders at the same logical
+instant. A test should assert the chosen overlap and freshness policy, without
+requiring one global live schedule. The
+[before/after review](notes/first-real-application.md#fifth-follow-through-polling-ordering-and-freshness)
+records the example's evidence and API conclusions.
+
 ## Why Are Notification and Request APIs Symmetric?
 
 The two Port interaction forms should teach each other. `Command::notify` accepts a

@@ -384,3 +384,117 @@ the scope. The following call still names `Shutdown::Cancel` explicitly. The
 library installs no signal handler and consumes no signal result; changing the
 example to a service supervisor, test future, or deadline needs no Samara API
 change.
+
+## Fifth Follow-Through: Polling Ordering and Freshness
+
+The September 22 review starts from `f215712`. Each `Tick` emits an HTTP
+Effect and a one-second timer together. The timer is independent of the HTTP
+outcome, so a slow call allows more calls to start. Every `TimeRetrieved`
+unconditionally replaces `current_time`; completing a newer call before an
+older one can then overwrite the newer observation. Serialized Component
+transitions do not order independent effect completions.
+
+### Application contract
+
+Keep the current initial one-second delay and timer-driven cadence. The Model
+is an enum with `Idle` and `Polling` states, each retaining the last observed
+time. Busy ticks schedule the next tick but issue no HTTP work; missed polls are skipped, with no catch-up queue. A terminal
+outcome makes the next scheduled tick eligible again. This differs from a
+one-second delay *after completion*, which would move timer scheduling into the
+outcome branches.
+
+| State + Message | Next state | Commands |
+| --- | --- | --- |
+| Idle + Tick | Polling, retaining cached observation | One HTTP Effect and next one-second tick |
+| Polling + Tick | Polling | Next one-second tick only |
+| Polling + successful PollFinished | Idle, with new observation | None |
+| Polling + failed/cancelled PollFinished | Idle, retaining cached observation | Print explanatory error |
+| Idle + PollFinished | Idle, unchanged; no poll exists to complete | None |
+| Either state + time-service Request | Unchanged | Reply with cached observation |
+
+At most one HTTP poll is outstanding, and all state changes still occur through
+Messages. A poll's terminal outcome is mapped exactly once by the existing
+runtime contract. Consequently, two HTTP polls cannot race to overwrite the
+cache. This does not promise monotonically increasing time from the remote
+server; sequential observations may legitimately move backward.
+
+An HTTP Effect that never terminates leaves the Model in `Polling` indefinitely,
+while ticks and cached reads remain serviceable. Component Request timeouts do
+not cancel or bound HTTP Effects. Scope Cancel still discards work without
+fabricating an outcome; the Model then belongs to a terminated scope. No retry,
+effect deadline, or runtime ordering policy is introduced by this fix.
+
+Acceptance requires direct transition/Command tests plus controlled runs with
+delayed completion, skipped ticks, recovery after each terminal outcome,
+cached reads during work, and both orders of a tick/completion at the same
+logical time. Rollback removes the guard and its tests together, reintroducing
+overlap; changing to completion-driven polling instead must update the cadence
+contract and evidence.
+
+### Before/after evidence and API assessment
+
+Before the fix, a controlled run issued polls A and B, accepted B's timestamp
+200, then accepted A's timestamp 100 and overwrote the cache. All five new
+regression tests failed against that implementation. The corrected program
+prevents B from starting while A is pending. After A settles, another poll may
+start on the next tick; a lower timestamp from that sequential poll is still
+accepted.
+
+The first guarded draft cleared the in-flight flag separately in success and
+failure branches. The final Message shape uses one
+`PollFinished(Result<DateTime<Utc>, GetTimeError>)`, retaining the existing
+typed error mapping. Its common terminal transition returns `Polling` to
+`Idle` for either result, making it harder to forget cleanup on one terminal
+path. The existing `From<EffectOutcome<...>>` conversion supports this directly.
+
+The retained evidence is in
+[`polling_tests.rs`](../../examples/time/src/polling_tests.rs):
+
+- `http_idle_ignores_unsolicited_poll_completion`: completion in Idle preserves
+  state and emits no Commands, for both empty and populated caches.
+- `http_poll_skips_busy_ticks`: initialization is Idle; the first tick enters
+  Polling and repeated busy ticks emit no HTTP Effect.
+- `http_poll_terminal_outcomes_update_state_and_allow_next_poll`: success,
+  transport failure, non-success status, decoding failure, and cancellation all
+  release the poll, preserve the intended cache behavior, and report errors.
+- `controlled_slow_poll_skips_work_and_serves_cached_reads`: slow effects do not
+  accumulate more polls; cache reads remain responsive, including before the
+  first observation. Sequential remote time may move backward.
+- `controlled_failed_polls_resume_on_next_tick_without_resetting_cadence`:
+  recovery keeps the already-scheduled tick and never catches up missed polls.
+- `controlled_tick_completion_orders_both_preserve_single_poll`: both orders
+  of a tick and completion at the same logical instant are safe and repeatable.
+  They may differ in whether that tick issues work, as allowed in live execution.
+
+**Recommendation:** keep the runtime signatures and ordering semantics. Add
+explicit polling guidance and a warning to `Command::batch` that batching HTTP
+with a timer does not sequence them. Teach two distinct recipes: skip busy ticks
+using Model state, or schedule the next tick from the terminal outcome for a
+completion-driven delay. One example does not justify a generic concurrency API
+with implicit operation identity or stale-result policy.
+
+A future polling Layer/helper would need to name cadence, overlap, missed ticks,
+terminal cleanup, and effect cancellation explicitly. An interval Source alone
+would not fix overlap; an idempotency key alone would not establish freshness.
+Keep those as design questions until another application demonstrates repeated
+policy scaffolding. This example changes application policy only; the runtime's
+serialization, causality, and controlled-time contracts remain unchanged.
+
+### Enum Model experiment
+
+The subsequent refinement replaces the boolean with `Idle { current_time }`
+and `Polling { current_time }` and matches `(model, message)` in `update`.
+Initialization names `Idle` explicitly. A completion in `Idle` is an explicit
+no-op: it cannot change the cached observation or emit an error for nonexistent
+work. This is an application transition rule, not a runtime stale-result check.
+
+The two variants currently carry the same data, so they represent the same
+state space as the boolean model. The benefit is named states, an exhaustive
+transition table, and a place for future state-specific data. New states must
+account for ticks and completion Messages; common cached reads stay shared.
+
+The existing `update(&self, &mut Model, Message)` signature supports this
+without cloning the Model or replacing it with a temporary default. The cached
+timestamp is Copy; moving non-Copy payloads between variants would put more
+pressure on this borrowed API and should be evaluated in a suitable example
+before proposing an owned-Model transition signature.

@@ -1767,7 +1767,7 @@ impl<Message> Command<Message> {
     ///
     /// Live execution uses real time. Controlled execution uses logical time, so
     /// tests advance it without wall-clock sleeping.
-    pub fn after(delay: Duration, message: Message) -> Self {
+    pub const fn after(delay: Duration, message: Message) -> Self {
         Self(CommandKind::After { delay, message })
     }
 
@@ -1776,6 +1776,11 @@ impl<Message> Command<Message> {
     /// Grouping does not promise effect completion order. If application logic
     /// requires sequencing, that dependency needs an explicit command contract
     /// or a later message transition.
+    ///
+    /// Batching an effect with [`Command::after`] schedules both independently:
+    /// the timer does not wait for the effect. Repeating this pattern can
+    /// overlap effects. To prevent overlap, guard issuance with Model state or
+    /// schedule the next timer when handling the effect's terminal outcome.
     pub fn batch(commands: impl IntoIterator<Item = Self>) -> Self {
         Self(CommandKind::Batch(commands.into_iter().collect()))
     }
