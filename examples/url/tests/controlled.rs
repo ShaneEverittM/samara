@@ -21,6 +21,41 @@ fn url(url: &str) -> Result<Message> {
     Ok(message)
 }
 
+fn input(
+    runtime: &mut ControlledRuntime,
+    checker: &ComponentRef<Checker>,
+    line: &str,
+) -> Result<()> {
+    runtime.emit_source::<_, StdinLines>(
+        checker,
+        &SubscriptionId::new("commands"),
+        SourceEvent::Item(line.into()),
+    )?;
+    runtime.run_until_idle()?;
+    Ok(())
+}
+
+// Inspect and finish exactly these writes, including asserting silence with &[].
+fn expect_stdout(runtime: &mut ControlledRuntime, expected: &[&str]) -> Result<()> {
+    for text in expected {
+        let output = runtime.next_effect::<PrintStdout>()?;
+        assert_eq!(output.intent.as_str(), *text);
+        runtime.complete(output, EffectOutcome::Succeeded(()))?;
+    }
+    assert!(runtime.next_effect::<PrintStdout>().is_err());
+    assert!(runtime.next_effect::<PrintStderr>().is_err());
+    Ok(())
+}
+
+fn response(status: StatusCode) -> EffectOutcome<HttpResponse, HttpError> {
+    EffectOutcome::Succeeded(HttpResponse::new(
+        status,
+        Default::default(),
+        Default::default(),
+        "",
+    ))
+}
+
 #[tokio::test]
 async fn does_nothing_on_eof() -> Result<()> {
     let (mut runtime, checker) = fixture()?;
@@ -160,5 +195,269 @@ async fn second_request_replaces_the_first_during_in_flight_period() -> Result<(
 
     assert!(runtime.cancel()?.is_clean());
 
+    Ok(())
+}
+
+#[test]
+fn clear_ignores_old_timers_even_after_reselecting_the_same_url() -> Result<()> {
+    for reselect in [false, true] {
+        let (mut runtime, checker) = fixture()?;
+        input(&mut runtime, &checker, "url https://google.com")?;
+        expect_stdout(&mut runtime, &["Waiting 500ms before checking...\n"])?;
+        runtime.advance(Checker::DELAY / 2)?;
+
+        // Repeated clear must not reset the revision either.
+        input(&mut runtime, &checker, "clear")?;
+        input(&mut runtime, &checker, "clear")?;
+        expect_stdout(&mut runtime, &["Cleared\n", "Cleared\n"])?;
+        if reselect {
+            input(&mut runtime, &checker, "url https://google.com")?;
+            expect_stdout(&mut runtime, &["Waiting 500ms before checking...\n"])?;
+        }
+
+        // The original deadline arrives; it must neither start HTTP nor log Checking.
+        let report = runtime.advance(Checker::DELAY / 2)?;
+        assert_eq!(report.transitions, 1);
+        assert!(runtime.next_effect::<HttpRequest>().is_err());
+        expect_stdout(&mut runtime, &[])?;
+        if reselect {
+            assert!(
+                matches!(runtime.state(&checker)?, Status::Pending { url, .. }
+                if url.as_ref() == "https://google.com/")
+            );
+            runtime.advance(Checker::DELAY / 2)?;
+            let request = runtime.next_effect::<HttpRequest>()?;
+            assert_eq!(request.intent.url(), "https://google.com/");
+            assert!(runtime.next_effect::<HttpRequest>().is_err());
+            expect_stdout(&mut runtime, &["Checking https://google.com/\n"])?;
+        } else {
+            assert!(matches!(runtime.state(&checker)?, Status::Idle { .. }));
+        }
+        assert!(runtime.cancel()?.is_clean());
+    }
+    Ok(())
+}
+
+#[test]
+fn clear_ignores_old_results_even_after_reselecting_the_same_url() -> Result<()> {
+    for reselect in [false, true] {
+        let (mut runtime, checker) = fixture()?;
+        input(&mut runtime, &checker, "url https://google.com")?;
+        runtime.advance(Checker::DELAY)?;
+        let old = runtime.next_effect::<HttpRequest>()?;
+        expect_stdout(
+            &mut runtime,
+            &[
+                "Waiting 500ms before checking...\n",
+                "Checking https://google.com/\n",
+            ],
+        )?;
+
+        input(&mut runtime, &checker, "clear")?;
+        input(&mut runtime, &checker, "clear")?;
+        expect_stdout(&mut runtime, &["Cleared\n", "Cleared\n"])?;
+        if reselect {
+            input(&mut runtime, &checker, "url https://google.com")?;
+            expect_stdout(&mut runtime, &["Waiting 500ms before checking...\n"])?;
+        }
+
+        runtime.complete(old, response(StatusCode::NOT_FOUND))?;
+        assert_eq!(runtime.run_until_idle()?.transitions, 1);
+        expect_stdout(&mut runtime, &[])?;
+        assert!(runtime.next_effect::<HttpRequest>().is_err());
+        if reselect {
+            assert!(
+                matches!(runtime.state(&checker)?, Status::Pending { url, .. }
+                if url.as_ref() == "https://google.com/")
+            );
+            runtime.advance(Checker::DELAY)?;
+            let new = runtime.next_effect::<HttpRequest>()?;
+            expect_stdout(&mut runtime, &["Checking https://google.com/\n"])?;
+            runtime.complete(new, response(StatusCode::OK))?;
+            runtime.run_until_idle()?;
+            assert!(matches!(
+                runtime.state(&checker)?,
+                Status::Finished {
+                    result: CheckResult::Response(StatusCode::OK),
+                    ..
+                }
+            ));
+            expect_stdout(&mut runtime, &["https://google.com/: 200 OK\n"])?;
+        } else {
+            assert!(matches!(runtime.state(&checker)?, Status::Idle { .. }));
+        }
+        assert!(runtime.cancel()?.is_clean());
+    }
+    Ok(())
+}
+
+#[test]
+fn reselecting_the_same_url_ignores_the_old_result_during_debounce() -> Result<()> {
+    let (mut runtime, checker) = fixture()?;
+    input(&mut runtime, &checker, "url https://google.com")?;
+    runtime.advance(Checker::DELAY)?;
+    let old = runtime.next_effect::<HttpRequest>()?;
+    input(&mut runtime, &checker, "url https://google.com")?;
+    expect_stdout(
+        &mut runtime,
+        &[
+            "Waiting 500ms before checking...\n",
+            "Checking https://google.com/\n",
+            "Waiting 500ms before checking...\n",
+        ],
+    )?;
+
+    runtime.complete(old, response(StatusCode::NOT_FOUND))?;
+    assert_eq!(runtime.run_until_idle()?.transitions, 1);
+    assert!(
+        matches!(runtime.state(&checker)?, Status::Pending { url, .. }
+        if url.as_ref() == "https://google.com/")
+    );
+    expect_stdout(&mut runtime, &[])?;
+    runtime.advance(Checker::DELAY)?;
+    assert_eq!(
+        runtime.next_effect::<HttpRequest>()?.intent.url(),
+        "https://google.com/"
+    );
+    expect_stdout(&mut runtime, &["Checking https://google.com/\n"])?;
+    assert!(runtime.cancel()?.is_clean());
+    Ok(())
+}
+
+#[test]
+fn status_and_clear_through_stdin_have_repeatable_traces() -> Result<()> {
+    let mut traces = Vec::new();
+    for _ in 0..2 {
+        let (mut runtime, checker) = fixture()?;
+        input(&mut runtime, &checker, "status")?;
+        expect_stdout(
+            &mut runtime,
+            &["URL: none\nState: idle\nLast result: none\n"],
+        )?;
+        input(&mut runtime, &checker, "url https://google.com")?;
+        input(&mut runtime, &checker, "status")?;
+        expect_stdout(
+            &mut runtime,
+            &[
+                "Waiting 500ms before checking...\n",
+                "URL: https://google.com/\nState: waiting\nLast result: none\n",
+            ],
+        )?;
+        runtime.advance(Checker::DELAY)?;
+        let request = runtime.next_effect::<HttpRequest>()?;
+        input(&mut runtime, &checker, "status")?;
+        expect_stdout(
+            &mut runtime,
+            &[
+                "Checking https://google.com/\n",
+                "URL: https://google.com/\nState: checking\nLast result: none\n",
+            ],
+        )?;
+        runtime.complete(request, response(StatusCode::OK))?;
+        runtime.run_until_idle()?;
+        input(&mut runtime, &checker, "status")?;
+        expect_stdout(
+            &mut runtime,
+            &[
+                "https://google.com/: 200 OK\n",
+                "URL: https://google.com/\nState: idle\nLast result: 200 OK\n",
+            ],
+        )?;
+
+        // Clearing a finished check forgets both the URL and the result.
+        input(&mut runtime, &checker, "clear")?;
+        input(&mut runtime, &checker, "status")?;
+        assert!(matches!(runtime.state(&checker)?, Status::Idle { .. }));
+        expect_stdout(
+            &mut runtime,
+            &["Cleared\n", "URL: none\nState: idle\nLast result: none\n"],
+        )?;
+        assert!(runtime.next_effect::<HttpRequest>().is_err());
+        traces.push(runtime.trace().to_vec());
+        assert!(runtime.cancel()?.is_clean());
+    }
+    assert_eq!(traces[0], traces[1]);
+    Ok(())
+}
+
+#[test]
+fn http_error_status_transport_failure_and_cancellation_remain_distinct() -> Result<()> {
+    for (outcome, expected) in [
+        (response(StatusCode::NOT_FOUND), "404 Not Found"),
+        (
+            EffectOutcome::Failed(HttpError::new(HttpErrorKind::Transport, "connection reset")),
+            "Check failed: HTTP Transport error: connection reset",
+        ),
+        (EffectOutcome::Cancelled(CancelReason::Deadline), "Canceled"),
+    ] {
+        let (mut runtime, checker) = fixture()?;
+        input(&mut runtime, &checker, "url https://google.com")?;
+        runtime.advance(Checker::DELAY)?;
+        let request = runtime.next_effect::<HttpRequest>()?;
+        expect_stdout(
+            &mut runtime,
+            &[
+                "Waiting 500ms before checking...\n",
+                "Checking https://google.com/\n",
+            ],
+        )?;
+        runtime.complete(request, outcome)?;
+        runtime.run_until_idle()?;
+        match runtime.state(&checker)? {
+            Status::Finished { url, result, .. } => {
+                assert_eq!(url.as_ref(), "https://google.com/");
+                assert_eq!(result.to_string(), expected);
+            }
+            _ => panic!("check should finish with {expected}"),
+        }
+        input(&mut runtime, &checker, "status")?;
+        expect_stdout(
+            &mut runtime,
+            &[
+                &format!("https://google.com/: {expected}\n"),
+                &format!("URL: https://google.com/\nState: idle\nLast result: {expected}\n"),
+            ],
+        )?;
+        assert!(runtime.next_effect::<HttpRequest>().is_err());
+        assert!(runtime.cancel()?.is_clean());
+    }
+    Ok(())
+}
+
+#[test]
+fn malformed_stdin_leaves_the_pending_selection_unchanged() -> Result<()> {
+    let (mut runtime, checker) = fixture()?;
+    input(&mut runtime, &checker, "url https://google.com")?;
+    expect_stdout(&mut runtime, &["Waiting 500ms before checking...\n"])?;
+    let revision = match runtime.state(&checker)? {
+        Status::Pending { revision, .. } => *revision,
+        _ => panic!("selection should be waiting"),
+    };
+    for line in [
+        "",
+        "wat",
+        "url",
+        "url not-a-url",
+        "status extra",
+        "clear extra",
+    ] {
+        input(&mut runtime, &checker, line)?;
+        assert!(
+            matches!(runtime.state(&checker)?, Status::Pending { url, revision: current }
+            if url.as_ref() == "https://google.com/" && *current == revision)
+        );
+        let error = runtime.next_effect::<PrintStderr>()?;
+        assert!(error.intent.as_str().contains("Invalid"));
+        runtime.complete(error, EffectOutcome::Succeeded(()))?;
+        expect_stdout(&mut runtime, &[])?;
+        assert!(runtime.next_effect::<HttpRequest>().is_err());
+    }
+    runtime.advance(Checker::DELAY)?;
+    assert_eq!(
+        runtime.next_effect::<HttpRequest>()?.intent.url(),
+        "https://google.com/"
+    );
+    expect_stdout(&mut runtime, &["Checking https://google.com/\n"])?;
+    assert!(runtime.cancel()?.is_clean());
     Ok(())
 }
