@@ -53,6 +53,8 @@ pub enum Message {
 pub enum CheckResult {
     Response(StatusCode),
     Error(String),
+    Canceled,
+    Cleared,
 }
 
 impl fmt::Display for CheckResult {
@@ -60,6 +62,8 @@ impl fmt::Display for CheckResult {
         match self {
             CheckResult::Response(code) => write!(f, "{code}"),
             CheckResult::Error(e) => write!(f, "Check failed: {e}"),
+            CheckResult::Canceled => write!(f, "Canceled"),
+            CheckResult::Cleared => write!(f, "none"),
         }
     }
 }
@@ -79,7 +83,7 @@ pub enum Status {
     Finished {
         revision: u64,
         url: Arc<str>,
-        result: Option<CheckResult>,
+        result: CheckResult,
     },
 }
 
@@ -181,13 +185,7 @@ impl Component for Checker {
                         Status::Finished { url, result, .. } => {
                             println!(
                                 &self.stdout,
-                                "URL: {}\nState: {}\nLast result: {}",
-                                url,
-                                "idle",
-                                result
-                                    .as_ref()
-                                    .map(|it| it.to_string())
-                                    .unwrap_or("cancelled".into())
+                                "URL: {}\nState: {}\nLast result: {}", url, "idle", result
                             )
                         }
                     },
@@ -209,11 +207,12 @@ impl Component for Checker {
                     revision,
                 };
                 let log = println!(&self.stdout, "Checking {}", url);
-                let request = request.into_command_with(&self.http, move |r| Message::CheckFinished {
-                    url,
-                    revision,
-                    outcome: r,
-                });
+                let request =
+                    request.into_command_with(&self.http, move |r| Message::CheckFinished {
+                        url,
+                        revision,
+                        outcome: r,
+                    });
                 Command::batch([log, request])
             }
 
@@ -228,25 +227,16 @@ impl Component for Checker {
                 }
 
                 let result = match &outcome {
-                    EffectOutcome::Succeeded(response) => {
-                        Some(CheckResult::Response(response.status()))
-                    }
-                    EffectOutcome::Failed(e) => Some(CheckResult::Error(e.to_string())),
-                    EffectOutcome::Cancelled(_) => None,
+                    EffectOutcome::Succeeded(response) => CheckResult::Response(response.status()),
+                    EffectOutcome::Failed(e) => CheckResult::Error(e.to_string()),
+                    EffectOutcome::Cancelled(_) => CheckResult::Canceled,
                 };
                 *model = Status::Finished {
                     revision,
                     url: Arc::clone(&url),
                     result: result.clone(),
                 };
-                println!(
-                    &self.stdout,
-                    "{}: {}",
-                    url,
-                    result
-                        .map(|it| it.to_string())
-                        .unwrap_or("cancelled".into())
-                )
+                println!(&self.stdout, "{}: {}", url, result)
             }
         }
     }
