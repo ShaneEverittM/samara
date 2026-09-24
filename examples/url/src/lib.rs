@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use std::time::Duration;
-use std::{fmt, mem};
+use std::fmt;
 
 use samara::prelude::*;
 use samara::{HttpResponsePipeline, eprintln, println};
@@ -152,16 +152,11 @@ impl Component for Checker {
                     }
 
                     UrlCommand::Clear => {
-                        if let Status::Finished { revision, url, .. } =
-                            mem::replace(model, Status::Idle { revision: 0 })
-                        {
-                            *model = Status::Finished {
-                                revision,
-                                url,
-                                result: None,
-                            }
-                        }
-                        Command::none()
+                        let revision = model.revision();
+                        *model = Status::Idle {
+                            revision: revision.checked_add(1).expect("revision overflow"),
+                        };
+                        println!(&self.stdout, "Cleared")
                     }
 
                     UrlCommand::Status => match &model {
