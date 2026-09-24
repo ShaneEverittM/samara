@@ -1,6 +1,6 @@
-use std::time::Duration;
 use anyhow::Result;
 use samara::prelude::*;
+use std::time::Duration;
 use url::Url;
 use urlchecker::*;
 
@@ -117,7 +117,7 @@ async fn second_request_replaces_the_first_during_in_flight_period() -> Result<(
         Status::Finished {
             url,
             revision,
-            result: Some(CheckResult::Response(status)),
+            result: CheckResult::Response(status),
         } => {
             assert_eq!(url.as_ref(), "https://wikipedia.com/");
             assert_eq!(*status, StatusCode::OK);
@@ -149,7 +149,7 @@ async fn second_request_replaces_the_first_during_in_flight_period() -> Result<(
         Status::Finished {
             url,
             revision,
-            result: Some(CheckResult::Response(status)),
+            result: CheckResult::Response(status),
         } if url.as_ref() == "https://wikipedia.com/"
             && *revision == second_revision
             && *status == StatusCode::OK
