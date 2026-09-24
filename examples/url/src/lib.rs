@@ -135,7 +135,7 @@ impl Component for Checker {
                         let request = HttpRequest::get(Arc::clone(&url))
                             .on_response()
                             .follow_redirects(5);
-                        let next = model.revision() + 1;
+                        let next = model.revision().checked_add(1).expect("revision overflow");
 
                         *model = Status::Pending {
                             url: Arc::clone(&url),
