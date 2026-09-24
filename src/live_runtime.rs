@@ -41,7 +41,8 @@ use tokio::{
 };
 
 use crate::controlled_runtime::{
-    ErasedCommand, ErasedRuntimeSubscription, ErasedSubscriptionChange,
+    ErasedCommand, ErasedEffectContinuation, ErasedRuntimeSubscription, ErasedSubscriptionChange,
+    erase_effect_continuation,
 };
 use crate::{
     BoxFuture, CapabilityToken, Command, CommandKind, ComponentId, DriverStopped, EffectDescriptor,
@@ -56,7 +57,8 @@ use crate::{
 use crate::{StdinError, StdinLines, StdinSourceDescriptor};
 
 type ErasedValue = Box<dyn Any + Send>;
-type ErasedMessageMapper = Box<dyn FnOnce(ErasedValue) -> ErasedValue + Send + 'static>;
+type ErasedMessageMapper =
+    Box<dyn FnOnce(ErasedValue) -> ErasedEffectContinuation + Send + 'static>;
 type HostReplyCompletion = Box<dyn FnOnce(RequestOutcome<ErasedValue>) + Send + 'static>;
 type ProtocolRequestConversion = Box<dyn FnOnce(Arc<RequestToken>) -> ErasedValue + Send + 'static>;
 
@@ -1910,7 +1912,7 @@ impl LiveCore {
                     })?;
                     let (descriptor, mapper) = command.into_parts();
                     let mapper: Option<ErasedMessageMapper> = mapper.map(|mapper| {
-                        Box::new(move |outcome| Box::new(mapper(outcome)) as ErasedValue)
+                        Box::new(move |outcome| erase_effect_continuation(mapper(outcome)))
                             as ErasedMessageMapper
                     });
                     let id = self.next_effect;
@@ -2284,7 +2286,7 @@ impl LiveCore {
             return Ok(());
         };
         let work = self.work();
-        let message = catch_unwind(AssertUnwindSafe(|| mapper(outcome))).map_err(|_| {
+        let continuation = catch_unwind(AssertUnwindSafe(|| mapper(outcome))).map_err(|_| {
             self.runtime_fault(
                 effect.component.clone(),
                 Some(effect.descriptor_type_name),
@@ -2292,13 +2294,20 @@ impl LiveCore {
                 "Effect outcome mapper panicked",
             )
         })?;
-        let _ = self.scope.accept_finite(LiveEvent::Message(QueuedMessage {
-            target: effect.component,
-            target_message_type: effect.message_type,
-            message_type_name: effect.message_type_name,
-            message,
-            source: None,
-        }));
+        match continuation {
+            ErasedEffectContinuation::Message(message) => {
+                let _ = self.scope.accept_finite(LiveEvent::Message(QueuedMessage {
+                    target: effect.component,
+                    target_message_type: effect.message_type,
+                    message_type_name: effect.message_type_name,
+                    message,
+                    source: None,
+                }));
+            }
+            ErasedEffectContinuation::Command(command) => {
+                command.interpret_live(self, &effect.component, work)?;
+            }
+        }
         Ok(())
     }
 
@@ -3573,7 +3582,7 @@ mod tests {
             descriptor_type_name: "CancelRaceEffect",
             mapper: Some(Box::new(move |_| {
                 calls.fetch_add(1, Ordering::SeqCst);
-                Box::new(())
+                ErasedEffectContinuation::Message(Box::new(()))
             })),
             message_type: TypeId::of::<()>(),
             message_type_name: std::any::type_name::<()>(),

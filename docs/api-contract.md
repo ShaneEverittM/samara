@@ -595,3 +595,13 @@ Phase 2 is ready for human acceptance when:
 5. Missing semantics and non-executable promises are listed rather than hidden
    behind passing placeholder tests.
 6. Formatting, documentation, Clippy, and stale-vocabulary checks pass.
+
+## Explicit HTTP Redirect Following
+
+[ADR-0012](adr/0012-http-redirect-layer.md) adds the opt-in
+`HttpResponsePipeline::follow_redirects(max_hops)` Layer. It runs unchanged in
+live and controlled execution, emitting an individually visible `HttpRequest`
+for each hop and mapping only the final outcome to an application Message.
+Raw Driver behavior and pipelines without the opt-in remain unchanged. Private
+pure Layer continuations may describe another finite Command without mutating
+Component state; each controlled continuation is caused by its raw hop outcome.

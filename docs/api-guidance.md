@@ -695,3 +695,24 @@ ADR-0005 additionally freezes only its narrow raw, pooled, no-redirect,
 no-retry HTTP Effect; it does not settle higher-level endpoint or client policy.
 Those choices should follow the guidance above rather than being inferred from
 the first implementation.
+
+## Following HTTP Redirects Explicitly
+
+A raw HTTP request still returns redirects unchanged. Opt in before status or
+body transforms when the application wants the final response:
+
+```rust,ignore
+HttpRequest::get(url)
+    .on_response()
+    .follow_redirects(5)
+    .require_success()
+    .json::<Reply>()
+    .into_command_with(&self.http, Message::Finished)
+```
+
+This Layer issues at most five additional requests through the same capability.
+Controlled tests intercept each hop with `next_effect::<HttpRequest>()`; no live
+Driver or hidden network work runs. Limits, invalid redirect targets, and
+rejected HTTPS downgrades produce `HttpErrorKind::Redirect`. The application
+mapper receives only the final outcome. See [ADR-0012](adr/0012-http-redirect-layer.md)
+for method, credential-header, lifecycle, and tracing semantics.

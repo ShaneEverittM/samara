@@ -203,3 +203,10 @@ Changing raw status handling, implicit request multiplication, controlled
 network isolation, pooled-client ownership, cancellation passthrough, or the
 raw-only trace boundary requires a superseding ADR and updated executable
 evidence.
+
+## Explicit redirect Layer amendment — September 24, 2026
+
+[ADR-0012](0012-http-redirect-layer.md) adds opt-in pipeline redirect following
+as a pure Layer issuing individually visible HTTP effects. The terminal Driver
+still performs one request and never follows redirects. Pipelines without this
+opt-in retain the single-effect pure-mapper contract above.

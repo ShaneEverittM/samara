@@ -67,10 +67,22 @@ use std::{
 mod component_kernel;
 mod controlled_runtime;
 mod declarative_work;
+mod http_redirect;
 mod live_runtime;
 
 use component_kernel::{ComponentKernel, ErasedComponentKernel};
 use controlled_runtime::ControlledCore;
+
+/// HTTP response status used by [`HttpResponse::status`].
+///
+/// ```
+/// use samara::prelude::*;
+///
+/// let status = StatusCode::OK;
+/// assert!(status.is_success());
+/// assert_eq!(status.as_u16(), 200);
+/// ```
+pub use http::StatusCode;
 
 /// Common imports for defining Components and assembling live or controlled
 /// runtimes.
@@ -85,10 +97,10 @@ pub mod prelude {
         ProgramBuildError, ProgramBuilder, Protocol, ReplyTo, Request, RequestError,
         RequestInvocation, RequestOutcome, RequestOutcomeKind, RunReport, RuntimeError,
         RuntimeTask, Shutdown, ShutdownReport, SourceCapability, SourceDescriptor, SourceDriver,
-        SourceEvent, SourceEventKind, SourceSink, StdinError, StdinErrorKind, StdinLines,
-        StreamDescriptor, Subscription, SubscriptionAction, SubscriptionId, Subscriptions,
-        TcpBytes, TcpError, TcpErrorKind, TraceCommandKind, TraceEvent, TraceId, TraceRecord,
-        protocol,
+        SourceEvent, SourceEventKind, SourceSink, StatusCode, StdinError, StdinErrorKind,
+        StdinLines, StreamDescriptor, Subscription, SubscriptionAction, SubscriptionId,
+        Subscriptions, TcpBytes, TcpError, TcpErrorKind, TraceCommandKind, TraceEvent, TraceId,
+        TraceRecord, protocol,
     };
 }
 
@@ -1126,11 +1138,19 @@ trait ErasedEffectCommand<Message>: Send {
     fn capability(&self) -> &CapabilityToken;
     fn intent(&self) -> &dyn Any;
     fn intent_type_name(&self) -> &'static str;
-    fn maps_outcome(&self) -> bool;
+    fn maps_directly_to_message(&self) -> bool;
     fn into_parts(self: Box<Self>) -> (Box<dyn Any + Send>, Option<ErasedEffectMapper<Message>>);
 }
 
-type ErasedEffectMapper<Message> = Box<dyn FnOnce(Box<dyn Any + Send>) -> Message + Send + 'static>;
+// Pure Layer continuations may describe another finite command; only Message
+// continuations enter the Component transition path.
+enum EffectContinuation<Message> {
+    Message(Message),
+    Command(Command<Message>),
+}
+
+type ErasedEffectMapper<Message> =
+    Box<dyn FnOnce(Box<dyn Any + Send>) -> EffectContinuation<Message> + Send + 'static>;
 
 type EffectMapper<E, Message> = Box<
     dyn FnOnce(
@@ -1141,6 +1161,7 @@ type EffectMapper<E, Message> = Box<
 >;
 
 struct Perform<E, Map> {
+    direct_message: bool,
     capability: CapabilityToken,
     effect: E,
     map: Map,
@@ -1150,7 +1171,7 @@ impl<Message, E, Map> ErasedEffectCommand<Message> for Perform<E, Map>
 where
     Message: Send + 'static,
     E: EffectDescriptor,
-    Map: FnOnce(EffectOutcome<E::Output, E::Error>) -> Message + Send + 'static,
+    Map: FnOnce(EffectOutcome<E::Output, E::Error>) -> EffectContinuation<Message> + Send + 'static,
 {
     fn capability(&self) -> &CapabilityToken {
         &self.capability
@@ -1164,8 +1185,8 @@ where
         std::any::type_name::<E>()
     }
 
-    fn maps_outcome(&self) -> bool {
-        true
+    fn maps_directly_to_message(&self) -> bool {
+        self.direct_message
     }
 
     fn into_parts(self: Box<Self>) -> (Box<dyn Any + Send>, Option<ErasedEffectMapper<Message>>) {
@@ -1205,7 +1226,7 @@ where
         std::any::type_name::<E>()
     }
 
-    fn maps_outcome(&self) -> bool {
+    fn maps_directly_to_message(&self) -> bool {
         false
     }
 
@@ -1609,9 +1630,10 @@ impl<Message> Command<Message> {
         Map: FnOnce(EffectOutcome<E::Output, E::Error>) -> Message + Send + 'static,
     {
         Self(CommandKind::Effect(Box::new(Perform {
+            direct_message: true,
             capability: capability.token.clone(),
             effect,
-            map,
+            map: move |outcome| EffectContinuation::Message(map(outcome)),
         })))
     }
 
@@ -1859,8 +1881,10 @@ impl<Message> Command<Message> {
     ///
     /// The returned [`EffectInvocation`] owns both the non-`Clone` descriptor
     /// and its one-shot mapper. A non-effect Command or mismatched descriptor
-    /// type is returned unchanged. Use [`Command::into_declarations`] first to
-    /// inspect or intercept effect occurrences nested in a batch.
+    /// type is returned unchanged. Layered effects whose continuation can emit
+    /// another Command are also returned unchanged; inspect them with controlled
+    /// execution or [`Command::effect_intent`]. Use [`Command::into_declarations`]
+    /// first to inspect or intercept effect occurrences nested in a batch.
     pub fn into_effect<E>(self) -> Result<EffectInvocation<E, Message>, Self>
     where
         Message: Send + 'static,
@@ -1868,7 +1892,7 @@ impl<Message> Command<Message> {
     {
         match self.0 {
             CommandKind::Effect(command)
-                if command.intent().is::<E>() && command.maps_outcome() =>
+                if command.intent().is::<E>() && command.maps_directly_to_message() =>
             {
                 let (descriptor, mapper) = command.into_parts();
                 let descriptor = match descriptor.downcast::<E>() {
@@ -1876,7 +1900,12 @@ impl<Message> Command<Message> {
                     Err(_) => unreachable!("the descriptor type was checked before interception"),
                 };
                 let mapper = mapper.expect("mapped effects retain one outcome mapper");
-                let mapper = Box::new(move |outcome| mapper(Box::new(outcome)));
+                let mapper = Box::new(move |outcome| match mapper(Box::new(outcome)) {
+                    EffectContinuation::Message(message) => message,
+                    EffectContinuation::Command(_) => {
+                        unreachable!("direct Message mapper checked above")
+                    }
+                });
                 Ok(EffectInvocation { descriptor, mapper })
             }
             command => Err(Self(command)),
@@ -2525,6 +2554,7 @@ impl HttpRequest {
     pub fn on_response(self) -> HttpResponsePipeline<HttpResponse, HttpError> {
         HttpResponsePipeline {
             request: self,
+            redirect_limit: None,
             transform: Box::new(|outcome| outcome),
         }
     }
@@ -2593,16 +2623,18 @@ impl HttpResponse {
     }
 }
 
-/// Stage at which a first-party HTTP effect failed.
+/// Stage at which an HTTP request or its explicit redirect Layer failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HttpErrorKind {
     /// The client or request could not be configured from the descriptor.
     Configuration,
     /// Sending the request or receiving its complete response failed.
     Transport,
+    /// The explicit redirect Layer rejected a target or exhausted its hop limit.
+    Redirect,
 }
 
-/// Typed explanatory data for a first-party HTTP effect failure.
+/// Typed explanatory data for an HTTP request or redirect Layer failure.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HttpError {
     kind: HttpErrorKind,
@@ -2612,7 +2644,8 @@ pub struct HttpError {
 impl HttpError {
     /// Creates a typed HTTP failure for controlled execution and fixtures.
     ///
-    /// Live execution constructs this value from its HTTP client diagnostics.
+    /// Live transport constructs this value from HTTP client diagnostics; the
+    /// redirect Layer constructs policy failures identically in both profiles.
     pub fn new(kind: HttpErrorKind, message: impl Into<Arc<str>>) -> Self {
         Self {
             kind,
@@ -2628,12 +2661,12 @@ impl HttpError {
         Self::new(HttpErrorKind::Transport, error.to_string())
     }
 
-    /// Returns whether configuration or transport failed.
+    /// Returns whether configuration, transport, or redirect policy failed.
     pub fn kind(&self) -> HttpErrorKind {
         self.kind
     }
 
-    /// Returns the underlying client diagnostic as explanatory text.
+    /// Returns the underlying transport or policy diagnostic as explanatory text.
     pub fn message(&self) -> &str {
         &self.message
     }
@@ -2653,13 +2686,15 @@ type HttpResponseTransform<Output, ResponseError> = Box<
         + 'static,
 >;
 
-/// Inert, ordered pure handling for one owned [`HttpRequest`] response.
+/// Inert HTTP response handling with optional explicit redirect following.
 ///
 /// This value performs no I/O and is not a separately bound or traced effect.
 /// [`HttpResponsePipeline::into_command`] or
 /// [`HttpResponsePipeline::into_command_with`] lowers it to the original raw
-/// request plus one composed, one-shot message mapper. It intentionally does
-/// not implement `Clone`: the request and every declared transform are owned
+/// request plus one composed, one-shot message mapper by default. Opting into
+/// [`HttpResponsePipeline::follow_redirects`] instead adds a pure Layer that
+/// issues each redirect hop as a separate raw effect before final mapping.
+/// It intentionally does not implement `Clone`: the request and every transform are owned
 /// and may be consumed only once.
 ///
 /// ```compile_fail
@@ -2672,6 +2707,7 @@ type HttpResponseTransform<Output, ResponseError> = Box<
 #[must_use = "an HTTP response pipeline is inert until converted into a Command"]
 pub struct HttpResponsePipeline<Output, ResponseError> {
     request: HttpRequest,
+    redirect_limit: Option<usize>,
     transform: HttpResponseTransform<Output, ResponseError>,
 }
 
@@ -2691,9 +2727,14 @@ where
             + Send
             + 'static,
     {
-        let Self { request, transform } = self;
+        let Self {
+            request,
+            redirect_limit,
+            transform,
+        } = self;
         HttpResponsePipeline {
             request,
+            redirect_limit,
             transform: Box::new(move |outcome| transform_next(transform(outcome))),
         }
     }
@@ -2724,8 +2765,9 @@ where
     ///
     /// Live execution still selects the [`HttpRequest`] Driver and controlled
     /// execution still intercepts `next_effect::<HttpRequest>()`. The response
-    /// transforms and `map` run synchronously and at most once after that raw
-    /// terminal outcome is accepted.
+    /// transforms and `map` run synchronously and at most once after the final
+    /// terminal outcome is accepted. With redirect following, controlled tests
+    /// intercept each raw hop; transforms do not run on intermediate responses.
     pub fn into_command_with<Message, Map>(
         self,
         capability: &EffectCapability<HttpRequest>,
@@ -2735,12 +2777,64 @@ where
         Message: Send + 'static,
         Map: FnOnce(EffectOutcome<Output, ResponseError>) -> Message + Send + 'static,
     {
-        let Self { request, transform } = self;
-        Command::effect_with(capability, request, move |outcome| map(transform(outcome)))
+        let Self {
+            request,
+            redirect_limit,
+            transform,
+        } = self;
+        match redirect_limit {
+            Some(limit) => http_redirect::command(
+                capability.clone(),
+                request,
+                limit,
+                Box::new(move |outcome| map(transform(outcome))),
+            ),
+            None => {
+                Command::effect_with(capability, request, move |outcome| map(transform(outcome)))
+            }
+        }
     }
 }
 
 impl HttpResponsePipeline<HttpResponse, HttpError> {
+    /// Follows at most `max_hops` additional HTTP requests before transforming
+    /// the final response. Redirects are otherwise returned unchanged.
+    ///
+    /// Call this before `require_success()` or `json()`. Every hop is a separate
+    /// `HttpRequest` visible to controlled execution through `next_effect()`;
+    /// only the final outcome reaches your Message mapper. A zero limit rejects
+    /// a followable redirect, and another call replaces the previous limit.
+    ///
+    /// Follows 301/302/303/307/308, resolves relative Location headers, and
+    /// rejects invalid targets, URL credentials, non-HTTP(S) schemes, and HTTPS
+    /// downgrades with [`HttpErrorKind::Redirect`]. Missing Location is a final
+    /// response. POST becomes GET for 301/302; 303 uses GET except for HEAD.
+    /// Other methods and 307/308 preserve the request body.
+    ///
+    /// Cross-origin hops strip Authorization, Cookie, and headers marked
+    /// sensitive; mark custom credential headers with `set_sensitive(true)`.
+    /// Host, Referer, and Proxy-Authorization are removed on every hop.
+    /// Drain finishes the bounded chain; Cancel aborts without a Message.
+    /// The hop limit is not a transport timeout.
+    ///
+    /// ```
+    /// use samara::prelude::*;
+    /// let mut program = Program::builder();
+    /// let http = program.effect::<HttpRequest>();
+    /// let command: Command<EffectOutcome<HttpResponse, HttpResponseError>> =
+    ///     HttpRequest::get("http://example.test/")
+    ///         .on_response()
+    ///         .follow_redirects(5)
+    ///         .require_success()
+    ///         .into_command_with(&http, |outcome| outcome);
+    /// assert_eq!(command.effect_intent::<HttpRequest>().unwrap().url(),
+    ///            "http://example.test/");
+    /// ```
+    pub fn follow_redirects(mut self, max_hops: usize) -> Self {
+        self.redirect_limit = Some(max_hops);
+        self
+    }
+
     /// Requires the response status to be in the inclusive 200–299 range.
     ///
     /// Any other status becomes [`HttpResponseError::Status`] and retains the
@@ -2811,7 +2905,7 @@ where
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum HttpResponseError {
-    /// The raw request could not be configured or transported.
+    /// The request could not be configured, transported, or redirected.
     #[error(transparent)]
     Http(#[from] HttpError),
     /// An explicit success-status policy rejected the complete response.
@@ -2823,7 +2917,7 @@ pub enum HttpResponseError {
 }
 
 impl HttpResponseError {
-    /// Returns the raw HTTP error when configuration or transport failed.
+    /// Returns the HTTP error when configuration, transport, or redirect policy failed.
     pub fn http_error(&self) -> Option<&HttpError> {
         match self {
             Self::Http(error) => Some(error),
@@ -5020,7 +5114,8 @@ impl ControlledRuntime {
     /// Supplies a terminal outcome for a previously intercepted effect.
     ///
     /// For [`Command::effect`], completion invokes the command's pure mapper and
-    /// enqueues the resulting Message. For
+    /// enqueues the resulting Message. A built-in Effect Layer may instead
+    /// declare the next finite Command, causally linked to this outcome. For
     /// [`Command::effect_discarding_outcome`], it records the outcome and closes
     /// the obligation without scheduling a Message. Neither mode executes a
     /// live [`EffectDriver`].

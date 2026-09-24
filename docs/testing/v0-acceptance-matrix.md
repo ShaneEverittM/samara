@@ -432,6 +432,26 @@ expired reply authority instead of accepting it as a harmless late Reply.
 Live timeout tests use paused Tokio time; controlled tests advance logical time.
 Neither depends on wall-clock sleeps or incidental task order.
 
+## HTTP Redirect Layer (ADR-0012)
+
+[ADR-0012](../adr/0012-http-redirect-layer.md) extends the HTTP pipeline with
+explicit, finite redirect following. Evidence lives in `tests/http_redirects.rs`:
+
+| Contract | Evidence |
+| --- | --- |
+| Each hop remains a raw effect; one final Message | `relative_hops_are_visible_causal_and_deliver_only_one_final_message` |
+| Deterministic trace and causal continuation | `controlled_traces_repeat_and_next_hop_is_caused_by_previous_outcome` |
+| Limits bound cycles and additional work | `zero_and_finite_limits_stop_before_an_extra_request` |
+| Final responses and URL validation | `missing_location_and_non_redirect_statuses_are_final_responses`; `malformed_unsupported_credentialed_and_downgrade_targets_fail` |
+| Method/body and credential policy stay in the Layer | `redirect_method_and_body_rules_are_explicit`; `origin_changes_strip_credentials_and_all_hops_remove_routing_headers` |
+| Pipeline transforms see only the terminal result | `status_and_json_transforms_run_only_after_following_and_keep_typed_errors` |
+| Failure and explicit cancellation terminate | `transport_failure_and_explicit_cancellation_end_the_chain` |
+| Live lifecycle owns the whole finite chain | `live_drain_follows_relative_redirect_through_the_same_driver`; `live_cancel_aborts_active_redirect_hop_without_application_completion` |
+
+Existing `tests/http_effects.rs` and `tests/http_response_pipeline.rs` retain
+coverage for raw redirects and the single-request default. Opt-in changes no
+Model ownership, Driver policy, or independent-event ordering guarantees.
+
 ## Remaining Deferrals
 
 - Descriptor/message payload capture, typed trace projections, a public live

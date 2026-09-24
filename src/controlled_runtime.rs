@@ -22,7 +22,8 @@ use crate::{
 };
 
 type ErasedValue = Box<dyn Any + Send>;
-type ErasedMessageMapper = Box<dyn FnOnce(ErasedValue) -> ErasedValue + Send + 'static>;
+type ErasedMessageMapper =
+    Box<dyn FnOnce(ErasedValue) -> ErasedEffectContinuation + Send + 'static>;
 
 /// Type-erased finite work returned by one typed Component transition.
 pub(crate) trait ErasedCommand: Send {
@@ -39,6 +40,24 @@ pub(crate) trait ErasedCommand: Send {
         component: &ComponentId,
         cause: TraceId,
     ) -> Result<(), RuntimeError>;
+}
+
+pub(crate) enum ErasedEffectContinuation {
+    Message(ErasedValue),
+    Command(Box<dyn ErasedCommand>),
+}
+
+pub(crate) fn erase_effect_continuation<Message: Send + 'static>(
+    continuation: crate::EffectContinuation<Message>,
+) -> ErasedEffectContinuation {
+    match continuation {
+        crate::EffectContinuation::Message(message) => {
+            ErasedEffectContinuation::Message(Box::new(message))
+        }
+        crate::EffectContinuation::Command(command) => {
+            ErasedEffectContinuation::Command(erase_command(command))
+        }
+    }
 }
 
 struct TypedCommand<Message>(Command<Message>);
@@ -715,7 +734,7 @@ impl ControlledCore {
                     }
                     let (descriptor, mapper) = command.into_parts();
                     let mapper: Option<ErasedMessageMapper> = mapper.map(|mapper| {
-                        Box::new(move |outcome| Box::new(mapper(outcome)) as ErasedValue)
+                        Box::new(move |outcome| erase_effect_continuation(mapper(outcome)))
                             as ErasedMessageMapper
                     });
                     let id = self.next_effect;
@@ -1264,18 +1283,23 @@ impl ControlledCore {
             outcome: outcome_kind,
         });
         if let Some(mapper) = effect.mapper.take() {
-            self.schedule_message(
-                QueuedMessage {
-                    target: effect.component,
-                    target_message_type: effect.message_type,
-                    message_type_name: effect.message_type_name,
-                    message: mapper(Box::new(outcome)),
-                    cause: outcome_trace,
-                    source: None,
-                    delivery: DeliveryKind::Message,
-                },
-                self.now,
-            );
+            match mapper(Box::new(outcome)) {
+                ErasedEffectContinuation::Message(message) => self.schedule_message(
+                    QueuedMessage {
+                        target: effect.component,
+                        target_message_type: effect.message_type,
+                        message_type_name: effect.message_type_name,
+                        message,
+                        cause: outcome_trace,
+                        source: None,
+                        delivery: DeliveryKind::Message,
+                    },
+                    self.now,
+                ),
+                ErasedEffectContinuation::Command(command) => {
+                    command.interpret(self, &effect.component, outcome_trace)?;
+                }
+            }
         }
         Ok(())
     }
