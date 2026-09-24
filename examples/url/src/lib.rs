@@ -30,7 +30,7 @@ impl InputEvent {
             },
             (Some("status"), None, None) => Self::Command(UrlCommand::Status),
             (Some("clear"), None, None) => Self::Command(UrlCommand::Clear),
-            _ => Self::Malformed(format!("Invalid input: {}", line)),
+            _ => Self::Malformed("usage: url <address> | status | clear".into()),
         }
     }
 }
@@ -54,7 +54,6 @@ pub enum CheckResult {
     Response(StatusCode),
     Error(String),
     Canceled,
-    Cleared,
 }
 
 impl fmt::Display for CheckResult {
@@ -63,7 +62,6 @@ impl fmt::Display for CheckResult {
             CheckResult::Response(code) => write!(f, "{code}"),
             CheckResult::Error(e) => write!(f, "Check failed: {e}"),
             CheckResult::Canceled => write!(f, "Canceled"),
-            CheckResult::Cleared => write!(f, "none"),
         }
     }
 }
@@ -122,7 +120,7 @@ impl Component for Checker {
             Message::Input(event) => {
                 let command = match event {
                     InputEvent::Command(command) => command,
-                    InputEvent::Malformed(e) => return eprintln!(&self.stderr, "{e:?}"),
+                    InputEvent::Malformed(e) => return eprintln!(&self.stderr, "{e}"),
                     InputEvent::Error(e) => return eprintln!(&self.stderr, "{e:?}"),
                     // This should return stop, and the runtime could perhaps exit
                     // if all components have stopped.
