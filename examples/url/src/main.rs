@@ -2,7 +2,7 @@ use samara::{LiveRuntime, Shutdown};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let (program, _, (input,)) = urlchecker::program()?;
+    let (program, input) = urlchecker::program()?;
 
     let runtime = LiveRuntime::builder(program)
         .bind_http()

@@ -1,11 +1,8 @@
+use super::*;
 use anyhow::Result;
-use samara::prelude::*;
-use std::time::Duration;
-use url::Url;
-use urlchecker::*;
 
 fn fixture() -> Result<(ControlledRuntime, ComponentRef<Checker>)> {
-    let (program, (checker,), _) = program()?;
+    let (program, checker, _) = assemble()?;
     let runtime = ControlledRuntime::builder(program)
         .control_effect::<PrintStdout>()
         .control_effect::<PrintStderr>()
@@ -433,13 +430,14 @@ fn malformed_stdin_leaves_the_pending_selection_unchanged() -> Result<()> {
         Status::Pending { revision, .. } => *revision,
         _ => panic!("selection should be waiting"),
     };
-    for line in [
-        "",
-        "wat",
-        "url",
-        "url not-a-url",
-        "status extra",
-        "clear extra",
+    let usage = "usage: url <address> | status | clear\n";
+    for (line, expected) in [
+        ("", usage),
+        ("wat", usage),
+        ("url", usage),
+        ("url not-a-url", "Invalid URL: not-a-url\n"),
+        ("status extra", usage),
+        ("clear extra", usage),
     ] {
         input(&mut runtime, &checker, line)?;
         assert!(
@@ -447,7 +445,7 @@ fn malformed_stdin_leaves_the_pending_selection_unchanged() -> Result<()> {
             if url.as_ref() == "https://google.com/" && *current == revision)
         );
         let error = runtime.next_effect::<PrintStderr>()?;
-        assert!(error.intent.as_str().contains("Invalid"));
+        assert_eq!(error.intent.as_str(), expected);
         runtime.complete(error, EffectOutcome::Succeeded(()))?;
         expect_stdout(&mut runtime, &[])?;
         assert!(runtime.next_effect::<HttpRequest>().is_err());

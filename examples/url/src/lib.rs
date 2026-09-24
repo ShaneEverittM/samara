@@ -1,19 +1,19 @@
+use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
-use std::fmt;
 
 use samara::prelude::*;
 use samara::{HttpResponsePipeline, eprintln, println};
 use url::Url;
 
 #[derive(Debug)]
-pub enum UrlCommand {
+enum UrlCommand {
     Url(Url),
     Status,
     Clear,
 }
 
-pub enum InputEvent {
+enum InputEvent {
     Command(UrlCommand),
     Error(StdinError),
     Malformed(String),
@@ -35,7 +35,7 @@ impl InputEvent {
     }
 }
 
-pub enum Message {
+enum Message {
     Input(InputEvent),
     CheckDue {
         revision: u64,
@@ -50,7 +50,7 @@ pub enum Message {
 }
 
 #[derive(Clone)]
-pub enum CheckResult {
+enum CheckResult {
     Response(StatusCode),
     Error(String),
     Canceled,
@@ -66,7 +66,7 @@ impl fmt::Display for CheckResult {
     }
 }
 
-pub enum Status {
+enum Status {
     Idle {
         revision: u64,
     },
@@ -96,7 +96,7 @@ impl Status {
     }
 }
 
-pub struct Checker {
+struct Checker {
     input: SourceCapability<StdinLines>,
     stdout: EffectCapability<PrintStdout>,
     stderr: EffectCapability<PrintStderr>,
@@ -104,7 +104,7 @@ pub struct Checker {
 }
 
 impl Checker {
-    pub const DELAY: Duration = Duration::from_millis(500);
+    const DELAY: Duration = Duration::from_millis(500);
 }
 
 impl Component for Checker {
@@ -255,14 +255,28 @@ impl Component for Checker {
     }
 }
 
-pub fn program() -> Result<
-    (
-        Program,
-        (ComponentRef<Checker>,),
-        (SourceCapability<StdinLines>,),
-    ),
-    ProgramBuildError,
-> {
+/// Assembles the URL checker and returns its stdin capability for host binding.
+///
+/// ```
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let (program, input) = urlchecker::program()?;
+/// let runtime = samara::LiveRuntime::builder(program)
+///     .bind_http()
+///     .bind_stdio()
+///     .bind_stdin(&input)
+///     .build()?;
+/// // Inside Tokio, call runtime.spawn() and use its RuntimeTask for shutdown.
+/// # Ok(())
+/// # }
+/// ```
+pub fn program() -> Result<(Program, SourceCapability<StdinLines>), ProgramBuildError> {
+    let (program, _, input) = assemble()?;
+    Ok((program, input))
+}
+
+// Tests retain the component reference without exposing it to library consumers.
+fn assemble()
+-> Result<(Program, ComponentRef<Checker>, SourceCapability<StdinLines>), ProgramBuildError> {
     let mut builder = Program::builder();
 
     let http = builder.effect::<HttpRequest>();
@@ -280,5 +294,8 @@ pub fn program() -> Result<
         },
     );
 
-    Ok((builder.build()?, (checker,), (input,)))
+    Ok((builder.build()?, checker, input))
 }
+
+#[cfg(test)]
+mod tests;
