@@ -36,12 +36,16 @@ Teaching principles for the future guide live in [User Guide Notes](user-guide-n
 Open items from writing the application by hand; these are exploratory proposals,
 not accepted API decisions or a review of the unfinished application.
 
-- [ ] **Example-led rustdoc:** Make Source construction discoverable without
+- [x] **Example-led rustdoc:** Make Source construction discoverable without
   navigating several types. Show a small, complete path from declaring a Program
   capability, storing it on a Component, and returning a Subscription to binding
   its live implementation. Include the controlled equivalent and handling for
   `SourceEvent::Item`, `Ended`, and `Failed`. Link the recipe from the relevant
-  constructors and traits, and compile-check the examples as doctests.
+  constructors and traits, and compile-check the examples as doctests. Completed
+  September 24, 2026 in [`src/lib.rs`](../../src/lib.rs): public API descriptions
+  now lead with caller behavior, with complete source wiring, request/reply,
+  HTTP, driver, shutdown, and controlled-test examples. Existing compile-fail
+  checks remain covered; no runtime behavior changed.
 - [ ] **Explicit Subscription restart revision:** Explore a Model-owned revision
   that the Component can increment to request a fresh Source realization with
   unchanged configuration. Consider keeping the stable Subscription identity

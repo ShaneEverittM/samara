@@ -2,6 +2,27 @@
 
 Loose material for the future Samara user guide.
 
+## Public API documentation
+
+Shane's documentation guidance, September 24, 2026:
+
+- Describe what the caller can do and what happens when they do it. Keep
+  implementation history and internal vocabulary in design documents.
+- Lead with a short behavior description. Explain inputs, results, errors,
+  timing, and cancellation only where they affect how to use the API.
+- Use examples that compile. Show complete wiring for common flows; link to
+  those examples from related constructors and methods. Keep simple accessors
+  brief rather than repeating a setup example on each one.
+- Prefer concrete wording such as "returns a response" or "stops reading" to
+  adjective-heavy descriptions of outcomes and boundaries.
+- Keep compile-fail checks available without making invalid usage the main
+  example. State guarantees and limitations accurately while removing jargon.
+
+The public rustdoc pass in `src/lib.rs` follows these rules. It changes
+documentation only; architecture contracts and runtime behavior are unchanged.
+
+## Effect design
+
 - **Choose Effect boundaries by control-flow significance.** Shane's guiding
   principle, September 22, 2026:
 

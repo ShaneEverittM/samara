@@ -1,53 +1,64 @@
 #![allow(dead_code)]
 #![warn(missing_docs)]
 
-//! Samara enables application programming on Tokio that is as side-effect-free
-//! as practical.
+//! Build message-driven applications that run on Tokio or under test control.
 //!
-//! Samara keeps application state in [`Component`] models, routes every state
-//! change through a typed message, and represents asynchronous work as inert
-//! [`Command`] and [`Subscription`] values. The runtime—not a Component
-//! transition—owns Tokio tasks, time, I/O, and world-facing Drivers.
+//! A [`Component`] owns a model. Its `update` method handles one message at a time,
+//! changes the model, and returns a [`Command`] describing what to do next.
+//! [`Subscription`]s describe inputs the component wants to keep receiving.
 //!
-//! # Mental model
+//! Use [`LiveRuntime`] to run the application with I/O. Use [`ControlledRuntime`]
+//! to supply inputs and results yourself, and advance time without waiting.
+//! Both run the same component code.
 //!
-//! 1. A [`Component`] owns a private model and accepts typed messages.
-//! 2. [`Component::update`] changes that model synchronously and returns a
-//!    [`Command`] describing finite work. It receives no runtime or I/O capability.
-//! 3. [`Component::subscriptions`] declares the ongoing [`SourceDescriptor`]
-//!    values the current model wants active. Declaring a subscription does not
-//!    start work.
-//! 4. A [`Program`] assembles Components and issues their logical
-//!    [`EffectCapability`], [`SourceCapability`], [`ComponentRef`], and [`Port`]
-//!    dependencies. Its declaration set closes when the Program is built.
-//! 5. [`LiveRuntime`] binds every declared terminal boundary to Tokio Drivers or
-//!    an exact resource adapter. [`ControlledRuntime`] exposes the same
-//!    boundaries as scripted inputs for deterministic tests.
+//! # A component and a test
 //!
-//! Commands and subscriptions contain explicit, typed intent. The runtime owns
-//! their asynchronous execution and returns behaviorally relevant outcomes as
-//! messages through [`EffectOutcome`], [`SourceEvent`], and [`RequestOutcome`].
+//! ```
+//! use samara::prelude::*;
 //!
-//! # Execution profiles
+//! struct Counter;
+//! enum Message { Add(u64) }
 //!
-//! [`LiveRuntime`] executes the program on Tokio. It serializes transitions for
-//! each Component, preserves causal relationships, supervises runtime-owned
-//! work, and supports explicit [`Shutdown::Drain`] and [`Shutdown::Cancel`]
-//! policies. Independent live events have no implicit global order.
+//! impl Component for Counter {
+//!     type Model = u64;
+//!     type Message = Message;
 //!
-//! [`ControlledRuntime`] runs the same Components and descriptors against a
-//! deterministic world supplied by a test. It owns logical time, never falls
-//! back to a live Driver, and records a structural causal trace that can be
-//! inspected after driving the program.
+//!     fn init(&self) -> Init<u64, Message> {
+//!         Init::new(0)
+//!     }
 //!
-//! # Conforming application code
+//!     fn update(&self, count: &mut u64, message: Message) -> Command<Message> {
+//!         match message {
+//!             Message::Add(amount) => *count += amount,
+//!         }
+//!         Command::none()
+//!     }
+//! }
 //!
-//! Rust cannot prevent application code from reading globals, performing I/O,
-//! or spawning tasks. To preserve Samara's guarantees, [`Component::init`],
-//! [`Component::update`], [`Component::subscriptions`], message mappers,
-//! protocol conversions, and decoders must be pure and deterministic. Live
-//! world interaction belongs in [`EffectDriver`] and [`SourceDriver`]
-//! implementations owned by the runtime.
+//! let mut builder = Program::builder();
+//! let counter = builder.component(ComponentId::new("counter"), Counter);
+//! let mut runtime = ControlledRuntime::builder(builder.build()?).build()?;
+//! runtime.send(&counter, Message::Add(3))?;
+//! runtime.run_until_idle()?;
+//! assert_eq!(*runtime.state(&counter)?, 3);
+//! assert!(runtime.cancel()?.is_clean());
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! # Where to go next
+//!
+//! - [`StdinLines`]: connect a component to input, with live and controlled examples.
+//! - [`Command`]: request work, send messages, and schedule timers.
+//! - [`HttpRequest`]: fetch a URL and handle its response.
+//! - [`ProgramBuilder::bind_port`]: connect components through a shared protocol.
+//! - [`EffectDriver`] and [`SourceDriver`]: implement your own I/O.
+//! - [`RuntimeTask`]: shut down a running application and wait for cleanup.
+//!
+//! Keep `init`, `update`, `subscriptions`, message conversions, and decoders free
+//! of I/O, blocking, locks, and clock reads. Describe work with commands and
+//! subscriptions; drivers perform the I/O. Each component's updates run without
+//! overlapping. Independent live events can arrive in either order; controlled
+//! runs produce the same trace for the same inputs.
 
 use std::{
     any::{Any, TypeId},
@@ -84,8 +95,16 @@ use controlled_runtime::ControlledCore;
 /// ```
 pub use http::StatusCode;
 
-/// Common imports for defining Components and assembling live or controlled
-/// runtimes.
+/// Common types and traits for writing components and building runtimes.
+///
+/// ```
+/// use samara::prelude::*;
+/// let command: Command<()> = Command::none();
+/// assert!(command.is_none());
+/// ```
+///
+/// Formatting macros are used as `samara::println!`, `samara::eprintln!`, etc.,
+/// to distinguish them from Rust's immediate I/O macros.
 pub mod prelude {
     pub use crate::{
         BoxFuture, CancelReason, Command, Component, ComponentHandle, ComponentId, ComponentRef,
@@ -104,14 +123,19 @@ pub mod prelude {
     };
 }
 
-/// Returns a deferred best-effort standard-output [`Command`] using familiar
-/// Rust formatting syntax.
+/// Creates a Command to write formatted text to standard output.
 ///
-/// The first argument is the Component's declared
-/// [`EffectCapability<PrintStdout>`]. The returned Command owns the formatted
-/// text and deliberately discards the print outcome. It must still be returned
-/// from the transition or included in [`Command::batch`]. This macro performs
-/// no immediate I/O and is intentionally not re-exported by [`prelude`].
+/// Return it from `update`, or include it in a [`Command::batch`], to request the
+/// write. Construction does no I/O. Writing schedules no response message and
+/// ignores I/O errors. Bind output with [`LiveRuntimeBuilder::bind_stdio`].
+///
+/// ```
+/// use samara::{Command, PrintStdout, Program};
+/// let mut program = Program::builder();
+/// let output = program.effect::<PrintStdout>();
+/// let command: Command<()> = samara::print!(&output, "count: {}", 3);
+/// assert_eq!(command.effect_intent::<PrintStdout>().unwrap().as_str(), "count: 3");
+/// ```
 #[macro_export]
 macro_rules! print {
     ($capability:expr) => {
@@ -128,21 +152,18 @@ macro_rules! print {
     };
 }
 
-/// Returns a deferred best-effort standard-output-line [`Command`] using
-/// familiar Rust formatting syntax.
+/// Creates a Command to write formatted text to standard output and append a newline.
 ///
-/// The first argument is the Component's declared
-/// [`EffectCapability<PrintStdout>`]. Exactly one newline is appended after the
-/// formatted text. The returned Command owns that text, schedules no completion
-/// Message, and must still be returned or batched. This macro is distinct from
-/// Rust's ambient, unqualified `println!`.
+/// Return it from `update`, or include it in a [`Command::batch`], to request the
+/// write. Construction does no I/O. Writing schedules no response message and
+/// ignores I/O errors. Bind output with [`LiveRuntimeBuilder::bind_stdio`].
 ///
 /// ```
 /// use samara::{Command, PrintStdout, Program};
-///
 /// let mut program = Program::builder();
-/// let stdout = program.effect::<PrintStdout>();
-/// let _: Command<()> = samara::println!(&stdout, "ready: {}", 7);
+/// let output = program.effect::<PrintStdout>();
+/// let command: Command<()> = samara::println!(&output, "count: {}", 3);
+/// assert_eq!(command.effect_intent::<PrintStdout>().unwrap().as_str(), "count: 3\n");
 /// ```
 #[macro_export]
 macro_rules! println {
@@ -160,14 +181,19 @@ macro_rules! println {
     };
 }
 
-/// Returns a deferred best-effort standard-error [`Command`] using familiar
-/// Rust formatting syntax.
+/// Creates a Command to write formatted text to standard error.
 ///
-/// The first argument is the Component's declared
-/// [`EffectCapability<PrintStderr>`]. The returned Command owns the formatted
-/// text and deliberately discards the print outcome. It must still be returned
-/// from the transition or included in [`Command::batch`]. This macro performs
-/// no immediate I/O and is intentionally not re-exported by [`prelude`].
+/// Return it from `update`, or include it in a [`Command::batch`], to request the
+/// write. Construction does no I/O. Writing schedules no response message and
+/// ignores I/O errors. Bind output with [`LiveRuntimeBuilder::bind_stdio`].
+///
+/// ```
+/// use samara::{Command, PrintStderr, Program};
+/// let mut program = Program::builder();
+/// let output = program.effect::<PrintStderr>();
+/// let command: Command<()> = samara::eprint!(&output, "count: {}", 3);
+/// assert_eq!(command.effect_intent::<PrintStderr>().unwrap().as_str(), "count: 3");
+/// ```
 #[macro_export]
 macro_rules! eprint {
     ($capability:expr) => {
@@ -184,14 +210,19 @@ macro_rules! eprint {
     };
 }
 
-/// Returns a deferred best-effort standard-error-line [`Command`] using
-/// familiar Rust formatting syntax.
+/// Creates a Command to write formatted text to standard error and append a newline.
 ///
-/// The first argument is the Component's declared
-/// [`EffectCapability<PrintStderr>`]. Exactly one newline is appended after the
-/// formatted text. The returned Command owns that text, schedules no completion
-/// Message, and must still be returned or batched. This macro is distinct from
-/// Rust's ambient, unqualified `eprintln!`.
+/// Return it from `update`, or include it in a [`Command::batch`], to request the
+/// write. Construction does no I/O. Writing schedules no response message and
+/// ignores I/O errors. Bind output with [`LiveRuntimeBuilder::bind_stdio`].
+///
+/// ```
+/// use samara::{Command, PrintStderr, Program};
+/// let mut program = Program::builder();
+/// let output = program.effect::<PrintStderr>();
+/// let command: Command<()> = samara::eprintln!(&output, "count: {}", 3);
+/// assert_eq!(command.effect_intent::<PrintStderr>().unwrap().as_str(), "count: 3\n");
+/// ```
 #[macro_export]
 macro_rules! eprintln {
     ($capability:expr) => {
@@ -208,93 +239,105 @@ macro_rules! eprintln {
     };
 }
 
-/// A boxed, sendable future returned by a live effect or source Driver.
+/// A boxed future returned by an [`EffectDriver`] or [`SourceDriver`].
 ///
-/// Returning the future to Samara transfers lifecycle ownership to the runtime;
-/// Drivers should not detach untracked Tokio tasks behind this boundary.
+/// Use `Box::pin(async move { ... })`. Samara runs and cancels the future;
+/// keep child work inside it rather than spawning detached tasks.
+///
+/// ```
+/// use samara::BoxFuture;
+/// let work: BoxFuture<u64> = Box::pin(async { 42 });
+/// ```
 pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 
-/// Stable logical identity of one Component instance in a [`Program`].
+/// The name of a component within a Program.
 ///
-/// This identifies the application unit, not a Tokio task, mailbox, or thread.
+/// Names must be unique within that program.
+///
+/// ```
+/// use samara::ComponentId;
+/// let id = ComponentId::new("input");
+/// assert_eq!(id, ComponentId::new("input"));
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ComponentId(Arc<str>);
 
 impl ComponentId {
-    /// Creates a logical Component identity.
+    /// Creates a name from a string.
     pub fn new(value: impl Into<Arc<str>>) -> Self {
         Self(value.into())
     }
 }
 
-/// Stable name of one provider-neutral protocol dependency in a [`Program`].
+/// The name of a protocol connection within a Program.
 ///
-/// A Port's full logical identity is its protocol type plus this name. Two
-/// [`Port`] values may therefore use the same [`Protocol`] while naming distinct
-/// dependencies, such as `"inventory/primary"` and `"inventory/fallback"`.
-/// Neither the name nor registration order implies execution order.
+/// A port is identified by its protocol type and name. Use different names for
+/// two providers of the same protocol, such as `"primary"` and `"fallback"`.
+///
+/// ```
+/// use samara::PortId;
+/// let id = PortId::new("input");
+/// assert_eq!(id, PortId::new("input"));
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PortId(Arc<str>);
 
 impl PortId {
-    /// Creates a stable logical Port name.
+    /// Creates a name from a string.
     pub fn new(value: impl Into<Arc<str>>) -> Self {
         Self(value.into())
     }
 }
 
-/// Stable identity of an ongoing subscription within its owning Component.
+/// The name of a subscription within one component.
 ///
-/// Reconciliation combines this key with the owning [`ComponentId`]. The same
-/// [`SourceCapability`] and an equal source descriptor keep the current Source
-/// alive; changing either starts a new private generation.
+/// Reuse the name across calls to `subscriptions` to keep the same input active.
+/// Different components can use the same name. See [`Subscription`] for when
+/// Samara keeps or replaces a source.
+///
+/// ```
+/// use samara::SubscriptionId;
+/// let id = SubscriptionId::new("input");
+/// assert_eq!(id, SubscriptionId::new("input"));
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SubscriptionId(Arc<str>);
 
 impl SubscriptionId {
-    /// Creates a logical subscription identity.
+    /// Creates a name from a string.
     pub fn new(value: impl Into<Arc<str>>) -> Self {
         Self(value.into())
     }
 }
 
-/// A typed description of finite world-facing work.
+/// Describes one I/O operation and the types of its result and error.
 ///
-/// Implementations are data only: they do not execute the effect. A live
-/// [`EffectDriver`] realizes the value in live execution, while controlled
-/// execution exposes it as [`PendingEffect`] for scripted completion.
+/// Store the arguments needed to perform the operation. Implement [`EffectDriver`]
+/// to execute it, or supply its result in a [`ControlledRuntime`] test. Creating
+/// or inspecting a descriptor must not perform I/O.
+///
+/// ```
+/// use samara::{EffectDescriptor, Program, Command};
+/// struct ReadFile { path: String }
+/// impl EffectDescriptor for ReadFile {
+///     type Output = Vec<u8>;
+///     type Error = std::io::Error;
+/// }
+/// let mut program = Program::builder();
+/// let files = program.effect::<ReadFile>();
+/// let command: Command<_> = Command::effect_with(
+///     &files, ReadFile { path: "settings.txt".into() }, |outcome| outcome,
+/// );
+/// assert_eq!(command.effect_intent::<ReadFile>().unwrap().path, "settings.txt");
+/// ```
 pub trait EffectDescriptor: Send + 'static {
     /// Value produced when the effect succeeds.
     type Output: Send + 'static;
-    /// Typed error explaining an effect failure.
+    /// Error returned when the operation fails.
     type Error: Send + 'static;
 }
 
-mod source_plan_private {
-    /// Unnameable outside this crate, so the hidden lowering hook can be
-    /// implemented by downstream descriptors but overridden only by Samara.
-    pub struct LowerToken(());
-
-    pub(crate) const LOWER_TOKEN: LowerToken = LowerToken(());
-}
-
-/// A cloneable, comparable description of an ongoing external event source.
-///
-/// Equality is semantic: together with Source capability identity, the runtime
-/// uses it during subscription reconciliation to decide whether an active
-/// Source is unchanged. Operational state such as a socket handle or partial
-/// input buffer must not live in this descriptor.
-///
-/// A custom implementation is a terminal Source boundary and can be bound with
-/// [`LiveRuntimeBuilder::bind_source`] or
-/// [`ControlledRuntimeBuilder::control_source`]. Samara-provided composed
-/// descriptors such as [`Framed`] lower to their terminal descriptor
-/// automatically.
-///
-/// SourcePlan lowering is reserved to Samara. A downstream descriptor supplies
-/// its event types and inherits terminal behavior; the hidden lowering and
-/// terminal-metadata methods cannot be overridden without naming crate-private
-/// types:
+/// Custom descriptors cannot override internal source composition.
 ///
 /// ```compile_fail
 /// use samara::SourceDescriptor;
@@ -314,10 +357,46 @@ mod source_plan_private {
 ///     }
 /// }
 /// ```
+mod source_plan_private {
+    /// Unnameable outside this crate, so the hidden lowering hook can be
+    /// implemented by downstream descriptors but overridden only by Samara.
+    pub struct LowerToken(());
+
+    pub(crate) const LOWER_TOKEN: LowerToken = LowerToken(());
+}
+
+/// Describes an input that can produce many events, such as a socket or file watcher.
+///
+/// Implement [`SourceDriver`] to read the input. Use [`Subscription`] to request
+/// it from a component, and [`ControlledRuntime::emit_source`] to supply test
+/// inputs. Descriptor equality determines whether a subscription needs to restart:
+/// include configuration such as the address or path, but keep open handles and
+/// read buffers in the driver.
+///
+/// ```
+/// use samara::{SourceDescriptor, Program, Subscription, SubscriptionId};
+/// #[derive(Clone, Debug, PartialEq)]
+/// struct WatchFile { path: String }
+/// impl SourceDescriptor for WatchFile {
+///     type Item = Vec<u8>;
+///     type Error = std::io::Error;
+/// }
+/// let mut program = Program::builder();
+/// let files = program.source::<WatchFile>();
+/// let subscription = Subscription::source_with(
+///     &files, SubscriptionId::new("settings"),
+///     WatchFile { path: "settings.txt".into() }, |event| event,
+/// );
+/// assert_eq!(subscription.id(), &SubscriptionId::new("settings"));
+/// ```
+///
+/// Use [`StdinLines`] for terminal input, [`StreamDescriptor`] for a Tokio channel,
+/// or [`TcpBytes`] for a TCP connection. Wrap a source in [`Framed`] to decode its
+/// items before they reach your component.
 pub trait SourceDescriptor: Clone + PartialEq + fmt::Debug + Send + Sync + 'static {
     /// Item emitted while the source remains active.
     type Item: Send + 'static;
-    /// Typed error explaining a failure that terminates the active Source.
+    /// Error that stops the input.
     type Error: Send + 'static;
 
     /// Internal stable-Rust dispatch for Samara's built-in composed descriptors.
@@ -502,48 +581,63 @@ impl SourcePlan {
     }
 }
 
-/// Behaviorally relevant terminal outcome of one finite [`EffectDescriptor`].
+/// The result of an effect: success, failure, or cancellation.
+///
+/// Your command's mapper converts this value to a component message.
+/// [`Shutdown::Cancel`] stops work without calling that mapper; it does not
+/// produce a `Cancelled` message.
+///
+/// ```
+/// use samara::EffectOutcome;
+/// let outcome: EffectOutcome<u64, &str> = EffectOutcome::Succeeded(42);
+/// let text = match outcome {
+///     EffectOutcome::Succeeded(value) => value.to_string(),
+///     EffectOutcome::Failed(error) => format!("failed: {error}"),
+///     EffectOutcome::Cancelled(reason) => format!("cancelled: {reason:?}"),
+/// };
+/// assert_eq!(text, "42");
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EffectOutcome<Output, EffectError> {
-    /// The effect completed with its typed output.
+    /// The operation succeeded and produced this value.
     Succeeded(Output),
-    /// The effect completed with its typed failure.
+    /// The operation failed with this error.
     Failed(EffectError),
-    /// An explicit effect policy ended the effect before completion.
+    /// The operation was cancelled for this reason.
     ///
-    /// Whole-runtime [`Shutdown::Cancel`] does not synthesize this outcome or
-    /// invoke the effect's message mapper; it aborts the owned work instead.
+    /// Runtime shutdown with [`Shutdown::Cancel`] does not send this outcome or
+    /// call the effect's message mapper.
     Cancelled(CancelReason),
 }
 
-/// Event delivered by an active Source realization.
+/// An item, error, or end-of-input notification from a source.
 ///
-/// Removing or replacing a Subscription, or cancelling its runtime scope, does
-/// not synthesize an `Ended` or `Failed` event.
+/// `Failed` and `Ended` stop that source. Samara does not restart it automatically
+/// while the subscription remains unchanged. Removing or replacing a subscription,
+/// or shutting down the runtime, sends neither event.
+///
+/// See [`StdinLines`] for an example that handles all three variants.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SourceEvent<Item, SourceError> {
-    /// The source emitted another typed item and remains active.
+    /// Another item from the input.
     Item(Item),
-    /// The active source instance failed and terminated.
+    /// The input failed and stopped.
     Failed(SourceError),
-    /// The active source ended normally.
+    /// The input ended normally.
     ///
-    /// Normal ending does not automatically restart the Source while its
-    /// Subscription remains desired.
+    /// Normal ending does not restart the input while its
+    /// subscription remains unchanged.
     Ended,
 }
 
-/// Structural shape of one [`SourceEvent`] in a controlled trace.
-///
-/// The trace records event shape without copying application payloads. Tests
-/// can inspect payloads through typed Component and descriptor APIs.
+/// The kind of source event recorded in a [`TraceEvent`], without its payload.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SourceEventKind {
-    /// The Source emitted another item and remains active.
+    /// The input produced an item.
     Item,
-    /// The Source failed and terminated.
+    /// The input failed and stopped.
     Failed,
-    /// The Source ended normally.
+    /// The input ended normally.
     Ended,
 }
 
@@ -561,30 +655,40 @@ impl SourceEventKind {
     }
 }
 
-/// Reason carried by an explicit [`EffectOutcome::Cancelled`] value.
+/// Why an effect was cancelled.
 ///
-/// These values are supplied by an effect-specific policy or controlled test.
-/// Whole-runtime [`Shutdown::Cancel`] does not invoke an effect mapper.
+/// These reasons come from effect-specific logic or a controlled test.
+/// Stopping the runtime with [`Shutdown::Cancel`] does not send effect outcomes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CancelReason {
-    /// An effect-specific policy associated cancellation with scope shutdown.
+    /// The operation was cancelled because its scope shut down.
     Shutdown,
-    /// Newer intent made the pending work obsolete.
+    /// Newer work made the operation obsolete.
     Superseded,
-    /// The effect did not complete before its declared deadline.
+    /// The operation exceeded its deadline.
     Deadline,
 }
 
-/// Initial model and optional startup command for a [`Component`].
+/// The model and startup command returned by [`Component::init`].
+///
+/// ```
+/// use samara::{Command, Init};
+/// use std::time::Duration;
+/// let init: Init<u64, ()> = Init::new(0)
+///     .with_command(Command::after(Duration::from_secs(1), ()));
+/// assert_eq!(init.model, 0);
+/// ```
+///
+/// Use `Init::default()` when the model implements [`Default`].
 pub struct Init<Model, Message> {
-    /// The Component's initial private state.
+    /// The starting model.
     pub model: Model,
-    /// Finite work requested as the Component enters the program.
+    /// The command to run at startup.
     pub command: Command<Message>,
 }
 
 impl<Model, Message> Init<Model, Message> {
-    /// Creates initialization with no startup command.
+    /// Creates an initial model with no startup work.
     pub fn new(model: Model) -> Self {
         Self {
             model,
@@ -592,7 +696,9 @@ impl<Model, Message> Init<Model, Message> {
         }
     }
 
-    /// Adds finite work to request after the initial model is installed.
+    /// Sets the command to run when the runtime starts.
+    ///
+    /// Replaces any previously set command. Use [`Command::batch`] for several actions.
     pub fn with_command(mut self, command: Command<Message>) -> Self {
         self.command = command;
         self
@@ -608,17 +714,37 @@ where
     }
 }
 
-/// Samara's topology-neutral unit of state and behavior.
+/// A part of an application with its own state and messages.
 ///
-/// A Component configuration may contain immutable logical wiring such as an
-/// [`EffectCapability`], [`SourceCapability`], [`Port`], or [`ComponentRef`],
-/// together with inert descriptor configuration. It must not contain ambient
-/// runtime, clock, I/O, or mutable state handles. The runtime owns `Model` and
-/// guarantees that two calls to [`Component::update`] for the same Component
-/// never overlap.
+/// Put changing application state in `Model`. Keep configuration, capabilities,
+/// and ports on the component itself. Samara owns the model and calls `update`
+/// for each message, never overlapping updates to the same component.
 ///
-/// The associated Message type makes every transition input explicit. Values
-/// from another vocabulary cannot be delivered accidentally:
+/// All three methods must be deterministic and free of I/O, blocking, locks, and
+/// clock reads. Return commands and subscriptions to request work.
+///
+/// ```
+/// use samara::prelude::*;
+/// struct Counter;
+/// impl Component for Counter {
+///     type Model = u64;
+///     type Message = u64;
+///     fn init(&self) -> Init<u64, u64> { Init::new(0) }
+///     fn update(&self, count: &mut u64, amount: u64) -> Command<u64> {
+///         *count += amount;
+///         Command::none()
+///     }
+/// }
+/// let mut model = Counter.init().model;
+/// assert!(Counter.update(&mut model, 3).is_none());
+/// assert_eq!(model, 3);
+/// ```
+///
+/// See [`StdinLines`] for subscriptions and [`ProgramBuilder::bind_port`] for
+/// communication between components.
+///
+/// <details>
+/// <summary>Compile-time checks</summary>
 ///
 /// ```compile_fail
 /// use samara::{Command, Component};
@@ -633,113 +759,135 @@ where
 ///     component.update(model, message)
 /// }
 /// ```
+///
+/// </details>
 pub trait Component: Send + 'static {
-    /// All mutable application state exclusively owned by this Component.
+    /// This component's mutable application state.
     type Model: Send + 'static;
-    /// The only input allowed to trigger a state transition.
+    /// Messages this component handles in `update`.
     type Message: Send + 'static;
 
-    /// Produces the initial model and any explicit startup work.
+    /// Creates the starting model and optional startup work. Called when the component is registered.
     fn init(&self) -> Init<Self::Model, Self::Message>;
 
-    /// Must be observationally pure. The mutable reference is exclusively owned
-    /// for the duration of this non-overlapping transition.
+    /// Handles one message, updates the model, and returns the next actions.
+    ///
+    /// Use [`Command::none`] when no work is needed. Do not perform I/O here.
     fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message>;
 
-    /// Purely describes the ongoing sources desired by the current model.
+    /// Returns the inputs this component wants for the current model.
     ///
-    /// The runtime evaluates this after a committed transition and reconciles
-    /// the returned set by [`SubscriptionId`], [`SourceCapability`], and source
-    /// equality. The default declares no ongoing work.
+    /// Called for the initial model and after each update. Samara starts new inputs,
+    /// keeps unchanged ones, and stops those omitted from the returned set.
+    /// The default returns no subscriptions. See [`Subscription`] for comparison rules.
     fn subscriptions(&self, _model: &Self::Model) -> Subscriptions<Self::Message> {
         Subscriptions::none()
     }
 }
 
-/// A provider-neutral set of values accepted through a [`Port`].
+/// Defines the messages that can be sent through a [`Port`].
 ///
-/// `Message` is normally a protocol-owned enum containing notification values
-/// and typed [`RequestInvocation`] requests. It is deliberately distinct from
-/// any provider Component's private [`Component::Message`] type. Program
-/// assembly converts it into the selected provider's Message through the
-/// `From` relationship required by [`ProgramBuilder::bind_port`].
+/// A protocol lets callers use a service without depending on its component's
+/// message type. The provider implements `From<P::Message>` for its own message
+/// type. Use [`protocol!`] to generate request and notification types, or define
+/// them yourself. See [`ProgramBuilder::bind_port`] for a complete example.
 pub trait Protocol: Send + Sync + 'static {
-    /// Complete provider-facing input vocabulary for this protocol.
+    /// Messages accepted by a provider of this protocol.
     type Message: Send + 'static;
 }
 
-/// A one-way value belonging to protocol `P`.
+/// A message sent through a [`Port`] without expecting a reply.
 ///
-/// Conversion to [`Protocol::Message`] is synchronous application logic and
-/// must be pure and deterministic. Sending the returned value remains a
-/// runtime-interpreted command rather than a direct provider call.
+/// `into_message` must be a pure conversion. [`protocol!`] generates this
+/// implementation for entries without `-> Reply`.
+///
+/// ```
+/// use samara::prelude::*;
+/// protocol! { type Alerts => enum AlertMessage { Changed(String), } }
+/// let mut program = Program::builder();
+/// let alerts = program.port::<Alerts>(PortId::new("alerts"));
+/// let command: Command<()> = Command::notify(alerts, Changed("ready".into()));
+/// assert_eq!(command.notification_intents::<Changed>().len(), 1);
+/// ```
 pub trait Notification<P: Protocol>: Send + 'static {
-    /// Wraps this notification in the protocol's provider-facing vocabulary.
+    /// Converts this notification to a protocol message.
     fn into_message(self) -> P::Message;
 }
 
-/// A request belonging to protocol `P` with one statically known reply type.
+/// A message sent through a [`Port`] that expects a reply of type `Reply`.
 ///
-/// The runtime creates an opaque [`ReplyTo`] value when interpreting
-/// [`Command::request`]. This pure conversion places the request and token into
-/// the protocol's [`Protocol::Message`] vocabulary for delivery to its bound
-/// provider.
+/// `into_message` packages the request with the reply token; it must not perform
+/// I/O. [`protocol!`] generates this implementation for entries with `-> Reply`.
+/// Use [`Command::request_with`] to receive the reply in your component.
+///
+/// ```
+/// use samara::prelude::*;
+/// protocol! { type Catalog => enum CatalogMessage { Lookup(String) -> Option<u64>, } }
+/// let mut program = Program::builder();
+/// let catalog = program.port::<Catalog>(PortId::new("catalog"));
+/// let command = Command::request_with(catalog, Lookup("widget".into()), |outcome| outcome);
+/// assert_eq!(command.request_intents::<Lookup>().len(), 1);
+/// ```
 pub trait Request<P: Protocol>: Send + 'static {
-    /// Reply value accepted for this particular request type.
+    /// The value returned in response to this request.
     type Reply: Send + 'static;
 
-    /// Wraps the request and runtime-owned reply token for provider delivery.
+    /// Packages this request and its reply token in a protocol message.
     fn into_message(self, reply_to: ReplyTo<Self::Reply>) -> P::Message;
 }
 
-/// Requester-visible terminal outcome of a correlated [`Command::request`].
+/// The reply or timeout delivered to a request's caller.
 ///
-/// Requests have no default deadline. [`Command::request_timeout`] and
-/// [`PortHandle::request_timeout`] opt into [`RequestOutcome::TimedOut`]; a
-/// reply accepted before the deadline produces [`RequestOutcome::Replied`].
-/// Timeout releases the request obligation without cancelling provider work.
-/// Scope cancellation does not manufacture Component outcomes; host scope
-/// failures return [`RuntimeError`]. `Failed` and `Cancelled` remain reserved.
+/// Requests have no timeout unless you use [`Command::request_timeout`] or
+/// [`PortHandle::request_timeout`]. A timeout leaves the provider's work running
+/// and discards its later reply. Runtime cancellation does not send this value
+/// to a component. `Failed` and `Cancelled` are not produced by the built-in
+/// request implementation.
+///
+/// ```
+/// use samara::RequestOutcome;
+/// let outcome: RequestOutcome<u64> = RequestOutcome::TimedOut;
+/// let value = match outcome {
+///     RequestOutcome::Replied(value) => Some(value),
+///     RequestOutcome::TimedOut | RequestOutcome::Cancelled | RequestOutcome::Failed(_) => None,
+/// };
+/// assert_eq!(value, None);
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RequestOutcome<Reply> {
-    /// The provider emitted a correctly typed reply.
+    /// The provider replied with this value.
     Replied(Reply),
-    /// The request or reply could not complete for a runtime-visible reason.
+    /// The request failed. Not produced by the built-in request implementation.
     Failed(RequestError),
-    /// A runtime-owned deadline expired before a reply was accepted.
+    /// No reply was processed before the deadline.
     TimedOut,
-    /// Runtime ownership ended the request for a reason other than timeout.
+    /// The request was cancelled. Not produced by the built-in request implementation.
     Cancelled,
 }
 
-/// Topology-neutral request failure data carried by [`RequestOutcome::Failed`].
+/// The reason for a [`RequestOutcome::Failed`] value.
 ///
-/// These variants describe whether delivery failed or an accepted request lost
-/// its ability to reply without exposing channels, tasks, or runtime topology.
-/// The built-in request path does not synthesize these failures.
+/// The built-in request implementation does not currently produce these errors.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum RequestError {
-    /// The bound provider could not accept the request.
+    /// The request could not be delivered to its provider.
     DeliveryFailed,
-    /// The provider accepted the request but no reply can now be produced.
+    /// The provider accepted the request but can no longer reply.
     ReplyAbandoned,
 }
 
-/// Opaque, one-shot correlation authority carried to a request provider.
+/// The token a provider uses to reply to a request.
 ///
-/// This is inert typed data: it is not a oneshot sender, future, runtime handle,
-/// or state mutation capability. It deliberately does not implement `Clone`,
-/// so [`Command::reply`] consumes the only authority presented to the provider.
-/// Application code cannot construct a token; the runtime creates it while
-/// interpreting [`Command::request`].
+/// Pass it to [`Command::reply`]. It cannot be cloned or created by application
+/// code, so each request can be answered at most once. Dropping it does not cancel
+/// the request: the caller keeps waiting until its timeout or runtime shutdown.
+/// An unanswered request without a timeout can keep [`Shutdown::Drain`] waiting.
 ///
-/// Discarding the authority is a diagnostic violation when `unused_must_use`
-/// is denied. The lint catches an immediately unused expression, but Rust
-/// cannot require a bound value to be consumed later. Dropping, storing, or
-/// forgetting a token without replying leaves the request unresolved until its
-/// optional timeout expires or its scope ends. Without a timeout,
-/// [`Shutdown::Drain`] may wait indefinitely.
+/// See [`ProgramBuilder::bind_port`] for a provider that returns a reply.
+///
+/// <details>
+/// <summary>Compile-time checks</summary>
 ///
 /// ```compile_fail
 /// #![deny(unused_must_use)]
@@ -749,6 +897,8 @@ pub enum RequestError {
 ///     reply_to;
 /// }
 /// ```
+///
+/// </details>
 #[must_use = "a ReplyTo must be consumed by Command::reply"]
 pub struct ReplyTo<Reply> {
     token: Arc<RequestToken>,
@@ -802,20 +952,18 @@ impl<Reply> fmt::Debug for ReplyTo<Reply> {
     }
 }
 
-/// One typed request delivered to a protocol provider.
+/// A received request and the token used to answer it.
 ///
-/// Protocol definitions normally place this value in a
-/// [`Protocol::Message`] enum variant. Provider Components inspect `request`
-/// and pass `reply_to` to [`Command::reply`]; they never await or access runtime
-/// state while handling it.
+/// Read `request` and return [`Command::reply`] with `reply_to`.
+/// See [`ProgramBuilder::bind_port`] for a complete provider example.
 pub struct RequestInvocation<P, R>
 where
     P: Protocol,
     R: Request<P>,
 {
-    /// Original typed request value supplied by the requester.
+    /// The request arguments.
     pub request: R,
-    /// Opaque authority for emitting exactly `R::Reply` to that requester.
+    /// The token to pass to [`Command::reply`].
     pub reply_to: ReplyTo<R::Reply>,
     protocol: PhantomData<fn() -> P>,
 }
@@ -825,11 +973,7 @@ where
     P: Protocol,
     R: Request<P>,
 {
-    /// Couples a request to the runtime-created reply authority.
-    ///
-    /// Protocol-owned [`Request::into_message`] implementations call this; the
-    /// private construction of [`ReplyTo`] prevents application code from
-    /// manufacturing a live correlation.
+    /// Packages a request and its reply token inside [`Request::into_message`].
     pub fn new(request: R, reply_to: ReplyTo<R::Reply>) -> Self {
         Self {
             request,
@@ -853,45 +997,31 @@ where
     }
 }
 
-/// Declares the operation vocabulary of a provider-neutral protocol.
+/// Defines a protocol and its request and notification types.
 ///
-/// Each entry generates an ordinary, nameable operation type. The declaration
-/// also generates a marker type, its [`Protocol`] implementation, a
-/// provider-facing protocol-message enum, and the corresponding
-/// [`Notification`] and [`Request`] conversions. Provider Components still
-/// match the generated protocol-message enum themselves.
-///
-/// An entry with no reply type is a notification; an entry followed by
-/// `-> Reply` is a request.
-/// Entries may be unit operations or carry one tuple field. Notification
-/// variants are flattened to that field, while request variants carry a typed
-/// [`RequestInvocation`]. A request with a unit reply must therefore spell
-/// `-> ()`. Generated operation types and the protocol-message enum derive
-/// [`Debug`](fmt::Debug).
-///
-/// The macro accepts neither per-operation attributes nor operations with
-/// multiple fields or generics. Generated derives are not configurable. Define
-/// the protocol types manually when that grammar is too narrow.
+/// Entries with `-> Reply` generate a [`Request`]; other entries generate a
+/// [`Notification`]. Each entry is a unit type or has one tuple field. Use
+/// `-> ()` for a request whose reply has no data.
 ///
 /// ```
 /// use samara::prelude::*;
-///
-/// #[derive(Debug)]
-/// pub struct HealthSnapshot;
-///
 /// protocol! {
-///     pub type HealthProtocol => enum HealthProtocolMessage {
+///     pub type Health => enum HealthMessage {
 ///         Changed(String),
 ///         Disconnected,
-///         Read -> HealthSnapshot,
+///         Read -> bool,
 ///     }
 /// }
-///
-/// let changed = <Changed as Notification<HealthProtocol>>::into_message(
-///     Changed("receiving".to_owned()),
-/// );
-/// assert!(matches!(changed, HealthProtocolMessage::Changed(status) if status == "receiving"));
+/// let mut program = Program::builder();
+/// let health = program.port::<Health>(PortId::new("health"));
+/// let command = Command::request_with(health, Read, |outcome| outcome);
+/// assert_eq!(command.request_intents::<Read>().len(), 1);
 /// ```
+///
+/// The generated message enum carries a notification's field directly, or a
+/// [`RequestInvocation`] for a request. All generated types implement `Debug`.
+/// Per-operation attributes, generics, and multiple fields are not supported;
+/// implement [`Protocol`], [`Request`], and [`Notification`] yourself for those cases.
 #[macro_export]
 macro_rules! protocol {
     (
@@ -935,7 +1065,7 @@ macro_rules! protocol {
 
         $($operation_items)*
 
-        #[doc = concat!("Provider-facing envelope for `", stringify!($protocol), "`.")]
+        #[doc = concat!("Messages accepted by providers of `", stringify!($protocol), "`.")]
         #[derive(Debug)]
         $visibility enum $message {
             $($message_variants)*
@@ -966,7 +1096,7 @@ macro_rules! protocol {
             [$message]
             [
                 $($operation_items)*
-                #[doc = concat!("Payload-carrying request operation in `", stringify!($protocol), "`.")]
+                #[doc = concat!("Request arguments for `", stringify!($protocol), "`.")]
                 #[derive(Debug)]
                 $visibility struct $operation(
                     #[doc = "Request payload."]
@@ -975,7 +1105,7 @@ macro_rules! protocol {
             ]
             [
                 $($message_variants)*
-                #[doc = concat!("Request operation `", stringify!($operation), "`.")]
+                #[doc = concat!("Request `", stringify!($operation), "`.")]
                 $operation($crate::RequestInvocation<$protocol, $operation>),
             ]
             [
@@ -1018,13 +1148,13 @@ macro_rules! protocol {
             [$message]
             [
                 $($operation_items)*
-                #[doc = concat!("Unit request operation in `", stringify!($protocol), "`.")]
+                #[doc = concat!("Request without arguments for `", stringify!($protocol), "`.")]
                 #[derive(Debug)]
                 $visibility struct $operation;
             ]
             [
                 $($message_variants)*
-                #[doc = concat!("Request operation `", stringify!($operation), "`.")]
+                #[doc = concat!("Request `", stringify!($operation), "`.")]
                 $operation($crate::RequestInvocation<$protocol, $operation>),
             ]
             [
@@ -1066,7 +1196,7 @@ macro_rules! protocol {
             [$message]
             [
                 $($operation_items)*
-                #[doc = concat!("Payload-carrying notification operation in `", stringify!($protocol), "`.")]
+                #[doc = concat!("Notification arguments for `", stringify!($protocol), "`.")]
                 #[derive(Debug)]
                 $visibility struct $operation(
                     #[doc = "Notification payload."]
@@ -1075,7 +1205,7 @@ macro_rules! protocol {
             ]
             [
                 $($message_variants)*
-                #[doc = concat!("Notification operation `", stringify!($operation), "`.")]
+                #[doc = concat!("Notification `", stringify!($operation), "`.")]
                 $operation($payload),
             ]
             [
@@ -1112,13 +1242,13 @@ macro_rules! protocol {
             [$message]
             [
                 $($operation_items)*
-                #[doc = concat!("Unit notification operation in `", stringify!($protocol), "`.")]
+                #[doc = concat!("Notification without arguments for `", stringify!($protocol), "`.")]
                 #[derive(Debug)]
                 $visibility struct $operation;
             ]
             [
                 $($message_variants)*
-                #[doc = concat!("Notification operation `", stringify!($operation), "`.")]
+                #[doc = concat!("Notification `", stringify!($operation), "`.")]
                 $operation,
             ]
             [
@@ -1439,15 +1569,22 @@ struct Reply<Reply> {
     reply: Reply,
 }
 
-/// One typed effect occurrence intercepted from an inert [`Command`].
+/// An effect and its response mapper, extracted for a unit test.
 ///
-/// The invocation owns the concrete descriptor without requiring it to be
-/// cloneable and retains the matching one-shot Message mapper. Creating this
-/// value performs no world interaction. An execution profile can move the
-/// descriptor to terminal behavior while retaining the mapper under
-/// runtime-owned correlation. Effects created by
-/// [`Command::effect_discarding_outcome`] have no mapper and are inspected
-/// through [`Command::effect_intent`] instead.
+/// Obtain it with [`Command::into_effect`], inspect the descriptor, then supply a
+/// result with [`Self::map_outcome`]. No I/O runs and no message is delivered.
+/// For effects that discard results, use [`Command::effect_intent`] instead.
+///
+/// ```
+/// use samara::prelude::*;
+/// let mut program = Program::builder();
+/// let output = program.effect::<PrintStdout>();
+/// let command = Command::effect_with(&output, PrintStdout::line("ready"), |outcome| outcome);
+/// let invocation = command.into_effect::<PrintStdout>().ok().unwrap();
+/// assert_eq!(invocation.descriptor().as_str(), "ready\n");
+/// assert!(matches!(invocation.map_outcome(EffectOutcome::Succeeded(())),
+///                  EffectOutcome::Succeeded(())));
+/// ```
 pub struct EffectInvocation<E, Message>
 where
     E: EffectDescriptor,
@@ -1460,14 +1597,18 @@ impl<E, Message> EffectInvocation<E, Message>
 where
     E: EffectDescriptor,
 {
-    /// Borrows the explicit descriptor for inspection before execution.
+    /// Returns the effect arguments for inspection.
     pub fn descriptor(&self) -> &E {
         &self.descriptor
     }
 
-    /// Applies the stored pure mapper to the invocation's sole terminal outcome.
+    /// Converts a supplied effect result to a message, consuming the mapper.
     ///
-    /// Consuming the invocation makes a second mapper call impossible:
+    /// See [`EffectInvocation`] for an example. Calling this does not run the effect
+    /// or deliver the message.
+    ///
+    /// <details>
+    /// <summary>Compile-time checks</summary>
     ///
     /// ```compile_fail
     /// use samara::{Command, EffectDescriptor, EffectOutcome, Program};
@@ -1487,6 +1628,8 @@ where
     /// invocation.map_outcome(EffectOutcome::Succeeded(()));
     /// invocation.map_outcome(EffectOutcome::Succeeded(()));
     /// ```
+    ///
+    /// </details>
     pub fn map_outcome(self, outcome: EffectOutcome<E::Output, E::Error>) -> Message {
         (self.mapper)(outcome)
     }
@@ -1517,22 +1660,31 @@ where
     }
 }
 
-/// A value describing finite work; never the work itself.
+/// Actions for Samara to run after a component update or at startup.
 ///
-/// `Command<Message>` can hold heterogeneous typed [`EffectDescriptor`] values
-/// because the runtime preserves their concrete types internally. Effect
-/// message mappers are synchronous application logic and must be pure and
-/// deterministic. Mapper object identity is not part of command semantics.
+/// Return a Command from [`Component::update`] or attach it to [`Init`]. Merely
+/// constructing it does not perform the action. Use [`Self::batch`] for several
+/// actions and [`Self::none`] when no work is needed.
 ///
-/// Commands intentionally do not implement `Clone`, `Debug`, or `PartialEq`:
-/// they may contain one-shot message mappers. Transition tests inspect concrete
-/// intent through [`Command::effect_intents`],
-/// [`Command::notification_intents`], and [`Command::request_intents`].
-/// [`Command::into_effect`] then exposes the owned descriptor and its mapper for
-/// direct tests.
+/// ```
+/// use samara::prelude::*;
+/// use std::time::Duration;
+/// let mut program = Program::builder();
+/// let output = program.effect::<PrintStdout>();
+/// let command = Command::batch([
+///     samara::println!(&output, "started"),
+///     Command::after(Duration::from_secs(1), ()),
+/// ]);
+/// assert_eq!(command.effect_intents::<PrintStdout>().len(), 1);
+/// ```
 ///
-/// Discarding a Command is a diagnostic violation when `unused_must_use` is
-/// denied because constructing inert intent does not submit it to a runtime:
+/// An effect's mapper converts its result to a message. Keep the mapper free of
+/// I/O and state changes; handle the message in `update`. Commands cannot be
+/// cloned or compared because they can own these mappers. Test their contents
+/// with methods such as [`Self::effect_intent`] and [`Self::request_intents`].
+///
+/// <details>
+/// <summary>Compile-time checks</summary>
 ///
 /// ```compile_fail
 /// #![deny(unused_must_use)]
@@ -1543,6 +1695,8 @@ where
 ///     command;
 /// }
 /// ```
+///
+/// </details>
 #[must_use = "commands are inert declarations; return, batch, or interpret this Command for it to take effect"]
 pub struct Command<Message>(CommandKind<Message>);
 
@@ -1558,21 +1712,28 @@ enum CommandKind<Message> {
 }
 
 impl<Message> Command<Message> {
-    /// Requests no finite work.
+    /// Returns a command that does nothing.
     pub fn none() -> Self {
         Self(CommandKind::None)
     }
 
-    /// Combines a typed effect intent with its canonical Message conversion.
+    /// Requests an effect and converts its result with `Message::from`.
     ///
-    /// `capability` is the declaration issued by the same [`ProgramBuilder`]
-    /// that owns the Component. Supplying it authorizes inert Command
-    /// construction; it does not execute the effect.
+    /// The capability must come from the component's Program. Use
+    /// [`Self::effect_with`] to choose the message conversion at the call site.
     ///
-    /// This short form uses `Message: From<EffectOutcome<...>>`. Use
-    /// [`Command::effect_with`] when this occurrence must capture domain
-    /// context or map the same outcome type differently from another call
-    /// site.
+    /// ```
+    /// use samara::prelude::*;
+    /// enum Message { Printed(EffectOutcome<(), std::convert::Infallible>) }
+    /// impl From<EffectOutcome<(), std::convert::Infallible>> for Message {
+    ///     fn from(outcome: EffectOutcome<(), std::convert::Infallible>) -> Self {
+    ///         Self::Printed(outcome)
+    ///     }
+    /// }
+    /// let mut program = Program::builder();
+    /// let output = program.effect::<PrintStdout>();
+    /// let command: Command<Message> = Command::effect(&output, PrintStdout::line("ready"));
+    /// ```
     pub fn effect<E>(capability: &EffectCapability<E>, effect: E) -> Self
     where
         Message: From<EffectOutcome<E::Output, E::Error>> + Send + 'static,
@@ -1581,17 +1742,29 @@ impl<Message> Command<Message> {
         Self::effect_with(capability, effect, Message::from)
     }
 
-    /// Combines a typed effect intent with an explicit pure message mapper.
+    /// Requests an effect and maps its result to a message.
     ///
-    /// `capability` is the Program-issued declaration for `E`. The descriptor
-    /// remains the data for this one occurrence.
+    /// `map` runs at most once and may capture values such as a request ID. It must
+    /// not perform I/O or change application state. Runtime cancellation drops the
+    /// mapper without calling it. The capability must come from the same Program.
     ///
-    /// Live execution passes `effect` to the registered [`EffectDriver<E>`].
-    /// Controlled execution exposes it through
-    /// [`ControlledRuntime::next_effect`] and invokes `map` when
-    /// [`ControlledRuntime::complete`] supplies an [`EffectOutcome`].
+    /// ```
+    /// use samara::prelude::*;
+    /// let mut program = Program::builder();
+    /// let http = program.effect::<HttpRequest>();
+    /// let revision = 3;
+    /// let command = Command::effect_with(
+    ///     &http, HttpRequest::get("https://example.test/"),
+    ///     move |outcome| (revision, outcome),
+    /// );
+    /// assert_eq!(command.effect_intent::<HttpRequest>().unwrap().url(), "https://example.test/");
+    /// ```
     ///
-    /// An arbitrary value cannot stand in for an explicit descriptor:
+    /// Controlled tests inspect the request with [`ControlledRuntime::next_effect`]
+    /// and provide its result with [`ControlledRuntime::complete`].
+    ///
+    /// <details>
+    /// <summary>Compile-time checks</summary>
     ///
     /// ```compile_fail
     /// use samara::{Command, EffectDescriptor, Program};
@@ -1607,9 +1780,6 @@ impl<Message> Command<Message> {
     /// let _: Command<()> = Command::effect_with(&read, HiddenWork, |_| ());
     /// ```
     ///
-    /// The message mapper is synchronous application logic rather than async
-    /// work hidden behind the Command boundary:
-    ///
     /// ```compile_fail
     /// use samara::{Command, EffectDescriptor, Program};
     ///
@@ -1623,6 +1793,8 @@ impl<Message> Command<Message> {
     /// let read = program.effect::<Read>();
     /// let _: Command<()> = Command::effect_with(&read, Read, |_| async {});
     /// ```
+    ///
+    /// </details>
     pub fn effect_with<E, Map>(capability: &EffectCapability<E>, effect: E, map: Map) -> Self
     where
         Message: Send + 'static,
@@ -1637,17 +1809,18 @@ impl<Message> Command<Message> {
         })))
     }
 
-    /// Requests a typed finite effect without an application continuation.
+    /// Requests an effect without sending its result to the component.
     ///
-    /// The matching Program-issued capability is still required because
-    /// discarding an outcome does not make the world boundary ambient.
+    /// Samara still tracks the work: Drain waits for it, Cancel aborts it, and
+    /// controlled tests must complete or cancel it.
     ///
-    /// This discards only the terminal [`EffectOutcome`]; it does not detach
-    /// the work. Live Drain still waits for the Driver, Cancel still aborts its
-    /// runtime-owned task, and controlled execution still exposes the
-    /// descriptor through [`ControlledRuntime::next_effect`] until the harness
-    /// completes or cancels it. Accepted outcomes remain structurally traced
-    /// but schedule no Message.
+    /// ```
+    /// use samara::prelude::*;
+    /// let mut program = Program::builder();
+    /// let output = program.effect::<PrintStdout>();
+    /// let command: Command<()> = Command::effect_discarding_outcome(&output, PrintStdout::line("ready"));
+    /// assert_eq!(command.effect_intent::<PrintStdout>().unwrap().as_str(), "ready\n");
+    /// ```
     pub fn effect_discarding_outcome<E>(capability: &EffectCapability<E>, effect: E) -> Self
     where
         E: EffectDescriptor,
@@ -1658,14 +1831,18 @@ impl<Message> Command<Message> {
         })))
     }
 
-    /// Requests one-way delivery to another Component.
+    /// Queues a message for another component.
     ///
-    /// This is cross-Component effect intent, not a direct method call. The
-    /// target's transition occurs later through normal message delivery.
-    /// This operation has no sender-visible delivery outcome; routing failure is
-    /// a runtime fault. Prefer [`Command::notify`] for a provider-neutral one-way
-    /// protocol and [`Command::request`] when the sender needs a typed terminal
-    /// outcome.
+    /// The recipient handles it after the current update returns. No delivery result
+    /// is sent back; a routing error faults the runtime. Use [`Self::notify`] or
+    /// [`Self::request`] to depend on a protocol instead of another component's type.
+    ///
+    /// ```
+    /// use samara::{Command, Component, ComponentRef};
+    /// fn forward<C: Component>(target: ComponentRef<C>, message: C::Message) -> Command<()> {
+    ///     Command::send(target, message)
+    /// }
+    /// ```
     pub fn send<C>(target: ComponentRef<C>, message: C::Message) -> Self
     where
         C: Component,
@@ -1673,13 +1850,11 @@ impl<Message> Command<Message> {
         Self(CommandKind::Send(Box::new(SendTo { target, message })))
     }
 
-    /// Requests one-way delivery through a named provider-neutral [`Port`].
+    /// Sends a notification to the component bound to a Port.
     ///
-    /// The sender depends on `P` and notification `N`, not the bound provider's
-    /// private [`Component::Message`] enum. The runtime converts `N` through
-    /// [`Notification::into_message`] and routes it using the exact Port binding
-    /// declared by [`ProgramBuilder::bind_port`]. No provider transition occurs
-    /// while this command is constructed.
+    /// The notification is converted with [`Notification::into_message`]. The command
+    /// schedules delivery; it does not call the provider while being constructed.
+    /// No reply or delivery result is sent back. See [`Notification`] for an example.
     pub fn notify<P, N>(port: Port<P>, notification: N) -> Self
     where
         P: Protocol,
@@ -1688,12 +1863,10 @@ impl<Message> Command<Message> {
         Self(CommandKind::Notify(Box::new(Notify { port, notification })))
     }
 
-    /// Sends a correlated request using its canonical Message conversion.
+    /// Sends a request through a Port and converts the reply with `Message::from`.
     ///
-    /// This short form uses `Message: From<RequestOutcome<R::Reply>>`. Use
-    /// [`Command::request_with`] when this request occurrence must capture
-    /// domain correlation or map the same reply type differently from another
-    /// call site.
+    /// Requires `Message: From<RequestOutcome<R::Reply>>`. Use [`Self::request_with`]
+    /// for a closure, or [`Self::request_timeout`] to limit how long to wait.
     pub fn request<P, R>(port: Port<P>, request: R) -> Self
     where
         Message: From<RequestOutcome<R::Reply>> + Send + 'static,
@@ -1703,19 +1876,23 @@ impl<Message> Command<Message> {
         Self::request_with(port, request, Message::from)
     }
 
-    /// Sends a correlated request with an explicit pure continuation.
+    /// Sends a request through a Port and maps its reply to a message.
     ///
-    /// Interpreting the command creates a one-shot [`ReplyTo<R::Reply>`] and
-    /// converts the request through [`Request::into_message`]. A successful
-    /// reply invokes the request continuation at most once with
-    /// [`RequestOutcome::Replied`]. The continuation is synchronous, pure
-    /// application logic and may capture a domain correlation key. The
-    /// Component never waits for the reply; the mapped message arrives through
-    /// its ordinary transition path.
+    /// The component continues handling other messages while waiting. `map` runs at
+    /// most once and must not perform I/O or mutate state. You can capture an ID to
+    /// associate the reply with application work.
     ///
-    /// Requests have no implicit deadline or per-request cancellation. An
-    /// unanswered request remains a runtime-owned obligation until the scope is
-    /// cancelled and can keep [`Shutdown::Drain`] pending indefinitely.
+    /// ```
+    /// use samara::prelude::*;
+    /// protocol! { type Catalog => enum CatalogMessage { Lookup(String) -> Option<u64>, } }
+    /// let mut program = Program::builder();
+    /// let catalog = program.port::<Catalog>(PortId::new("catalog"));
+    /// let command = Command::request_with(catalog, Lookup("widget".into()), |reply| (7, reply));
+    /// assert_eq!(command.request_intents::<Lookup>().len(), 1);
+    /// ```
+    ///
+    /// There is no timeout. An unanswered request can keep [`Shutdown::Drain`] waiting;
+    /// use [`Self::request_timeout_with`] to bound the wait.
     pub fn request_with<P, R, Map>(port: Port<P>, request: R, map: Map) -> Self
     where
         Message: Send + 'static,
@@ -1731,13 +1908,15 @@ impl<Message> Command<Message> {
         })))
     }
 
-    /// Sends a request with a runtime-owned timeout and canonical conversion.
+    /// Sends a request with a timeout and converts its result with `Message::from`.
     ///
-    /// The duration starts when interpreted, using logical time in controlled
-    /// execution and Tokio time live. A reply must be interpreted strictly
-    /// before the deadline; zero always times out. Expiry produces one
-    /// [`RequestOutcome::TimedOut`] and discards late replies. Provider work
-    /// continues. An unrepresentable deadline faults the runtime explicitly.
+    /// The timeout starts when Samara runs the command. A reply must be processed
+    /// before the deadline; a zero timeout always expires. On expiry, the caller gets
+    /// [`RequestOutcome::TimedOut`], the provider keeps running, and later replies are
+    /// ignored. A duration that overflows the clock faults the runtime.
+    ///
+    /// Live execution uses Tokio time; controlled tests advance time themselves.
+    /// See [`Self::request_timeout_with`] for a closure-based example.
     pub fn request_timeout<P, R>(port: Port<P>, request: R, timeout: Duration) -> Self
     where
         Message: From<RequestOutcome<R::Reply>> + Send + 'static,
@@ -1747,11 +1926,22 @@ impl<Message> Command<Message> {
         Self::request_timeout_with(port, request, timeout, Message::from)
     }
 
-    /// Sends a timed request with an explicit pure outcome-to-Message mapper.
+    /// Sends a request with a timeout and maps its reply or timeout to a message.
     ///
-    /// See [`Command::request_timeout`] for deadline and provider semantics.
-    /// The mapper may capture application correlation, as in
-    /// [`Command::request_with`], and runs once for reply or timeout.
+    /// Uses the deadline rules of [`Self::request_timeout`]. Runtime cancellation
+    /// drops the mapper without sending a message.
+    ///
+    /// ```
+    /// use samara::prelude::*;
+    /// use std::time::Duration;
+    /// protocol! { type Health => enum HealthMessage { Check -> bool, } }
+    /// let mut program = Program::builder();
+    /// let health = program.port::<Health>(PortId::new("health"));
+    /// let command = Command::request_timeout_with(
+    ///     health, Check, Duration::from_secs(2), |outcome| outcome,
+    /// );
+    /// assert_eq!(command.request_intents::<Check>().len(), 1);
+    /// ```
     pub fn request_timeout_with<P, R, Map>(
         port: Port<P>,
         request: R,
@@ -1772,12 +1962,11 @@ impl<Message> Command<Message> {
         })))
     }
 
-    /// Emits a typed reply through a [`RequestInvocation`]'s opaque token.
+    /// Replies to a request using its reply token.
     ///
-    /// Consuming the token prevents a provider transition from intentionally
-    /// issuing two replies from the same authority. This command is inert data;
-    /// it does not touch a channel, wake a requester, or mutate runtime state
-    /// until interpreted after the provider transition commits.
+    /// The token is consumed, so the same request cannot be answered twice. Delivery
+    /// happens after the provider's update returns. A reply after the caller's timeout
+    /// is ignored. See [`ProgramBuilder::bind_port`] for an example.
     pub fn reply<ReplyValue>(reply_to: ReplyTo<ReplyValue>, reply: ReplyValue) -> Self
     where
         ReplyValue: Send + 'static,
@@ -1785,49 +1974,48 @@ impl<Message> Command<Message> {
         Self(CommandKind::Reply(Box::new(Reply { reply_to, reply })))
     }
 
-    /// Requests delivery of `message` after a runtime-controlled duration.
+    /// Schedules a message for this component after `delay`.
     ///
-    /// Live execution uses real time. Controlled execution uses logical time, so
-    /// tests advance it without wall-clock sleeping.
+    /// Uses Tokio time live and the test-controlled clock in [`ControlledRuntime`].
+    /// The delay starts when Samara runs the command, not when you construct it.
+    ///
+    /// ```
+    /// use samara::Command;
+    /// use std::time::Duration;
+    /// enum Message { Tick }
+    /// let command = Command::after(Duration::from_secs(1), Message::Tick);
+    /// ```
     pub const fn after(delay: Duration, message: Message) -> Self {
         Self(CommandKind::After { delay, message })
     }
 
-    /// Groups commands emitted by one transition.
+    /// Groups actions to run after the same update.
     ///
-    /// Grouping does not promise effect completion order. If application logic
-    /// requires sequencing, that dependency needs an explicit command contract
-    /// or a later message transition.
+    /// Actions are independent: completion order is not guaranteed. A timer batched
+    /// with an HTTP request starts alongside it, rather than waiting for the response.
+    /// To sequence work, issue the next command when handling the previous result.
     ///
-    /// Batching an effect with [`Command::after`] schedules both independently:
-    /// the timer does not wait for the effect. Repeating this pattern can
-    /// overlap effects. To prevent overlap, guard issuance with Model state or
-    /// schedule the next timer when handling the effect's terminal outcome.
+    /// See [`Command`] for a batch example.
     pub fn batch(commands: impl IntoIterator<Item = Self>) -> Self {
         Self(CommandKind::Batch(commands.into_iter().collect()))
     }
 
-    /// Returns whether this value requests no work.
+    /// Returns whether this is `Command::none()`. An empty batch returns `false`.
     pub fn is_none(&self) -> bool {
         matches!(&self.0, CommandKind::None)
     }
 
-    /// Finds the first concrete effect intent of type `E`, including inside a
-    /// batch.
+    /// Returns the first effect descriptor of type `E`, searching inside batches.
     ///
-    /// This inspection hook is intended for direct transition tests; it does not
-    /// execute the effect or compare mapper identity.
+    /// Useful for testing an update without running I/O. See [`Self::effect_with`].
     pub fn effect_intent<E: EffectDescriptor>(&self) -> Option<&E> {
         self.effect_intents::<E>().into_iter().next()
     }
 
-    /// Collects every concrete effect intent of type `E`, including inside a
-    /// batch and preserving declaration traversal order.
+    /// Returns all effect descriptors of type `E`, searching inside batches.
     ///
-    /// Equal-looking descriptors remain separate entries because each Command
-    /// occurrence represents a distinct effect invocation. The returned order
-    /// is an inspection property of this inert value; it does not promise
-    /// effect completion order.
+    /// Results follow declaration order, including duplicates. This order does not
+    /// predict execution or completion order.
     pub fn effect_intents<E: EffectDescriptor>(&self) -> Vec<&E> {
         let mut intents = Vec::new();
         self.collect_effect_intents(&mut intents);
@@ -1855,14 +2043,12 @@ impl<Message> Command<Message> {
         }
     }
 
-    /// Applies the stored one-shot mapper when this is a top-level effect
-    /// Command with concrete descriptor type `E`.
+    /// Maps a supplied effect result to a message for a unit test.
     ///
-    /// This is a pure testing hook: it supplies typed data
-    /// directly and never invokes a Driver or either execution profile. The
-    /// Command is consumed so its `FnOnce` mapper cannot be called twice. A
-    /// non-effect Command, mismatched descriptor type, or effect that explicitly
-    /// discards its outcome is returned unchanged.
+    /// Consumes a top-level effect command. Returns the command unchanged if its type
+    /// does not match, it discards its result, or it may issue another command (such
+    /// as a redirect-following pipeline). Batches must be unpacked first with
+    /// [`Self::into_declarations`]. No I/O runs. See [`EffectInvocation`] for an example.
     pub fn map_effect_outcome<E>(
         self,
         outcome: EffectOutcome<E::Output, E::Error>,
@@ -1877,14 +2063,12 @@ impl<Message> Command<Message> {
         }
     }
 
-    /// Intercepts a top-level typed effect occurrence without executing it.
+    /// Extracts an effect and its mapper for a unit test.
     ///
-    /// The returned [`EffectInvocation`] owns both the non-`Clone` descriptor
-    /// and its one-shot mapper. A non-effect Command or mismatched descriptor
-    /// type is returned unchanged. Layered effects whose continuation can emit
-    /// another Command are also returned unchanged; inspect them with controlled
-    /// execution or [`Command::effect_intent`]. Use [`Command::into_declarations`]
-    /// first to inspect or intercept effect occurrences nested in a batch.
+    /// Returns the command unchanged if it is a batch, has a different descriptor
+    /// type, discards its result, or may issue another command. Use
+    /// [`Self::into_declarations`] for batches and [`ControlledRuntime`] to test
+    /// redirect-following pipelines. See [`EffectInvocation`] for an example.
     pub fn into_effect<E>(self) -> Result<EffectInvocation<E, Message>, Self>
     where
         Message: Send + 'static,
@@ -1912,11 +2096,10 @@ impl<Message> Command<Message> {
         }
     }
 
-    /// Collects notification intents of concrete type `N`, including inside a
-    /// batch, paired with the exact named Port each notification targets.
+    /// Returns notifications of type `N` with their destination Port IDs.
     ///
-    /// This is a direct-transition testing hook. It neither converts the value
-    /// to [`Protocol::Message`] nor delivers it to a provider.
+    /// Searches batches in declaration order without delivering anything. See
+    /// [`Notification`] for an example.
     pub fn notification_intents<N: 'static>(&self) -> Vec<(&PortId, &N)> {
         let mut intents = Vec::new();
         self.collect_notification_intents(&mut intents);
@@ -1947,11 +2130,9 @@ impl<Message> Command<Message> {
         }
     }
 
-    /// Collects request intents of concrete type `R`, including inside a
-    /// batch, paired with the exact named Port each request targets.
+    /// Returns requests of type `R` with their destination Port IDs.
     ///
-    /// Mapper identity and runtime correlation tokens are intentionally absent:
-    /// tests assert request intent and test pure mapping functions separately.
+    /// Searches batches in declaration order. See [`Self::request_with`] for an example.
     pub fn request_intents<R: 'static>(&self) -> Vec<(&PortId, &R)> {
         let mut intents = Vec::new();
         self.collect_request_intents(&mut intents);
@@ -1979,11 +2160,9 @@ impl<Message> Command<Message> {
         }
     }
 
-    /// Collects typed reply values, including inside a batch.
+    /// Returns replies of type `ReplyValue`, searching inside batches in declaration order.
     ///
-    /// The opaque correlation token is not exposed. This test hook verifies the
-    /// provider's semantic reply value without making token identity part of
-    /// application behavior.
+    /// This inspects reply values without consuming tokens or delivering replies.
     pub fn reply_intents<ReplyValue: 'static>(&self) -> Vec<&ReplyValue> {
         let mut intents = Vec::new();
         self.collect_reply_intents(&mut intents);
@@ -2011,10 +2190,10 @@ impl<Message> Command<Message> {
         }
     }
 
-    /// Returns the concrete type name for a top-level effect command.
+    /// Returns the Rust type name of a top-level effect descriptor.
     ///
-    /// This is diagnostic metadata, not a stable serialization identifier. A
-    /// batch returns `None`; use typed inspection for behavioral tests.
+    /// Returns `None` for other commands, including batches. The name is diagnostic
+    /// text, not a stable identifier for storage or communication.
     pub fn effect_type_name(&self) -> Option<&'static str> {
         match &self.0 {
             CommandKind::Effect(command) => Some(command.intent_type_name()),
@@ -2028,12 +2207,17 @@ impl<Message> Command<Message> {
         }
     }
 
-    /// Consumes a composable Command into its non-batch declarations.
+    /// Unpacks batches and removes `none` commands.
     ///
-    /// Direct tests and runtime interpretation use this to handle one declared
-    /// operation at a time. Traversal order preserves how declarations were
-    /// nested for inspectability, but does not promise execution or completion
-    /// order for independent work.
+    /// The returned list follows declaration order. It can be used to inspect each
+    /// action separately; it does not promise an execution order.
+    ///
+    /// ```
+    /// use samara::Command;
+    /// use std::time::Duration;
+    /// let command = Command::batch([Command::none(), Command::after(Duration::ZERO, ())]);
+    /// assert_eq!(command.into_declarations().len(), 1);
+    /// ```
     pub fn into_declarations(self) -> Vec<Self> {
         fn append<Message>(command: Command<Message>, declarations: &mut Vec<Command<Message>>) {
             match command.0 {
@@ -2137,31 +2321,42 @@ impl<S: SourceDescriptor> ErasedSourceDescriptor for SourceDescriptorSnapshot<S>
     }
 }
 
-/// One declarative request for an ongoing source of messages.
+/// An input a component wants to receive, with a name and an event-to-message mapper.
 ///
-/// A subscription's stable local identity is its owning [`ComponentId`] plus
-/// [`SubscriptionId`]. Retention additionally requires the same
-/// [`SourceCapability`] and an equal [`SourceDescriptor`] value; changing either
-/// replaces the Source generation. The message mapper converts repeated
-/// [`SourceEvent`] values to Component messages and is excluded from
-/// reconciliation identity. Re-declaring an equal descriptor keeps the active
-/// Source and installs the newest mapper for subsequent events, provided the
-/// capability is also unchanged.
+/// Return subscriptions from [`Component::subscriptions`]. Samara compares them
+/// after each update:
+///
+/// - The same ID, capability, and equal descriptor keep the input running.
+/// - A changed capability or descriptor stops the old input and starts a new one.
+/// - An omitted ID stops that input.
+///
+/// IDs must be unique within one component's returned set. Updating only the
+/// mapper keeps the input running and uses the new mapper for subsequent events;
+/// messages already created keep their original values. Replacing the input
+/// discards old events and messages that have not begun an update.
+///
+/// ```
+/// use samara::prelude::*;
+/// enum Message { Input(SourceEvent<String, StdinError>) }
+/// let mut program = Program::builder();
+/// let input = program.source::<StdinLines>();
+/// let subscription = Subscription::source_with(
+///     &input, SubscriptionId::new("commands"), StdinLines::new(), Message::Input,
+/// );
+/// assert_eq!(subscription.source_descriptor::<StdinLines>(), Some(&StdinLines::new()));
+/// ```
+///
+/// See [`StdinLines`] for a complete component, live binding, and controlled test.
 pub struct Subscription<Message> {
     id: SubscriptionId,
     descriptor: Box<dyn ErasedSubscription<Message>>,
 }
 
 impl<Message> Subscription<Message> {
-    /// Declares a typed source using its canonical Message conversion.
+    /// Subscribes to a source and converts each event with `Message::from`.
     ///
-    /// `capability` is the Program-issued declaration for `S`; `descriptor`
-    /// remains the Model-derived reconciliation value for this desired Source.
-    ///
-    /// This short form uses `Message: From<SourceEvent<...>>`. Use
-    /// [`Subscription::source_with`] when this Subscription identity must
-    /// capture domain context or map the same event type differently from
-    /// another Source.
+    /// Requires `Message: From<SourceEvent<S::Item, S::Error>>`. Use
+    /// [`Self::source_with`] to supply a closure. See [`StdinLines`] for a complete example.
     pub fn source<S>(capability: &SourceCapability<S>, id: SubscriptionId, descriptor: S) -> Self
     where
         Message: From<SourceEvent<S::Item, S::Error>> + Send + 'static,
@@ -2170,16 +2365,12 @@ impl<Message> Subscription<Message> {
         Self::source_with(capability, id, descriptor, Message::from)
     }
 
-    /// Declares a typed source with an explicit pure event-to-message mapping.
+    /// Subscribes to a source and maps each event to a message.
     ///
-    /// `capability` is the Program-issued declaration for `S`; it participates
-    /// in reconciliation identity alongside the Component-local Subscription
-    /// identity and descriptor value.
-    ///
-    /// Constructing this value starts no task and touches no external resource.
-    /// `Map` is called repeatedly for the lifetime of an active source, so it is
-    /// `Fn` rather than the one-shot `FnOnce` accepted by
-    /// [`Command::effect_with`].
+    /// The capability must come from the component's Program. The mapper may be called
+    /// many times and must not perform I/O or change state. Capture configuration or
+    /// IDs by value when events need application context. See [`Subscription`] for a
+    /// construction example and [`StdinLines`] for live and controlled wiring.
     pub fn source_with<S, Map>(
         capability: &SourceCapability<S>,
         id: SubscriptionId,
@@ -2201,25 +2392,33 @@ impl<Message> Subscription<Message> {
         }
     }
 
-    /// Returns the stable key used to reconcile this subscription.
+    /// Returns the name used to match this subscription across updates.
     pub fn id(&self) -> &SubscriptionId {
         &self.id
     }
 
-    /// Returns the concrete source descriptor when it has type `S`.
+    /// Returns this subscription's descriptor if it has type `S`, otherwise `None`.
     ///
-    /// Direct Component tests use this to assert the desired SourceDescriptor
-    /// without starting a live Driver.
+    /// Use it to inspect subscriptions without starting the input.
     pub fn source_descriptor<S: SourceDescriptor>(&self) -> Option<&S> {
         self.descriptor.descriptor().downcast_ref()
     }
 
-    /// Applies this subscription's reusable mapper to one typed Source event.
+    /// Maps a test event to a message without starting a source or delivering the message.
     ///
-    /// This pure testing hook does not create a Source,
-    /// select an execution profile, or deliver the resulting Message. The
-    /// mapper is borrowed and can therefore be applied to every event from one
-    /// active Source. A mismatched descriptor type returns the event unchanged.
+    /// The mapper can be called repeatedly. If the descriptor is not type `S`, returns
+    /// the event unchanged.
+    ///
+    /// ```
+    /// use samara::prelude::*;
+    /// let mut program = Program::builder();
+    /// let input = program.source::<StdinLines>();
+    /// let subscription = Subscription::source_with(
+    ///     &input, SubscriptionId::new("input"), StdinLines::new(), |event| event,
+    /// );
+    /// let message = subscription.map_source_event::<StdinLines>(SourceEvent::Item("hello".into())).unwrap();
+    /// assert_eq!(message, SourceEvent::Item("hello".into()));
+    /// ```
     pub fn map_source_event<S>(
         &self,
         event: SourceEvent<S::Item, S::Error>,
@@ -2234,9 +2433,9 @@ impl<Message> Subscription<Message> {
         }
     }
 
-    /// Returns diagnostic Rust type metadata for the source descriptor.
+    /// Returns the descriptor's Rust type name for diagnostics.
     ///
-    /// The returned name is not a stable protocol or serialization identifier.
+    /// The name is not a stable identifier for storage or communication.
     pub fn descriptor_type_name(&self) -> &'static str {
         self.descriptor.descriptor_type_name()
     }
@@ -2266,31 +2465,42 @@ impl<Message> Subscription<Message> {
     }
 }
 
-/// Complete desired subscription set for one Component model.
+/// The inputs a component wants to keep active.
 ///
-/// The runtime compares this set with the active set after a committed
-/// transition. Omitting a previously desired identity requests cancellation.
+/// Return the full set on each call to [`Component::subscriptions`]. Leaving out
+/// an earlier subscription stops its input. IDs must be unique within the set.
+///
+/// ```
+/// use samara::prelude::*;
+/// let mut program = Program::builder();
+/// let input = program.source::<StdinLines>();
+/// let subscriptions: Subscriptions<SourceEvent<String, StdinError>> = vec![
+///     Subscription::source(&input, SubscriptionId::new("commands"), StdinLines::new()),
+/// ].into();
+/// assert_eq!(subscriptions.iter().count(), 1);
+/// assert!(subscriptions.find::<StdinLines>(&SubscriptionId::new("commands")).is_some());
+/// ```
 pub struct Subscriptions<Message>(Vec<Subscription<Message>>);
 
 impl<Message> Subscriptions<Message> {
-    /// Declares no ongoing sources.
+    /// Returns an empty set of subscriptions.
     pub fn none() -> Self {
         Self(Vec::new())
     }
 
-    /// Creates a desired set containing exactly one subscription.
+    /// Creates a set containing one subscription.
     pub fn one(subscription: Subscription<Message>) -> Self {
         Self(vec![subscription])
     }
 
-    /// Iterates over the desired subscriptions without executing them.
+    /// Iterates over the subscriptions in declaration order.
     pub fn iter(&self) -> impl Iterator<Item = &Subscription<Message>> {
         self.0.iter()
     }
 
-    /// Finds SourceDescriptor `S` for one stable subscription identity.
+    /// Returns the descriptor with this ID if it has type `S`, otherwise `None`.
     ///
-    /// This is primarily an inspection helper for direct Component tests.
+    /// Useful for asserting what a component subscribes to. See [`Subscriptions`].
     pub fn find<S: SourceDescriptor>(&self, id: &SubscriptionId) -> Option<&S> {
         self.0
             .iter()
@@ -2305,25 +2515,62 @@ impl<Message> From<Vec<Subscription<Message>>> for Subscriptions<Message> {
     }
 }
 
-/// Inert description of a named logical stream of `T` values.
+/// Describes values received from a Tokio `mpsc` channel.
 ///
-/// This descriptor is safe to store in a Component and does not prescribe how
-/// the stream is realized. Live assembly may bind a concrete Tokio
-/// `mpsc::Receiver<T>` through [`LiveRuntimeBuilder::bind_mpsc`], while
-/// controlled tests script the same logical stream through
-/// [`ControlledRuntimeBuilder::control_stream`]. Normal stream closure is
-/// delivered as [`SourceEvent::Ended`].
+/// The capability selects the channel. The name is configuration used to compare
+/// subscriptions, not a global channel lookup key.
 ///
-/// The bound receiver is a one-shot, single-consumer resource. Its first Source
-/// realization consumes it; competing activation or reactivation after the
-/// Source ends faults the live runtime rather than fabricating another stream.
+/// ```
+/// use samara::prelude::*;
+/// use std::convert::Infallible;
+/// struct Sum { input: SourceCapability<StreamDescriptor<u64>> }
+/// impl Component for Sum {
+///     type Model = u64;
+///     type Message = SourceEvent<u64, Infallible>;
+///     fn init(&self) -> Init<u64, Self::Message> { Init::new(0) }
+///     fn update(&self, sum: &mut u64, event: Self::Message) -> Command<Self::Message> {
+///         if let SourceEvent::Item(value) = event { *sum += value; }
+///         Command::none()
+///     }
+///     fn subscriptions(&self, _: &u64) -> Subscriptions<Self::Message> {
+///         Subscriptions::one(Subscription::source(
+///             &self.input, SubscriptionId::new("values"), StreamDescriptor::named("numbers"),
+///         ))
+///     }
+/// }
+/// fn program() -> Result<(Program, ComponentRef<Sum>, SourceCapability<StreamDescriptor<u64>>), ProgramBuildError> {
+///     let mut builder = Program::builder();
+///     let input = builder.source::<StreamDescriptor<u64>>();
+///     let sum = builder.component(ComponentId::new("sum"), Sum { input: input.clone() });
+///     Ok((builder.build()?, sum, input))
+/// }
+/// let (program_under_test, sum, input) = program()?;
+/// let mut test = ControlledRuntime::builder(program_under_test).control_stream(&input).build()?;
+/// test.run_until_idle()?;
+/// test.emit_stream(&input, 3)?;
+/// test.close_stream(&input)?;
+/// test.run_until_idle()?;
+/// assert_eq!(*test.state(&sum)?, 3);
+/// test.cancel()?;
+///
+/// // In the host, bind a real receiver instead.
+/// let (program, _, input) = program()?;
+/// let (sender, receiver) = tokio::sync::mpsc::channel(16);
+/// let live = LiveRuntime::builder(program).bind_mpsc(&input, receiver).build()?;
+/// // Inside Tokio, call live.spawn() and sender.send(value).await.
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+///
+/// A bound receiver can be used by only one subscription and cannot be restarted
+/// after ending or being stopped. A second activation faults the live runtime.
+/// Channel closure produces [`SourceEvent::Ended`].
 pub struct StreamDescriptor<T> {
     binding: Arc<str>,
     marker: PhantomData<fn() -> T>,
 }
 
 impl<T> StreamDescriptor<T> {
-    /// Creates a reusable logical stream name.
+    /// Creates a descriptor with this name. It does not create or bind a channel.
     pub fn named(binding: impl Into<Arc<str>>) -> Self {
         Self {
             binding: binding.into(),
@@ -2374,19 +2621,89 @@ impl<T: Send + 'static> StreamSourceDescriptor for StreamDescriptor<T> {
     type StreamItem = T;
 }
 
-/// Inert description of UTF-8 lines read from process standard input.
+/// Reads UTF-8 lines from process standard input.
 ///
-/// Live Unix execution binds this unique process resource through
-/// `LiveRuntimeBuilder::bind_stdin`. Controlled execution scripts the same
-/// line, failure, and EOF events through
-/// [`ControlledRuntimeBuilder::control_source`]. Each emitted [`String`] has
-/// its terminating LF and one immediately preceding CR removed; a final
-/// nonempty line is emitted at EOF even without an LF terminator.
+/// Each item has its trailing LF and preceding CR removed. Empty lines are kept.
+/// EOF emits any remaining nonempty line, then [`SourceEvent::Ended`]. A read or
+/// UTF-8 error produces [`SourceEvent::Failed`] and stops reading. Lines have no
+/// size limit. Live input is available on Unix through
+/// `LiveRuntimeBuilder::bind_stdin`; tests can supply events on any platform.
+///
+/// The following example declares the input, stores its capability on a component,
+/// returns a subscription, and runs that component under test control. It also
+/// shows the live binding for the same program.
+///
+/// ```
+/// use samara::prelude::*;
+///
+/// struct Reader { input: SourceCapability<StdinLines> }
+/// struct Model { lines: Vec<String>, error: Option<StdinError>, open: bool }
+///
+/// impl Component for Reader {
+///     type Model = Model;
+///     type Message = SourceEvent<String, StdinError>;
+///
+///     fn init(&self) -> Init<Model, Self::Message> {
+///         Init::new(Model { lines: Vec::new(), error: None, open: true })
+///     }
+///     fn update(&self, model: &mut Model, event: Self::Message) -> Command<Self::Message> {
+///         match event {
+///             SourceEvent::Item(line) => model.lines.push(line),
+///             SourceEvent::Ended => model.open = false,
+///             SourceEvent::Failed(error) => {
+///                 model.error = Some(error);
+///                 model.open = false;
+///             }
+///         }
+///         Command::none()
+///     }
+///     fn subscriptions(&self, model: &Model) -> Subscriptions<Self::Message> {
+///         if !model.open { return Subscriptions::none(); }
+///         Subscriptions::one(Subscription::source(
+///             &self.input, SubscriptionId::new("input"), StdinLines::new(),
+///         ))
+///     }
+/// }
+///
+/// fn program() -> Result<(Program, ComponentRef<Reader>, SourceCapability<StdinLines>), ProgramBuildError> {
+///     let mut builder = Program::builder();
+///     let input = builder.source::<StdinLines>();
+///     let reader = builder.component(ComponentId::new("reader"), Reader { input: input.clone() });
+///     Ok((builder.build()?, reader, input))
+/// }
+///
+/// // Test input without reading the terminal.
+/// let (program_under_test, reader, _) = program()?;
+/// let mut test = ControlledRuntime::builder(program_under_test)
+///     .control_source::<StdinLines>().build()?;
+/// test.run_until_idle()?; // Starts the subscription.
+/// test.emit_source::<_, StdinLines>(
+///     &reader, &SubscriptionId::new("input"), SourceEvent::Item("hello".into()),
+/// )?;
+/// test.run_until_idle()?;
+/// assert_eq!(test.state(&reader)?.lines, ["hello"]);
+/// test.emit_source::<_, StdinLines>(&reader, &SubscriptionId::new("input"), SourceEvent::Ended)?;
+/// test.run_until_idle()?;
+/// assert!(!test.state(&reader)?.open);
+/// assert!(test.cancel()?.is_clean());
+///
+/// // Bind the same component to process stdin on Unix.
+/// #[cfg(unix)]
+/// {
+///     let (program, _, input) = program()?;
+///     let live = LiveRuntime::builder(program).bind_stdin(&input).build()?;
+///     // Call live.spawn() inside Tokio to start reading; see RuntimeTask for shutdown.
+/// }
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+///
+/// A source ending does not shut down the application. The host owns shutdown;
+/// see [`RuntimeTask`]. Only one active subscription may read process stdin.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct StdinLines;
 
 impl StdinLines {
-    /// Describes process standard input as a stream of UTF-8 lines.
+    /// Creates the descriptor. Reading starts only when the live subscription starts.
     pub const fn new() -> Self {
         Self
     }
@@ -2401,7 +2718,7 @@ impl stdin_source_private::Sealed for StdinLines {}
 
 impl StdinSourceDescriptor for StdinLines {}
 
-/// Class of terminal failure produced by [`StdinLines`].
+/// The reason reading [`StdinLines`] stopped.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StdinErrorKind {
     /// Reading bytes from process standard input failed.
@@ -2410,7 +2727,14 @@ pub enum StdinErrorKind {
     InvalidUtf8,
 }
 
-/// Typed explanatory data for a first-party standard-input Source failure.
+/// An input error with a category and diagnostic message.
+///
+/// ```
+/// use samara::{StdinError, StdinErrorKind};
+/// let error = StdinError::new(StdinErrorKind::InvalidUtf8, "input is not UTF-8");
+/// assert_eq!(error.kind(), StdinErrorKind::InvalidUtf8);
+/// assert_eq!(error.message(), "input is not UTF-8");
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StdinError {
     kind: StdinErrorKind,
@@ -2418,11 +2742,7 @@ pub struct StdinError {
 }
 
 impl StdinError {
-    /// Creates a typed stdin failure for controlled execution and fixtures.
-    ///
-    /// Live execution constructs this value from operating-system and UTF-8
-    /// errors. Controlled execution has no live error to wrap, so tests use
-    /// this constructor to supply the same explanatory boundary explicitly.
+    /// Creates an input error, for example to supply a failure in a controlled test.
     pub fn new(kind: StdinErrorKind, message: impl Into<Arc<str>>) -> Self {
         Self {
             kind,
@@ -2440,12 +2760,12 @@ impl StdinError {
         Self::new(StdinErrorKind::InvalidUtf8, error.to_string())
     }
 
-    /// Returns whether byte acquisition or UTF-8 interpretation failed.
+    /// Returns the error category.
     pub fn kind(&self) -> StdinErrorKind {
         self.kind
     }
 
-    /// Returns the underlying diagnostic without exposing it as policy.
+    /// Returns the diagnostic message.
     pub fn message(&self) -> &str {
         &self.message
     }
@@ -2463,13 +2783,29 @@ impl fmt::Display for StdinError {
 
 impl Error for StdinError {}
 
-/// Inert description of one finite HTTP request.
+/// Describes an HTTP request: method, URL, headers, and body.
 ///
-/// The descriptor owns its method, URL text, headers, and body. Constructing it
-/// performs no parsing, DNS lookup, socket access, or other I/O. Live execution
-/// realizes it through [`LiveRuntimeBuilder::bind_http`], while controlled
-/// execution intercepts it through
-/// [`ControlledRuntimeBuilder::control_effect`].
+/// Creating the request does not parse the URL or perform I/O. Use
+/// [`Self::on_response`] to choose how to handle the response, then return the
+/// resulting Command from your component. Live programs need
+/// [`LiveRuntimeBuilder::bind_http`]; controlled tests use
+/// `control_effect::<HttpRequest>()`.
+///
+/// ```
+/// use samara::prelude::*;
+/// let mut program = Program::builder();
+/// let http = program.effect::<HttpRequest>();
+/// let command = HttpRequest::get("https://example.test/health")
+///     .on_response()
+///     .require_success()
+///     .into_command_with(&http, |outcome| outcome);
+/// assert_eq!(command.effect_intent::<HttpRequest>().unwrap().url(),
+///            "https://example.test/health");
+/// ```
+///
+/// HTTP error statuses are responses, not transport failures. Use `require_success()`
+/// to reject non-2xx statuses. Redirects are returned unchanged unless you choose
+/// [`HttpResponsePipeline::follow_redirects`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HttpRequest {
     method: http::Method,
@@ -2479,10 +2815,17 @@ pub struct HttpRequest {
 }
 
 impl HttpRequest {
-    /// Describes a request with an empty header map and body.
+    /// Creates a request with the given method and URL, empty headers, and an empty body.
     ///
-    /// URL validation is deliberately deferred to the terminal Driver so
-    /// invalid or unsupported live configuration becomes a typed [`HttpError`].
+    /// Invalid URLs become [`HttpError`] values when the live driver runs the request.
+    ///
+    /// ```
+    /// use samara::HttpRequest;
+    /// let request = HttpRequest::new(http::Method::POST, "https://example.test/items")
+    ///     .with_body("new item");
+    /// assert_eq!(request.method(), http::Method::POST);
+    /// assert_eq!(request.body().as_ref(), b"new item");
+    /// ```
     pub fn new(method: http::Method, url: impl Into<Arc<str>>) -> Self {
         Self {
             method,
@@ -2492,57 +2835,82 @@ impl HttpRequest {
         }
     }
 
-    /// Describes a `GET` request with an empty header map and body.
+    /// Creates a GET request with empty headers and an empty body. See [`HttpRequest`].
     pub fn get(url: impl Into<Arc<str>>) -> Self {
         Self::new(http::Method::GET, url)
     }
 
-    /// Returns the declared HTTP method.
+    /// Returns the request method.
     pub fn method(&self) -> &http::Method {
         &self.method
     }
 
-    /// Returns the exact URL text supplied by the application.
+    /// Returns the URL text supplied when the request was created.
     pub fn url(&self) -> &str {
         &self.url
     }
 
-    /// Returns the declared request headers.
+    /// Returns the request headers.
     pub fn headers(&self) -> &http::HeaderMap {
         &self.headers
     }
 
-    /// Returns mutable access to the declared request headers.
+    /// Returns the request headers for editing.
     ///
-    /// `HeaderMap::append` can be used when repeated field values must be
-    /// preserved.
+    /// ```
+    /// use samara::HttpRequest;
+    /// let mut request = HttpRequest::get("https://example.test/");
+    /// request.headers_mut().insert("accept", "application/json".parse().unwrap());
+    /// assert_eq!(request.headers()["accept"], "application/json");
+    /// ```
     pub fn headers_mut(&mut self) -> &mut http::HeaderMap {
         &mut self.headers
     }
 
-    /// Appends one request header and returns the updated descriptor.
+    /// Appends a header, preserving existing values with the same name.
     ///
-    /// Appending, rather than replacing, preserves repeated field values.
+    /// Use [`Self::headers_mut`] and `insert` to replace a value.
+    ///
+    /// ```
+    /// use samara::HttpRequest;
+    /// let request = HttpRequest::get("https://example.test/")
+    ///     .with_header(http::header::ACCEPT, "application/json".parse().unwrap());
+    /// assert_eq!(request.headers()["accept"], "application/json");
+    /// ```
     pub fn with_header(mut self, name: http::HeaderName, value: http::HeaderValue) -> Self {
         self.headers.append(name, value);
         self
     }
 
-    /// Returns the complete owned request body.
+    /// Returns the request body.
     pub fn body(&self) -> &bytes::Bytes {
         &self.body
     }
 
     /// Replaces the request body.
+    ///
+    /// Does not set Content-Type; add that header when needed. See [`Self::new`].
     pub fn with_body(mut self, body: impl Into<bytes::Bytes>) -> Self {
         self.body = body.into();
         self
     }
 
-    /// Crosses from request construction into pure response handling.
+    /// Starts a response pipeline for this request.
     ///
-    /// This consumes the request and returns a distinct, inert type. Request
-    /// modifiers are deliberately unavailable after the boundary:
+    /// Set the method, headers, and body before calling this. Then choose redirect,
+    /// status, or JSON handling and convert the pipeline to a Command.
+    ///
+    /// ```
+    /// use samara::prelude::*;
+    /// let mut program = Program::builder();
+    /// let http = program.effect::<HttpRequest>();
+    /// let command = HttpRequest::get("https://example.test/config")
+    ///     .on_response().require_success().json::<serde_json::Value>()
+    ///     .into_command_with(&http, |outcome| outcome);
+    /// ```
+    ///
+    /// <details>
+    /// <summary>Compile-time checks</summary>
     ///
     /// ```compile_fail
     /// use samara::HttpRequest;
@@ -2551,6 +2919,8 @@ impl HttpRequest {
     ///     .on_response()
     ///     .with_body("too late");
     /// ```
+    ///
+    /// </details>
     pub fn on_response(self) -> HttpResponsePipeline<HttpResponse, HttpError> {
         HttpResponsePipeline {
             request: self,
@@ -2569,10 +2939,24 @@ impl EffectDescriptor for HttpRequest {
     type Error = HttpError;
 }
 
-/// Complete raw output of one first-party [`HttpRequest`] effect.
+/// An HTTP status, headers, version, and buffered response body.
 ///
-/// Every HTTP status is a successful response value. The terminal Driver does
-/// not interpret redirects, 4xx or 5xx statuses, content types, or body bytes.
+/// All status codes can appear in a successful HTTP effect result, including
+/// redirects and 4xx/5xx errors. Status checks and body decoding are available on
+/// [`HttpResponsePipeline`].
+///
+/// Construct responses directly in controlled tests:
+///
+/// ```
+/// use samara::{HttpResponse, StatusCode};
+/// let response = HttpResponse::new(
+///     StatusCode::OK, http::Version::HTTP_11, http::HeaderMap::new(), "ready",
+/// );
+/// assert!(response.status().is_success());
+/// assert_eq!(response.version(), http::Version::HTTP_11);
+/// assert!(response.headers().is_empty());
+/// assert_eq!(response.into_body().as_ref(), b"ready");
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HttpResponse {
     status: http::StatusCode,
@@ -2582,7 +2966,7 @@ pub struct HttpResponse {
 }
 
 impl HttpResponse {
-    /// Constructs a complete raw response, including for controlled fixtures.
+    /// Creates a response from its parts, for example in a controlled test. See [`HttpResponse`].
     pub fn new(
         status: http::StatusCode,
         version: http::Version,
@@ -2597,44 +2981,54 @@ impl HttpResponse {
         }
     }
 
-    /// Returns the raw HTTP status without applying success policy.
+    /// Returns the status code.
     pub fn status(&self) -> http::StatusCode {
         self.status
     }
 
-    /// Returns the HTTP protocol version reported by the server.
+    /// Returns the HTTP version.
     pub fn version(&self) -> http::Version {
         self.version
     }
 
-    /// Returns all response headers.
+    /// Returns the response headers.
     pub fn headers(&self) -> &http::HeaderMap {
         &self.headers
     }
 
-    /// Returns the fully buffered response body.
+    /// Returns the buffered response body.
     pub fn body(&self) -> &bytes::Bytes {
         &self.body
     }
 
-    /// Consumes the response and returns its fully buffered body.
+    /// Consumes the response and returns its body.
     pub fn into_body(self) -> bytes::Bytes {
         self.body
     }
 }
 
-/// Stage at which an HTTP request or its explicit redirect Layer failed.
+/// The reason an HTTP request or redirect attempt failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HttpErrorKind {
     /// The client or request could not be configured from the descriptor.
     Configuration,
     /// Sending the request or receiving its complete response failed.
     Transport,
-    /// The explicit redirect Layer rejected a target or exhausted its hop limit.
+    /// A redirect was rejected or exceeded the configured hop limit.
     Redirect,
 }
 
-/// Typed explanatory data for an HTTP request or redirect Layer failure.
+/// An HTTP error with a category and diagnostic message.
+///
+/// HTTP status errors such as 404 are responses, not `HttpError` values.
+/// [`HttpResponsePipeline::require_success`] can turn them into [`HttpStatusError`].
+///
+/// ```
+/// use samara::{HttpError, HttpErrorKind};
+/// let error = HttpError::new(HttpErrorKind::Transport, "connection reset");
+/// assert_eq!(error.kind(), HttpErrorKind::Transport);
+/// assert_eq!(error.message(), "connection reset");
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HttpError {
     kind: HttpErrorKind,
@@ -2642,10 +3036,7 @@ pub struct HttpError {
 }
 
 impl HttpError {
-    /// Creates a typed HTTP failure for controlled execution and fixtures.
-    ///
-    /// Live transport constructs this value from HTTP client diagnostics; the
-    /// redirect Layer constructs policy failures identically in both profiles.
+    /// Creates an HTTP error, for example to simulate a transport failure in a test.
     pub fn new(kind: HttpErrorKind, message: impl Into<Arc<str>>) -> Self {
         Self {
             kind,
@@ -2661,12 +3052,12 @@ impl HttpError {
         Self::new(HttpErrorKind::Transport, error.to_string())
     }
 
-    /// Returns whether configuration, transport, or redirect policy failed.
+    /// Returns the error category.
     pub fn kind(&self) -> HttpErrorKind {
         self.kind
     }
 
-    /// Returns the underlying transport or policy diagnostic as explanatory text.
+    /// Returns the diagnostic message.
     pub fn message(&self) -> &str {
         &self.message
     }
@@ -2686,16 +3077,30 @@ type HttpResponseTransform<Output, ResponseError> = Box<
         + 'static,
 >;
 
-/// Inert HTTP response handling with optional explicit redirect following.
+/// Builds the response handling for an [`HttpRequest`].
 ///
-/// This value performs no I/O and is not a separately bound or traced effect.
-/// [`HttpResponsePipeline::into_command`] or
-/// [`HttpResponsePipeline::into_command_with`] lowers it to the original raw
-/// request plus one composed, one-shot message mapper by default. Opting into
-/// [`HttpResponsePipeline::follow_redirects`] instead adds a pure Layer that
-/// issues each redirect hop as a separate raw effect before final mapping.
-/// It intentionally does not implement `Clone`: the request and every transform are owned
-/// and may be consumed only once.
+/// Start with [`HttpRequest::on_response`], choose the handling steps, then call
+/// [`Self::into_command`] or [`Self::into_command_with`]. Construction performs
+/// no I/O. The pipeline owns the request and its response mapper and cannot be cloned.
+///
+/// ```
+/// use samara::prelude::*;
+/// let mut program = Program::builder();
+/// let http = program.effect::<HttpRequest>();
+/// let command = HttpRequest::get("https://example.test/config")
+///     .on_response()
+///     .follow_redirects(5)
+///     .require_success()
+///     .json::<serde_json::Value>()
+///     .into_command_with(&http, |outcome| outcome);
+/// ```
+///
+/// Steps run in the order shown. A failure skips later success transformations.
+/// Redirect following issues each request through the same HTTP capability;
+/// status checks and JSON decoding only run on the response returned to the caller.
+///
+/// <details>
+/// <summary>Compile-time checks</summary>
 ///
 /// ```compile_fail
 /// use samara::HttpRequest;
@@ -2704,6 +3109,8 @@ type HttpResponseTransform<Output, ResponseError> = Box<
 /// let duplicate = pipeline.clone();
 /// # drop(duplicate);
 /// ```
+///
+/// </details>
 #[must_use = "an HTTP response pipeline is inert until converted into a Command"]
 pub struct HttpResponsePipeline<Output, ResponseError> {
     request: HttpRequest,
@@ -2739,15 +3146,18 @@ where
         }
     }
 
-    /// Lowers this pipeline using its canonical Message conversion.
+    /// Creates a Command that converts the pipeline result with `Message::from`.
     ///
-    /// The capability is the Program-issued declaration for the raw terminal
-    /// [`HttpRequest`] effect retained beneath this pure response pipeline.
+    /// Use [`Self::into_command_with`] for a closure. The capability must come from
+    /// the component's Program.
     ///
-    /// This short form uses `Message: From<EffectOutcome<Output,
-    /// ResponseError>>`. Use [`HttpResponsePipeline::into_command_with`] when
-    /// this endpoint occurrence needs captured context or a distinct Message
-    /// projection.
+    /// ```
+    /// use samara::prelude::*;
+    /// let mut program = Program::builder();
+    /// let http = program.effect::<HttpRequest>();
+    /// let command: Command<EffectOutcome<HttpResponse, HttpError>> =
+    ///     HttpRequest::get("https://example.test/").on_response().into_command(&http);
+    /// ```
     pub fn into_command<Message>(
         self,
         capability: &EffectCapability<HttpRequest>,
@@ -2758,16 +3168,20 @@ where
         self.into_command_with(capability, Message::from)
     }
 
-    /// Lowers this pure pipeline with an explicit Message mapper.
+    /// Creates a Command that maps the pipeline result to a message.
     ///
-    /// The capability is the Program-issued declaration for the raw terminal
-    /// [`HttpRequest`] effect retained beneath this pure response pipeline.
+    /// The mapper runs at most once and must not perform I/O or mutate state.
+    /// If redirects are enabled, intermediate responses do not call it. Controlled
+    /// tests inspect each HTTP request using `next_effect::<HttpRequest>()`.
     ///
-    /// Live execution still selects the [`HttpRequest`] Driver and controlled
-    /// execution still intercepts `next_effect::<HttpRequest>()`. The response
-    /// transforms and `map` run synchronously and at most once after the final
-    /// terminal outcome is accepted. With redirect following, controlled tests
-    /// intercept each raw hop; transforms do not run on intermediate responses.
+    /// ```
+    /// use samara::prelude::*;
+    /// let mut program = Program::builder();
+    /// let http = program.effect::<HttpRequest>();
+    /// let revision = 7;
+    /// let command = HttpRequest::get("https://example.test/").on_response()
+    ///     .into_command_with(&http, move |outcome| (revision, outcome));
+    /// ```
     pub fn into_command_with<Message, Map>(
         self,
         capability: &EffectCapability<HttpRequest>,
@@ -2797,50 +3211,49 @@ where
 }
 
 impl HttpResponsePipeline<HttpResponse, HttpError> {
-    /// Follows at most `max_hops` additional HTTP requests before transforming
-    /// the final response. Redirects are otherwise returned unchanged.
+    /// Follows redirects, allowing at most `max_hops` additional requests.
     ///
-    /// Call this before `require_success()` or `json()`. Every hop is a separate
-    /// `HttpRequest` visible to controlled execution through `next_effect()`;
-    /// only the final outcome reaches your Message mapper. A zero limit rejects
-    /// a followable redirect, and another call replaces the previous limit.
-    ///
-    /// Follows 301/302/303/307/308, resolves relative Location headers, and
-    /// rejects invalid targets, URL credentials, non-HTTP(S) schemes, and HTTPS
-    /// downgrades with [`HttpErrorKind::Redirect`]. Missing Location is a final
-    /// response. POST becomes GET for 301/302; 303 uses GET except for HEAD.
-    /// Other methods and 307/308 preserve the request body.
-    ///
-    /// Cross-origin hops strip Authorization, Cookie, and headers marked
-    /// sensitive; mark custom credential headers with `set_sensitive(true)`.
-    /// Host, Referer, and Proxy-Authorization are removed on every hop.
-    /// Drain finishes the bounded chain; Cancel aborts without a Message.
-    /// The hop limit is not a transport timeout.
+    /// Call this before `require_success()` or `json()`. Another call replaces the
+    /// limit. Zero allows the initial request but rejects any redirect it could follow.
     ///
     /// ```
     /// use samara::prelude::*;
     /// let mut program = Program::builder();
     /// let http = program.effect::<HttpRequest>();
-    /// let command: Command<EffectOutcome<HttpResponse, HttpResponseError>> =
-    ///     HttpRequest::get("http://example.test/")
-    ///         .on_response()
-    ///         .follow_redirects(5)
-    ///         .require_success()
-    ///         .into_command_with(&http, |outcome| outcome);
-    /// assert_eq!(command.effect_intent::<HttpRequest>().unwrap().url(),
-    ///            "http://example.test/");
+    /// let command = HttpRequest::get("http://example.test/")
+    ///     .on_response().follow_redirects(5).require_success()
+    ///     .into_command_with(&http, |outcome| outcome);
     /// ```
+    ///
+    /// Follows 301, 302, 303, 307, and 308 responses with a Location header, resolving
+    /// relative URLs against the current request. Other responses, including redirects
+    /// without Location, are returned to the caller. POST becomes GET on 301/302;
+    /// 303 uses GET except for HEAD and removes the body. Other methods on 301/302
+    /// and all methods on 307/308 keep the body.
+    ///
+    /// An exhausted limit, malformed or multiple Locations, URL credentials, a
+    /// non-HTTP(S) target, or an HTTPS-to-HTTP redirect produces [`HttpErrorKind::Redirect`].
+    /// Host, Referer, and Proxy-Authorization are removed on every hop. A change of
+    /// scheme, host, or effective port also removes Authorization, Cookie, Cookie2,
+    /// and headers marked sensitive. Mark custom credential headers with
+    /// `HeaderValue::set_sensitive(true)`.
+    ///
+    /// Each hop is a separate [`HttpRequest`] in controlled tests. Drain waits for
+    /// the chain; Cancel stops it without a result message. The hop limit does not
+    /// limit the time or size of a response.
     pub fn follow_redirects(mut self, max_hops: usize) -> Self {
         self.redirect_limit = Some(max_hops);
         self
     }
 
-    /// Requires the response status to be in the inclusive 200–299 range.
+    /// Rejects responses outside the 200–299 status range.
     ///
-    /// Any other status becomes [`HttpResponseError::Status`] and retains the
-    /// complete response. Later transforms do not run for a rejected response.
-    /// Apply this before body decoding; after `json::<T>()`, the pipeline no
-    /// longer carries a raw response:
+    /// Returns [`HttpResponseError::Status`] with the response on rejection; later
+    /// JSON decoding is skipped. Call this before [`Self::json`]. See
+    /// [`HttpResponsePipeline`] for an example.
+    ///
+    /// <details>
+    /// <summary>Compile-time checks</summary>
     ///
     /// ```compile_fail
     /// use samara::HttpRequest;
@@ -2854,6 +3267,8 @@ impl HttpResponsePipeline<HttpResponse, HttpError> {
     ///     .json::<Reply>()
     ///     .require_success();
     /// ```
+    ///
+    /// </details>
     pub fn require_success(self) -> HttpResponsePipeline<HttpResponse, HttpResponseError> {
         self.then(|outcome| match outcome {
             EffectOutcome::Succeeded(response) if response.status().is_success() => {
@@ -2872,12 +3287,22 @@ impl<ResponseError> HttpResponsePipeline<HttpResponse, ResponseError>
 where
     ResponseError: Into<HttpResponseError> + Send + 'static,
 {
-    /// Decodes the complete owned response body as JSON.
+    /// Decodes the response body as JSON into `T`.
     ///
-    /// This operation adds no status policy. In particular, a valid JSON body
-    /// on a 4xx or 5xx response succeeds unless [`Self::require_success`] was
-    /// explicitly applied first. A decoding failure retains both the complete
-    /// raw response and the original [`serde_json::Error`].
+    /// Accepts any HTTP status unless `require_success()` was called first. A decode
+    /// error preserves the response and the `serde_json` error in [`HttpJsonError`].
+    /// It does not check Content-Type.
+    ///
+    /// ```
+    /// use samara::prelude::*;
+    /// #[derive(serde::Deserialize)]
+    /// struct Reply { count: u64 }
+    /// let mut program = Program::builder();
+    /// let http = program.effect::<HttpRequest>();
+    /// let command = HttpRequest::get("https://example.test/count")
+    ///     .on_response().require_success().json::<Reply>()
+    ///     .into_command_with(&http, |outcome| outcome);
+    /// ```
     pub fn json<T>(self) -> HttpResponsePipeline<T, HttpResponseError>
     where
         T: serde::de::DeserializeOwned + Send + 'static,
@@ -2898,17 +3323,25 @@ where
     }
 }
 
-/// Typed response-pipeline failures after a raw HTTP terminal outcome.
+/// An HTTP request, status check, or JSON decoding error.
 ///
-/// Runtime cancellation is deliberately absent: it remains the separate
-/// [`EffectOutcome::Cancelled`] terminal condition.
+/// Use [`Self::http_error`] to inspect request failures and [`Self::response`] to
+/// inspect responses rejected by status checks or JSON decoding. Cancellation
+/// is represented separately by [`EffectOutcome::Cancelled`].
+///
+/// ```
+/// use samara::{HttpError, HttpErrorKind, HttpResponseError};
+/// let error: HttpResponseError = HttpError::new(HttpErrorKind::Redirect, "hop limit exceeded").into();
+/// assert_eq!(error.http_error().unwrap().kind(), HttpErrorKind::Redirect);
+/// assert!(error.response().is_none());
+/// ```
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum HttpResponseError {
     /// The request could not be configured, transported, or redirected.
     #[error(transparent)]
     Http(#[from] HttpError),
-    /// An explicit success-status policy rejected the complete response.
+    /// The response status was rejected by `require_success()`.
     #[error(transparent)]
     Status(#[from] HttpStatusError),
     /// The complete response body could not be decoded as JSON.
@@ -2917,7 +3350,7 @@ pub enum HttpResponseError {
 }
 
 impl HttpResponseError {
-    /// Returns the HTTP error when configuration, transport, or redirect policy failed.
+    /// Returns the request or redirect error, or `None` for status and JSON errors.
     pub fn http_error(&self) -> Option<&HttpError> {
         match self {
             Self::Http(error) => Some(error),
@@ -2925,7 +3358,9 @@ impl HttpResponseError {
         }
     }
 
-    /// Returns the retained response for status-policy or JSON failures.
+    /// Returns the response rejected by a status check or JSON decoder.
+    ///
+    /// Returns `None` for request and redirect errors.
     pub fn response(&self) -> Option<&HttpResponse> {
         match self {
             Self::Http(_) => None,
@@ -2935,7 +3370,10 @@ impl HttpResponseError {
     }
 }
 
-/// A complete non-2xx response rejected by [`HttpResponsePipeline::require_success`].
+/// A response rejected by [`HttpResponsePipeline::require_success`].
+///
+/// Use [`Self::status`] to branch on the status code and [`Self::response`] to
+/// inspect headers or the body. The response is preserved unchanged.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HttpStatusError {
     response: HttpResponse,
@@ -2951,12 +3389,12 @@ impl HttpStatusError {
         self.response.status()
     }
 
-    /// Borrows the complete rejected response.
+    /// Returns the response associated with this error.
     pub fn response(&self) -> &HttpResponse {
         &self.response
     }
 
-    /// Consumes the error and returns the complete rejected response.
+    /// Consumes the error and returns the response.
     pub fn into_response(self) -> HttpResponse {
         self.response
     }
@@ -2974,7 +3412,11 @@ impl fmt::Display for HttpStatusError {
 
 impl Error for HttpStatusError {}
 
-/// JSON decoding failure retaining its source and complete raw response.
+/// A JSON decoding error and the response that could not be decoded.
+///
+/// [`Self::source`] returns the `serde_json` error. [`Self::response`] gives access
+/// to the body and headers for diagnostics; [`Self::into_parts`] returns both.
+/// See [`HttpResponsePipeline::json`] for request construction.
 #[derive(Debug, thiserror::Error)]
 #[error("failed to decode HTTP response body as JSON: {source}")]
 pub struct HttpJsonError {
@@ -2987,54 +3429,57 @@ impl HttpJsonError {
         Self { source, response }
     }
 
-    /// Returns the original JSON decoder error.
+    /// Returns the JSON decoder error.
     pub fn source(&self) -> &serde_json::Error {
         &self.source
     }
 
-    /// Borrows the complete response whose body failed to decode.
+    /// Returns the response associated with this error.
     pub fn response(&self) -> &HttpResponse {
         &self.response
     }
 
-    /// Consumes the error and returns the complete response.
+    /// Consumes the error and returns the response.
     pub fn into_response(self) -> HttpResponse {
         self.response
     }
 
-    /// Consumes the error and returns both decoder source and raw response.
+    /// Consumes the error and returns the JSON decoder error and response.
     pub fn into_parts(self) -> (serde_json::Error, HttpResponse) {
         (self.source, self.response)
     }
 }
 
-/// Inert description of one finite best-effort print to process standard output.
+/// Text to write to standard output.
 ///
-/// Constructing this value performs no I/O. Live execution realizes it through
-/// [`LiveRuntimeBuilder::bind_stdio`], while controlled execution can intercept
-/// it through [`ControlledRuntimeBuilder::control_effect`].
+/// Creating this value does not write anything. Submit it with a Command and
+/// bind output with [`LiveRuntimeBuilder::bind_stdio`]. The driver writes and
+/// flushes the text but ignores I/O errors. Use [`println!`] for formatting.
+///
+/// ```
+/// use samara::PrintStdout;
+/// assert_eq!(PrintStdout::text("ready").as_str(), "ready");
+/// assert_eq!(PrintStdout::line("ready").as_str(), "ready\n");
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PrintStdout {
     text: String,
 }
 
 impl PrintStdout {
-    /// Describes an exact UTF-8 text write with no implicit terminator.
+    /// Creates a write with exactly this text and no added newline.
     pub fn text(text: impl Into<String>) -> Self {
         Self { text: text.into() }
     }
 
-    /// Describes a UTF-8 text write followed by one `\n` byte.
-    ///
-    /// The newline is unconditional; text already ending in `\n` therefore
-    /// produces one additional blank line, matching `println!` behavior.
+    /// Creates a write with one newline appended, even if the text already ends in one.
     pub fn line(text: impl Into<String>) -> Self {
         let mut text = text.into();
         text.push('\n');
         Self::text(text)
     }
 
-    /// Returns the exact text this effect asks the Driver to print.
+    /// Returns the text that will be written.
     pub fn as_str(&self) -> &str {
         &self.text
     }
@@ -3049,33 +3494,36 @@ impl EffectDescriptor for PrintStdout {
     type Error = std::convert::Infallible;
 }
 
-/// Inert description of one finite best-effort print to process standard error.
+/// Text to write to standard error.
 ///
-/// Constructing this value performs no I/O. Live execution realizes it through
-/// [`LiveRuntimeBuilder::bind_stdio`], while controlled execution can intercept
-/// it through [`ControlledRuntimeBuilder::control_effect`].
+/// Creating this value does not write anything. Submit it with a Command and
+/// bind output with [`LiveRuntimeBuilder::bind_stdio`]. The driver writes and
+/// flushes the text but ignores I/O errors. Use [`eprintln!`] for formatting.
+///
+/// ```
+/// use samara::PrintStderr;
+/// assert_eq!(PrintStderr::text("ready").as_str(), "ready");
+/// assert_eq!(PrintStderr::line("ready").as_str(), "ready\n");
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PrintStderr {
     text: String,
 }
 
 impl PrintStderr {
-    /// Describes an exact UTF-8 text write with no implicit terminator.
+    /// Creates a write with exactly this text and no added newline.
     pub fn text(text: impl Into<String>) -> Self {
         Self { text: text.into() }
     }
 
-    /// Describes a UTF-8 text write followed by one `\n` byte.
-    ///
-    /// The newline is unconditional; text already ending in `\n` therefore
-    /// produces one additional blank line, matching `eprintln!` behavior.
+    /// Creates a write with one newline appended, even if the text already ends in one.
     pub fn line(text: impl Into<String>) -> Self {
         let mut text = text.into();
         text.push('\n');
         Self::text(text)
     }
 
-    /// Returns the exact text this effect asks the Driver to print.
+    /// Returns the text that will be written.
     pub fn as_str(&self) -> &str {
         &self.text
     }
@@ -3090,23 +3538,45 @@ impl EffectDescriptor for PrintStderr {
     type Error = std::convert::Infallible;
 }
 
-/// Inert description of one TCP byte-stream connection.
+/// Reads byte chunks from a TCP connection.
 ///
-/// Each live Source realization makes exactly one connection attempt to the
-/// supplied numeric socket address. DNS, reconnect, retry, framing, TLS, and
-/// domain interpretation are deliberately outside this terminal descriptor.
+/// Each subscription makes one connection attempt to an IP address and port.
+/// Chunk boundaries do not correspond to application messages; use [`Framed`]
+/// with a [`Decoder`] to assemble them. This source does not resolve DNS names,
+/// retry, reconnect, or use TLS.
+///
+/// Return a subscription from your component:
+///
+/// ```
+/// use samara::prelude::*;
+/// use std::net::SocketAddr;
+/// fn input(
+///     tcp: &SourceCapability<TcpBytes>,
+///     address: SocketAddr,
+/// ) -> Subscriptions<SourceEvent<bytes::Bytes, TcpError>> {
+///     Subscriptions::one(Subscription::source(
+///         tcp, SubscriptionId::new("feed"), TcpBytes::connect(address),
+///     ))
+/// }
+/// ```
+///
+/// Declare the capability with `program.source::<TcpBytes>()` and pass it into
+/// the component. Enable connections with [`LiveRuntimeBuilder::bind_tcp`].
+/// Controlled tests use `control_source::<TcpBytes>()` and
+/// [`ControlledRuntime::emit_source`] to supply chunks, errors, or EOF.
+/// See [`StdinLines`] for the full source wiring pattern.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TcpBytes {
     endpoint: SocketAddr,
 }
 
 impl TcpBytes {
-    /// Describes one connection to `endpoint`.
+    /// Creates a descriptor for the given IP address and port. It does not connect yet.
     pub fn connect(endpoint: SocketAddr) -> Self {
         Self { endpoint }
     }
 
-    /// Returns the numeric endpoint used for the one connection attempt.
+    /// Returns the IP address and port.
     pub fn endpoint(&self) -> SocketAddr {
         self.endpoint
     }
@@ -3117,7 +3587,7 @@ impl SourceDescriptor for TcpBytes {
     type Error = TcpError;
 }
 
-/// Stage at which the first-party TCP Source failed.
+/// The operation that failed while reading a TCP source.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TcpErrorKind {
     /// Establishing the single connection failed.
@@ -3126,7 +3596,14 @@ pub enum TcpErrorKind {
     Read,
 }
 
-/// Typed explanatory data for a first-party TCP Source failure.
+/// A TCP connection or read error.
+///
+/// ```
+/// use samara::{TcpError, TcpErrorKind};
+/// let error = TcpError::new(TcpErrorKind::Connect, "connection refused");
+/// assert_eq!(error.kind(), TcpErrorKind::Connect);
+/// assert_eq!(error.message(), "connection refused");
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TcpError {
     kind: TcpErrorKind,
@@ -3134,11 +3611,7 @@ pub struct TcpError {
 }
 
 impl TcpError {
-    /// Creates a typed TCP failure for controlled execution and test fixtures.
-    ///
-    /// Live execution constructs this value from Tokio I/O errors. Controlled
-    /// execution has no live error to wrap, so tests use this constructor to
-    /// supply the same explanatory boundary value explicitly.
+    /// Creates a TCP error, for example to simulate a failure in a controlled test.
     pub fn new(kind: TcpErrorKind, message: impl Into<Arc<str>>) -> Self {
         Self {
             kind,
@@ -3154,12 +3627,12 @@ impl TcpError {
         Self::new(TcpErrorKind::Read, error.to_string())
     }
 
-    /// Returns whether connection or established-stream reading failed.
+    /// Returns whether connecting or reading failed.
     pub fn kind(&self) -> TcpErrorKind {
         self.kind
     }
 
-    /// Returns the operating-system diagnostic without exposing it as policy.
+    /// Returns the diagnostic message.
     pub fn message(&self) -> &str {
         &self.message
     }
@@ -3173,57 +3646,91 @@ impl fmt::Display for TcpError {
 
 impl Error for TcpError {}
 
-/// Pure streaming decoder used by [`Framed`].
+/// Converts input chunks into application values, optionally buffering incomplete data.
 ///
-/// The decoder value is comparable configuration. Mutable operational state,
-/// such as an incomplete-frame buffer, is created with [`Decoder::start`] and
-/// owned by the runtime for one active subscription instance.
+/// Use with [`Framed`]. Put configuration on the decoder and per-subscription
+/// buffers in `State`. Equality compares configuration to decide whether a source
+/// must restart. Methods must be deterministic and must not perform I/O.
+///
+/// This decoder combines byte chunks into UTF-8 lines:
+///
+/// ```
+/// use samara::prelude::*;
+/// #[derive(Clone, Debug, PartialEq)]
+/// struct Lines;
+/// impl Decoder for Lines {
+///     type Chunk = Vec<u8>;
+///     type Frame = String;
+///     type Error = std::string::FromUtf8Error;
+///     type State = Vec<u8>;
+///     fn start(&self) -> Self::State { Vec::new() }
+///     fn push(&self, buffer: &mut Vec<u8>, chunk: Vec<u8>) -> Result<Vec<String>, Self::Error> {
+///         buffer.extend(chunk);
+///         let mut lines = Vec::new();
+///         while let Some(end) = buffer.iter().position(|byte| *byte == b'\n') {
+///             let mut line: Vec<u8> = buffer.drain(..=end).collect();
+///             line.pop();
+///             lines.push(String::from_utf8(line)?);
+///         }
+///         Ok(lines)
+///     }
+///     fn finish(&self, buffer: &mut Vec<u8>) -> Result<Vec<String>, Self::Error> {
+///         if buffer.is_empty() { return Ok(Vec::new()); }
+///         Ok(vec![String::from_utf8(std::mem::take(buffer))?])
+///     }
+/// }
+/// let source = StreamDescriptor::<Vec<u8>>::named("bytes");
+/// let mut layer = Framed::new(source, Lines).into_layer();
+/// assert!(layer.map_event(SourceEvent::Item(b"hel".to_vec())).is_empty());
+/// assert_eq!(layer.map_event(SourceEvent::Item(b"lo\n".to_vec())),
+///            vec![SourceEvent::Item("hello".to_owned())]);
+/// assert_eq!(layer.map_event(SourceEvent::Ended), vec![SourceEvent::Ended]);
+/// ```
 pub trait Decoder: Clone + PartialEq + fmt::Debug + Send + Sync + 'static {
-    /// Raw chunk accepted from the underlying source.
+    /// An input chunk.
     type Chunk: Send + 'static;
-    /// Decoded application value emitted by the framed source.
+    /// A decoded value.
     type Frame: Send + 'static;
-    /// Typed error explaining a decoding failure.
+    /// An error that stops decoding.
     type Error: Send + 'static;
-    /// Per-subscription mutable decoder state.
+    /// One subscription's buffer or other decoding state.
     type State: Send + 'static;
 
-    /// Creates fresh operational state when a framed subscription starts.
+    /// Creates the buffer or other state for one subscription.
     fn start(&self) -> Self::State;
 
-    /// Purely incorporates one chunk and emits zero or more complete frames.
+    /// Consumes one chunk and returns any complete values, keeping incomplete data in `state`.
     fn push(
         &self,
         state: &mut Self::State,
         chunk: Self::Chunk,
     ) -> Result<Vec<Self::Frame>, Self::Error>;
 
-    /// Purely finalizes decoder state after normal end of the byte stream.
+    /// Handles normal EOF, returning buffered values or an error for incomplete input.
     ///
-    /// This method is called exactly once for a normally ending underlying
-    /// Source. It must either return every final frame in order or reject the
-    /// remaining state with a typed Error. Source failure, replacement,
-    /// cancellation, shutdown, runtime fault, and an earlier decode failure do
-    /// not call `finish`.
+    /// Called once on normal source end. It is not called after a source or decoding
+    /// error, subscription replacement, cancellation, shutdown, or runtime failure.
     fn finish(&self, state: &mut Self::State) -> Result<Vec<Self::Frame>, Self::Error>;
 }
 
-/// Source Layer that applies a pure stateful [`Decoder`] to another
-/// [`SourceDescriptor`].
+/// A source whose chunks are decoded before delivery to a component.
 ///
-/// Live execution binds the underlying source descriptor to a world-facing
-/// Driver. Controlled execution injects underlying chunks, ensuring the
-/// identical decoder and partial-frame behavior run in both profiles.
+/// Wrap a source with `Framed::new(source, decoder)` and declare a capability for
+/// that combined type. Bind or control the underlying source type: for example,
+/// `bind_tcp()` or `control_source::<TcpBytes>()` for a framed TCP source.
+/// The same decoder runs in live execution and tests.
+///
+/// See [`Decoder`] for a complete construction and decoding example.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Framed<S, D> {
-    /// Underlying source of raw decoder chunks.
+    /// The source supplying input chunks.
     pub source: S,
-    /// Pure decoder configuration shared across execution profiles.
+    /// The decoder configuration.
     pub decoder: D,
 }
 
 impl<S, D> Framed<S, D> {
-    /// Composes an underlying source with a decoder configuration.
+    /// Combines a source descriptor with a decoder. See [`Decoder`] for an example.
     pub fn new(source: S, decoder: D) -> Self {
         Self { source, decoder }
     }
@@ -3234,11 +3741,10 @@ where
     S: SourceDescriptor<Item = D::Chunk>,
     D: Decoder,
 {
-    /// Creates the pure runtime-scoped Layer state for one descriptor instance.
+    /// Creates a decoder instance for testing without starting the source.
     ///
-    /// This does not create a Source, invoke a Driver, or choose live versus
-    /// controlled execution. Both profiles use the same Layer to transform
-    /// events from the inner descriptor vocabulary.
+    /// The runtime creates these instances automatically for subscriptions.
+    /// Use [`FramedLayer::map_event`] to supply chunks or EOF directly. See [`Decoder`].
     pub fn into_layer(self) -> FramedLayer<S, D> {
         let state = self.decoder.start();
         FramedLayer {
@@ -3248,12 +3754,11 @@ where
     }
 }
 
-/// Profile-independent state for one active [`Framed`] composition.
+/// One decoder instance and its buffer, created by [`Framed::into_layer`].
 ///
-/// The runtime creates one value per active composed Source. Its decoder state
-/// is deterministic mechanism state rather than Component Model state or a
-/// world-facing resource. Mapping an event produces only outer [`SourceEvent`]
-/// values; delivery and terminal Source behavior remain runtime concerns.
+/// The runtime creates a separate instance for each subscription. Tests can use
+/// it directly to check chunk handling without I/O; see [`Decoder`]. It returns
+/// source events without delivering component messages.
 pub struct FramedLayer<S, D>
 where
     S: SourceDescriptor<Item = D::Chunk>,
@@ -3273,20 +3778,17 @@ where
     S: SourceDescriptor<Item = D::Chunk>,
     D: Decoder,
 {
-    /// Returns the next descriptor inside this composed Layer.
-    ///
-    /// The returned descriptor may itself be composed; this method does not
-    /// claim that it is the terminal Driver boundary.
+    /// Returns the wrapped source descriptor, which may itself be another [`Framed`] source.
     pub fn inner_descriptor(&self) -> &S {
         &self.descriptor.source
     }
 
-    /// Purely transforms one inner Source event into zero or more outer events.
+    /// Decodes one input event into zero or more output events.
     ///
-    /// A chunk may yield several frames or no frame while decoder state retains
-    /// an incomplete suffix. Inner and decoder failures remain distinguished as
-    /// typed data. Producing a terminal event does not itself cancel a Source or
-    /// deliver a Component Message.
+    /// Items pass through [`Decoder::push`]. EOF calls [`Decoder::finish`] and emits
+    /// its values followed by `Ended`. A source or decoder error emits `Failed`.
+    /// When calling this directly, stop after `Ended` or `Failed`; this method does
+    /// not stop the underlying source. See [`Decoder`] for an example.
     pub fn map_event(
         &mut self,
         event: SourceEvent<S::Item, S::Error>,
@@ -3313,12 +3815,12 @@ where
     }
 }
 
-/// Typed error explaining failure in either part of a [`Framed`] Layer.
+/// An error from either the wrapped source or its decoder.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FramedError<SourceError, DecodeError> {
-    /// The underlying world-facing source failed.
+    /// The wrapped input failed.
     Source(SourceError),
-    /// The pure decoder rejected input from an otherwise active source.
+    /// The decoder rejected the input.
     Decode(DecodeError),
 }
 
@@ -3414,14 +3916,24 @@ where
     }
 }
 
-/// Program-issued authority to describe finite effects of type `D`.
+/// Permission to request an effect type within a Program.
 ///
-/// Creating this value through [`ProgramBuilder::effect`] both declares the
-/// dependency and provides the only supported way to create a matching Effect
-/// [`Command`]. The capability is inert logical wiring: it owns no Driver,
-/// Tokio handle, or world resource and performs no work itself.
+/// Create it with [`ProgramBuilder::effect`], store it on the component, and pass
+/// it to [`Command::effect`] or [`Command::effect_with`]. Cloning shares permission
+/// within the same program; using it in a different program is an error.
 ///
-/// A raw descriptor alone cannot issue work:
+/// ```
+/// use samara::prelude::*;
+/// let mut program = Program::builder();
+/// let http = program.effect::<HttpRequest>();
+/// let command = Command::effect_with(&http, HttpRequest::get("https://example.test/"), |outcome| outcome);
+/// ```
+///
+/// The runtime builder requires a driver or test control for every declared
+/// effect, including effects first requested by later messages.
+///
+/// <details>
+/// <summary>Compile-time checks</summary>
 ///
 /// ```compile_fail
 /// use samara::{Command, EffectDescriptor};
@@ -3434,6 +3946,8 @@ where
 ///
 /// let _: Command<()> = Command::effect_with(Read, |_| ());
 /// ```
+///
+/// </details>
 #[must_use = "store and thread the declared Effect capability into its Component"]
 pub struct EffectCapability<D: EffectDescriptor> {
     token: CapabilityToken,
@@ -3458,15 +3972,17 @@ impl<D: EffectDescriptor> fmt::Debug for EffectCapability<D> {
     }
 }
 
-/// Program-issued authority to desire ongoing sources described by `S`.
+/// Permission to subscribe to a source type within a Program.
 ///
-/// [`ProgramBuilder::source`] declares the dependency. A Component stores this
-/// inert value in immutable configuration and supplies it whenever it creates a
-/// matching [`Subscription`]. Concrete descriptor values remain Model-derived
-/// reconciliation configuration; the capability owns no running Source or live
-/// resource.
+/// Create it with [`ProgramBuilder::source`] and store it on the component. Pass
+/// it to [`Subscription::source`] or [`Subscription::source_with`] together with
+/// the source configuration. Cloning does not create a running input, and the
+/// capability cannot be used in another Program.
 ///
-/// A raw descriptor alone cannot create a Subscription:
+/// See [`StdinLines`] for declaration, component storage, subscriptions, and binding.
+///
+/// <details>
+/// <summary>Compile-time checks</summary>
 ///
 /// ```compile_fail
 /// use samara::{SourceDescriptor, SourceEvent, Subscription, SubscriptionId};
@@ -3484,6 +4000,8 @@ impl<D: EffectDescriptor> fmt::Debug for EffectCapability<D> {
 ///     |_: SourceEvent<(), ()>| (),
 /// );
 /// ```
+///
+/// </details>
 #[must_use = "store and thread the declared Source capability into its Component"]
 pub struct SourceCapability<S: SourceDescriptor> {
     token: CapabilityToken,
@@ -3512,13 +4030,22 @@ impl<S: SourceDescriptor> fmt::Debug for SourceCapability<S> {
     }
 }
 
-/// Named, immutable logical dependency on a provider-neutral [`Protocol`].
+/// A named connection to a component that implements a [`Protocol`].
 ///
-/// A Component may store this value and use it with [`Command::notify`] or
-/// [`Command::request`]. It contains no provider reference, channel, runtime handle,
-/// or lookup capability. [`ProgramBuilder::bind_port`] selects the provider
-/// during program assembly, allowing the same Component definition to receive
-/// real, mock, or controlled providers without changing its transition logic.
+/// Create it with [`ProgramBuilder::port`] and select its provider with
+/// [`ProgramBuilder::bind_port`]. Components use it with [`Command::notify`] and
+/// [`Command::request`]. Code outside the program uses a [`PortHandle`] instead.
+///
+/// ```
+/// use samara::prelude::*;
+/// protocol! { type Health => enum HealthMessage { Check -> bool, } }
+/// let mut program = Program::builder();
+/// let health = program.port::<Health>(PortId::new("primary"));
+/// assert_eq!(health.id(), &PortId::new("primary"));
+/// ```
+///
+/// A port does not expose the provider's model. See [`ProgramBuilder::bind_port`]
+/// for a complete request/reply example.
 pub struct Port<P: Protocol> {
     id: PortId,
     program: Arc<()>,
@@ -3526,7 +4053,7 @@ pub struct Port<P: Protocol> {
 }
 
 impl<P: Protocol> Port<P> {
-    /// Returns this dependency's stable logical name.
+    /// Returns the port name.
     pub fn id(&self) -> &PortId {
         &self.id
     }
@@ -3556,17 +4083,18 @@ impl<P: Protocol> fmt::Debug for Port<P> {
     }
 }
 
-/// Typed logical address of a Component in a [`Program`].
+/// Identifies a registered component without giving access to its state.
 ///
-/// A Component may retain this value and pass it to [`Command::send`] when tight
-/// coupling to another Component's complete message API is intentional. Normal
-/// reusable dependencies should prefer [`Port`], which exposes only a stable
-/// provider-neutral protocol. A Component reference exposes no model access and
-/// does not itself send messages, so transitions receive no runtime capability.
-/// This address is independent of mailbox or task topology.
+/// Returned by [`ProgramBuilder::component`]. Use it with [`Command::send`] for
+/// component-to-component delivery, [`LiveRuntime::handle`] for an external sender,
+/// or [`ControlledRuntime::state`] to inspect state in tests.
 ///
-/// Delivery remains a runtime-interpreted Command rather than a capability on
-/// the reference itself:
+/// See the [crate example](crate) for registration and controlled state inspection.
+/// Use a [`Port`] when a caller should depend on a protocol rather than the
+/// component's complete message type.
+///
+/// <details>
+/// <summary>Compile-time checks</summary>
 ///
 /// ```compile_fail
 /// use samara::{Component, ComponentRef};
@@ -3575,6 +4103,8 @@ impl<P: Protocol> fmt::Debug for Port<P> {
 ///     target.send(message);
 /// }
 /// ```
+///
+/// </details>
 pub struct ComponentRef<C: Component> {
     id: ComponentId,
     program: Arc<()>,
@@ -3582,7 +4112,7 @@ pub struct ComponentRef<C: Component> {
 }
 
 impl<C: Component> ComponentRef<C> {
-    /// Returns the target's stable program identity.
+    /// Returns the component name.
     pub fn id(&self) -> &ComponentId {
         &self.id
     }
@@ -3607,12 +4137,21 @@ impl<C: Component> fmt::Debug for ComponentRef<C> {
     }
 }
 
-/// Topology-neutral application blueprint assembled from Components.
+/// Components and their connections, ready to run live or under test control.
 ///
-/// A program contains logical Component, effect, source, and protocol
-/// relationships but no live Tokio resources. Its declaration set is closed
-/// when [`ProgramBuilder::build`] succeeds. Call the same program factory for
-/// [`LiveRuntime`] and [`ControlledRuntime`] assembly.
+/// Build one with [`Program::builder`]. Pass it to [`LiveRuntime::builder`] or
+/// [`ControlledRuntime::builder`] to supply I/O implementations or test controls.
+/// A Program is consumed by its runtime; use a function to build a fresh copy for
+/// each run. See the [crate example](crate) for component registration.
+///
+/// ```
+/// use samara::{Program, ControlledRuntime};
+/// let program = Program::builder().build()?;
+/// let mut runtime = ControlledRuntime::builder(program).build()?;
+/// assert_eq!(runtime.run_until_idle()?.transitions, 0);
+/// assert!(runtime.cancel()?.is_clean());
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 pub struct Program {
     program: Arc<()>,
     components: Vec<Box<dyn ErasedComponentKernel>>,
@@ -3622,7 +4161,7 @@ pub struct Program {
 }
 
 impl Program {
-    /// Begins assembling a program blueprint.
+    /// Starts building a Program. See [`ProgramBuilder`].
     pub fn builder() -> ProgramBuilder {
         let program = Arc::new(());
         ProgramBuilder {
@@ -3916,47 +4455,55 @@ where
     }
 }
 
-/// Explicitly knowable error in topology-neutral program assembly.
+/// A problem with component registration or port wiring.
 ///
-/// The variants deliberately cover only facts represented by
-/// [`ProgramBuilder`]. Port cycles and behavior-dependent direct sends are not
-/// treated as a statically closed dependency graph.
+/// Returned by [`ProgramBuilder::build`]. Missing I/O implementations are checked
+/// later by the runtime builder. Cyclic port connections are allowed.
+///
+/// ```
+/// use samara::{Program, PortId, Protocol, ProgramBuildError};
+/// struct Service;
+/// impl Protocol for Service { type Message = (); }
+/// let mut builder = Program::builder();
+/// let _service = builder.port::<Service>(PortId::new("service"));
+/// assert!(matches!(builder.build(), Err(ProgramBuildError::PortBindingCount { count: 0, .. })));
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ProgramBuildError {
-    /// Two registered Components claimed the same logical identity.
+    /// Two components have the same name.
     DuplicateComponentId(ComponentId),
-    /// One Protocol and Port name pair was declared more than once.
+    /// A port name was declared twice for the same protocol.
     DuplicatePort {
-        /// Diagnostic Rust Protocol type name.
+        /// The protocol's Rust type name.
         protocol_type: &'static str,
-        /// Duplicated logical Port name.
+        /// The duplicated port name.
         port: PortId,
     },
-    /// A declared Port had zero or more than one provider binding.
+    /// A port has no provider or more than one provider.
     PortBindingCount {
-        /// Diagnostic Rust Protocol type name.
+        /// The protocol's Rust type name.
         protocol_type: &'static str,
-        /// Logical Port name.
+        /// The port name.
         port: PortId,
-        /// Number of bindings found.
+        /// The number of providers bound to the port.
         count: usize,
     },
-    /// A binding used a Port declared by another builder.
+    /// A port belongs to another builder.
     ForeignPort {
-        /// Diagnostic Rust Protocol type name.
+        /// The protocol's Rust type name.
         protocol_type: &'static str,
-        /// Logical Port name.
+        /// The port name.
         port: PortId,
     },
-    /// A binding selected a provider registered by another builder.
+    /// A provider belongs to another builder.
     ForeignProvider {
-        /// Logical provider identity.
+        /// The provider name.
         provider: ComponentId,
     },
-    /// A provider reference did not name a matching registered Component.
+    /// The referenced provider is not registered.
     ProviderNotRegistered {
-        /// Logical provider identity.
+        /// The provider name.
         provider: ComponentId,
     },
 }
@@ -3999,14 +4546,15 @@ impl fmt::Display for ProgramBuildError {
 
 impl Error for ProgramBuildError {}
 
-/// Mutable builder used to declare a closed Program and issue its logical
-/// capability values.
+/// Registers components, declares their I/O, and connects ports to providers.
 ///
-/// [`ProgramBuilder::build`] validates Component and Port structure, then
-/// preserves every Effect and Source declaration for complete live or
-/// controlled profile validation. It does not introspect arbitrary Component
-/// fields or behavior-dependent sends; conforming Components use only
-/// capabilities issued by this builder.
+/// Start with [`Program::builder`]. Create capabilities before passing them into
+/// components. Call [`Self::build`] once wiring is complete, then configure a
+/// live or controlled runtime. Capabilities and component references must all
+/// come from this builder.
+///
+/// See the [crate example](crate) for a component, [`StdinLines`] for input, and
+/// [`Self::bind_port`] for request/reply wiring.
 pub struct ProgramBuilder {
     program: Arc<()>,
     components: Vec<Box<dyn ErasedComponentKernel>>,
@@ -4027,12 +4575,18 @@ impl ProgramBuilder {
         token
     }
 
-    /// Declares finite world-facing work of descriptor type `D`.
+    /// Declares an effect type and returns the capability used to request it.
     ///
-    /// The returned inert capability is threaded into Component configuration
-    /// and is required by the matching [`Command`] constructors. Declaring the
-    /// capability makes the terminal live and controlled requirement knowable
-    /// even when the first Command is emitted only after a later Message.
+    /// Every declaration needs a driver in live execution or a control in tests,
+    /// even if the application has not requested that effect yet.
+    ///
+    /// ```
+    /// use samara::prelude::*;
+    /// let mut program = Program::builder();
+    /// let http = program.effect::<HttpRequest>();
+    /// let runtime = LiveRuntime::builder(program.build()?).bind_http().build()?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn effect<D>(&mut self) -> EffectCapability<D>
     where
         D: EffectDescriptor,
@@ -4049,12 +4603,10 @@ impl ProgramBuilder {
         }
     }
 
-    /// Declares ongoing event production described by `S`.
+    /// Declares a source type and returns the capability used to subscribe to it.
     ///
-    /// The returned inert capability is required by matching
-    /// [`Subscription`] constructors. For a composed descriptor such as
-    /// [`Framed`], assembly records only its lowered terminal descriptor as the
-    /// profile binding requirement.
+    /// For [`Framed`] sources, bind or control the wrapped input type; decoding still
+    /// runs in both live execution and tests. See [`StdinLines`] for an example.
     pub fn source<S>(&mut self) -> SourceCapability<S>
     where
         S: SourceDescriptor,
@@ -4076,13 +4628,13 @@ impl ProgramBuilder {
         }
     }
 
-    /// Adds a Component instance and returns its typed logical address.
+    /// Registers a component and returns its address.
     ///
-    /// Registration order is assembly detail, not an application execution
-    /// order. The Component configuration may hold only logical wiring and typed
-    /// references—not live runtime resources. Registration calls
-    /// [`Component::init`] immediately and stores its model and startup Command
-    /// in the Program blueprint.
+    /// Calls [`Component::init`] now and stores the starting model and command.
+    /// The command runs when the runtime starts. Component names must be unique;
+    /// registration order does not determine live execution order.
+    ///
+    /// See the [crate example](crate) or [`Self::bind_port`].
     pub fn component<C>(&mut self, id: ComponentId, component: C) -> ComponentRef<C>
     where
         C: Component,
@@ -4098,11 +4650,10 @@ impl ProgramBuilder {
         component_ref
     }
 
-    /// Declares one named logical dependency on protocol `P`.
+    /// Declares a named connection to a provider of protocol `P`.
     ///
-    /// Identity includes both `P` and `id`; registration does not select a
-    /// provider. Multiple differently named Ports of the same protocol are
-    /// first-class and may be bound independently.
+    /// Bind exactly one provider with [`Self::bind_port`]. Different names allow
+    /// several providers of the same protocol. See [`Port`] for construction.
     pub fn port<P>(&mut self, id: PortId) -> Port<P>
     where
         P: Protocol,
@@ -4120,17 +4671,53 @@ impl ProgramBuilder {
         }
     }
 
-    /// Binds one exact named Port to a provider Component.
+    /// Connects a Port to the component that will handle its messages.
     ///
-    /// The selected Component's private Message type implements
-    /// `From<P::Message>`. This makes Protocol acceptance a canonical type
-    /// relationship declared by the provider Message rather than a conversion
-    /// closure repeated at every binding site. Separate named `Port<P>` values
-    /// may still bind independently to different provider instances.
+    /// The provider's message type must implement `From<P::Message>`; using the
+    /// protocol message type directly also works. Both the port and provider must
+    /// belong to this builder. [`Self::build`] checks that every port has exactly one
+    /// provider. Cyclic connections are allowed.
     ///
-    /// [`ProgramBuilder::build`] later requires exactly one binding for every
-    /// declared Port and verifies that this provider belongs to the same
-    /// builder. Port cycles remain legal.
+    /// ```
+    /// use samara::prelude::*;
+    /// protocol! { type Count => enum CountMessage { Read -> u64, } }
+    ///
+    /// struct Counter;
+    /// impl Component for Counter {
+    ///     type Model = u64;
+    ///     type Message = CountMessage;
+    ///     fn init(&self) -> Init<u64, CountMessage> { Init::new(42) }
+    ///     fn update(&self, count: &mut u64, message: CountMessage) -> Command<CountMessage> {
+    ///         match message {
+    ///             CountMessage::Read(call) => Command::reply(call.reply_to, *count),
+    ///         }
+    ///     }
+    /// }
+    ///
+    /// struct Client { counter: Port<Count> }
+    /// impl Component for Client {
+    ///     type Model = Option<u64>;
+    ///     type Message = RequestOutcome<u64>;
+    ///     fn init(&self) -> Init<Self::Model, Self::Message> {
+    ///         Init::default().with_command(Command::request(self.counter.clone(), Read))
+    ///     }
+    ///     fn update(&self, value: &mut Option<u64>, reply: Self::Message) -> Command<Self::Message> {
+    ///         if let RequestOutcome::Replied(count) = reply { *value = Some(count); }
+    ///         Command::none()
+    ///     }
+    /// }
+    ///
+    /// let mut builder = Program::builder();
+    /// let port = builder.port::<Count>(PortId::new("counter"));
+    /// let counter = builder.component(ComponentId::new("counter"), Counter);
+    /// builder.bind_port(&port, &counter);
+    /// let client = builder.component(ComponentId::new("client"), Client { counter: port });
+    /// let mut runtime = ControlledRuntime::builder(builder.build()?).build()?;
+    /// runtime.run_until_idle()?;
+    /// assert_eq!(*runtime.state(&client)?, Some(42));
+    /// assert!(runtime.cancel()?.is_clean());
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn bind_port<P, C>(&mut self, port: &Port<P>, provider: &ComponentRef<C>)
     where
         P: Protocol,
@@ -4143,11 +4730,11 @@ impl ProgramBuilder {
         }));
     }
 
-    /// Closes declaration, validates structural assembly, and finishes the
-    /// Program blueprint.
+    /// Checks component names and port connections and returns the Program.
     ///
-    /// Terminal Driver or controlled-behavior completeness is validated later
-    /// by the selected runtime builder against the complete declaration set.
+    /// Returns [`ProgramBuildError`] for duplicate names, missing or duplicate port
+    /// bindings, or references from another builder. Does not start work. I/O drivers
+    /// and test controls are checked by the runtime builder.
     pub fn build(self) -> Result<Program, ProgramBuildError> {
         let mut component_ids = std::collections::HashSet::new();
         for component in &self.components {
@@ -4224,49 +4811,96 @@ impl ProgramBuilder {
     }
 }
 
-/// Terminal live-world implementation for one concrete [`EffectDescriptor`]
-/// type.
+/// Performs the I/O described by an [`EffectDescriptor`] in a live runtime.
 ///
-/// This is an explicitly impure boundary. The runtime owns and supervises the
-/// returned future, then passes its result through the pure mapper stored in the
-/// originating [`Command`]. Controlled execution does not call this Driver.
+/// Return the work as a [`BoxFuture`]; Samara runs it, sends its result to the
+/// component, and cancels it when needed. Do not mutate component state or spawn
+/// detached work. Controlled tests supply results instead of calling the driver.
+///
+/// This driver checks whether a TCP connection can be established:
+///
+/// ```
+/// use samara::prelude::*;
+/// use std::net::SocketAddr;
+/// struct CheckConnection(SocketAddr);
+/// impl EffectDescriptor for CheckConnection {
+///     type Output = ();
+///     type Error = std::io::Error;
+/// }
+/// struct Network;
+/// impl EffectDriver<CheckConnection> for Network {
+///     fn execute(&self, request: CheckConnection) -> BoxFuture<Result<(), std::io::Error>> {
+///         Box::pin(async move {
+///             let connection = tokio::net::TcpStream::connect(request.0).await?;
+///             drop(connection);
+///             Ok(())
+///         })
+///     }
+/// }
+/// let mut program = Program::builder();
+/// let network = program.effect::<CheckConnection>();
+/// let runtime = LiveRuntime::builder(program.build()?)
+///     .bind_effect::<CheckConnection, _>(Network).build()?;
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+///
+/// The driver may retain resources such as a connection pool. Application state
+/// and decisions such as when to retry belong in components or Layers.
 pub trait EffectDriver<D: EffectDescriptor>: Send + Sync + 'static {
-    /// Executes one typed intent and returns its typed success or failure.
+    /// Returns the future that performs one operation.
     ///
-    /// Multiple invocations may be in flight at once, so implementations must
-    /// not rely on runtime-provided serialization. Panicking while creating or
-    /// polling the returned future faults the live runtime and cancels its
-    /// structured scope. A normal `Ok` or `Err` return produces exactly one
-    /// terminal [`EffectOutcome`] and invokes the Command mapper once when one
-    /// exists. Whole-scope cancellation that wins first drops the future and
-    /// mapper without producing an outcome.
+    /// Several calls may be running at once. A successful or failed return supplies
+    /// one [`EffectOutcome`]. Cancellation drops the future and response mapper.
+    /// A panic while creating or running the future stops the runtime with an error.
     fn execute(&self, descriptor: D) -> BoxFuture<Result<D::Output, D::Error>>;
 }
 
-/// Terminal live-world implementation for one concrete world-facing
-/// [`SourceDescriptor`] type.
+/// Produces events for a source in a live runtime.
 ///
-/// The returned future belongs to the runtime's structured-concurrency scope.
-/// It may emit many items through [`SourceSink::emit`], then should terminate
-/// explicitly with [`SourceSink::fail`] or [`SourceSink::end`]. If the sink
-/// returns [`DriverStopped`], the Driver should promptly release its resources
-/// and return. Returning normally without an accepted terminal call is one
-/// implicit normal end for the active Source generation.
+/// Send items through the supplied [`SourceSink`]. Finish by calling `end` or
+/// `fail`, or return normally to end the input. Stop promptly if the sink returns
+/// [`DriverStopped`]. Controlled tests supply events without calling the driver.
+///
+/// ```
+/// use samara::prelude::*;
+/// use std::convert::Infallible;
+/// #[derive(Clone, Debug, PartialEq)]
+/// struct Values(Vec<u64>);
+/// impl SourceDescriptor for Values {
+///     type Item = u64;
+///     type Error = Infallible;
+/// }
+/// struct ValueSource;
+/// impl SourceDriver<Values> for ValueSource {
+///     fn run(&self, values: Values, sink: SourceSink<Values>) -> BoxFuture<()> {
+///         Box::pin(async move {
+///             for value in values.0 {
+///                 if sink.emit(value).await.is_err() { return; }
+///             }
+///             let _ = sink.end().await;
+///         })
+///     }
+/// }
+/// let mut program = Program::builder();
+/// let values = program.source::<Values>();
+/// let runtime = LiveRuntime::builder(program.build()?)
+///     .bind_source::<Values, _>(ValueSource).build()?;
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 pub trait SourceDriver<D: SourceDescriptor>: Send + Sync + 'static {
-    /// Runs one active instance of the source descriptor.
+    /// Returns the future that reads one subscribed input.
     ///
-    /// The runtime may drop this future when the Subscription is removed or
-    /// replaced, or when the runtime shuts down. Drivers should release owned
-    /// resources promptly when dropped or after the sink returns
-    /// [`DriverStopped`]. Multiple Source realizations may run concurrently;
-    /// panicking while creating or polling the future faults the live runtime.
+    /// Samara may drop it when the subscription changes or the runtime shuts down.
+    /// Keep resources owned by the future so dropping it releases them. Several
+    /// subscriptions may run concurrently. A panic stops the runtime with an error.
     fn run(&self, descriptor: D, sink: SourceSink<D>) -> BoxFuture<()>;
 }
 
-/// Runtime-owned output channel supplied to a live [`SourceDriver`].
+/// Sends a driver's items, errors, and EOF into the subscribed component.
 ///
-/// The sink translates Driver activity into [`SourceEvent`] values for the
-/// subscription mapper. It offers no path to Component state.
+/// Samara creates the sink and passes it to [`SourceDriver::run`]. Events become
+/// [`SourceEvent`] values, then messages through the subscription's mapper.
+/// The sink does not expose component state. See [`SourceDriver`] for an example.
 pub struct SourceSink<D: SourceDescriptor> {
     inner: Arc<live_runtime::SourceSinkCore>,
     marker: PhantomData<fn() -> D>,
@@ -4280,10 +4914,10 @@ impl<D: SourceDescriptor> SourceSink<D> {
         }
     }
 
-    /// Emits one item while leaving the source active.
+    /// Sends an item and leaves the input open.
     ///
-    /// `DriverStopped` means the owning subscription or runtime scope no longer
-    /// accepts events.
+    /// `Ok(())` means the event was accepted, not that the component handled it.
+    /// Returns [`DriverStopped`] after input end, failure, removal, or shutdown.
     pub async fn emit(&self, item: D::Item) -> Result<(), DriverStopped> {
         self.inner.send(
             ErasedSourceEvent::typed::<D>(SourceEvent::Item(item)),
@@ -4291,11 +4925,10 @@ impl<D: SourceDescriptor> SourceSink<D> {
         )
     }
 
-    /// Emits a terminal source failure.
+    /// Sends an error and ends the input.
     ///
-    /// The first accepted terminal operation wins and returns `Ok(())`. If the
-    /// Source has already terminated, this and all later sink operations return
-    /// [`DriverStopped`].
+    /// The first `fail` or `end` call accepted by the runtime succeeds. Later sink
+    /// calls return [`DriverStopped`], as do calls after removal or shutdown.
     pub async fn fail(&self, error: D::Error) -> Result<(), DriverStopped> {
         self.inner.send(
             ErasedSourceEvent::typed::<D>(SourceEvent::Failed(error)),
@@ -4303,18 +4936,20 @@ impl<D: SourceDescriptor> SourceSink<D> {
         )
     }
 
-    /// Emits normal terminal completion.
+    /// Sends EOF and ends the input.
     ///
-    /// The first accepted terminal operation wins and returns `Ok(())`. If the
-    /// Source has already terminated, this and all later sink operations return
-    /// [`DriverStopped`].
+    /// The first `fail` or `end` call accepted by the runtime succeeds. Later sink
+    /// calls return [`DriverStopped`], as do calls after removal or shutdown.
     pub async fn end(&self) -> Result<(), DriverStopped> {
         self.inner
             .send(ErasedSourceEvent::typed::<D>(SourceEvent::Ended), true)
     }
 }
 
-/// Signal that runtime ownership of a live Driver has ended.
+/// The source no longer accepts events.
+///
+/// Returned by [`SourceSink`] after the input ends, fails, is removed, or the
+/// runtime shuts down. The driver should release its resources and return.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DriverStopped;
 
@@ -4326,12 +4961,21 @@ impl fmt::Display for DriverStopped {
 
 impl Error for DriverStopped {}
 
-/// Topology-neutral runtime or controlled-harness diagnostic.
+/// An error building, running, or controlling a runtime.
 ///
-/// Component faults expose the Component, terminal descriptor type when
-/// applicable, and structural work occurrence. Assembly and controlled-harness
-/// errors may not have that context, in which case the corresponding accessors
-/// return `None`.
+/// Use its Display text for a diagnostic. Execution errors can also identify the
+/// component, descriptor type, and trace record involved. Setup and test-input
+/// errors may lack that context; the accessors then return `None`.
+///
+/// ```
+/// use samara::{ControlledRuntime, HttpRequest, Program};
+/// let mut program = Program::builder();
+/// let http = program.effect::<HttpRequest>();
+/// // The declared HTTP capability needs a test control.
+/// let result = ControlledRuntime::builder(program.build()?).build();
+/// assert!(result.is_err());
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RuntimeError(Arc<RuntimeErrorKind>);
 
@@ -4365,7 +5009,7 @@ impl RuntimeError {
         Self(Arc::new(RuntimeErrorKind::Harness(reason.into())))
     }
 
-    /// Component at which execution faulted, if this is a runtime fault.
+    /// Returns the component involved in an execution error, if known.
     pub fn component(&self) -> Option<&ComponentId> {
         match self.0.as_ref() {
             RuntimeErrorKind::Fault { component, .. } => Some(component),
@@ -4373,7 +5017,7 @@ impl RuntimeError {
         }
     }
 
-    /// Concrete terminal descriptor type involved in a runtime fault.
+    /// Returns the effect or source descriptor type involved, if known.
     pub fn descriptor_type(&self) -> Option<&'static str> {
         match self.0.as_ref() {
             RuntimeErrorKind::Fault {
@@ -4383,7 +5027,7 @@ impl RuntimeError {
         }
     }
 
-    /// Structural trace identity of the work occurrence that faulted.
+    /// Returns the trace ID of the work that failed, if known.
     pub fn work_occurrence(&self) -> Option<TraceId> {
         match self.0.as_ref() {
             RuntimeErrorKind::Fault { work, .. } => Some(*work),
@@ -4414,24 +5058,51 @@ impl fmt::Display for RuntimeError {
 
 impl Error for RuntimeError {}
 
-/// Binds a topology-neutral [`Program`] to live Tokio world Drivers.
+/// Connects a Program's effects and sources to their I/O implementations.
 ///
-/// Binding is assembly-time work: Components retain only inert Program-issued
-/// capabilities and typed descriptors. Missing, duplicate, ambiguous, or
-/// foreign bindings make [`LiveRuntimeBuilder::build`] fail before spawn.
+/// Call `bind_*` methods, then [`Self::build`]. Building validates the bindings;
+/// [`LiveRuntime::spawn`] starts work. See [`LiveRuntime`] for running a program,
+/// [`StdinLines`] for input, and [`EffectDriver`] for a custom driver.
 pub struct LiveRuntimeBuilder {
     program: Program,
     bindings: live_runtime::LiveBindings,
 }
 
-/// Fully assembled live program that will use real Tokio scheduling, time, and
-/// world Drivers.
+/// A Program configured to run on Tokio with real I/O.
 ///
-/// Live execution preserves per-Component serialization and causality, but does
-/// not promise deterministic order between independent events. Internal
-/// delivery is unbounded: a healthy runtime does not drop accepted work because
-/// a queue reached capacity, but sustained overload can grow memory use. Cancel
-/// and runtime-fault cutovers may discard queued application work.
+/// Obtain any external senders before calling [`Self::spawn`]. Keep the returned
+/// [`RuntimeTask`] to observe errors and wait for shutdown.
+///
+/// ```
+/// use samara::prelude::*;
+/// struct Counter;
+/// impl Component for Counter {
+///     type Model = u64;
+///     type Message = u64;
+///     fn init(&self) -> Init<u64, u64> { Init::new(0) }
+///     fn update(&self, count: &mut u64, amount: u64) -> Command<u64> {
+///         *count += amount;
+///         Command::none()
+///     }
+/// }
+/// let tokio = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+/// tokio.block_on(async {
+///     let mut builder = Program::builder();
+///     let counter = builder.component(ComponentId::new("counter"), Counter);
+///     let runtime = LiveRuntime::builder(builder.build()?).build()?;
+///     let sender = runtime.handle(&counter)?;
+///     let task = runtime.spawn();
+///     sender.send(3).await?;
+///     // Drain processes the accepted message before returning.
+///     assert!(task.shutdown(Shutdown::Drain).await?.is_clean());
+///     Ok::<(), Box<dyn std::error::Error>>(())
+/// })?;
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+///
+/// Updates to one component never overlap. Independent events can arrive in
+/// either order. Internal message queues have no size limit, so sustained overload
+/// can grow memory use. Cancellation and runtime errors may discard queued work.
 pub struct LiveRuntime {
     program: Program,
     bindings: live_runtime::LiveBindings,
@@ -4440,7 +5111,7 @@ pub struct LiveRuntime {
 }
 
 impl LiveRuntime {
-    /// Starts live assembly for a topology-neutral program blueprint.
+    /// Starts configuring I/O for a Program. See [`LiveRuntime`].
     pub fn builder(program: Program) -> LiveRuntimeBuilder {
         LiveRuntimeBuilder {
             program,
@@ -4448,10 +5119,10 @@ impl LiveRuntime {
         }
     }
 
-    /// Creates external ingress for one typed Component.
+    /// Creates a sender for code outside the Samara program.
     ///
-    /// Unlike [`ComponentRef`], a handle is a live runtime capability and must
-    /// never be placed in a Component or passed to its transition.
+    /// Returns an error if the component does not belong to this Program. Keep the
+    /// handle in host code; components send via Commands instead. See [`LiveRuntime`].
     pub fn handle<C: Component>(
         &self,
         component: &ComponentRef<C>,
@@ -4471,11 +5142,11 @@ impl LiveRuntime {
         })
     }
 
-    /// Creates live external ingress for one provider-neutral Port.
+    /// Creates a protocol client for code outside the Samara program.
     ///
-    /// The Port must have been declared and bound in this runtime's Program.
-    /// Unlike [`Port`], the returned handle is a live capability and must never
-    /// be stored in a Component or used from a transition.
+    /// The port must be declared and bound in this Program. Otherwise returns an
+    /// error. Keep the handle in host code; components use [`Port`] and Commands.
+    /// See [`PortHandle`] for an example.
     pub fn port_handle<P: Protocol>(&self, port: &Port<P>) -> Result<PortHandle<P>, RuntimeError> {
         if !Arc::ptr_eq(&port.program, &self.program.program)
             || !self.program.bindings.iter().any(|binding| {
@@ -4494,14 +5165,14 @@ impl LiveRuntime {
         })
     }
 
-    /// Starts the assembled program in a runtime-owned structured scope.
+    /// Starts the program on the current Tokio runtime.
     ///
-    /// The returned [`RuntimeTask`] is the ownership handle used to shut down and
-    /// account for all Samara-authorized work.
+    /// Returns a [`RuntimeTask`] that owns the running work. Await its shutdown to
+    /// wait for resource cleanup. See [`LiveRuntime`] for a complete example.
     ///
     /// # Panics
     ///
-    /// Panics when called outside an active Tokio runtime.
+    /// Panics if called outside a Tokio runtime.
     pub fn spawn(self) -> RuntimeTask {
         let scope = self.scope.clone();
         let core =
@@ -4515,13 +5186,12 @@ impl LiveRuntime {
 }
 
 impl LiveRuntimeBuilder {
-    /// Binds one declared capability whose terminal descriptor is
-    /// [`StreamDescriptor<T>`] to a Tokio receiver.
+    /// Connects a source capability to a Tokio receiver.
     ///
-    /// The receiver is unique live-world state and therefore stays out of the
-    /// Component and [`Program`]. The capability may describe the terminal
-    /// stream directly or a composition such as [`Framed`] above it. Closing
-    /// the receiver produces [`SourceEvent::Ended`] through the same Layers.
+    /// Use a capability for [`StreamDescriptor`] or a [`Framed`] source wrapping one.
+    /// The receiver is consumed by its first subscription and cannot be restarted.
+    /// When the channel closes, the source emits [`SourceEvent::Ended`].
+    /// See [`StreamDescriptor`] for construction.
     pub fn bind_mpsc<S>(
         mut self,
         stream: &SourceCapability<S>,
@@ -4534,20 +5204,15 @@ impl LiveRuntimeBuilder {
         self
     }
 
-    /// Binds process standard input to one exact capability whose terminal
-    /// descriptor is [`StdinLines`].
+    /// Connects a source capability to process standard input on Unix.
     ///
-    /// This first-party binding is available on Unix, where the runtime owns
-    /// an interruptible line-reader thread for each active Source realization.
-    /// The capability may expose `StdinLines` directly or place built-in
-    /// [`Framed`] Layers above it.
-    /// Removing or replacing the Subscription and shutting down the runtime
-    /// cancel and join that thread without waiting for another input byte.
+    /// Accepts [`StdinLines`] or a [`Framed`] source wrapping it. Only one active
+    /// subscription may read stdin across all runtimes; a competing reader faults
+    /// the runtime. Do not also read stdin outside Samara.
     ///
-    /// Process stdin has one owner: a live runtime may contain only one stdin
-    /// binding, and first-party bindings in separate runtimes share the same
-    /// active process lease. A second concurrent realization faults the
-    /// runtime. Code outside Samara must not read stdin concurrently.
+    /// Removing the subscription or shutting down interrupts the read without waiting
+    /// for another byte. A later subscription resumes at stdin's current position.
+    /// See [`StdinLines`] for a complete example.
     #[cfg(unix)]
     pub fn bind_stdin<S>(mut self, stdin: &SourceCapability<S>) -> Self
     where
@@ -4557,10 +5222,10 @@ impl LiveRuntimeBuilder {
         self
     }
 
-    /// Registers the live Driver for effect descriptor type `D`.
+    /// Registers an implementation of effect type `D`.
     ///
-    /// A runtime has at most one Effect Driver for each descriptor type.
-    /// Registering the same type more than once makes [`Self::build`] fail.
+    /// Register at most one driver per effect type; duplicates fail at [`Self::build`].
+    /// See [`EffectDriver`] for an implementation and registration example.
     pub fn bind_effect<D, Driver>(mut self, driver: Driver) -> Self
     where
         D: EffectDescriptor,
@@ -4570,12 +5235,11 @@ impl LiveRuntimeBuilder {
         self
     }
 
-    /// Registers the live Driver for world-facing source descriptor type `D`.
+    /// Registers an implementation of source type `D`.
     ///
-    /// Pure source composition such as [`Framed`] is evaluated above this
-    /// binding, so Drivers operate on raw world events rather than application
-    /// messages. Duplicate or ambiguous terminal Source bindings make
-    /// [`Self::build`] fail.
+    /// For a [`Framed`] source, register the wrapped source's driver. Samara runs the
+    /// decoder before delivering messages. Duplicate or conflicting bindings fail
+    /// at [`Self::build`]. See [`SourceDriver`] for an example.
     pub fn bind_source<D, Driver>(mut self, driver: Driver) -> Self
     where
         D: SourceDescriptor,
@@ -4585,58 +5249,60 @@ impl LiveRuntimeBuilder {
         self
     }
 
-    /// Registers Samara's first-party one-connection Tokio TCP Driver.
+    /// Enables [`TcpBytes`] subscriptions using Tokio TCP connections.
     ///
-    /// Components store a declared [`SourceCapability`] for their raw or
-    /// composed descriptor and produce [`TcpBytes`] terminal values. Controlled
-    /// execution binds that same terminal descriptor type with
-    /// `control_source::<TcpBytes>()`. The live Driver performs no DNS, retry,
-    /// reconnect, or framing.
+    /// Each input connects once to the configured IP address and port. No DNS, retry,
+    /// or reconnect is performed. See [`TcpBytes`] for construction.
     pub fn bind_tcp(mut self) -> Self {
         live_runtime::bind_tcp(&mut self.bindings);
         self
     }
 
-    /// Registers Samara's first-party pooled HTTP Effect Driver.
+    /// Enables [`HttpRequest`] effects with a shared HTTP client and connection pool.
     ///
-    /// Components use a declared [`EffectCapability<HttpRequest>`] to issue raw
-    /// [`HttpRequest`] descriptors and receive complete [`HttpResponse`] values
-    /// or typed [`HttpError`] data. One reusable client and connection pool are
-    /// retained by this binding. The Driver follows
-    /// no redirects, performs no retries, uses no system proxy, performs no
-    /// automatic content decompression, and applies no status or body-decoding
-    /// policy. Responses are fully buffered, with no Samara-configured body
-    /// limit or request timeout. It supplies `Accept: */*` only when the
-    /// descriptor omits `Accept`. Controlled execution uses the same descriptor
-    /// through `control_effect::<HttpRequest>()` without network access.
+    /// ```
+    /// use samara::prelude::*;
+    /// let mut program = Program::builder();
+    /// let http = program.effect::<HttpRequest>();
+    /// let runtime = LiveRuntime::builder(program.build()?).bind_http().build()?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// The driver makes one request, buffers the response, and returns any HTTP status.
+    /// It does not retry, follow redirects, use system proxies, or decompress bodies.
+    /// Use [`HttpResponsePipeline`] for redirect, status, and JSON handling.
+    /// There is no request timeout or body-size limit. `Accept: */*` is supplied if
+    /// no Accept header was set. Controlled tests use `control_effect::<HttpRequest>()`.
     pub fn bind_http(mut self) -> Self {
         live_runtime::bind_http(&mut self.bindings);
         self
     }
 
-    /// Registers Samara's first-party Tokio standard-output Drivers.
+    /// Enables [`PrintStdout`] and [`PrintStderr`] effects.
     ///
-    /// Components declare separate [`EffectCapability<PrintStdout>`] and/or
-    /// [`EffectCapability<PrintStderr>`] dependencies. Their descriptors each
-    /// attempt to write complete text and flush the selected stream. Host I/O
-    /// errors are deliberately discarded, so these high-level effects are
-    /// infallible from the Component's perspective. Within this binding, each
-    /// stream is serialized independently; this method adds no ordering
-    /// guarantee among otherwise independent effects, between stdout and
-    /// stderr, or relative to direct process writes.
+    /// Each write attempts to send all text and flush the stream. I/O errors are
+    /// ignored. Writes to a stream do not interleave with each other through this
+    /// binding, but independent commands have no promised completion order. Direct
+    /// process writes and writes to different streams are not ordered by Samara.
+    ///
+    /// ```
+    /// use samara::prelude::*;
+    /// let mut program = Program::builder();
+    /// let output = program.effect::<PrintStdout>();
+    /// let runtime = LiveRuntime::builder(program.build()?).bind_stdio().build()?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn bind_stdio(mut self) -> Self {
         live_runtime::bind_stdio(&mut self.bindings);
         self
     }
 
-    /// Validates bindings and finishes live assembly.
+    /// Checks the bindings and returns a runtime ready to start.
     ///
-    /// Every Effect and Source capability declared by the Program must have
-    /// exactly one applicable terminal binding, even when a dependency is not
-    /// visible in the initial Commands or Subscriptions. Missing, duplicate,
-    /// ambiguous, foreign, or type-incompatible bindings return an error before
-    /// the runtime is created. Initial work carrying a foreign Program
-    /// capability is rejected at the same boundary.
+    /// Every declared effect and source needs one matching implementation, even if
+    /// unused at startup. Missing, duplicate, conflicting, or foreign bindings return
+    /// an error, as do foreign capabilities in startup commands and subscriptions.
+    /// Call [`LiveRuntime::spawn`] to begin work.
     pub fn build(self) -> Result<LiveRuntime, RuntimeError> {
         self.bindings.validate(&self.program)?;
         for component in &self.program.components {
@@ -4653,14 +5319,14 @@ impl LiveRuntimeBuilder {
     }
 }
 
-/// Live external sender for one typed Component.
+/// Sends messages to a component from surrounding async code.
 ///
-/// Application Components normally communicate through [`Command::notify`] and
-/// [`Command::request`], or through lower-level [`Command::send`] when tight coupling is
-/// intentional. This capability is for surrounding Tokio code at the Samara
-/// program boundary.
+/// Create it with [`LiveRuntime::handle`] before spawning the runtime. Clones
+/// send to the same component. The handle does not expose its model and should
+/// not be stored in a component. See [`LiveRuntime`] for a working example.
 ///
-/// A live handle deliberately exposes no Model access or mutation capability:
+/// <details>
+/// <summary>Compile-time checks</summary>
 ///
 /// ```compile_fail
 /// use samara::{Component, ComponentHandle};
@@ -4669,6 +5335,8 @@ impl LiveRuntimeBuilder {
 ///     *handle.model_mut() = model;
 /// }
 /// ```
+///
+/// </details>
 pub struct ComponentHandle<C: Component> {
     component: ComponentRef<C>,
     scope: Arc<live_runtime::LiveScope>,
@@ -4684,11 +5352,10 @@ impl<C: Component> Clone for ComponentHandle<C> {
 }
 
 impl<C: Component> ComponentHandle<C> {
-    /// Submits a message to the live runtime.
+    /// Queues a message for this component.
     ///
-    /// Successful return means accepted for runtime-managed delivery, not that
-    /// the target transition has completed. Sending after Drain, Cancel, clean
-    /// closure, or a runtime fault returns an error.
+    /// Success means the message was accepted, not that `update` has run. Returns an
+    /// error after shutdown begins or the runtime fails. See [`LiveRuntime`].
     pub async fn send(&self, message: C::Message) -> Result<(), RuntimeError> {
         self.scope.accept_ingress(live_runtime::LiveEvent::ingress(
             live_runtime::LiveIngress {
@@ -4701,14 +5368,46 @@ impl<C: Component> ComponentHandle<C> {
     }
 }
 
-/// Live external ingress through one provider-neutral [`Port`].
+/// Calls a protocol from async code outside a Samara program.
 ///
-/// Surrounding Tokio code can submit protocol notifications and await typed
-/// request replies without depending on the bound provider Component's private
-/// message type. Successful admission still routes through runtime-owned
-/// serialized Component transitions.
+/// Create it with [`LiveRuntime::port_handle`] before spawning the runtime.
+/// Clones use the same port. Notifications and requests still go through the
+/// provider's `update` method; the handle does not expose its model.
 ///
-/// A Port handle exposes no provider Model access:
+/// ```
+/// use samara::prelude::*;
+/// protocol! { type Count => enum CountMessage { Read -> u64, } }
+/// struct Counter;
+/// impl Component for Counter {
+///     type Model = u64;
+///     type Message = CountMessage;
+///     fn init(&self) -> Init<u64, CountMessage> { Init::new(42) }
+///     fn update(&self, count: &mut u64, message: CountMessage) -> Command<CountMessage> {
+///         match message {
+///             CountMessage::Read(call) => Command::reply(call.reply_to, *count),
+///         }
+///     }
+/// }
+/// let tokio = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+/// tokio.block_on(async {
+///     let mut builder = Program::builder();
+///     let count = builder.port::<Count>(PortId::new("count"));
+///     let counter = builder.component(ComponentId::new("counter"), Counter);
+///     builder.bind_port(&count, &counter);
+///     let runtime = LiveRuntime::builder(builder.build()?).build()?;
+///     let client = runtime.port_handle(&count)?;
+///     let task = runtime.spawn();
+///     assert_eq!(client.request(Read).await?, 42);
+///     assert!(task.shutdown(Shutdown::Drain).await?.is_clean());
+///     Ok::<(), Box<dyn std::error::Error>>(())
+/// })?;
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+///
+/// Components use [`Port`] and Commands instead of storing these handles.
+///
+/// <details>
+/// <summary>Compile-time checks</summary>
 ///
 /// ```compile_fail
 /// use samara::{PortHandle, Protocol};
@@ -4717,9 +5416,6 @@ impl<C: Component> ComponentHandle<C> {
 ///     handle.model_mut();
 /// }
 /// ```
-///
-/// It is also not interchangeable with the inert [`Port`] accepted by
-/// Component Commands:
 ///
 /// ```compile_fail
 /// use samara::{Command, Notification, PortHandle, Protocol};
@@ -4742,6 +5438,8 @@ impl<C: Component> ComponentHandle<C> {
 ///     Command::notify(handle, Notify)
 /// }
 /// ```
+///
+/// </details>
 pub struct PortHandle<P: Protocol> {
     port: Port<P>,
     scope: Arc<live_runtime::LiveScope>,
@@ -4766,12 +5464,18 @@ impl<P: Protocol> fmt::Debug for PortHandle<P> {
 }
 
 impl<P: Protocol> PortHandle<P> {
-    /// Submits one protocol notification to the live runtime.
+    /// Queues a notification for the provider.
     ///
-    /// Successful return means the notification crossed the runtime admission
-    /// boundary; it does not mean the provider transition has completed.
-    /// Notification after Drain, Cancel, clean closure, or a runtime fault
-    /// returns an error.
+    /// Success means accepted for delivery, not handled by the provider. Returns an
+    /// error if shutdown has begun or the runtime has failed.
+    ///
+    /// ```no_run
+    /// use samara::prelude::*;
+    /// protocol! { type Events => enum EventMessage { Changed(String), } }
+    /// async fn notify(client: &PortHandle<Events>) -> Result<(), RuntimeError> {
+    ///     client.notify(Changed("ready".into())).await
+    /// }
+    /// ```
     pub async fn notify<N>(&self, notification: N) -> Result<(), RuntimeError>
     where
         N: Notification<P>,
@@ -4783,13 +5487,12 @@ impl<P: Protocol> PortHandle<P> {
             ))
     }
 
-    /// Submits one protocol request and awaits its correlated typed reply.
+    /// Sends a request and waits for its reply without a timeout.
     ///
-    /// Dropping this future stops only the host from waiting. Once admitted,
-    /// the request remains runtime-owned until it replies or the runtime ends;
-    /// dropping the future does not cancel it or allow Drain to forget it. An
-    /// unanswered request can keep Drain pending indefinitely. Cancel, clean
-    /// closure, or a runtime fault before the reply returns [`RuntimeError`].
+    /// Dropping this future after sending stops waiting but does not cancel the
+    /// provider's work or release the pending request. An unanswered request can
+    /// keep Drain waiting. Runtime shutdown or failure before the reply returns
+    /// [`RuntimeError`]. See [`PortHandle`] for an example.
     pub async fn request<R>(&self, request: R) -> Result<R::Reply, RuntimeError>
     where
         R: Request<P>,
@@ -4800,14 +5503,22 @@ impl<P: Protocol> PortHandle<P> {
         }
     }
 
-    /// Submits a request with a runtime-owned reply-acceptance deadline.
+    /// Sends a request and waits for its reply until `timeout` expires.
     ///
-    /// The timeout starts at admission on first poll, including time queued
-    /// for the runtime. A reply interpreted at or after the deadline yields
-    /// [`RequestOutcome::TimedOut`]. Provider work continues and late replies
-    /// are discarded. Dropping this future does not cancel the request or its
-    /// deadline. Scope failures and unrepresentable deadlines return
-    /// [`RuntimeError`]; existing [`Self::request`] remains unbounded.
+    /// The clock starts when the future is first polled, including time waiting in
+    /// the runtime's queue. A reply processed at or after the deadline produces
+    /// [`RequestOutcome::TimedOut`]. Zero always times out. The provider keeps working;
+    /// later replies are ignored. Dropping this future does not remove the timeout.
+    /// Shutdown, runtime failure, or clock overflow returns [`RuntimeError`].
+    ///
+    /// ```no_run
+    /// use samara::prelude::*;
+    /// use std::time::Duration;
+    /// protocol! { type Health => enum HealthMessage { Check -> bool, } }
+    /// async fn check(client: &PortHandle<Health>) -> Result<RequestOutcome<bool>, RuntimeError> {
+    ///     client.request_timeout(Check, Duration::from_secs(2)).await
+    /// }
+    /// ```
     pub async fn request_timeout<R>(
         &self,
         request: R,
@@ -4846,13 +5557,27 @@ impl<P: Protocol> PortHandle<P> {
     }
 }
 
-/// Ownership handle for a running live Samara program.
+/// Owns a running Samara program and provides shutdown and error reporting.
 ///
-/// [`RuntimeTask::shutdown`] closes and waits for the structured scope. To
-/// escalate Drain to Cancel, use [`RuntimeTask::request_shutdown`] and await
-/// [`RuntimeTask::run_forever`]. Dropping the handle instead closes admission
-/// with Cancel semantics and aborts the owner without awaiting cleanup.
-/// Neither path leaves detached Samara-owned Driver work.
+/// Returned by [`LiveRuntime::spawn`]. Await [`Self::shutdown`] to stop the program
+/// and wait for cleanup. Use [`Self::run_forever`] to monitor it while waiting for
+/// an external shutdown signal.
+///
+/// ```
+/// use samara::prelude::*;
+/// let tokio = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+/// tokio.block_on(async {
+///     let program = Program::builder().build()?;
+///     let task = LiveRuntime::builder(program).build()?.spawn();
+///     assert!(task.shutdown(Shutdown::Drain).await?.is_clean());
+///     Ok::<(), Box<dyn std::error::Error>>(())
+/// })?;
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+///
+/// Dropping the task requests cancellation and aborts Samara's tasks without
+/// waiting for cleanup. Prefer an awaited shutdown when resource release matters.
+/// [`Self::request_shutdown`] shows how to give Drain a grace period before Cancel.
 pub struct RuntimeTask {
     scope: Arc<live_runtime::LiveScope>,
     join: Option<tokio::task::JoinHandle<Result<ShutdownReport, RuntimeError>>>,
@@ -4860,37 +5585,32 @@ pub struct RuntimeTask {
 }
 
 impl RuntimeTask {
-    /// Requests shutdown without consuming the owner or waiting for cleanup.
+    /// Starts shutdown without waiting for it to finish.
     ///
-    /// External ingress is closed before this method returns. Drain may later
-    /// be escalated to Cancel; repeated requests are harmless, and Drain cannot
-    /// reverse Cancel. Requests after fault or closure preserve the original
-    /// terminal result. Observe that result and joined cleanup through
-    /// [`Self::run_forever`] or [`Self::shutdown`].
+    /// Closes external message delivery before returning. A later Cancel can escalate
+    /// Drain; a later Drain cannot reverse Cancel. Repeated calls are harmless and
+    /// do not replace an already recorded error or shutdown result.
     ///
-    /// Cancelling a pending observation leaves ownership and the requested
-    /// shutdown state intact. A host can therefore choose its own grace period:
+    /// Wait for cleanup with [`Self::run_forever`] or [`Self::shutdown`]. To allow a
+    /// grace period, wait for Drain and escalate if it takes too long:
     ///
     /// ```no_run
     /// use samara::{RuntimeError, RuntimeTask, Shutdown, ShutdownReport};
     /// use std::time::Duration;
-    ///
-    /// # async fn stop(mut task: RuntimeTask, grace_period: Duration)
-    /// # -> Result<ShutdownReport, RuntimeError> {
-    /// task.request_shutdown(Shutdown::Drain);
-    /// match tokio::time::timeout(grace_period, task.run_forever()).await {
-    ///     Ok(result) => result,
-    ///     Err(_) => {
-    ///         task.request_shutdown(Shutdown::Cancel);
-    ///         task.run_forever().await
+    /// async fn stop(mut task: RuntimeTask) -> Result<ShutdownReport, RuntimeError> {
+    ///     task.request_shutdown(Shutdown::Drain);
+    ///     match tokio::time::timeout(Duration::from_secs(2), task.run_forever()).await {
+    ///         Ok(result) => result,
+    ///         Err(_) => {
+    ///             task.request_shutdown(Shutdown::Cancel);
+    ///             task.run_forever().await
+    ///         }
     ///     }
     /// }
-    /// # }
     /// ```
     ///
-    /// The grace period bounds waiting for Drain, not cleanup duration. This
-    /// method reports no completion or success; runtime faults and owner-task
-    /// failures remain observable through the terminal result.
+    /// The grace period limits waiting for Drain, not the time needed for cleanup.
+    /// Cancelling the wait does not undo the shutdown request.
     pub fn request_shutdown(&mut self, mode: Shutdown) {
         // A fault is preserved in the scope, and a closed event channel means
         // the owner has ended. Its retained JoinHandle supplies the terminal
@@ -4899,29 +5619,40 @@ impl RuntimeTask {
         let _ = self.scope.begin_shutdown(mode);
     }
 
-    /// Observes the running program until its owner terminates.
+    /// Waits for the program to stop and returns its shutdown report or error.
     ///
-    /// This method does not initiate shutdown or choose between [`Shutdown::Drain`]
-    /// and [`Shutdown::Cancel`]. A healthy long-running program therefore leaves
-    /// this future pending, while a runtime fault is returned after Samara has
-    /// cleaned up the structured scope.
+    /// Does not initiate shutdown. A running program keeps this future pending even
+    /// when it currently has no work. Dropping the future leaves the RuntimeTask
+    /// owning the program and preserves any earlier shutdown request.
     ///
-    /// The mutable borrow is cancellation safe with respect to ownership. A host
-    /// can select this future against Ctrl-C or another shutdown future; when the
-    /// host future wins, cancelling this observation leaves the [`RuntimeTask`]
-    /// owning the live scope so the host can call [`Self::request_shutdown`] or
-    /// [`Self::shutdown`] with an explicit policy. If shutdown has already been
-    /// requested, cancelling observation leaves that request in effect.
+    /// The host can supply a Ctrl-C handler or another shutdown future:
+    ///
+    /// ```no_run
+    /// use samara::{RuntimeError, RuntimeTask, Shutdown, ShutdownReport};
+    /// async fn run_until(
+    ///     mut task: RuntimeTask,
+    ///     stop: impl std::future::Future<Output = ()>,
+    /// ) -> Result<ShutdownReport, RuntimeError> {
+    ///     tokio::select! {
+    ///         result = task.run_forever() => return result,
+    ///         () = stop => {}
+    ///     }
+    ///     task.shutdown(Shutdown::Cancel).await
+    /// }
+    /// ```
     pub async fn run_forever(&mut self) -> Result<ShutdownReport, RuntimeError> {
         self.await_completion().await
     }
 
-    /// Ends the program using the requested shutdown policy and returns
-    /// work-accounting evidence.
+    /// Stops the program and waits for all Samara work to be cleaned up.
     ///
-    /// Combines [`Self::request_shutdown`] and terminal observation. An earlier
-    /// Drain may be escalated to Cancel; a later Drain cannot weaken Cancel.
-    /// If completion was already observed, returns the same terminal result.
+    /// Returns a report, or the runtime error if execution failed. An earlier Drain
+    /// can be escalated to Cancel, but Cancel cannot be reversed. If a result was
+    /// already observed, returns the same result. Consumes the task; cancelling this
+    /// future drops the task and requests cancellation.
+    ///
+    /// See [`RuntimeTask`] for an example, or [`Self::request_shutdown`] to start
+    /// shutdown while keeping the task for later observation.
     pub async fn shutdown(mut self, mode: Shutdown) -> Result<ShutdownReport, RuntimeError> {
         self.request_shutdown(mode);
         self.await_completion().await
@@ -4963,64 +5694,110 @@ impl Drop for RuntimeTask {
     }
 }
 
-/// Policy for runtime-owned work during live shutdown.
+/// How a live runtime should stop.
+///
+/// Use [`Self::Drain`] to finish accepted work or [`Self::Cancel`] to abort it.
+/// Both reject new external messages and stop sources. See
+/// [`RuntimeTask::request_shutdown`] for escalation from Drain to Cancel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Shutdown {
-    /// Stop Sources and recursively finish accepted and causally emitted finite
-    /// work. Drain has no implicit deadline and may wait forever.
+    /// Finishes accepted messages, effects, timers, and requests, including work
+    /// created while processing them. Stops sources and starts no new ones.
+    ///
+    /// There is no deadline. Recurring commands, unanswered requests, or hung I/O
+    /// can keep Drain waiting indefinitely.
     Drain,
-    /// Stop application driving, cancel owned work, and emit no synthetic
-    /// application outcomes solely because the scope ended.
+    /// Stops processing messages and aborts outstanding work.
+    ///
+    /// Does not send cancellation messages to components just because the runtime
+    /// is stopping. Cleanup is still awaited.
     Cancel,
 }
 
-/// Structured-concurrency accounting returned after a runtime scope closes.
+/// Counts of completed, cancelled, and remaining work after shutdown.
 ///
-/// `completed` and `cancelled` are diagnostic counters and their exact values
-/// are not a compatibility guarantee. A successful live shutdown or controlled
-/// cancellation guarantees that `remaining`, `pending_now`, and
-/// `pending_later` are all zero.
+/// Successful shutdown guarantees zero remaining work. The completed and
+/// cancelled counts are diagnostics; their exact values can change between
+/// versions. See [`RuntimeTask`] for an example using [`Self::is_clean`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ShutdownReport {
-    /// Runtime-owned work units that completed while the scope was closing.
+    /// Work completed during shutdown.
     pub completed: usize,
-    /// Runtime-owned work units that were cancelled while the scope was closing.
+    /// Work cancelled during shutdown.
     pub cancelled: usize,
-    /// Work units still owned after scope closure returned.
+    /// Work still pending after shutdown.
     pub remaining: usize,
-    /// Immediately runnable semantic obligations after scope closure.
+    /// Ready work still pending after shutdown.
     pub pending_now: usize,
-    /// Deferred semantic obligations after scope closure.
+    /// Work still waiting for time or input after shutdown.
     pub pending_later: usize,
 }
 
 impl ShutdownReport {
-    /// Returns whether scope closure left no owned work behind.
+    /// Returns whether no work remains (`remaining == 0`).
     pub fn is_clean(&self) -> bool {
         self.remaining == 0
     }
 }
 
-/// Declares which effect and source boundaries the controlled world may script.
+/// Selects the effects and sources a test will control.
 ///
-/// Controlled assembly never falls back to a live Driver. Missing controlled
-/// behavior must fail explicitly so a test cannot accidentally touch the world.
+/// Every declared effect or source needs a matching control. Missing controls
+/// are errors, never a fallback to live I/O. See [`ControlledRuntime`] for effects
+/// and [`StdinLines`] for source events.
 pub struct ControlledRuntimeBuilder {
     program: Program,
     bindings: controlled_runtime::ControlledBindings,
 }
 
-/// Deterministic, synchronously driven execution of a [`Program`].
+/// Runs a Program synchronously with inputs, effect results, and time supplied by a test.
 ///
-/// Components, commands, subscriptions, decoders, and declared boundary contracts
-/// are identical to live execution. The difference is runtime decisions: tests
-/// supply external events, effect outcomes, and logical-time progression.
+/// No drivers run. Your components, response handling, and decoders are the same
+/// as in live execution. Drive ready work with [`Self::run_until_idle`], inspect
+/// state, and provide the next input or result. Identical inputs and clock advances
+/// produce identical traces.
+///
+/// ```
+/// use samara::prelude::*;
+/// struct Check { http: EffectCapability<HttpRequest> }
+/// impl Component for Check {
+///     type Model = Option<StatusCode>;
+///     type Message = EffectOutcome<HttpResponse, HttpError>;
+///     fn init(&self) -> Init<Self::Model, Self::Message> {
+///         Init::default().with_command(Command::effect(
+///             &self.http, HttpRequest::get("https://example.test/health"),
+///         ))
+///     }
+///     fn update(&self, status: &mut Self::Model, outcome: Self::Message) -> Command<Self::Message> {
+///         if let EffectOutcome::Succeeded(response) = outcome {
+///             *status = Some(response.status());
+///         }
+///         Command::none()
+///     }
+/// }
+/// let mut builder = Program::builder();
+/// let http = builder.effect::<HttpRequest>();
+/// let check = builder.component(ComponentId::new("check"), Check { http });
+/// let mut runtime = ControlledRuntime::builder(builder.build()?)
+///     .control_effect::<HttpRequest>().build()?;
+/// runtime.run_until_idle()?;
+/// let request = runtime.next_effect::<HttpRequest>()?;
+/// assert_eq!(request.intent.url(), "https://example.test/health");
+/// let response = HttpResponse::new(StatusCode::OK, http::Version::HTTP_11, http::HeaderMap::new(), "");
+/// runtime.complete(request, EffectOutcome::Succeeded(response))?;
+/// runtime.run_until_idle()?;
+/// assert_eq!(*runtime.state(&check)?, Some(StatusCode::OK));
+/// assert!(runtime.cancel()?.is_clean());
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+///
+/// See [`StdinLines`] for source inputs and [`Self::advance`] for timers.
 pub struct ControlledRuntime {
     core: ControlledCore,
 }
 
 impl ControlledRuntime {
-    /// Starts controlled assembly for a topology-neutral program blueprint.
+    /// Starts configuring a test runtime for this Program. See [`ControlledRuntime`].
     pub fn builder(program: Program) -> ControlledRuntimeBuilder {
         ControlledRuntimeBuilder {
             program,
@@ -5028,10 +5805,10 @@ impl ControlledRuntime {
         }
     }
 
-    /// Enqueues a typed message at a Component boundary.
+    /// Queues a message for a component without running its update yet.
     ///
-    /// The transition runs only when a drive method such as
-    /// [`ControlledRuntime::run_until_idle`] is called.
+    /// Call [`Self::run_until_idle`] or a clock-advancing method to process it.
+    /// Returns an error for a component from another Program. See the [crate example](crate).
     pub fn send<C: Component>(
         &mut self,
         component: &ComponentRef<C>,
@@ -5040,10 +5817,12 @@ impl ControlledRuntime {
         self.core.send(component, message)
     }
 
-    /// Emits one terminal stream item through an exact controlled capability.
+    /// Supplies a channel item to the subscription using this capability.
     ///
-    /// For a composed capability, the item enters below its Layers and is then
-    /// transformed exactly as it would be in live execution.
+    /// For a framed stream, provide the original chunk; Samara runs the decoder.
+    /// The subscription must be active and the capability must belong to this Program.
+    /// Call [`Self::run_until_idle`] to deliver the resulting messages.
+    /// See [`StreamDescriptor`] for an example.
     pub fn emit_stream<S>(
         &mut self,
         stream: &SourceCapability<S>,
@@ -5055,9 +5834,11 @@ impl ControlledRuntime {
         self.core.emit_stream(stream, item)
     }
 
-    /// Ends an exact controlled stream capability normally.
+    /// Supplies EOF to the subscription using this capability.
     ///
-    /// Its subscription mapper receives [`SourceEvent::Ended`].
+    /// The subscription must be active. Decoders process EOF before the subscription
+    /// mapper receives [`SourceEvent::Ended`]. Call [`Self::run_until_idle`] to deliver
+    /// messages. See [`StreamDescriptor`] for an example.
     pub fn close_stream<S: StreamSourceDescriptor>(
         &mut self,
         stream: &SourceCapability<S>,
@@ -5065,12 +5846,15 @@ impl ControlledRuntime {
         self.core.close_stream(stream)
     }
 
-    /// Injects an event at the typed terminal source of an active subscription.
+    /// Supplies an event to a component's active subscription.
     ///
-    /// For `Framed<TcpBytes, Decoder>`, controlled tests select the underlying
-    /// terminal `TcpBytes` descriptor and inject raw chunks. Samara then runs the same decoder
-    /// used by live execution before invoking the subscription mapper. Injection
-    /// into an inactive identity or a non-terminal descriptor type is an error.
+    /// Use the underlying input type for `S`: for `Framed<TcpBytes, D>`, provide
+    /// `SourceEvent<bytes::Bytes, TcpError>` with `S = TcpBytes`. Samara runs the decoder
+    /// before the message mapper. An inactive subscription, wrong type, or component
+    /// from another Program returns an error.
+    ///
+    /// Call [`Self::run_until_idle`] to process the input. See [`StdinLines`] for a
+    /// complete example.
     pub fn emit_source<C, S>(
         &mut self,
         component: &ComponentRef<C>,
@@ -5084,10 +5868,11 @@ impl ControlledRuntime {
         self.core.emit_source::<C, S>(component, id, event)
     }
 
-    /// Returns a clone of the active source descriptor for inspection.
+    /// Returns a clone of the active subscription's descriptor.
     ///
-    /// Tests use this to verify subscription reconciliation and resource
-    /// configuration without observing Driver-owned operational state.
+    /// Use the full descriptor type for `S`, including any [`Framed`] wrappers.
+    /// Returns an error if the component, subscription, or descriptor type does not
+    /// match. This inspects configuration, not an open connection or driver state.
     pub fn source_descriptor<C, S>(
         &self,
         component: &ComponentRef<C>,
@@ -5100,25 +5885,28 @@ impl ControlledRuntime {
         self.core.source_descriptor(component, id)
     }
 
-    /// Claims and returns the next pending effect of concrete type `E`.
+    /// Takes the next pending effect of type `E` for inspection and completion.
     ///
-    /// Selection follows the controlled scheduler's stable deterministic order,
-    /// which is reproducibility machinery rather than a live ordering promise.
-    /// The occurrence remains a pending semantic obligation until
-    /// [`ControlledRuntime::complete`] or controlled cancellation, but its
-    /// descriptor cannot be claimed a second time.
+    /// Call [`Self::run_until_idle`] first to issue startup commands or process
+    /// messages. Returns an error if no unclaimed effect of that type exists.
+    /// An effect can be taken only once and remains pending until [`Self::complete`]
+    /// or [`Self::cancel`], even if its [`PendingEffect`] is dropped.
+    ///
+    /// Selection order is repeatable in tests; it does not promise live completion
+    /// order. See [`ControlledRuntime`] for a complete example.
     pub fn next_effect<E: EffectDescriptor>(&mut self) -> Result<PendingEffect<E>, RuntimeError> {
         self.core.next_effect()
     }
 
-    /// Supplies a terminal outcome for a previously intercepted effect.
+    /// Supplies a result for an effect taken from this runtime.
     ///
-    /// For [`Command::effect`], completion invokes the command's pure mapper and
-    /// enqueues the resulting Message. A built-in Effect Layer may instead
-    /// declare the next finite Command, causally linked to this outcome. For
-    /// [`Command::effect_discarding_outcome`], it records the outcome and closes
-    /// the obligation without scheduling a Message. Neither mode executes a
-    /// live [`EffectDriver`].
+    /// Runs its mapper and queues the resulting message. Redirect-following pipelines
+    /// may issue another HTTP request instead; effects that discard results queue no
+    /// message. No driver or I/O runs. Call [`Self::run_until_idle`] to handle any
+    /// queued messages. See [`ControlledRuntime`] for an example.
+    ///
+    /// Returns an error if the effect belongs to another runtime or is no longer
+    /// pending.
     pub fn complete<E: EffectDescriptor>(
         &mut self,
         pending: PendingEffect<E>,
@@ -5127,48 +5915,73 @@ impl ControlledRuntime {
         self.core.complete(pending, outcome)
     }
 
-    /// Processes immediately runnable work until the program is quiescent now.
+    /// Processes ready work until only future timers and external inputs remain.
     ///
-    /// Future timers and open subscriptions remain pending and do not prevent
-    /// return. This method does not advance logical time.
+    /// Does not advance time or supply effect results. Recurring immediate commands
+    /// can prevent it from returning. Returns the number of updates and remaining
+    /// work counts. See [`ControlledRuntime`] for an example.
     pub fn run_until_idle(&mut self) -> Result<RunReport, RuntimeError> {
         self.core.run_until_idle()
     }
 
-    /// Drains work due at the current instant, advances logical time by
-    /// `duration`, and processes each newly reachable instant until immediate
-    /// quiescence.
+    /// Moves the test clock forward by `duration` and processes work along the way.
+    ///
+    /// Processes work ready now before moving time, then visits each due deadline
+    /// through the requested time. Does not sleep or supply effect results. Clock
+    /// overflow returns an error.
+    ///
+    /// ```
+    /// use samara::prelude::*;
+    /// use std::time::Duration;
+    /// struct Timer;
+    /// impl Component for Timer {
+    ///     type Model = bool;
+    ///     type Message = ();
+    ///     fn init(&self) -> Init<bool, ()> {
+    ///         Init::new(false).with_command(Command::after(Duration::from_secs(2), ()))
+    ///     }
+    ///     fn update(&self, fired: &mut bool, _: ()) -> Command<()> {
+    ///         *fired = true;
+    ///         Command::none()
+    ///     }
+    /// }
+    /// let mut builder = Program::builder();
+    /// let timer = builder.component(ComponentId::new("timer"), Timer);
+    /// let mut runtime = ControlledRuntime::builder(builder.build()?).build()?;
+    /// runtime.advance(Duration::from_secs(1))?;
+    /// assert!(!*runtime.state(&timer)?);
+    /// runtime.advance_to_next()?;
+    /// assert!(*runtime.state(&timer)?);
+    /// assert_eq!(runtime.trace().last().unwrap().at.as_duration(), Duration::from_secs(2));
+    /// runtime.cancel()?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn advance(&mut self, duration: Duration) -> Result<RunReport, RuntimeError> {
         self.core.advance(duration)
     }
 
-    /// Advances to the next scheduled logical instant and processes work there.
+    /// Moves the test clock to the next scheduled deadline and processes ready work.
     ///
-    /// Returns an error when no future scheduled work exists. Repeated calls are
-    /// the primitive behind automatic time advancement.
+    /// Returns an error if no future work is scheduled. Does not supply effect results.
+    /// See [`Self::advance`] for an example.
     pub fn advance_to_next(&mut self) -> Result<RunReport, RuntimeError> {
         self.core.advance_to_next()
     }
 
-    /// Closes this controlled scope by cancelling all remaining owned work.
+    /// Stops the test runtime and cancels its remaining work.
     ///
-    /// Consuming the runtime prevents the harness from supplying any further
-    /// controlled input. Cancellation and accounting proceed in deterministic
-    /// controlled-runtime order, covering messages, subscriptions, timers,
-    /// effects, and requests owned by the scope. Successful return guarantees that
-    /// [`ShutdownReport::remaining`] is zero.
-    ///
-    /// This is lifecycle and diagnostic behavior only: it does not mean the
-    /// application reached a domain-defined completion state. A test that needs
-    /// a Component to observe cancellation must explicitly supply the
-    /// appropriate typed cancellation outcome before calling this method.
+    /// Consumes the runtime and returns a report with no work remaining. It does not
+    /// send cancellation messages to components. To test a component's cancellation
+    /// handling, supply an [`EffectOutcome::Cancelled`] to [`Self::complete`] first.
+    /// See [`ControlledRuntime`] for cleanup after a test.
     pub fn cancel(self) -> Result<ShutdownReport, RuntimeError> {
         self.core.cancel()
     }
 
-    /// Borrows the current model while controlled execution is paused.
+    /// Borrows a component's model for assertions without running any work.
     ///
-    /// Live execution deliberately has no equivalent shared model handle.
+    /// Returns an error if the component does not belong to this Program. Live
+    /// runtimes do not expose models. See [`ControlledRuntime`] for an example.
     pub fn state<C: Component>(
         &self,
         component: &ComponentRef<C>,
@@ -5176,27 +5989,29 @@ impl ControlledRuntime {
         self.core.state(component)
     }
 
-    /// Returns the currently owned semantic obligations without driving.
+    /// Returns counts of ready and waiting work without processing it.
     pub fn pending_work(&self) -> PendingWork {
         self.core.pending_work()
     }
 
-    /// Returns the deterministic structured semantic trace accumulated so far.
+    /// Returns the recorded events, their test-clock times, and causal links.
     ///
-    /// Trace observation has no callback or feedback path into Components.
+    /// Reading the trace does not run work or affect components. It records event
+    /// kinds and Rust type names, not message or descriptor payloads. See
+    /// [`TraceRecord`] for an example of inspecting it.
     pub fn trace(&self) -> &[TraceRecord] {
         self.core.trace()
     }
 }
 
 impl ControlledRuntimeBuilder {
-    /// Allows tests to script one exact logical stream capability.
+    /// Lets a test supply events for this channel capability.
     ///
-    /// The capability must belong to this Program. Registering the same exact
-    /// capability twice, or combining it with type-wide control for its terminal
-    /// descriptor, is rejected as ambiguous during [`Self::build`]. Composed
-    /// descriptors such as [`Framed<StreamDescriptor<T>, D>`] are accepted and
-    /// retain their Layers above the exact terminal stream.
+    /// Use [`ControlledRuntime::emit_stream`] and [`ControlledRuntime::close_stream`].
+    /// Accepts a plain [`StreamDescriptor`] or a [`Framed`] source wrapping it.
+    /// Registering the same capability twice, mixing this with type-wide control of
+    /// its input, or using a foreign capability fails at [`Self::build`].
+    /// See [`StreamDescriptor`] for a complete example.
     pub fn control_stream<S: StreamSourceDescriptor>(
         mut self,
         stream: &SourceCapability<S>,
@@ -5205,29 +6020,31 @@ impl ControlledRuntimeBuilder {
         self
     }
 
-    /// Allows tests to intercept and complete effect type `E`.
+    /// Lets a test inspect requests and supply results for effect type `E`.
+    ///
+    /// Use [`ControlledRuntime::next_effect`] and [`ControlledRuntime::complete`].
+    /// No live driver runs. See [`ControlledRuntime`] for a complete example.
     pub fn control_effect<E: EffectDescriptor>(mut self) -> Self {
         self.bindings.effects.insert(TypeId::of::<E>());
         self
     }
 
-    /// Allows tests to inject events for world-facing source type `S`.
+    /// Lets a test supply events for source type `S`.
     ///
-    /// For a composed [`Framed`] source, register and inject the underlying
-    /// source type so the decoder remains part of the program under test.
+    /// For a [`Framed`] source, register the wrapped input type, so the decoder stays
+    /// part of the test. Supply events with [`ControlledRuntime::emit_source`].
+    /// See [`StdinLines`] for a complete example.
     pub fn control_source<S: SourceDescriptor>(mut self) -> Self {
         self.bindings.sources.insert(TypeId::of::<S>());
         self
     }
 
-    /// Creates a paused deterministic runtime with the declared controls.
+    /// Checks test controls and returns a runtime ready to drive.
     ///
-    /// Every Effect and Source capability declared by the Program must have
-    /// exactly one applicable controlled behavior, including dependencies not
-    /// visible in the initial Commands or Subscriptions. Missing, ambiguous,
-    /// foreign, or type-incompatible controls return an error before the
-    /// runtime is created. Initial work carrying a foreign Program capability
-    /// is rejected at the same boundary.
+    /// Every declared effect and source needs one matching control, even if unused
+    /// at startup. Missing, conflicting, foreign, or incompatible controls return an
+    /// error, as do foreign capabilities in startup work. Call
+    /// [`ControlledRuntime::run_until_idle`] to process startup work.
     pub fn build(self) -> Result<ControlledRuntime, RuntimeError> {
         self.bindings.validate(&self.program)?;
         for component in &self.program.components {
@@ -5239,248 +6056,292 @@ impl ControlledRuntimeBuilder {
     }
 }
 
-/// Typed effect claimed before any live world interaction occurs.
+/// An effect taken by a test and awaiting its supplied result.
 ///
-/// This token must be returned to [`ControlledRuntime::complete`] on the same
-/// runtime or the effect remains pending until controlled cancellation.
+/// Inspect `intent`, then pass the whole value to [`ControlledRuntime::complete`]
+/// on the same runtime. Dropping it does not cancel or complete the effect.
+/// See [`ControlledRuntime`] for a complete example.
 #[must_use = "a PendingEffect remains outstanding until completed or cancelled"]
 pub struct PendingEffect<E: EffectDescriptor> {
-    /// Original effect intent emitted by the Component transition.
+    /// The effect arguments to inspect before supplying a result.
     pub intent: E,
     id: u64,
     program: Arc<()>,
 }
 
-/// Snapshot of semantic obligations owned by a controlled runtime.
+/// Counts of ready work and work waiting for time or input.
+///
+/// Returned by [`ControlledRuntime::pending_work`]. Inspecting these counts does
+/// not process work.
+///
+/// ```
+/// use samara::{Program, ControlledRuntime};
+/// let mut runtime = ControlledRuntime::builder(Program::builder().build()?).build()?;
+/// runtime.run_until_idle()?;
+/// let work = runtime.pending_work();
+/// assert_eq!(work.pending_now, 0);
+/// assert_eq!(work.pending_later, 0);
+/// runtime.cancel()?;
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PendingWork {
-    /// Accepted Component Messages and due timers ready to run.
+    /// Messages, source events, and due timers ready to run.
     pub pending_now: usize,
-    /// Effects, future timers, active Sources, and outstanding Requests.
+    /// Effects, future timers, active inputs, and requests awaiting replies.
     pub pending_later: usize,
 }
 
-/// Work summary returned by one controlled-runtime drive operation.
+/// The number of updates processed and work left after driving a controlled runtime.
+///
+/// Returned by methods such as [`ControlledRuntime::run_until_idle`] and
+/// [`ControlledRuntime::advance`]. See their examples for driving the runtime.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RunReport {
-    /// Component transitions committed by this drive operation.
+    /// The number of component updates processed.
     pub transitions: usize,
     /// Work still immediately runnable when the operation stopped.
     pub pending_now: usize,
-    /// Work waiting for controlled input or a later logical instant.
+    /// Work waiting for input or a later time.
     pub pending_later: usize,
 }
 
-/// Runtime-controlled logical instant used by controlled scheduling and trace.
+/// Time elapsed on a controlled runtime's clock.
+///
+/// Time advances only when the test asks it to. Trace records use this value;
+/// [`Self::as_duration`] returns the elapsed duration. See [`ControlledRuntime::advance`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct LogicalTime(Duration);
 
 impl LogicalTime {
-    /// Returns the elapsed duration from the controlled runtime's origin.
+    /// Returns the time elapsed since the controlled runtime started.
     pub fn as_duration(self) -> Duration {
         self.0
     }
 }
 
-/// Identity of one in-memory controlled trace record.
+/// Identifies one event within a controlled run's trace.
+///
+/// Use it to follow [`TraceRecord::cause`] links. IDs are repeatable for identical
+/// controlled runs, but are not global identifiers. See [`TraceRecord`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TraceId(u64);
 
 impl TraceId {
-    /// Returns the deterministic run-local numeric identity.
+    /// Returns the numeric ID within this run.
     pub fn get(self) -> u64 {
         self.0
     }
 }
 
-/// Common envelope for one structural controlled semantic event.
+/// One recorded event with its test-clock time and the event that caused it.
+///
+/// Initialization and test inputs have no `cause`; other events point to their
+/// immediate cause by [`TraceId`]. The event payload describes what happened
+/// without copying application data.
+///
+/// ```
+/// use samara::TraceRecord;
+/// fn caused_by(records: &[TraceRecord], event: &TraceRecord) -> Option<TraceRecord> {
+///     let cause = event.cause?;
+///     records.iter().find(|record| record.id == cause).cloned()
+/// }
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TraceRecord {
-    /// Run-local record identity.
+    /// This event's ID within the run.
     pub id: TraceId,
-    /// Logical instant at which the event occurred.
+    /// The test clock's time when the event occurred.
     pub at: LogicalTime,
-    /// Immediate causal parent; absent only for initialization and harness-input roots.
+    /// The event that caused this one; `None` for initialization and test inputs.
     pub cause: Option<TraceId>,
-    /// Structural semantic event.
+    /// What happened.
     pub event: TraceEvent,
 }
 
-/// Finite-work kind recorded without copying application payloads.
+/// The kind of command recorded by [`TraceEvent::CommandEmitted`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TraceCommandKind {
-    /// A terminal EffectDescriptor was requested.
+    /// An effect was requested.
     Effect,
-    /// A direct Component Message delivery was requested.
+    /// A message was sent to another component.
     Send,
-    /// A one-way Protocol notification was requested.
+    /// A notification was sent through a port.
     Notify,
-    /// A correlated Protocol Request was issued.
+    /// A request was sent through a port.
     Request,
-    /// A provider emitted a correlated Reply.
+    /// A provider replied to a request.
     Reply,
-    /// A Message was scheduled against logical time.
+    /// A message was scheduled for later.
     Timer,
 }
 
-/// Source-maintenance decision committed after a Component transition.
+/// How Samara updated a subscription after a component update.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SubscriptionAction {
-    /// A newly desired Source realization started.
+    /// A new input was started.
     Started,
-    /// The same capability and an equal descriptor retained the Source and
-    /// adopted the latest mapper.
+    /// The input stayed active with the same capability and configuration, using
+    /// the newest event mapper.
     Retained,
-    /// A changed capability or descriptor withdrew one generation and started
+    /// Changed configuration or capability stopped the previous input and started
     /// another.
     Replaced,
-    /// Removed desire cancelled the active Source.
+    /// Removing the subscription stopped the input.
     Cancelled,
 }
 
-/// Structural terminal shape of one effect completion.
+/// Whether an effect succeeded, failed, or was cancelled, without its result data.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EffectOutcomeKind {
     /// The effect succeeded.
     Succeeded,
-    /// The effect failed with typed Error data.
+    /// The effect failed.
     Failed,
-    /// Runtime ownership cancelled the effect.
+    /// The supplied effect result was cancellation.
     Cancelled,
 }
 
-/// Structural terminal shape of a runtime-settled request.
+/// Whether a request received a reply or timed out, without its reply data.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RequestOutcomeKind {
     /// A reply was accepted before any configured deadline.
     Replied,
-    /// The runtime-owned deadline expired.
+    /// The request timed out.
     TimedOut,
 }
 
-/// Always-collected structural semantic event from controlled execution.
+/// An event recorded during controlled execution.
 ///
-/// The trace records concrete Rust types, targets, lifecycle, time, and
-/// causation without copying descriptor or Message payloads.
+/// Records component updates, commands, source changes, results, and errors.
+/// [`TraceRecord`] adds a timestamp and causal link. Payloads contain type names
+/// and IDs rather than copies of messages or effect arguments.
+///
+/// ```
+/// use samara::{TraceEvent, TraceRecord};
+/// fn updates(records: &[TraceRecord]) -> usize {
+///     records.iter().filter(|record| matches!(record.event, TraceEvent::Transition { .. })).count()
+/// }
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TraceEvent {
-    /// Parentless initialization root for one Component.
+    /// A component was initialized.
     Initialization {
-        /// Component entering the controlled Program.
+        /// The component being initialized.
         component: ComponentId,
     },
-    /// Parentless controlled Message input accepted from the harness.
+    /// A test queued a message for a component.
     ControlledMessageInput {
-        /// Target Component.
+        /// The receiving component.
         component: ComponentId,
-        /// Diagnostic Rust Message type name.
+        /// The message's Rust type name.
         message_type: &'static str,
     },
-    /// Parentless controlled terminal Source input accepted from the harness.
+    /// A test supplied a source event.
     ControlledSourceInput {
-        /// Component owning the Source.
+        /// The component subscribed to the input.
         component: ComponentId,
-        /// Stable Component-local Subscription identity.
+        /// The subscription name within the component.
         subscription: SubscriptionId,
-        /// Terminal descriptor type reached after SourcePlan lowering.
+        /// The underlying input descriptor type, before decoding.
         source_descriptor_type: &'static str,
-        /// Structural input event shape.
+        /// Whether the input was an item, error, or EOF.
         event: SourceEventKind,
     },
-    /// A Component committed one message transition.
+    /// A component processed a message.
     Transition {
-        /// Component that owned the transition.
+        /// The component that handled the message.
         component: ComponentId,
-        /// Diagnostic Rust type name of the delivered message.
+        /// The message's Rust type name.
         message_type: &'static str,
     },
-    /// One flattened Command occurrence emitted by a transition or initialization.
+    /// A command was issued at startup, by an update, or by an effect Layer.
     CommandEmitted {
-        /// Component that owns the Command.
+        /// The component that requested the work.
         component: ComponentId,
-        /// Structural finite-work category.
+        /// The kind of command.
         kind: TraceCommandKind,
-        /// Concrete descriptor, operation, reply, or Message type when applicable.
+        /// The descriptor, request, notification, reply, or message type.
         detail_type: &'static str,
-        /// Direct target Component, if this Command uses one.
+        /// The destination component, if addressed directly.
         target_component: Option<ComponentId>,
-        /// Named target Port, if this Command uses one.
+        /// The destination port, if used.
         target_port: Option<PortId>,
     },
-    /// Post-transition Subscription reconciliation decision.
+    /// Samara compared a component's subscriptions with its active inputs.
     SubscriptionLifecycle {
-        /// Component owning the Subscription.
+        /// The component requesting the subscription.
         component: ComponentId,
-        /// Stable Component-local Subscription identity.
+        /// The subscription name within the component.
         subscription: SubscriptionId,
-        /// Complete desired SourceDescriptor type.
+        /// The subscribed descriptor type, including decoder wrappers.
         source_descriptor_type: &'static str,
-        /// Lifecycle action selected by reconciliation.
+        /// Whether the input was started, kept, replaced, or stopped.
         action: SubscriptionAction,
     },
-    /// One event emerged from the ordered SourcePlan Layers.
+    /// An input event passed through its decoders to the subscription mapper.
     SourceEventMapped {
-        /// Component owning the Source.
+        /// The component subscribed to the input.
         component: ComponentId,
-        /// Stable Component-local Subscription identity.
+        /// The subscription name within the component.
         subscription: SubscriptionId,
-        /// Complete composed descriptor type presented to the mapper.
+        /// The subscribed descriptor type, including decoder wrappers.
         source_descriptor_type: &'static str,
-        /// Structural outer event shape.
+        /// Whether the mapped event was an item, error, or EOF.
         event: SourceEventKind,
     },
-    /// Old-generation Source work was rejected before a transition began.
+    /// An event or message from a replaced or removed input was discarded.
     StaleSourceWorkDropped {
-        /// Component that would have received the work.
+        /// The component that would have received it.
         component: ComponentId,
-        /// Stable Component-local Subscription identity.
+        /// The subscription name within the component.
         subscription: SubscriptionId,
-        /// Whether the stale occurrence was an event or an already-mapped Message.
+        /// `true` for an already-mapped message; `false` for an input event.
         mapped_message: bool,
     },
-    /// One scripted terminal effect outcome was accepted.
+    /// A test supplied an effect result.
     EffectOutcome {
-        /// Command occurrence whose pending effect this input resolves.
+        /// The command that requested this effect.
         effect: TraceId,
-        /// Component that requested the effect.
+        /// The component that requested the effect.
         component: ComponentId,
-        /// Concrete EffectDescriptor type.
+        /// The effect descriptor type.
         effect_type: &'static str,
-        /// Structural terminal outcome shape.
+        /// The kind of result, without its data.
         outcome: EffectOutcomeKind,
     },
-    /// One correlated Request settled with a reply or timeout.
+    /// A request received a reply or timed out.
     RequestOutcome {
-        /// Requesting Component.
+        /// The requesting component.
         component: ComponentId,
-        /// Concrete Reply type.
+        /// The reply's Rust type name.
         reply_type: &'static str,
-        /// Structural terminal outcome shape.
+        /// The kind of result, without its data.
         outcome: RequestOutcomeKind,
     },
-    /// An expired request's reply was discarded without another outcome.
+    /// A reply arrived after timeout and was ignored.
     LateReplyDropped {
-        /// Component emitting the late Reply.
+        /// The provider that sent the late reply.
         component: ComponentId,
-        /// Concrete Reply type.
+        /// The reply's Rust type name.
         reply_type: &'static str,
     },
-    /// A due logical timer released its Message.
+    /// A timer became due and queued its message.
     TimerFired {
-        /// Component receiving the scheduled Message.
+        /// The component receiving the message.
         component: ComponentId,
-        /// Diagnostic Rust Message type.
+        /// The message's Rust type name.
         message_type: &'static str,
     },
-    /// A terminal boundary or runtime invariant faulted the controlled run.
+    /// Execution stopped with a runtime error.
     RuntimeFault {
-        /// Component whose work encountered the fault.
+        /// The component whose work failed.
         component: ComponentId,
-        /// Command or lifecycle trace occurrence that faulted.
+        /// The command or subscription event that failed.
         work: TraceId,
-        /// Concrete terminal descriptor type when applicable.
+        /// The effect or source descriptor type, if applicable.
         descriptor_type: &'static str,
-        /// Topology-neutral diagnostic explanation.
+        /// The diagnostic message.
         reason: Arc<str>,
     },
 }
