@@ -87,10 +87,15 @@ async fn second_request_replaces_the_first_during_in_flight_period() -> Result<(
     assert_eq!(second.intent.url(), "https://wikipedia.com/");
     assert!(runtime.next_effect::<HttpRequest>().is_err());
 
-    // Before either response, only the two debounce messages should be printed.
-    for _ in 0..2 {
+    // Before either response, each selection prints its debounce and start messages.
+    for expected in [
+        "Waiting 500ms before checking...\n",
+        "Checking https://google.com/\n",
+        "Waiting 500ms before checking...\n",
+        "Checking https://wikipedia.com/\n",
+    ] {
         let output = runtime.next_effect::<PrintStdout>()?;
-        assert!(output.intent.as_str().contains("Waiting"));
+        assert_eq!(output.intent.as_str(), expected);
         runtime.complete(output, EffectOutcome::Succeeded(()))?;
     }
     runtime.run_until_idle()?;
@@ -121,7 +126,7 @@ async fn second_request_replaces_the_first_during_in_flight_period() -> Result<(
         _ => panic!("B should have a completed HTTP result"),
     };
     let output = runtime.next_effect::<PrintStdout>()?;
-    assert_eq!(output.intent.as_str(), "200 OK\n");
+    assert_eq!(output.intent.as_str(), "https://wikipedia.com/: 200 OK\n");
     runtime.complete(output, EffectOutcome::Succeeded(()))?;
     runtime.run_until_idle()?;
     assert!(runtime.next_effect::<PrintStdout>().is_err());

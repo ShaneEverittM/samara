@@ -213,11 +213,13 @@ impl Component for Checker {
                     url: Arc::clone(&url),
                     revision,
                 };
-                request.into_command_with(&self.http, move |r| Message::CheckFinished {
+                let log = println!(&self.stdout, "Checking {}", url);
+                let request = request.into_command_with(&self.http, move |r| Message::CheckFinished {
                     url,
                     revision,
                     outcome: r,
-                })
+                });
+                Command::batch([log, request])
             }
 
             Message::CheckFinished {
@@ -239,12 +241,13 @@ impl Component for Checker {
                 };
                 *model = Status::Finished {
                     revision,
-                    url,
+                    url: Arc::clone(&url),
                     result: result.clone(),
                 };
                 println!(
                     &self.stdout,
-                    "{}",
+                    "{}: {}",
+                    url,
                     result
                         .map(|it| it.to_string())
                         .unwrap_or("cancelled".into())
