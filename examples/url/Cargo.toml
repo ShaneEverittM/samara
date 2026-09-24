@@ -1,0 +1,13 @@
+[package]
+name = "urlchecker"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+chrono = { version = "0.4.45", features = ["serde"] }
+samara = { path = "../.." }
+serde = { version = "1.0.229", features = ["derive"] }
+thiserror = "2.0.19"
+tokio = { version = "1.45.1", features = ["macros", "rt-multi-thread", "signal"] }
+url = "2.5.8"
