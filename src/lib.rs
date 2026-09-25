@@ -5407,6 +5407,14 @@ impl<C: Component> ComponentHandle<C> {
 /// }
 /// ```
 ///
+/// ```compile_fail
+/// use samara::{ControlledRuntime, Port, Protocol};
+///
+/// fn controlled_port_handle<P: Protocol>(runtime: &ControlledRuntime, port: &Port<P>) {
+///     let _ = runtime.port_handle(port);
+/// }
+/// ```
+///
 /// </details>
 pub struct PortHandle<P: Protocol> {
     port: Port<P>,

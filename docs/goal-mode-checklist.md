@@ -1,6 +1,6 @@
 # Samara Goal-Mode Checklist
 
-- Status: Phase 6 implementation complete; audit ready
+- Status: Phase 6 accepted; Phase 7 authorized
 - Purpose: Track bounded implementation phases and their human audit gates.
 
 ## Working Rule
@@ -108,7 +108,8 @@ Audit packet: [Phase 5 Controlled Execution](audits/phase-5-controlled-execution
   characterize load, backpressure, cancellation, and faults through
   runtime-scoped Sources and Drivers.
 - [x] Run both reference Components unchanged in live and controlled profiles.
-- [ ] Audit observable parity and any incidental topology assumptions.
+- [x] Audit observable parity and any incidental topology assumptions.
+- [x] Shane accepts the Phase 6 audit and authorizes Phase 7.
 
 Audit packet: [Phase 6 Live Tokio Runtime](audits/phase-6-live-tokio-runtime.md).
 
@@ -132,6 +133,6 @@ or are not implementable as written, stop and present evidence. Complete only
 when the phase checks pass and an audit summary is ready for review.
 ```
 
-Shane accepted ADR-0004 and authorized Phase 6 implementation. The
-implementation and reference-profile runs are complete; Shane's Phase 6 audit
-and acceptance remain open.
+Shane accepted the Phase 6 audit on September 22, 2026, after the acceptance
+matrix was reconciled so that every Active scenario cites executable evidence.
+Phase 7 is authorized.

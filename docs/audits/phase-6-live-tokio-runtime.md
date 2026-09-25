@@ -1,6 +1,6 @@
 # Phase 6 Audit: Live Tokio Runtime
 
-- Status: Implementation complete; ready for Shane's audit
+- Status: Accepted by Shane on September 22, 2026
 - Date: July 23, 2026
 - Governing phase: `docs/goal-mode-checklist.md`, Phase 6
 - Governing decisions: ADR-0002, ADR-0003, and ADR-0004
@@ -260,5 +260,10 @@ Review these in order:
     shares one Component/program factory and differs only in runtime decisions
     and terminal-world bindings.
 
-Shane's manual audit and Phase 6 acceptance remain open. Do not advance to
-Phase 7 until he accepts this packet.
+Shane accepted this packet on September 22, 2026, and authorized Phase 7.
+Before acceptance, the
+[acceptance matrix](../testing/v0-acceptance-matrix.md) was reconciled so that
+every Active scenario, including the ADR-0006 Port-ingress set, cites an
+executable test or rustdoc compile-fail example. The one scenario without prior
+evidence, `PortHandle` having no ControlledRuntime counterpart, gained a
+compile-fail example.

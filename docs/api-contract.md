@@ -1,7 +1,7 @@
 # Samara v0 Milestone API Contract
 
-- Status: Phase 6 live-runtime implementation complete; ADR-0008
-  closed-capability and ADR-0009 stdin contracts accepted for implementation
+- Status: Phase 6 accepted; ADR-0005 through ADR-0012 contracts accepted and
+  implemented
 - Date: July 25, 2026
 - Scope: Change-controlled public API slices for staged implementation
 
@@ -71,17 +71,12 @@ container, task, queue, lock, or scheduling topology used to implement them.
 
 ## Compile-Checked Candidate Slices
 
-The following public shapes remain in the root crate so the three reference
-applications continue to exercise the intended end state. They are
-change-controlled design candidates, but their implementation phases must
-activate and audit their acceptance tranche before freezing them:
-
-- Phase 6: live Drivers, first-party Tokio bridges, live ingress, runtime scope,
-  and structured shutdown (implemented, pending phase-audit acceptance).
-
-The reference examples are normative about the application shape they show.
-Their live and controlled tests are implementation evidence, but the Phase 6
-slice becomes frozen only when Shane accepts its audit.
+No implementation-phase candidate slice remains open. Shane accepted the Phase 6
+audit on September 22, 2026, freezing live Drivers, first-party Tokio bridges,
+live ingress, runtime scope, and structured shutdown as described under
+[Accepted for Phase 6](#accepted-for-phase-6-initial-live-runtime). The
+reference examples remain normative about the application shape they show, and
+their live and controlled tests remain regression evidence.
 
 ## Frozen for Phase 4: Declarative Work Kernel
 
@@ -127,8 +122,8 @@ contract gate by adopting `bytes::Bytes` for first-party TCP chunks and
 requiring explicit pure Decoder finalization before a Framed Source reports
 normal ending. The Phase 6 implementation now spells that operation
 `Decoder::finish` and exercises the profile-independent Layer behavior directly;
-the same Layer is retained by both runtime profiles. The spelling remains
-pending phase-audit acceptance.
+the same Layer is retained by both runtime profiles. The accepted Phase 6
+audit freezes that spelling.
 
 ## Accepted for Phase 5: Controlled Execution
 
@@ -166,7 +161,7 @@ at its audit.
 ## Accepted for Phase 6: Initial Live Runtime
 
 [ADR-0004](adr/0004-initial-live-runtime-semantics.md) governs the accepted,
-bounded live-runtime slice now implemented and ready for Phase 6 audit.
+bounded live-runtime slice, implemented and accepted with the Phase 6 audit.
 
 The ADR specifies:
 
@@ -556,9 +551,9 @@ accidental promises made by a placeholder type or variant:
   beyond whole-scope termination.
 - Automatic Source restart, retry, restartable or shared channel bridges, and
   Driver fault isolation or recovery.
-- Exact `Decoder` finalization method spelling and first-party bridge
-  module/type names, provided implementation preserves ADR-0004's accepted
-  observable EOF and bridge semantics.
+- First-party bridge module/type names, provided implementation preserves
+  ADR-0004's accepted observable EOF and bridge semantics. The accepted Phase 6
+  audit froze the `Decoder::finish` spelling.
 
 Before an implementation phase reaches one of these surfaces, its acceptance
 contract must either settle the question or explicitly keep the behavior out of

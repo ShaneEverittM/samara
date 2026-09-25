@@ -748,6 +748,6 @@ The following questions remain intentionally open:
 - Request failure, abandonment, delegation, and in-band cancellation beyond
   [ADR-0011](adr/0011-request-timeouts.md)'s opt-in timeouts and ADR-0006's
   live-host whole-scope closure diagnostic.
-- Exact Decoder-finalization method spelling and first-party module/type naming, provided
-  ADR-0004's accepted observable EOF and `bytes` semantics are preserved.
+- First-party module/type naming, provided ADR-0004's accepted observable EOF and
+  `bytes` semantics are preserved.
 - The shape and release timing of reusable conformance harnesses.

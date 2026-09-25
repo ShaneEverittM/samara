@@ -9,12 +9,11 @@ Samara is a framework for building asynchronous applications in Rust.
 ## Status
 
 Samara's Phase 2 executable contract, Phase 3 Component kernel, Phase 4
-declarative-work kernel, and Phase 5 controlled runtime are accepted. The
-bounded Phase 6 live Tokio runtime is implemented and ready for its manual
-audit. Controlled programs retain deterministic causal traces and logical time;
-live programs now interpret the same typed Commands and Sources through
-structured Drivers, one-shot Tokio `mpsc` bindings, and a narrow TCP byte
-Source under ADR-0004. Phase 6 is not closed until its audit is accepted.
+declarative-work kernel, Phase 5 controlled runtime, and Phase 6 live Tokio
+runtime are accepted. Controlled programs retain deterministic causal traces
+and logical time; live programs interpret the same typed Commands and Sources
+through structured Drivers and first-party HTTP, stdio, stdin, TCP, and Tokio
+`mpsc` boundaries. Phase 7, conformance and release readiness, is next.
 
 The earlier Actor proof of concept remains available in Git history at commit
 `8408509`, but it is not a compatibility target for the new runtime.
