@@ -266,8 +266,9 @@ apply downstream policy only after a complete line has been acquired.
 
 Process stdin is one concrete resource, not an implementation that can realize
 arbitrarily many independent descriptors. Unix live assembly therefore uses
-`bind_stdin(&capability)` to name one exact capability whose terminal
-descriptor is `StdinLines`. The capability may expose `StdinLines` directly or
+`bind_stdin()` to discover the sole declared capability whose terminal
+descriptor is `StdinLines` and bind it exactly. Zero or multiple matching
+declarations fail live build. The capability may expose `StdinLines` directly or
 place built-in Layers such as `Framed<StdinLines, D>` above it. A second
 binding fails assembly, and concurrent realization faults instead of racing,
 load-balancing, or broadcasting lines. First-party bindings in separate

@@ -460,9 +460,10 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
 - Read or UTF-8 failure terminates the Source with `Failed` after any earlier
   complete valid lines and is not followed by `Ended`. The v0 descriptor has
   no line-length limit.
-- On Unix, `bind_stdin(&capability)` is an exact live binding for one capability
-  whose terminal descriptor is `StdinLines`. Direct and built-in composed
-  capabilities such as `Framed<StdinLines, D>` use the same terminal binding.
+- On Unix, `bind_stdin()` discovers and exactly binds the sole declared
+  capability whose terminal descriptor is `StdinLines`; zero or multiple
+  matches fail build. Direct and built-in composed capabilities such as
+  `Framed<StdinLines, D>` use the same terminal binding.
   A runtime accepts only one stdin binding even for distinct capabilities, and
   bindings in separate live runtimes share the process-wide active lease. A
   second concurrent realization faults rather than sharing or broadcasting

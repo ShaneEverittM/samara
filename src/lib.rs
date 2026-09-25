@@ -450,19 +450,6 @@ pub trait StreamSourceDescriptor: SourceDescriptor + stream_source_private::Seal
     type StreamItem: Send + 'static;
 }
 
-mod stdin_source_private {
-    pub trait Sealed {}
-}
-
-/// Type-level evidence that a source descriptor lowers to [`StdinLines`].
-///
-/// This trait is sealed and used only by Samara's exact stdin binding. An
-/// application may bind either `StdinLines` directly or a built-in composition
-/// such as `Framed<StdinLines, D>` without exposing the terminal descriptor
-/// separately.
-#[doc(hidden)]
-pub trait StdinSourceDescriptor: SourceDescriptor + stdin_source_private::Sealed {}
-
 #[derive(Clone)]
 pub(crate) struct CapabilityToken {
     id: u64,
@@ -2665,15 +2652,15 @@ impl<T: Send + 'static> StreamSourceDescriptor for StreamDescriptor<T> {
 ///     }
 /// }
 ///
-/// fn program() -> Result<(Program, ComponentRef<Reader>, SourceCapability<StdinLines>), ProgramBuildError> {
+/// fn program() -> Result<(Program, ComponentRef<Reader>), ProgramBuildError> {
 ///     let mut builder = Program::builder();
 ///     let input = builder.source::<StdinLines>();
-///     let reader = builder.component(ComponentId::new("reader"), Reader { input: input.clone() });
-///     Ok((builder.build()?, reader, input))
+///     let reader = builder.component(ComponentId::new("reader"), Reader { input });
+///     Ok((builder.build()?, reader))
 /// }
 ///
 /// // Test input without reading the terminal.
-/// let (program_under_test, reader, _) = program()?;
+/// let (program_under_test, reader) = program()?;
 /// let mut test = ControlledRuntime::builder(program_under_test)
 ///     .control_source::<StdinLines>().build()?;
 /// test.run_until_idle()?; // Starts the subscription.
@@ -2690,8 +2677,8 @@ impl<T: Send + 'static> StreamSourceDescriptor for StreamDescriptor<T> {
 /// // Bind the same component to process stdin on Unix.
 /// #[cfg(unix)]
 /// {
-///     let (program, _, input) = program()?;
-///     let live = LiveRuntime::builder(program).bind_stdin(&input).build()?;
+///     let (program, _) = program()?;
+///     let live = LiveRuntime::builder(program).bind_stdin().build()?;
 ///     // Call live.spawn() inside Tokio to start reading; see RuntimeTask for shutdown.
 /// }
 /// # Ok::<(), Box<dyn std::error::Error>>(())
@@ -2713,10 +2700,6 @@ impl SourceDescriptor for StdinLines {
     type Item = String;
     type Error = StdinError;
 }
-
-impl stdin_source_private::Sealed for StdinLines {}
-
-impl StdinSourceDescriptor for StdinLines {}
 
 /// The reason reading [`StdinLines`] stopped.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3876,20 +3859,6 @@ where
     D: Decoder,
 {
     type StreamItem = S::StreamItem;
-}
-
-impl<S, D> stdin_source_private::Sealed for Framed<S, D>
-where
-    S: StdinSourceDescriptor<Item = D::Chunk>,
-    D: Decoder,
-{
-}
-
-impl<S, D> StdinSourceDescriptor for Framed<S, D>
-where
-    S: StdinSourceDescriptor<Item = D::Chunk>,
-    D: Decoder,
-{
 }
 
 impl<S, D> ErasedSourceLayer for FramedLayer<S, D>
@@ -5204,9 +5173,11 @@ impl LiveRuntimeBuilder {
         self
     }
 
-    /// Connects a source capability to process standard input on Unix.
+    /// Connects the Program's declared stdin source to process standard input on Unix.
     ///
-    /// Accepts [`StdinLines`] or a [`Framed`] source wrapping it. Only one active
+    /// [`Self::build`] finds the sole capability for [`StdinLines`] or a [`Framed`]
+    /// source wrapping it. No matching capability, multiple matches, repeated calls,
+    /// or a conflicting source driver return a build error. Only one active
     /// subscription may read stdin across all runtimes; a competing reader faults
     /// the runtime. Do not also read stdin outside Samara.
     ///
@@ -5214,11 +5185,8 @@ impl LiveRuntimeBuilder {
     /// for another byte. A later subscription resumes at stdin's current position.
     /// See [`StdinLines`] for a complete example.
     #[cfg(unix)]
-    pub fn bind_stdin<S>(mut self, stdin: &SourceCapability<S>) -> Self
-    where
-        S: StdinSourceDescriptor,
-    {
-        live_runtime::bind_stdin(&mut self.bindings, stdin);
+    pub fn bind_stdin(mut self) -> Self {
+        live_runtime::bind_stdin(&mut self.bindings);
         self
     }
 
@@ -5303,7 +5271,7 @@ impl LiveRuntimeBuilder {
     /// unused at startup. Missing, duplicate, conflicting, or foreign bindings return
     /// an error, as do foreign capabilities in startup commands and subscriptions.
     /// Call [`LiveRuntime::spawn`] to begin work.
-    pub fn build(self) -> Result<LiveRuntime, RuntimeError> {
+    pub fn build(mut self) -> Result<LiveRuntime, RuntimeError> {
         self.bindings.validate(&self.program)?;
         for component in &self.program.components {
             component.validate_initial_capabilities(&self.program)?;

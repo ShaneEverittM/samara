@@ -326,7 +326,7 @@ async fn main() -> Result<()> {
         // ...and a built-in stdio effect driver...
         .bind_stdio()
         // ...and binding the declared command Source to process stdin.
-        .bind_stdin(&cli_input)
+        .bind_stdin()
         // ...and build it, similar to program finding configuration errors.
         .build()?;
 

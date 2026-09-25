@@ -4,6 +4,7 @@
 - Date: July 25, 2026
 - Deciders: Samara maintainers
 - Scope: First-party interactive standard-input ingress for live and controlled execution
+- Amended: September 24, 2026 — discover the stdin capability during live build
 
 ## Context
 
@@ -45,7 +46,7 @@ Subscription::source_with(
 )
 
 let runtime = LiveRuntime::builder(program)
-    .bind_stdin(&stdin)
+    .bind_stdin()
     .build()?;
 ```
 
@@ -72,8 +73,18 @@ after each complete line has been acquired.
 
 ### Exact live binding and uniqueness
 
-`LiveRuntimeBuilder::bind_stdin(&capability)` binds the process resource to one
-exact Program-issued capability whose terminal descriptor is `StdinLines`.
+`LiveRuntimeBuilder::bind_stdin()` requests binding process stdin to the
+Program's sole declared capability whose terminal descriptor is `StdinLines`.
+`build()` discovers that capability and creates the same exact binding used
+by the reader. Zero or multiple matching declarations fail build, including
+unused declarations and mixtures of raw and composed stdin capabilities.
+Repeated `bind_stdin()` calls and conflicts with a type-wide stdin Driver also
+fail build. Registration and build do not acquire or read process stdin.
+
+This replaces the capability argument: the single-resource rule already
+forbids multiple choices, so applications need not expose their input capability
+just for host binding. Unlike type-wide HTTP binding, this does not authorize
+several independent stdin capabilities or introduce broadcast behavior.
 The application-visible capability may be `SourceCapability<StdinLines>` or a
 built-in composition such as `SourceCapability<Framed<StdinLines, D>>`; the
 terminal binding still sees lines before the pure Layers run. The method is
@@ -146,7 +157,9 @@ order.
 
 ## Failure Modes
 
-- Missing, foreign, duplicate, or ambiguous stdin bindings fail live build.
+- Missing bindings, zero or multiple stdin declarations with `bind_stdin()`,
+  and duplicate or conflicting stdin bindings fail live build. Discovery uses
+  only the runtime's own Program; no foreign binding argument is accepted.
 - A second concurrent realization of the stdin capability faults the runtime.
 - Read and UTF-8 failures become one typed terminal Source failure.
 - Private readiness, cancellation-channel, and reader-thread failures fault
@@ -164,14 +177,19 @@ order.
   final unterminated-line delivery, invalid UTF-8 failure, and EOF ordering.
 - A live cancellation test proves an idle reader is interrupted and joined
   without requiring another input byte.
-- Duplicate, foreign, missing, concurrent-realization, and sequential
-  reactivation cases behave at the stated boundary.
+- Missing bindings, zero/multiple declarations, duplicate requests, type-wide
+  conflicts, concurrent realization, and sequential reactivation behave at the
+  stated boundary. Raw and composed capabilities use the same discovery rule.
 - A composed capability whose terminal descriptor is `StdinLines` uses the
   same exact binding.
 - The real application example contains no stdin thread or mpsc binding and
   uses `StdinLines` unchanged in its Component logic.
 
 ## Rollback
+
+To revert automatic selection, restore the explicit capability argument and
+pass it through application assembly. Exact ownership, controlled execution,
+ordering, cancellation, and reader cleanup are unchanged by this amendment.
 
 Remove `StdinLines`, its error types, the exact live binding, and its tests;
 restore the example's explicit host adapter. No Component Model, Message,

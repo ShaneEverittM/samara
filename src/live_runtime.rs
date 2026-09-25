@@ -54,7 +54,7 @@ use crate::{
     TraceId,
 };
 #[cfg(unix)]
-use crate::{StdinError, StdinLines, StdinSourceDescriptor};
+use crate::{StdinError, StdinLines};
 
 type ErasedValue = Box<dyn Any + Send>;
 type ErasedMessageMapper =
@@ -939,6 +939,8 @@ impl SourceDriver<TcpBytes> for TokioTcpDriver {
 pub(crate) struct LiveBindings {
     effects: Vec<Arc<dyn ErasedEffectBinding>>,
     sources: Vec<Arc<dyn ErasedSourceBinding>>,
+    #[cfg(unix)]
+    stdin_requests: u8,
 }
 
 impl LiveBindings {
@@ -946,6 +948,8 @@ impl LiveBindings {
         Self {
             effects: Vec::new(),
             sources: Vec::new(),
+            #[cfg(unix)]
+            stdin_requests: 0,
         }
     }
 
@@ -985,14 +989,35 @@ impl LiveBindings {
     }
 
     #[cfg(unix)]
-    pub(crate) fn bind_stdin<S>(&mut self, capability: &SourceCapability<S>)
-    where
-        S: StdinSourceDescriptor,
-    {
+    pub(crate) fn bind_stdin(&mut self) {
+        self.stdin_requests = self.stdin_requests.saturating_add(1);
+    }
+
+    #[cfg(unix)]
+    fn resolve_stdin(&mut self, program: &Program) -> Result<(), RuntimeError> {
+        match self.stdin_requests {
+            0 => return Ok(()),
+            1 => {}
+            _ => return Err(RuntimeError::harness("duplicate live stdin binding")),
+        }
+        let mut candidates = program
+            .source_requirements
+            .iter()
+            .filter(|requirement| requirement.terminal_type == TypeId::of::<StdinLines>());
+        let capability = candidates.next().ok_or_else(|| {
+            RuntimeError::harness("bind_stdin() has no declared stdin capability")
+        })?;
+        if candidates.next().is_some() {
+            return Err(RuntimeError::harness(
+                "bind_stdin() has multiple declared stdin capabilities; expected exactly one",
+            ));
+        }
         self.sources.push(Arc::new(StdinBinding {
             capability: capability.token.clone(),
             active: process_stdin_lease(),
         }));
+        self.stdin_requests = 0;
+        Ok(())
     }
 
     pub(crate) fn bind_tcp(&mut self) {
@@ -1008,7 +1033,10 @@ impl LiveBindings {
         self.bind_effect::<PrintStderr, _>(TokioPrintStderrDriver::new());
     }
 
-    pub(crate) fn validate(&self, program: &Program) -> Result<(), RuntimeError> {
+    pub(crate) fn validate(&mut self, program: &Program) -> Result<(), RuntimeError> {
+        #[cfg(unix)]
+        self.resolve_stdin(program)?;
+
         let mut effect_types = HashSet::new();
         for binding in &self.effects {
             if !effect_types.insert(binding.descriptor_type()) {
@@ -2844,13 +2872,10 @@ pub(crate) fn bind_mpsc<S>(
     bindings.bind_mpsc(capability, receiver);
 }
 
-/// Creates the first-party exact process-standard-input binding.
+/// Requests the first-party stdin binding, resolved during live build.
 #[cfg(unix)]
-pub(crate) fn bind_stdin<S>(bindings: &mut LiveBindings, capability: &SourceCapability<S>)
-where
-    S: StdinSourceDescriptor,
-{
-    bindings.bind_stdin(capability);
+pub(crate) fn bind_stdin(bindings: &mut LiveBindings) {
+    bindings.bind_stdin();
 }
 
 /// Registers the first-party Tokio TCP terminal Driver.

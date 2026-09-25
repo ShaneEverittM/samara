@@ -2,7 +2,7 @@ use super::*;
 use anyhow::Result;
 
 fn fixture() -> Result<(ControlledRuntime, ComponentRef<Checker>)> {
-    let (program, checker, _) = assemble()?;
+    let (program, checker) = assemble()?;
     let runtime = ControlledRuntime::builder(program)
         .control_effect::<PrintStdout>()
         .control_effect::<PrintStderr>()

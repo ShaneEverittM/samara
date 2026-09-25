@@ -328,8 +328,9 @@ longer the flow exercised by this example.
 The expanded application gives command interpretation to a `Cli` Component.
 It declares `SourceCapability<StdinLines>`, reasserts that descriptor under a
 stable Subscription identity, and maps each `SourceEvent` into its private
-Message type. Live Unix assembly binds the exact capability with
-`bind_stdin(&cli_input)`; controlled tests inject the same line, failure, and
+Message type. Live Unix assembly discovers and binds the exact capability with
+`bind_stdin()` (simplified from an explicit argument in the September 24
+ADR-0009 amendment); controlled tests inject the same line, failure, and
 EOF vocabulary through the ordinary typed Source boundary. The host no longer
 owns an mpsc channel, forwarding thread, or input framing policy, and still
 does not decide what `print` or `time` means.

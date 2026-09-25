@@ -384,9 +384,10 @@ failure is not followed by `Ended`. The initial descriptor has no line-length
 limit. Bounded or byte-oriented acquisition therefore requires another
 terminal descriptor; a Layer above `StdinLines` sees only complete lines.
 
-On Unix, `LiveRuntimeBuilder::bind_stdin(&capability)` binds process stdin to
-one exact capability whose terminal descriptor is `StdinLines`. The capability
-may be direct or a built-in composition such as
+On Unix, `LiveRuntimeBuilder::bind_stdin()` discovers the sole declared
+capability whose terminal descriptor is `StdinLines` and binds process stdin
+to that exact capability. Zero or multiple matching declarations fail build.
+The capability may be direct or a built-in composition such as
 `SourceCapability<Framed<StdinLines, D>>`. A live runtime may contain only one
 such binding, even for distinct capability values, and a second concurrent
 realization faults rather than racing for lines or inventing broadcast
@@ -513,7 +514,7 @@ exact Source capability through `bind_mpsc(&capability, receiver)` and
 operations select that same exact capability. These exact APIs also accept a
 composed capability such as `SourceCapability<Framed<StreamDescriptor<T>, D>>`;
 raw items and ending enter at the terminal stream and traverse the declared
-Layers. ADR-0009's Unix `bind_stdin(&capability)` is another exact live
+Layers. ADR-0009's Unix `bind_stdin()` is another exact live
 binding, but it is unique across the process-input descriptor type rather than
 one of several independently bindable receivers.
 

@@ -194,35 +194,30 @@ fn live_stdin_binding_is_exact_and_required() {
     let (program, _probe, _stdin) = stdin_program();
     assert!(LiveRuntime::builder(program).build().is_err());
 
-    let (program, _probe, stdin) = stdin_program();
-    assert!(
-        LiveRuntime::builder(program)
-            .bind_stdin(&stdin)
-            .build()
-            .is_ok()
-    );
-
     let (program, _probe, _stdin) = stdin_program();
-    let mut foreign = Program::builder();
-    let foreign_stdin = foreign.source::<StdinLines>();
-    assert!(
-        LiveRuntime::builder(program)
-            .bind_stdin(&foreign_stdin)
-            .build()
-            .is_err()
-    );
+    assert!(LiveRuntime::builder(program).bind_stdin().build().is_ok());
+
+    let program = Program::builder().build().expect("empty program");
+    let error = LiveRuntime::builder(program)
+        .bind_stdin()
+        .build()
+        .err()
+        .expect("stdin binding requires a declared input");
+    assert!(error.to_string().contains("no declared stdin capability"));
 }
 
 #[cfg(unix)]
 #[test]
 fn live_stdin_binding_accepts_a_composed_capability() {
     let mut builder = Program::builder();
-    let stdin = builder.source::<Framed<StdinLines, LineLength>>();
+    let _stdin = builder.source::<Framed<StdinLines, LineLength>>();
+    let _tcp = builder.source::<TcpBytes>();
     let program = builder.build().expect("valid composed stdin program");
 
     assert!(
         LiveRuntime::builder(program)
-            .bind_stdin(&stdin)
+            .bind_stdin()
+            .bind_tcp()
             .build()
             .is_ok()
     );
@@ -231,35 +226,59 @@ fn live_stdin_binding_accepts_a_composed_capability() {
 #[cfg(unix)]
 #[test]
 fn live_stdin_rejects_duplicate_or_competing_process_bindings() {
-    let (program, _probe, stdin) = stdin_program();
+    let (program, _probe, _stdin) = stdin_program();
     assert!(
         LiveRuntime::builder(program)
-            .bind_stdin(&stdin)
-            .bind_stdin(&stdin)
+            .bind_stdin()
+            .bind_stdin()
             .build()
             .is_err()
     );
 
     let mut builder = Program::builder();
-    let first = builder.source::<StdinLines>();
+    let _first = builder.source::<StdinLines>();
     let _second = builder.source::<StdinLines>();
     let program = builder.build().expect("two declarations are valid");
+    let error = LiveRuntime::builder(program)
+        .bind_stdin()
+        .build()
+        .err()
+        .expect("two stdin declarations are ambiguous even without subscriptions");
     assert!(
-        LiveRuntime::builder(program)
-            .bind_stdin(&first)
-            .build()
-            .is_err()
+        error
+            .to_string()
+            .contains("multiple declared stdin capabilities")
     );
 
     let mut builder = Program::builder();
-    let first = builder.source::<StdinLines>();
-    let second = builder.source::<StdinLines>();
+    let _first = builder.source::<StdinLines>();
+    let _second = builder.source::<Framed<StdinLines, LineLength>>();
     let program = builder.build().expect("two declarations are valid");
-    assert!(
-        LiveRuntime::builder(program)
-            .bind_stdin(&first)
-            .bind_stdin(&second)
-            .build()
-            .is_err()
-    );
+    assert!(LiveRuntime::builder(program).bind_stdin().build().is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn live_stdin_rejects_a_conflicting_type_wide_driver_in_either_order() {
+    struct UnusedStdinDriver;
+    impl SourceDriver<StdinLines> for UnusedStdinDriver {
+        fn run(&self, _: StdinLines, _: SourceSink<StdinLines>) -> BoxFuture<()> {
+            panic!("build must not run a source driver");
+        }
+    }
+
+    for stdin_first in [false, true] {
+        let (program, _, _) = stdin_program();
+        let builder = LiveRuntime::builder(program);
+        let builder = if stdin_first {
+            builder
+                .bind_stdin()
+                .bind_source::<StdinLines, _>(UnusedStdinDriver)
+        } else {
+            builder
+                .bind_source::<StdinLines, _>(UnusedStdinDriver)
+                .bind_stdin()
+        };
+        assert!(builder.build().is_err());
+    }
 }

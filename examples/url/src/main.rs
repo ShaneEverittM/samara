@@ -2,12 +2,12 @@ use samara::{LiveRuntime, Shutdown};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let (program, input) = urlchecker::program()?;
+    let program = urlchecker::program()?;
 
     let runtime = LiveRuntime::builder(program)
         .bind_http()
         .bind_stdio()
-        .bind_stdin(&input)
+        .bind_stdin()
         .build()?;
 
     let mut task = runtime.spawn();

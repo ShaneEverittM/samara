@@ -255,28 +255,27 @@ impl Component for Checker {
     }
 }
 
-/// Assembles the URL checker and returns its stdin capability for host binding.
+/// Assembles the URL checker for live or controlled execution.
 ///
 /// ```
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// let (program, input) = urlchecker::program()?;
+/// let program = urlchecker::program()?;
 /// let runtime = samara::LiveRuntime::builder(program)
 ///     .bind_http()
 ///     .bind_stdio()
-///     .bind_stdin(&input)
+///     .bind_stdin()
 ///     .build()?;
 /// // Inside Tokio, call runtime.spawn() and use its RuntimeTask for shutdown.
 /// # Ok(())
 /// # }
 /// ```
-pub fn program() -> Result<(Program, SourceCapability<StdinLines>), ProgramBuildError> {
-    let (program, _, input) = assemble()?;
-    Ok((program, input))
+pub fn program() -> Result<Program, ProgramBuildError> {
+    let (program, _) = assemble()?;
+    Ok(program)
 }
 
 // Tests retain the component reference without exposing it to library consumers.
-fn assemble()
--> Result<(Program, ComponentRef<Checker>, SourceCapability<StdinLines>), ProgramBuildError> {
+fn assemble() -> Result<(Program, ComponentRef<Checker>), ProgramBuildError> {
     let mut builder = Program::builder();
 
     let http = builder.effect::<HttpRequest>();
@@ -287,14 +286,14 @@ fn assemble()
     let checker = builder.component(
         ComponentId::new("Url Checker"),
         Checker {
-            input: input.clone(),
+            input,
             stdout,
             stderr,
             http,
         },
     );
 
-    Ok((builder.build()?, checker, input))
+    Ok((builder.build()?, checker))
 }
 
 #[cfg(test)]

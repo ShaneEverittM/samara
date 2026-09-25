@@ -171,7 +171,8 @@ that was not valid UTF-8.
 Either failure produces `SourceEvent::Failed` without a later `Ended`.
 
 **stdin live binding / `bind_stdin`** — The Unix-only first-party exact binding
-of process stdin to one capability whose terminal descriptor is `StdinLines`.
+of process stdin to the sole declared capability whose terminal descriptor is
+`StdinLines`, discovered during build. Zero or multiple matches fail build.
 The capability may be direct or place built-in Layers above that terminal
 descriptor. One live runtime has at most one such binding, and first-party
 bindings across runtimes share one process-wide active lease. Each realization
@@ -388,7 +389,7 @@ duplicate activation or reactivation after consumption or cancellation faults
 explicitly rather than implying a recreated receiver.
 
 `StdinLines` directly names the intrinsic line-oriented intent, so it needs no
-`Descriptor` suffix. Unix `bind_stdin(&capability)` names the unique live
+`Descriptor` suffix. Unix `bind_stdin()` names the unique live
 process resource. It removes CRLF or LF framing, preserves empty lines, emits a
 final unterminated line before clean EOF, and reports read or UTF-8 failure as
 typed Source Error data. Private readiness, cancellation, and reader-thread
