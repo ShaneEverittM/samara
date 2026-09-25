@@ -5,6 +5,7 @@ an ADR before implementation. Shutdown escalation is complete under
 [ADR-0010](../adr/0010-shutdown-escalation.md).
 
 Teaching principles for the future guide live in [User Guide Notes](user-guide-notes.md).
+Related research: [Lessons from TypeScript Effect](effect-ts-research.md).
 
 - **Request lifecycles:** Opt-in timeouts and harmless late replies are complete
   under [ADR-0011](../adr/0011-request-timeouts.md). Explicit per-request
