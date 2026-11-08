@@ -613,13 +613,11 @@ update(&self, Model, Message) -> (Model, Commands<Message>)
   either order for independent completions and compares causal partial order,
   not controlled trace-vector order.
 - Internal topology may change without an ADR when these observable semantics remain unchanged.
-- See `docs/architecture/topology-options.md`,
-  `docs/adr/0002-runtime-topology-and-ordering.md`, and
+- See `docs/adr/0002-runtime-topology-and-ordering.md` and
   `docs/adr/0003-controlled-execution-semantics.md`. Accepted live behavior is
   in
   `docs/adr/0004-initial-live-runtime-semantics.md`; closed capability assembly
   is in `docs/adr/0008-closed-program-capabilities.md`.
 
 ## Related Design Sketches
-- Thin-slice API comparison and PoC shape: `docs/architecture/thin-slice-value.md`.
 - Effect mechanism/policy split: `docs/architecture/effects-layering.md`.

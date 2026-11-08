@@ -36,16 +36,9 @@ Teaching principles for the future guide live in [User Guide Notes](user-guide-n
 Open items from writing the application by hand; these are exploratory proposals,
 not accepted API decisions or a review of the unfinished application.
 
-- [x] **Example-led rustdoc:** Make Source construction discoverable without
-  navigating several types. Show a small, complete path from declaring a Program
-  capability, storing it on a Component, and returning a Subscription to binding
-  its live implementation. Include the controlled equivalent and handling for
-  `SourceEvent::Item`, `Ended`, and `Failed`. Link the recipe from the relevant
-  constructors and traits, and compile-check the examples as doctests. Completed
-  September 24, 2026 in [`src/lib.rs`](../../src/lib.rs): public API descriptions
-  now lead with caller behavior, with complete source wiring, request/reply,
-  HTTP, driver, shutdown, and controlled-test examples. Existing compile-fail
-  checks remain covered; no runtime behavior changed.
+- [x] **Example-led rustdoc.** Done September 24, 2026: public API docs in
+  `src/lib.rs` lead with caller behavior and carry complete, compile-checked
+  source, request/reply, HTTP, Driver, shutdown, and controlled-test examples.
 - [ ] **Explicit Subscription restart revision:** Explore a Model-owned revision
   that the Component can increment to request a fresh Source realization with
   unchanged configuration. Consider keeping the stable Subscription identity
@@ -123,63 +116,13 @@ a journal Component; exploratory proposals, not accepted API decisions.
   execution must supply, so write an ADR and matching live and controlled tests
   before implementation.
 
-- [x] **Library assembly via `install`:** `examples/pulse` assembles its journal
-  through `journal::install(&mut ProgramBuilder) -> Port<Journal>`. The module
-  declares its Component, Port, and capabilities, binds the Port, and exports
-  only the Port; the Component type, its `ComponentId`, and its capabilities
-  stay private. This is a working, runtime-free answer to the composable
-  Programs item above and should become the documented shape for library
-  Components. Three tensions came up while designing it:
-  - **Driver ownership.** `install` must not bind live Drivers. Assembly is
-    shared by live and controlled execution, and binding is an
-    execution-profile decision, so a Driver argument to `install` would tie it
-    to one profile. The caller therefore has to bind a Driver for every
-    capability `install` declared, and today learns which ones only from the
-    synchronous failure in `LiveRuntime::builder(program).build()`. That
-    backstop is correct but late and far from `install`.
-  - **Making requirements visible.** Candidate A returns a `#[must_use]` token
-    alongside the Port, with `live(runtime, drivers...)` and
-    `controlled(runtime)` methods that discharge it; requirements show in the
-    type and the binding is typed, but `let _ =` defeats the lint and the
-    builder stays the real guarantee. Candidate B puts the requirements in the
-    `install` signature as parameters, so they cannot be skipped. B needs two
-    things the runtime lacks: a `Binding<D>` abstraction implemented by live
-    Drivers and by a controlled marker, because controlled execution has no
-    Driver and must never run one; and a single builder that spans assembly
-    and binding, because `install` writes into `ProgramBuilder` while profile
-    builders only exist after `program.build()`. B would also revise the
-    earlier direction that live and controlled runtimes share no interface,
-    and it touches the two-stage validation in ADR-0008, so it needs an ADR.
-    Use A in `pulse`; its ergonomics are the evidence for whether B is worth
-    the staging change.
-  - **`install` as a Component trait member.** Consider an associated
-    function such as `fn install(program: &mut ProgramBuilder, config: Self::Config)
-    -> Self::Exports`, giving every Component one discoverable entry point and
-    enabling a `program.install::<Journal>(config)` helper. It must be an
-    associated function, not a method, because it constructs the Component
-    from capabilities the builder issues. Open questions: `Exports` must carry
-    the Port plus any binding requirements while keeping `ComponentRef` and
-    capabilities private, yet the url checker's tests wanted the
-    `ComponentRef` retained privately; identity must come through `Config`
-    for multiple instances; and a one-function-per-Component shape does not
-    cover a module that installs several cooperating Components, which is the
-    subprogram case the item above cares about. Decide whether the trait
-    member is the primitive and module-level `install` composes it, or whether
-    the free function stays the idiom and the trait only standardizes naming.
-  Gather evidence from `pulse` before choosing: how much `main` and the
-  controlled tests have to know about the journal's internals, whether the
-  token is ever discharged with `let _ =`, and whether a second installed
-  module repeats the same ceremony. Landed November 7, 2026 as the
-  `Subprogram` trait with profile-generic `Drivers` and
-  `with_subprogram` on both builders; see the
-  [Subprogram design note](subprogram-design.md). Requirements as `install`
-  parameters was considered and rejected because it would merge assembly and
-  binding into one builder and erase the Program/Runtime divide. Still open
-  from it: identity scoping through `Config`, and a Port-level
-  controlled ingress (`notify`/`request` on `ControlledRuntime` keyed by
-  `Port`, with replies observed through a token after `run_until_idle`) so a
-  Subprogram can be tested from outside its module; exporting a `ComponentRef`
-  does not work for that because it makes the Component type public.
+- [x] **Library assembly via `install`.** Landed November 7, 2026 as the
+  `Subprogram` trait, profile-generic `Drivers`, and
+  `with_subprogram(..).and_drivers(..)` on both builders; design, rejected
+  alternatives, and remaining open items are in the
+  [Subprogram design note](subprogram-design.md). Still open from it: identity
+  scoping through `Config`, and a Port-level controlled ingress so a
+  Subprogram can be tested from outside its module.
 
 - [ ] **No small-scale composition: `Command::map` and `Subscriptions::map`
   are missing.** The pulse journal raised the question of whether it should be

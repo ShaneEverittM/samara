@@ -5,8 +5,8 @@ Status: implemented November 7, 2026 as additive API (`RuntimeBuilder`,
 `ProgramBuilder::install`), with
 evidence in `tests/subprograms.rs`, the `Subprogram` rustdoc, and
 `examples/pulse`. The follow-on that moves drivers into `install`'s
-signature remains exploratory. Two findings from landing it are recorded under
-"What implementation taught" below.
+signature was considered and rejected; see "What remains open". Two findings
+from landing it are under "What implementation taught".
 Motivated by `examples/pulse` and the
 [install tension](framework-follow-ups.md#pulse-monitor-api-exercise--october-8-2026)
 recorded there.
@@ -49,162 +49,23 @@ The name `SubComponent` was considered and rejected. It reads as a child inside
 a parent Component's `update`, which is the nested-component model Samara does
 not use; Components are peers connected by Ports.
 
-## Sketch
+## Shape
 
-### `RuntimeBuilder`
+The authoritative description is the `Subprogram` rustdoc in `src/lib.rs`,
+with its full example and two compile-fail cases, and `tests/subprograms.rs`.
+In one paragraph: `RuntimeBuilder` is the profile-neutral binding surface
+shared by the live and controlled builders; its generic associated types make
+a live binding a boxed Driver and a controlled binding the `Controlled`
+marker. `Bindings<R>` is implemented once per drivers struct, generic over the
+profile. `Subprogram` has `Config`, `Exports`, and `Drivers<R>`, and an
+`install` associated function that declares into a `ProgramBuilder`;
+`ProgramBuilder::install` returns a `must_use` `Installed<S>` token carrying
+the exports. On either builder, `with_subprogram(token)` returns a
+`WithSubprogram` step whose only method, `and_drivers`, binds them and returns
+the builder. Implement `Subprogram` on the protocol type, not the Component.
+The pulse journal (`examples/pulse/src/journal.rs`) is the worked example.
 
-The one hard difference between profiles is that a live binding carries a
-Driver and a controlled binding carries nothing. A generic associated type
-holds that difference so a Subprogram can name a binding without naming the
-profile.
-
-```rust
-pub trait RuntimeBuilder: Sized {
-    type EffectBinding<D: EffectDescriptor>;
-    type SourceBinding<S: SourceDescriptor>;
-
-    fn bind_effect<D: EffectDescriptor>(self, binding: Self::EffectBinding<D>) -> Self;
-    fn bind_source<S: SourceDescriptor>(self, binding: Self::SourceBinding<S>) -> Self;
-
-    fn with_subprogram<S: Subprogram>(self, installed: Installed<S>) -> WithSubprogram<Self, S>;
-}
-
-#[must_use]
-pub struct WithSubprogram<B: RuntimeBuilder, S: Subprogram> { builder: B, .. }
-
-impl<B: RuntimeBuilder, S: Subprogram> WithSubprogram<B, S> {
-    pub fn and_drivers(self, drivers: S::Drivers<B>) -> B;
-}
-
-/// Marker binding: controlled execution supplies outcomes through the harness.
-pub struct Controlled;
-
-impl RuntimeBuilder for LiveRuntimeBuilder {
-    type EffectBinding<D: EffectDescriptor> = Box<dyn EffectDriver<D>>;
-    type SourceBinding<S: SourceDescriptor> = Box<dyn SourceDriver<S>>;
-    // Both methods delegate to the existing generic `bind_effect` / `bind_source`,
-    // which requires `impl EffectDriver<D> for Box<dyn EffectDriver<D>>`.
-}
-
-impl RuntimeBuilder for ControlledRuntimeBuilder {
-    type EffectBinding<D: EffectDescriptor> = Controlled;
-    type SourceBinding<S: SourceDescriptor> = Controlled;
-    // Both methods delegate to `control_effect` / `control_source`.
-}
-```
-
-`EffectDriver` and `SourceDriver` are already object-safe, so boxing costs one
-allocation per binding at startup. The existing generic `bind_effect` and
-`bind_source` remain for direct callers; the trait methods are a second path,
-not a replacement.
-
-### `Bindings`
-
-```rust
-pub trait Bindings<R: RuntimeBuilder> {
-    fn bind(self, runtime: R) -> R;
-}
-```
-
-A Subprogram implements this once for its drivers struct, generic over
-`R`. Live and controlled are then the same code path with different field
-types.
-
-### `Subprogram`
-
-```rust
-pub trait Subprogram {
-    type Config;
-    type Exports;
-    type Drivers<R: RuntimeBuilder>: Bindings<R>;
-
-    fn install(program: &mut ProgramBuilder, config: Self::Config) -> Self::Exports;
-}
-
-#[must_use]
-pub struct Installed<S: Subprogram> { exports: S::Exports, .. }
-
-impl<S: Subprogram> Installed<S> {
-    pub fn exports(&self) -> &S::Exports;
-}
-
-impl ProgramBuilder {
-    pub fn install<S: Subprogram>(&mut self, config: S::Config) -> Installed<S>;
-}
-```
-
-`install` on the trait is an associated function, not a method, because it constructs the
-Component from capabilities the builder issues. `Config` carries whatever the
-caller must supply at assembly, including identity when multiple instances are
-possible. `Exports` is what the caller may use afterward, normally a `Port`;
-`ComponentRef` and capabilities stay private unless deliberately exported.
-
-The trait is separate from `Component` and does not require the implementor to
-be one. Application-owned Components such as the pulse monitor never implement
-it, so they pay nothing. A module that installs several Components implements
-it on a marker type or on its protocol type.
-
-### Worked example: the pulse journal
-
-```rust
-pub struct JournalDrivers<R: RuntimeBuilder> {
-    pub append: R::EffectBinding<AppendLineToFile>,
-    pub clock: R::EffectBinding<GetTime>,
-}
-
-impl<R: RuntimeBuilder> Bindings<R> for JournalDrivers<R> {
-    fn bind(self, runtime: R) -> R {
-        runtime.bind_effect::<AppendLineToFile>(self.append).bind_effect::<GetTime>(self.clock)
-    }
-}
-
-impl JournalDrivers<ControlledRuntimeBuilder> {
-    pub fn controlled() -> Self { Self { append: Controlled, clock: Controlled } }
-}
-
-impl Subprogram for Journal {
-    type Config = ();
-    type Exports = Port<Journal>;
-    type Drivers<R: RuntimeBuilder> = JournalDrivers<R>;
-
-    fn install(program: &mut ProgramBuilder, _: ()) -> Port<Journal> {
-        let append = program.effect::<AppendLineToFile>();
-        let clock = program.effect::<GetTime>();
-        let port = program.port::<Journal>(PortId::new("pulse/journal"));
-        let component = program.component(
-            ComponentId::new("journal"),
-            Recorder { append, clock },
-        );
-        program.bind_port(&port, &component);
-        port
-    }
-}
-```
-
-```rust
-// Live host.
-let mut program = Program::builder();
-let journal = program.install::<Journal>(());
-// ... assemble the application's own Components against `journal.exports()` ...
-let runtime = LiveRuntime::builder(program.build()?)
-    .with_subprogram(journal)
-    .and_drivers(JournalDrivers {
-        append: Box::new(AppendLineWithTokio::new(path)),
-        clock: Box::new(GetTimeWithSystemClock),
-    })
-    .bind_http()
-    .bind_stdio()
-    .bind_stdin()
-    .build()?;
-
-// Controlled test.
-let runtime = ControlledRuntime::builder(program.build()?)
-    .with_subprogram(journal)
-    .and_drivers(JournalDrivers::default())
-    .build()?;
-```
-
-## What the sketch settles
+## What it settles
 
 - Drivers are named once, as a struct whose field names document them.
   No variadic generics are needed because the trait names one type per
@@ -246,7 +107,7 @@ let runtime = ControlledRuntime::builder(program.build()?)
   interface. The earlier direction that the two runtimes share no interface is
   narrowed, not reversed: execution stays separate.
 
-## What the sketch does not settle
+## What remains open
 
 - **Drivers are deliberately not parameters of `install`.** Making them
   so would need one builder that owns both assembly and binding, which
@@ -315,15 +176,9 @@ let runtime = ControlledRuntime::builder(program.build()?)
 - The glossary needs entries for Subprogram and Drivers, and the
   "Composable Programs / subprograms" follow-up should reference this note.
 
-## Acceptance evidence before implementation
+## Evidence
 
-- Library unit tests: `with_subprogram` on both builders binds every
-  requirement; a live build with a Subprogram installed and no
-  `with_subprogram` call fails with the descriptor type named; a controlled
-  build with `Drivers::default()` registers every descriptor.
-- `examples/pulse` as the first Subprogram, exercised live and in controlled
-  tests, with the journal's two Drivers bound only in `main`.
-- A compile-fail doctest showing that `JournalDrivers` cannot be passed
-  for a different Subprogram.
-- Rollback: delete the traits and the method; `install` reverts to a free
-  function and callers bind Drivers directly. No data or semantics to recover.
+`tests/subprograms.rs`, the `Subprogram` rustdoc examples, and the
+`examples/pulse` journal; cited in the acceptance matrix. Rollback is
+deleting the traits and types, after which callers assemble by hand and bind
+Drivers directly.
