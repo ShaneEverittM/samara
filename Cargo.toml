@@ -3,7 +3,7 @@ resolver = "3"
 members = [
     "examples/api_pressure",
     "examples/framed_socket",
-    "examples/minimal",
+    "examples/minimal", "examples/pulse",
     "examples/time", "examples/url",
 ]
 default-members = [

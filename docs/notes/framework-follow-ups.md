@@ -95,6 +95,82 @@ not accepted API decisions or a review of the unfinished application.
   This September 24 proposal is exploratory; settle construction, dependency
   boundaries, and conformance evidence before implementation.
 
+## Pulse Monitor API Exercise — October 8, 2026
+
+Open items from designing `examples/pulse`, a multi-target uptime monitor with
+a journal Component; exploratory proposals, not accepted API decisions.
+
+- [ ] **Time access beyond delayed delivery:** Logical time currently reaches
+  Components only through `Command::after`. That covers scheduling but not
+  observation: a Component cannot learn the current time to stamp a journal
+  entry, compute an age, or compare against a deadline without reading the wall
+  clock inside `update`, which the purity rule forbids. The workaround is an
+  application-defined `Now` effect with its own Driver, which is ceremony for
+  something every real application needs. Explore two first-party shapes and
+  decide which, or both, the runtime should own:
+  - A time provider effect: a built-in descriptor whose outcome carries the
+    current time, served by the runtime clock live and by the logical clock in
+    controlled execution. This keeps time a message like any other outcome.
+  - A time subscription: a `SourceDescriptor` that ticks at a declared interval
+    and carries the time of each tick, reconciled like other subscriptions.
+    This replaces hand-rolled `after` loops for periodic work and gives
+    controlled tests one place to advance time.
+  Either shape must keep `update` free of clocks, must be served from the same
+  logical clock that drives timers so observed time and scheduled time agree,
+  and must preserve deterministic controlled traces. Decide the representation
+  of time (monotonic runtime instant, wall-clock timestamp, or both) and how a
+  controlled test sets the epoch. Additive API, but it changes what controlled
+  execution must supply, so write an ADR and matching live and controlled tests
+  before implementation.
+
+- [ ] **Library assembly via `install`:** `examples/pulse` assembles its journal
+  through `journal::install(&mut ProgramBuilder) -> Port<Journal>`. The module
+  declares its Component, Port, and capabilities, binds the Port, and exports
+  only the Port; the Component type, its `ComponentId`, and its capabilities
+  stay private. This is a working, runtime-free answer to the composable
+  Programs item above and should become the documented shape for library
+  Components. Three tensions came up while designing it:
+  - **Driver ownership.** `install` must not bind live Drivers. Assembly is
+    shared by live and controlled execution, and binding is an
+    execution-profile decision, so a Driver argument to `install` would tie it
+    to one profile. The caller therefore has to bind a Driver for every
+    capability `install` declared, and today learns which ones only from the
+    synchronous failure in `LiveRuntime::builder(program).build()`. That
+    backstop is correct but late and far from `install`.
+  - **Making requirements visible.** Candidate A returns a `#[must_use]` token
+    alongside the Port, with `live(runtime, drivers...)` and
+    `controlled(runtime)` methods that discharge it; requirements show in the
+    type and the binding is typed, but `let _ =` defeats the lint and the
+    builder stays the real guarantee. Candidate B puts the requirements in the
+    `install` signature as parameters, so they cannot be skipped. B needs two
+    things the runtime lacks: a `Binding<D>` abstraction implemented by live
+    Drivers and by a controlled marker, because controlled execution has no
+    Driver and must never run one; and a single builder that spans assembly
+    and binding, because `install` writes into `ProgramBuilder` while profile
+    builders only exist after `program.build()`. B would also revise the
+    earlier direction that live and controlled runtimes share no interface,
+    and it touches the two-stage validation in ADR-0008, so it needs an ADR.
+    Use A in `pulse`; its ergonomics are the evidence for whether B is worth
+    the staging change.
+  - **`install` as a Component trait member.** Consider an associated
+    function such as `fn install(program: &mut ProgramBuilder, config: Self::Config)
+    -> Self::Exports`, giving every Component one discoverable entry point and
+    enabling a `program.install::<FsJournal>(config)` helper. It must be an
+    associated function, not a method, because it constructs the Component
+    from capabilities the builder issues. Open questions: `Exports` must carry
+    the Port plus any binding requirements while keeping `ComponentRef` and
+    capabilities private, yet the url checker's tests wanted the
+    `ComponentRef` retained privately; identity must come through `Config`
+    for multiple instances; and a one-function-per-Component shape does not
+    cover a module that installs several cooperating Components, which is the
+    subprogram case the item above cares about. Decide whether the trait
+    member is the primitive and module-level `install` composes it, or whether
+    the free function stays the idiom and the trait only standardizes naming.
+  Gather evidence from `pulse` before choosing: how much `main` and the
+  controlled tests have to know about the journal's internals, whether the
+  token is ever discharged with `let _ =`, and whether a second installed
+  module repeats the same ceremony.
+
 ## Component Completion and Supervision — Open Design Questions
 
 - **Completion rule:** Consider having `Command::stop(...)` declare that its
