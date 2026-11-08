@@ -123,7 +123,7 @@ a journal Component; exploratory proposals, not accepted API decisions.
   execution must supply, so write an ADR and matching live and controlled tests
   before implementation.
 
-- [ ] **Library assembly via `install`:** `examples/pulse` assembles its journal
+- [x] **Library assembly via `install`:** `examples/pulse` assembles its journal
   through `journal::install(&mut ProgramBuilder) -> Port<Journal>`. The module
   declares its Component, Port, and capabilities, binds the Port, and exports
   only the Port; the Component type, its `ComponentId`, and its capabilities
@@ -169,7 +169,44 @@ a journal Component; exploratory proposals, not accepted API decisions.
   Gather evidence from `pulse` before choosing: how much `main` and the
   controlled tests have to know about the journal's internals, whether the
   token is ever discharged with `let _ =`, and whether a second installed
-  module repeats the same ceremony.
+  module repeats the same ceremony. Landed November 7, 2026 as the
+  `Subprogram` trait with profile-generic `Drivers` and
+  `with_subprogram` on both builders; see the
+  [Subprogram design note](subprogram-design.md). Requirements as `install`
+  parameters was considered and rejected because it would merge assembly and
+  binding into one builder and erase the Program/Runtime divide. Still open
+  from it: identity scoping through `Config`, and a Port-level
+  controlled ingress (`notify`/`request` on `ControlledRuntime` keyed by
+  `Port`, with replies observed through a token after `run_until_idle`) so a
+  Subprogram can be tested from outside its module; exporting a `ComponentRef`
+  does not work for that because it makes the Component type public.
+
+- [ ] **No small-scale composition: `Command::map` and `Subscriptions::map`
+  are missing.** The pulse journal raised the question of whether it should be
+  a Subprogram (a peer Component with its own identity, serialization,
+  capabilities, and Port protocol) or an Elm-style sub-component (a pure
+  sub-reducer embedded in the parent's Model, called from the parent's
+  `update`, with its Commands lifted into the parent's Message). On the
+  merits the journal is roughly 60/40 toward Subprogram: it owns two effects
+  and a hold timer and would be reused by another application, but in pulse it
+  has one consumer, `history` is an in-process lookup dressed as
+  request/reply, and a transition costs an extra hop and a second trace
+  identity for one logical state change. The question could not be decided on
+  the merits because Samara offers only one shape. Nothing can lift a
+  `Command<Child>` into a `Command<Parent>` or a `Subscriptions<Child>` into a
+  `Subscriptions<Parent>`; the existing `map_*` methods are test inspectors.
+  Without the equivalent of Elm's `Cmd.map` and `Sub.map`, every reusable
+  piece of stateful logic, however small, must become a Component with a Port,
+  a `From` impl, and a protocol. That is a larger DX gap than the controlled
+  Port ingress above. Both are implementable: effect Commands already carry a
+  boxed outcome mapper, timers carry a Message, replies carry none, and
+  batches map elementwise; Subscriptions compose their event mappers the same
+  way. Specify how a lifted Command's trace attribution and the
+  pure-sub-reducer pattern (capabilities passed in by the parent, child state
+  inside the parent Model) are documented before implementation. Decision for
+  pulse, November 7, 2026: the journal stays a Subprogram, because it is the
+  test bed for that design and genuinely has its own effects and timer, not
+  because the sub-component shape was weighed and rejected.
 
 ## Component Completion and Supervision — Open Design Questions
 
