@@ -148,13 +148,13 @@ it on a marker type or on its protocol type.
 
 ```rust
 pub struct JournalDrivers<R: RuntimeBuilder> {
-    pub append: R::EffectBinding<AppendLine>,
-    pub clock: R::EffectBinding<Now>,
+    pub append: R::EffectBinding<AppendLineToFile>,
+    pub clock: R::EffectBinding<GetTime>,
 }
 
 impl<R: RuntimeBuilder> Bindings<R> for JournalDrivers<R> {
     fn bind(self, runtime: R) -> R {
-        runtime.bind_effect::<AppendLine>(self.append).bind_effect::<Now>(self.clock)
+        runtime.bind_effect::<AppendLineToFile>(self.append).bind_effect::<GetTime>(self.clock)
     }
 }
 
@@ -168,12 +168,12 @@ impl Subprogram for Journal {
     type Drivers<R: RuntimeBuilder> = JournalDrivers<R>;
 
     fn install(program: &mut ProgramBuilder, _: ()) -> Port<Journal> {
-        let append = program.effect::<AppendLine>();
-        let clock = program.effect::<Now>();
+        let append = program.effect::<AppendLineToFile>();
+        let clock = program.effect::<GetTime>();
         let port = program.port::<Journal>(PortId::new("pulse/journal"));
         let component = program.component(
-            ComponentId::new("fs-journal"),
-            FsJournal { append, clock },
+            ComponentId::new("journal"),
+            Recorder { append, clock },
         );
         program.bind_port(&port, &component);
         port
@@ -189,8 +189,8 @@ let journal = program.install::<Journal>(());
 let runtime = LiveRuntime::builder(program.build()?)
     .with_subprogram(journal)
     .and_drivers(JournalDrivers {
-        append: Box::new(FsAppend::new(path)),
-        clock: Box::new(SystemClock),
+        append: Box::new(AppendLineWithTokio::new(path)),
+        clock: Box::new(GetTimeWithSystemClock),
     })
     .bind_http()
     .bind_stdio()
@@ -276,8 +276,9 @@ let runtime = ControlledRuntime::builder(program.build()?)
 ## What implementation taught
 
 - **Implement `Subprogram` on the protocol type, not the Component.** The
-  first pulse wiring put `impl Subprogram for FsJournal`, which made
-  `FsJournal` a public name and failed to compile: `Component`'s associated
+  first pulse wiring implemented `Subprogram` on the Component (then named
+  `FsJournal`, since renamed `Recorder` because the filesystem lives in the
+  Driver), which made it a public name and failed to compile: `Component`'s associated
   `Model` and `Message` are part of its interface, so they would have to be
   public too. Implementing on `Journal`, the protocol type callers already
   hold, keeps the Component and its types private. The rustdoc example still

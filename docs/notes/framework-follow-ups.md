@@ -105,7 +105,7 @@ a journal Component; exploratory proposals, not accepted API decisions.
   observation: a Component cannot learn the current time to stamp a journal
   entry, compute an age, or compare against a deadline without reading the wall
   clock inside `update`, which the purity rule forbids. The workaround is an
-  application-defined `Now` effect with its own Driver, which is ceremony for
+  application-defined `GetTime` effect with its own Driver, which is ceremony for
   something every real application needs. Explore two first-party shapes and
   decide which, or both, the runtime should own:
   - A time provider effect: a built-in descriptor whose outcome carries the
@@ -155,7 +155,7 @@ a journal Component; exploratory proposals, not accepted API decisions.
   - **`install` as a Component trait member.** Consider an associated
     function such as `fn install(program: &mut ProgramBuilder, config: Self::Config)
     -> Self::Exports`, giving every Component one discoverable entry point and
-    enabling a `program.install::<FsJournal>(config)` helper. It must be an
+    enabling a `program.install::<Journal>(config)` helper. It must be an
     associated function, not a method, because it constructs the Component
     from capabilities the builder issues. Open questions: `Exports` must carry
     the Port plus any binding requirements while keeping `ComponentRef` and
@@ -207,6 +207,59 @@ a journal Component; exploratory proposals, not accepted API decisions.
   pulse, November 7, 2026: the journal stays a Subprogram, because it is the
   test bed for that design and genuinely has its own effects and timer, not
   because the sub-component shape was weighed and rejected.
+
+- [ ] **First-party filesystem effects, shaped by one principle: if a
+  sequence must fail together, it is one effect.** The effect boundary is the
+  atomicity boundary. Write-close-reopen patterns exist for atomicity, not for
+  the handle, so they become single finite effects with one outcome: `Append`,
+  `Replace` (temp file, fsync, rename), `Rotate`, `Read`. The Driver performs
+  the multi-step dance internally, as the HTTP Driver already does for a
+  request. There are no `Open` or `Close` effects; "write only while open" is
+  runtime state that outcomes delivered as later Messages cannot type-check,
+  and modelling it would only turn a race into a different race. The pulse
+  journal's hand-rolled `AppendLineToFile` (path inside the descriptor) is the
+  stopgap and the evidence. Design points:
+  - **Owned and Shared handles.** A file is a declared resource: an inert
+    handle token issued at assembly, bound to a path by the live builder, with
+    the Driver owning the open file and controlled execution seeing
+    `Append { handle, bytes }` intents only. An Owned handle is held by exactly
+    one Component, enforced at build like a Port bound exactly once; its
+    appends land in that Component's issue order. A Shared handle gives atomic
+    appends and per-Component order with no cross-Component order, matching
+    the existing rule for independent live events. Precedent for exact versus
+    type-wide binding: stdin is an exact source boundary.
+  - **Ordering prerequisite (ADR).** Today `LiveRuntime` calls a Driver's
+    `execute` inside the spawned effect task, so two effects issued back to
+    back may reach the Driver in either order. Calling `execute` on the
+    dispatch path in issue order and spawning the returned future would let a
+    Driver that enqueues synchronously preserve per-Component FIFO, while
+    Drivers that do not care (HTTP) stay concurrent. Ordering is therefore a
+    property of the sink that opts in, never a per-Component serialization of
+    all effects. This adds an observable promise to ADR-0002 and ADR-0004 and
+    must state that controlled `next_effect` order matches issue order.
+  - **Lifecycle.** Queued appends flush on Drain and drop on Cancel per
+    ADR-0010; I/O errors are `Failed` outcomes; reopening after an error is
+    Driver mechanism. Feature-gate the module like the other integrations.
+  - **Name the uses, because the capability model forces it.** Ambient
+    filesystems never ask which kind of file use a piece of code is; a closed
+    capability inventory does, at assembly, visibly. Five uses, not all of
+    them descriptors: a declared sink or store (handle token bound to a path
+    by the host, the journal); a declared working directory (the capability
+    is a root bound by the host, descriptors carry relative paths, which
+    covers most "I know a file exists" cases without granting the whole
+    filesystem); arbitrary paths (a file manager, and the inventory should
+    say so); a watched file (a Source); and temporary files inside one
+    operation (Driver-internal, not a capability). A sink is a root plus a
+    fixed name, so the handle and path families can share one bound-root
+    mechanism.
+  - **Sessions are a separate, larger concept.** A resource that is genuinely
+    stateful over time (a long-lived connection, a file kept open across
+    writes for a reason) wants a model-derived, reconciled, generation-carrying
+    resource that both produces events and accepts scoped effects, with stale
+    work failing as a typed outcome. Sources are the read-only half of that
+    concept; the Subscription restart revision item above and the read-only
+    `TcpBytes` are the same gap seen from two sides. Name it once rather than
+    designing it three times; not needed for files.
 
 ## Component Completion and Supervision — Open Design Questions
 
