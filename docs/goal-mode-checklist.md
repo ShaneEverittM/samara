@@ -58,7 +58,7 @@ Governing documents:
 - [x] Audit for missing semantics, topology leakage, and untestable promises.
 - [x] Shane accepts the Phase 2 audit and freezes the Component-kernel contract.
 
-Audit packet: [Phase 2 Executable Acceptance Contract](audits/phase-2-executable-acceptance-contract.md).
+Audit: [Phase 2 Executable Acceptance Contract](audits/README.md#phase-2-executable-acceptance-contract).
 
 ### 3. Component Kernel
 
@@ -67,7 +67,7 @@ Audit packet: [Phase 2 Executable Acceptance Contract](audits/phase-2-executable
 - [x] Audit the reference Components and public API before continuing.
 - [x] Shane accepts the Phase 3 audit and authorizes Phase 4.
 
-Audit packet: [Phase 3 Component Kernel](audits/phase-3-component-kernel.md).
+Audit: [Phase 3 Component Kernel](audits/README.md#phase-3-component-kernel).
 
 ### 4. Declarative Work Kernel
 
@@ -81,7 +81,7 @@ Audit packet: [Phase 3 Component Kernel](audits/phase-3-component-kernel.md).
   retention and replacement, and the separation between Layers and Drivers.
 - [x] Shane accepts the Phase 4 audit and authorizes Phase 5.
 
-Audit packet: [Phase 4 Declarative Work Kernel](audits/phase-4-declarative-work-kernel.md).
+Audit: [Phase 4 Declarative Work Kernel](audits/README.md#phase-4-declarative-work-kernel).
 
 ### 5. Controlled Execution
 
@@ -96,7 +96,7 @@ Audit packet: [Phase 4 Declarative Work Kernel](audits/phase-4-declarative-work-
   failure diagnostics, and proof that controlled execution never silently
   invokes a live Driver.
 
-Audit packet: [Phase 5 Controlled Execution](audits/phase-5-controlled-execution.md).
+Audit: [Phase 5 Controlled Execution](audits/README.md#phase-5-controlled-execution).
 
 ### 6. Live Tokio Runtime
 
@@ -111,7 +111,7 @@ Audit packet: [Phase 5 Controlled Execution](audits/phase-5-controlled-execution
 - [x] Audit observable parity and any incidental topology assumptions.
 - [x] Shane accepts the Phase 6 audit and authorizes Phase 7.
 
-Audit packet: [Phase 6 Live Tokio Runtime](audits/phase-6-live-tokio-runtime.md).
+Audit: [Phase 6 Live Tokio Runtime](audits/README.md#phase-6-live-tokio-runtime).
 
 ### 7. Conformance and Release Readiness
 
