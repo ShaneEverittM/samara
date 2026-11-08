@@ -26,7 +26,14 @@ impl InputEvent {
         match (words.next(), words.next(), words.next()) {
             (Some("url"), Some(url), None) => match Url::parse(url) {
                 Ok(url) => Self::Command(UrlCommand::Url(url)),
-                Err(_) => Self::Malformed(format!("Invalid URL: {}", url)),
+                Err(_) => {
+                    let url = String::from("https://") + url;
+                    if let Ok(url) = Url::parse(&url) {
+                        return Self::Command(UrlCommand::Url(url));
+                    }
+
+                    Self::Malformed(format!("Invalid URL: {}", url))
+                }
             },
             (Some("status"), None, None) => Self::Command(UrlCommand::Status),
             (Some("clear"), None, None) => Self::Command(UrlCommand::Clear),
@@ -140,7 +147,8 @@ impl Component for Checker {
                             revision: next,
                         };
 
-                        let log = println!(&self.stdout, "Waiting 500ms before checking...");
+                        let log =
+                            println!(&self.stdout, "Waiting {:?} before checking...", Self::DELAY);
                         let check = Command::after(
                             Self::DELAY,
                             Message::CheckDue {
