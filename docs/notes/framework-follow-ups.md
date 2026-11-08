@@ -47,6 +47,15 @@ Teaching principles for the future guide live in [User Guide Notes](user-guide-n
   hand-rolled `AppendLineToFile` is the next data point. Any shorthand must
   keep the descriptor, output, error, and live/controlled boundary visible.
 
+- **Deferred API areas, recorded so they are not forgotten:** a blessed escape
+  hatch and how it advertises weakened guarantees; named capability bundles and
+  capability identity inspection; a universal `Layer` trait or other general
+  profile-binding abstraction beyond type-wide Drivers and exact Source
+  capabilities; notification delivery-failure semantics; domain-payload trace
+  capture, typed trace projections, a public live observer, and durable trace
+  storage; exact shutdown diagnostic counts. Each was listed in the vision or
+  glossary before November 8, 2026 and now lives only here.
+
 ## URL Checker API Exercise — September 23, 2026
 
 Open items from writing the application by hand; these are exploratory proposals,
@@ -141,84 +150,26 @@ a journal Component; exploratory proposals, not accepted API decisions.
   Subprogram can be tested from outside its module.
 
 - [ ] **No small-scale composition: `Command::map` and `Subscriptions::map`
-  are missing.** The pulse journal raised the question of whether it should be
-  a Subprogram (a peer Component with its own identity, serialization,
-  capabilities, and Port protocol) or an Elm-style sub-component (a pure
-  sub-reducer embedded in the parent's Model, called from the parent's
-  `update`, with its Commands lifted into the parent's Message). On the
-  merits the journal is roughly 60/40 toward Subprogram: it owns two effects
-  and a hold timer and would be reused by another application, but in pulse it
-  has one consumer, `history` is an in-process lookup dressed as
-  request/reply, and a transition costs an extra hop and a second trace
-  identity for one logical state change. The question could not be decided on
-  the merits because Samara offers only one shape. Nothing can lift a
-  `Command<Child>` into a `Command<Parent>` or a `Subscriptions<Child>` into a
-  `Subscriptions<Parent>`; the existing `map_*` methods are test inspectors.
-  Without the equivalent of Elm's `Cmd.map` and `Sub.map`, every reusable
-  piece of stateful logic, however small, must become a Component with a Port,
-  a `From` impl, and a protocol. That is a larger DX gap than the controlled
-  Port ingress above. Both are implementable: effect Commands already carry a
-  boxed outcome mapper, timers carry a Message, replies carry none, and
-  batches map elementwise; Subscriptions compose their event mappers the same
-  way. Specify how a lifted Command's trace attribution and the
-  pure-sub-reducer pattern (capabilities passed in by the parent, child state
-  inside the parent Model) are documented before implementation. Decision for
-  pulse, November 7, 2026: the journal stays a Subprogram, because it is the
-  test bed for that design and genuinely has its own effects and timer, not
-  because the sub-component shape was weighed and rejected.
+  are missing.** Nothing lifts a `Command<Child>` into a `Command<Parent>` or
+  a `Subscriptions<Child>` into a `Subscriptions<Parent>`; the existing `map_*`
+  methods are test inspectors. Without Elm's `Cmd.map` and `Sub.map`, every
+  reusable piece of stateful logic, however small, must become a Component
+  with a Port, a `From` impl, and a protocol. The pulse journal raised it:
+  on the merits it is roughly 60/40 a Subprogram over an embedded
+  sub-reducer, but the question could not be decided because only one shape
+  exists. Both maps are implementable from what Commands already carry.
+  Specify trace attribution for a lifted Command and document the
+  pure-sub-reducer pattern before implementing. Decision for pulse, November
+  7, 2026: the journal stays a Subprogram as the test bed for that design,
+  not because the sub-component shape was weighed and rejected.
 
-- [ ] **First-party filesystem effects, shaped by one principle: if a
-  sequence must fail together, it is one effect.** The effect boundary is the
-  atomicity boundary. Write-close-reopen patterns exist for atomicity, not for
-  the handle, so they become single finite effects with one outcome: `Append`,
-  `Replace` (temp file, fsync, rename), `Rotate`, `Read`. The Driver performs
-  the multi-step dance internally, as the HTTP Driver already does for a
-  request. There are no `Open` or `Close` effects; "write only while open" is
-  runtime state that outcomes delivered as later Messages cannot type-check,
-  and modelling it would only turn a race into a different race. The pulse
-  journal's hand-rolled `AppendLineToFile` (path inside the descriptor) is the
-  stopgap and the evidence. Design points:
-  - **Owned and Shared handles.** A file is a declared resource: an inert
-    handle token issued at assembly, bound to a path by the live builder, with
-    the Driver owning the open file and controlled execution seeing
-    `Append { handle, bytes }` intents only. An Owned handle is held by exactly
-    one Component, enforced at build like a Port bound exactly once; its
-    appends land in that Component's issue order. A Shared handle gives atomic
-    appends and per-Component order with no cross-Component order, matching
-    the existing rule for independent live events. Precedent for exact versus
-    type-wide binding: stdin is an exact source boundary.
-  - **Ordering prerequisite (ADR).** Today `LiveRuntime` calls a Driver's
-    `execute` inside the spawned effect task, so two effects issued back to
-    back may reach the Driver in either order. Calling `execute` on the
-    dispatch path in issue order and spawning the returned future would let a
-    Driver that enqueues synchronously preserve per-Component FIFO, while
-    Drivers that do not care (HTTP) stay concurrent. Ordering is therefore a
-    property of the sink that opts in, never a per-Component serialization of
-    all effects. This adds an observable promise to ADR-0002 and ADR-0004 and
-    must state that controlled `next_effect` order matches issue order.
-  - **Lifecycle.** Queued appends flush on Drain and drop on Cancel per
-    ADR-0010; I/O errors are `Failed` outcomes; reopening after an error is
-    Driver mechanism. Feature-gate the module like the other integrations.
-  - **Name the uses, because the capability model forces it.** Ambient
-    filesystems never ask which kind of file use a piece of code is; a closed
-    capability inventory does, at assembly, visibly. Five uses, not all of
-    them descriptors: a declared sink or store (handle token bound to a path
-    by the host, the journal); a declared working directory (the capability
-    is a root bound by the host, descriptors carry relative paths, which
-    covers most "I know a file exists" cases without granting the whole
-    filesystem); arbitrary paths (a file manager, and the inventory should
-    say so); a watched file (a Source); and temporary files inside one
-    operation (Driver-internal, not a capability). A sink is a root plus a
-    fixed name, so the handle and path families can share one bound-root
-    mechanism.
-  - **Sessions are a separate, larger concept.** A resource that is genuinely
-    stateful over time (a long-lived connection, a file kept open across
-    writes for a reason) wants a model-derived, reconciled, generation-carrying
-    resource that both produces events and accepts scoped effects, with stale
-    work failing as a typed outcome. Sources are the read-only half of that
-    concept; the Subscription restart revision item above and the read-only
-    `TcpBytes` are the same gap seen from two sides. Name it once rather than
-    designing it three times; not needed for files.
+- [ ] **First-party filesystem effects.** Governing principle: if a sequence
+  must fail together, it is one effect. Owned and Shared handles, a bound root
+  for runtime-named files, the five file uses the capability model forces us
+  to name, the dispatch-order ADR prerequisite for ordered sinks, lifecycle
+  under Drain and Cancel, and sessions as a separate concept are all worked
+  through in the [filesystem design note](filesystem-design.md). The pulse
+  journal's hand-rolled `AppendLineToFile` is the stopgap and the evidence.
 
 ## Component Completion and Supervision — Open Design Questions
 

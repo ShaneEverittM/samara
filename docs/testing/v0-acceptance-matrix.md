@@ -43,6 +43,65 @@ executable test function or a rustdoc compile-fail example identified by the
 item it documents. Placeholder names from Phase 2 that were implemented under
 other names now cite those tests.
 
+## Scenario Definitions
+
+The vision states its requirements as these twelve topology-neutral scenarios.
+Each row of the traceability table below cites the evidence for one of them.
+
+- **V1 Repeatable Component Transition.** The same conforming Component
+  implementation, equivalent configuration, initial Model, and Message produce
+  equivalent next Model and Commands, and the transition receives no ambient
+  world capability. Command equivalence compares descriptors and the Messages
+  produced from equivalent controlled outcomes, not closure identity.
+- **V2 Isolated State Ownership.** Concurrent messages to one Component never
+  overlap its transitions, no external handle mutates its Model, and it
+  interacts with another Component only through declared Messages and
+  Protocols.
+- **V3 Interceptable Effect Descriptor.** Controlled execution can observe a
+  Command's typed descriptor, apply the same Layers, and supply an outcome
+  without a live Driver. A mapped outcome enters as a Message; a discarded one
+  is traced but schedules none. Both remain runtime-owned finite work.
+- **V4 Declarative Subscription Lifecycle.** A Source starts when its identity
+  is first desired, is retained while capability and descriptor are equal
+  (adopting the newest mapper without restarting), is replaced on change with
+  stale work discarded before it can begin another transition, and is cancelled
+  when no longer desired. A composed descriptor lowers through the same Layers
+  in both profiles. Events and failures enter as Messages. No automatic restart
+  is asserted.
+- **V5 Live and Controlled Program Parity.** One program assembles against live
+  and controlled bindings with no change to Components, Models, Messages,
+  Commands, descriptors, Subscriptions, Layers, codecs, Protocol logic, or
+  mappers.
+- **V6 Program-Wide Controlled Determinism.** The same program, controlled
+  world, inputs, seeds, and runtime semantics produce equivalent structural
+  traces (transitions, command kinds, descriptor types, subscriptions, outcomes,
+  causation, logical time) and equivalent final state across all Components.
+  Same final models after different traces are not equivalent runs.
+- **V7 Controlled Time Progression.** Explicit and automatic time advancement
+  each produce the trace their input schedule defines, without wall-clock
+  sleeping.
+- **V8 Causal Semantics Without Global Order.** A multi-Component scenario
+  preserves causal relationships and per-Component non-overlap without assuming
+  an order between independent live events or a runtime topology.
+- **V9 Structured Work Ownership.** The runtime can account for all work it
+  owns at every observation point, and ending the scope leaves no detached
+  work. Controlled cancellation and successful live shutdown report zero
+  pending obligations; Cancel and runtime fault never synthesize application
+  outcomes to announce termination.
+- **V10 Non-Influential Structural Semantic Trace.** Reading the controlled
+  trace has no feedback path into Components, and the trace explains
+  transitions, effects, subscriptions, Source lifecycle, time, and causation.
+- **V11 Shallow Tokio Onboarding.** A compiling example embeds one Component in
+  a normal Tokio application through first-party `mpsc` interop and reuses it
+  in a controlled test with no custom runtime, Layer, Driver, or
+  controlled-world code.
+- **V12 Closed Program Capability Assembly.** Assembly issues every reference,
+  Port, and capability before closing the Program; raw descriptors cannot build
+  Commands or Subscriptions; both profile builders reject missing, duplicate,
+  ambiguous, foreign, or type-incompatible bindings before execution, including
+  a dependency first used after a later Message; a hidden foreign capability
+  faults before terminal behavior rather than extending the Program.
+
 ## Vision Traceability
 
 | Vision requirement | Named scenarios | Current contract evidence | Activation |
