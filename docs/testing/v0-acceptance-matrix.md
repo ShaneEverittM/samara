@@ -77,6 +77,14 @@ The following evidence must pass before the Phase 2 audit:
 - Library unit tests validate the `protocol!` expansion for unit, tuple, and
   struct-like entries, including flattened struct notification variants and
   typed Request reply association.
+- `tests/subprograms.rs` validates `Subprogram`, `RuntimeBuilder`, `Bindings`,
+  and `Installed`: `ProgramBuilder::install` returns a token carrying the
+  exports, `with_subprogram(token).and_drivers(..)` binds every effect
+  and source requirement on the live builder and controls every one on the
+  controlled builder, and either builder fails synchronously when the
+  drivers are not bound. The `Subprogram` rustdoc compile-fail cases show
+  that one Subprogram's drivers cannot be passed for another and that a
+  chain which skips `and_drivers` has no builder to finish.
 - Rustdoc compile-fail cases validate that an arbitrary value cannot be passed
   as an EffectDescriptor, an async closure cannot replace a synchronous message
   mapper, raw descriptors cannot bypass Program-issued Effect/Source

@@ -678,6 +678,53 @@ cancellation. It does not retry, reconnect, frame, or interpret domain data.
 Those choices belong in Layers or Component logic where they remain visible
 and controllable.
 
+## How Does a Library Component Declare What It Needs?
+
+A reusable Component ships as a `Subprogram`. Its `install` declares the
+Component, its Port, and its Effect and Source capabilities into the caller's
+`ProgramBuilder`, and returns only what the caller may use, normally the Port.
+The Component type, its `ComponentId`, and its capabilities stay private.
+
+`install` binds no Drivers. Assembly is shared by live and controlled
+execution, binding is an execution-profile decision, and controlled execution
+must never run a live Driver. The Subprogram instead names its Drivers as
+a struct with one field per capability, typed through `RuntimeBuilder`'s
+associated bindings. A live host fills the fields with boxed Drivers; a
+controlled test fills them with `Controlled`. One `Bindings` implementation
+serves both. `ProgramBuilder::install` returns an `Installed<S>` token that
+holds the exports. On either builder, `with_subprogram(installed)` consumes
+the token and returns a step that holds the builder until
+`and_drivers(drivers)` supplies them and hands it back. The
+profile is the builder's own type, so the same struct literal is written
+for live and controlled hosts. Because the drivers type belongs to `S`
+and the token can only come from `install`, a mismatched struct is a compile
+error, drivers cannot be bound for a Subprogram that is not in the
+Program, and a chain that forgets `and_drivers` has no builder left to
+call `build()` on.
+The token is `must_use`, which warns when it is discarded outright but cannot
+warn when it is kept for its exports and never bound; that case still fails
+the builder's existing validation with the descriptor type named.
+
+Implement `Subprogram` on a marker or on the protocol type, not on the
+Component. `Component`'s associated `Model` and `Message` are part of its
+public interface, so a public Component forces them public too; the protocol
+type is already the public name callers hold.
+
+Controlled execution delivers messages and inspects state by `ComponentRef<C>`,
+not by Port, and exporting a `ComponentRef<C>` makes `C` public with the same
+leak. So a Subprogram's isolated controlled tests live inside its module, where
+its private types are reachable, exactly as the url checker's tests do.
+Application-level controlled tests reach the Subprogram through the Components
+that use its Port. A Port-level controlled ingress would let callers test a
+Subprogram they do not own and is tracked in the follow-ups.
+
+The gap between `install` and `and_drivers` is deliberate. A Program is
+profile-neutral and one assembly serves both builders, so binding cannot live
+in `install` without merging the two. The `Installed` token and the
+`WithSubprogram` step are the typed bridge across that gap, and `build()`
+names any descriptor left unbound. See the
+[Subprogram design note](notes/subprogram-design.md).
+
 ## What Does This Document Deliberately Not Settle?
 
 The Phase 2 API contract freezes the Component-kernel signatures and records

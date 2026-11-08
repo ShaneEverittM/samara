@@ -35,6 +35,31 @@ execution. The inventory is closed even though assembly does not introspect
 arbitrary Component fields or statically enumerate behavior-dependent message
 edges.
 
+**Subprogram** — A reusable assembly unit that installs its own Components,
+Ports, and capabilities into an enclosing Program through
+`ProgramBuilder::install`, exports what callers may use (normally a Port), and
+states its binding requirements as a type. It is subordinate to the Program,
+not to another Component; the Components it installs are ordinary peers
+reached through Ports. Usually one Component, but it may install several. Not
+a *SubComponent*: Samara has no parent-child `update` nesting. A Subprogram
+binds no Drivers; assembly is shared by both execution profiles.
+
+**Drivers (of a Subprogram)** — The struct naming what a Subprogram needs
+bound: one field per declared Effect or Source capability, typed through
+`RuntimeBuilder::EffectBinding` and `RuntimeBuilder::SourceBinding` so the same
+struct serves live and controlled execution. The name reads the same way in
+both profiles: a Driver is whatever services the effect, a live Driver in one
+and the controlled harness, named by the `Controlled` marker, in the other. A
+`Default` impl per profile lets a host accept the Subprogram's shipped Drivers
+with `Drivers::default()`; the controlled impl is always `Controlled` markers. Bound on either profile builder by passing the `must_use`
+`Installed` token from `ProgramBuilder::install` to `with_subprogram`, then
+supplying the struct to `and_drivers`, which returns the builder.
+
+**RuntimeBuilder** — The profile-neutral binding surface implemented by the
+live and controlled profile builders. A live binding is a boxed Driver; a
+controlled binding is the `Controlled` marker. Only binding is shared;
+spawning, stepping, and supplying outcomes stay profile-specific.
+
 **Program boundary** — The scope within which Samara's guarantees apply. Code
 outside this boundary is part of the surrounding world and interacts with the
 program through explicit adapters or ingress APIs.

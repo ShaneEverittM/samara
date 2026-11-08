@@ -107,19 +107,20 @@ pub use http::StatusCode;
 /// to distinguish them from Rust's immediate I/O macros.
 pub mod prelude {
     pub use crate::{
-        BoxFuture, CancelReason, Command, Component, ComponentHandle, ComponentId, ComponentRef,
-        ControlledRuntime, Decoder, DriverStopped, EffectCapability, EffectDescriptor,
-        EffectDriver, EffectInvocation, EffectOutcome, EffectOutcomeKind, Framed, FramedError,
-        FramedLayer, HttpError, HttpErrorKind, HttpJsonError, HttpRequest, HttpResponse,
-        HttpResponseError, HttpStatusError, Init, LiveRuntime, LogicalTime, Notification,
-        PendingEffect, PendingWork, Port, PortHandle, PortId, PrintStderr, PrintStdout, Program,
-        ProgramBuildError, ProgramBuilder, Protocol, ReplyTo, Request, RequestError,
-        RequestInvocation, RequestOutcome, RequestOutcomeKind, RunReport, RuntimeError,
-        RuntimeTask, Shutdown, ShutdownReport, SourceCapability, SourceDescriptor, SourceDriver,
-        SourceEvent, SourceEventKind, SourceSink, StatusCode, StdinError, StdinErrorKind,
-        StdinLines, StreamDescriptor, Subscription, SubscriptionAction, SubscriptionId,
-        Subscriptions, TcpBytes, TcpError, TcpErrorKind, TraceCommandKind, TraceEvent, TraceId,
-        TraceRecord, protocol,
+        Bindings, BoxFuture, CancelReason, Command, Component, ComponentHandle, ComponentId,
+        ComponentRef, Controlled, ControlledRuntime, ControlledRuntimeBuilder, Decoder,
+        DriverStopped, EffectCapability, EffectDescriptor, EffectDriver, EffectInvocation,
+        EffectOutcome, EffectOutcomeKind, Framed, FramedError, FramedLayer, HttpError,
+        HttpErrorKind, HttpJsonError, HttpRequest, HttpResponse, HttpResponseError,
+        HttpStatusError, Init, Installed, LiveRuntime, LiveRuntimeBuilder, LogicalTime,
+        Notification, PendingEffect, PendingWork, Port, PortHandle, PortId, PrintStderr,
+        PrintStdout, Program, ProgramBuildError, ProgramBuilder, Protocol, ReplyTo, Request,
+        RequestError, RequestInvocation, RequestOutcome, RequestOutcomeKind, RunReport,
+        RuntimeBuilder, RuntimeError, RuntimeTask, Shutdown, ShutdownReport, SourceCapability,
+        SourceDescriptor, SourceDriver, SourceEvent, SourceEventKind, SourceSink, StatusCode,
+        StdinError, StdinErrorKind, StdinLines, StreamDescriptor, Subprogram, Subscription,
+        SubscriptionAction, SubscriptionId, Subscriptions, TcpBytes, TcpError, TcpErrorKind,
+        TraceCommandKind, TraceEvent, TraceId, TraceRecord, WithSubprogram, protocol,
     };
 }
 
@@ -6136,6 +6137,332 @@ impl ControlledRuntimeBuilder {
         Ok(ControlledRuntime {
             core: ControlledCore::new(self.program, self.bindings),
         })
+    }
+}
+
+/// Binds effects and sources without naming the execution profile.
+///
+/// [`LiveRuntimeBuilder`] and [`ControlledRuntimeBuilder`] both implement it. A
+/// live binding is a boxed driver; a controlled binding is the [`Controlled`]
+/// marker, because tests supply outcomes through the harness and no driver runs.
+/// The associated types carry that difference so a [`Subprogram`] can state the
+/// drivers it needs once, generic over the profile. Only binding is shared: spawning,
+/// stepping, and supplying outcomes stay on the concrete builders.
+///
+/// Direct callers can keep using [`LiveRuntimeBuilder::bind_effect`] and
+/// [`ControlledRuntimeBuilder::control_effect`]; these methods are a second path
+/// for profile-generic code. See [`Subprogram`] for a complete example.
+pub trait RuntimeBuilder: Sized {
+    /// What binding effect type `D` takes in this profile.
+    type EffectBinding<D: EffectDescriptor>;
+    /// What binding source type `S` takes in this profile.
+    type SourceBinding<S: SourceDescriptor>;
+
+    /// Binds effect type `D` for this profile.
+    fn bind_effect<D: EffectDescriptor>(self, binding: Self::EffectBinding<D>) -> Self;
+
+    /// Binds source type `S` for this profile.
+    fn bind_source<S: SourceDescriptor>(self, binding: Self::SourceBinding<S>) -> Self;
+
+    /// Starts binding an installed [`Subprogram`]'s drivers.
+    ///
+    /// Takes the [`Installed`] token from [`ProgramBuilder::install`] and returns a
+    /// step that holds this builder until [`WithSubprogram::and_drivers`]
+    /// supplies them. Nothing else can be called on the builder in between, so a
+    /// chain that forgets the drivers does not compile.
+    fn with_subprogram<S: Subprogram>(self, installed: Installed<S>) -> WithSubprogram<Self, S> {
+        drop(installed);
+        WithSubprogram {
+            builder: self,
+            marker: PhantomData,
+        }
+    }
+}
+
+/// A builder waiting for an installed Subprogram's drivers.
+///
+/// Returned by [`RuntimeBuilder::with_subprogram`]. Call
+/// [`Self::and_drivers`] to bind them and get the builder back.
+#[must_use = "call `and_drivers` to bind the Subprogram's drivers and recover the builder"]
+pub struct WithSubprogram<B: RuntimeBuilder, S: Subprogram> {
+    builder: B,
+    marker: PhantomData<fn() -> S>,
+}
+
+impl<B: RuntimeBuilder, S: Subprogram> WithSubprogram<B, S> {
+    /// Binds the Subprogram's drivers and returns the builder.
+    ///
+    /// The profile is the builder's own, so a live host writes boxed drivers and a
+    /// controlled test writes [`Controlled`] markers into the same struct.
+    pub fn and_drivers(self, drivers: S::Drivers<B>) -> B {
+        drivers.bind(self.builder)
+    }
+}
+
+/// The binding for an effect or source under controlled execution.
+///
+/// Controlled tests supply outcomes and events through the harness, so no driver
+/// is needed. Pass it wherever [`RuntimeBuilder::EffectBinding`] or
+/// [`RuntimeBuilder::SourceBinding`] names it for [`ControlledRuntimeBuilder`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Controlled;
+
+impl<D: EffectDescriptor> EffectDriver<D> for Box<dyn EffectDriver<D>> {
+    fn execute(&self, descriptor: D) -> BoxFuture<Result<D::Output, D::Error>> {
+        (**self).execute(descriptor)
+    }
+}
+
+impl<D: SourceDescriptor> SourceDriver<D> for Box<dyn SourceDriver<D>> {
+    fn run(&self, descriptor: D, sink: SourceSink<D>) -> BoxFuture<()> {
+        (**self).run(descriptor, sink)
+    }
+}
+
+impl RuntimeBuilder for LiveRuntimeBuilder {
+    type EffectBinding<D: EffectDescriptor> = Box<dyn EffectDriver<D>>;
+    type SourceBinding<S: SourceDescriptor> = Box<dyn SourceDriver<S>>;
+
+    fn bind_effect<D: EffectDescriptor>(self, binding: Box<dyn EffectDriver<D>>) -> Self {
+        LiveRuntimeBuilder::bind_effect::<D, _>(self, binding)
+    }
+
+    fn bind_source<S: SourceDescriptor>(self, binding: Box<dyn SourceDriver<S>>) -> Self {
+        LiveRuntimeBuilder::bind_source::<S, _>(self, binding)
+    }
+}
+
+impl RuntimeBuilder for ControlledRuntimeBuilder {
+    type EffectBinding<D: EffectDescriptor> = Controlled;
+    type SourceBinding<S: SourceDescriptor> = Controlled;
+
+    fn bind_effect<D: EffectDescriptor>(self, Controlled: Controlled) -> Self {
+        self.control_effect::<D>()
+    }
+
+    fn bind_source<S: SourceDescriptor>(self, Controlled: Controlled) -> Self {
+        self.control_source::<S>()
+    }
+}
+
+/// A Subprogram's drivers for one execution profile.
+///
+/// Implement it once for a struct with one field per declared effect or source,
+/// typed through [`RuntimeBuilder::EffectBinding`] and
+/// [`RuntimeBuilder::SourceBinding`]. The same implementation then serves live and
+/// controlled builders. See [`Subprogram`] for a complete example.
+pub trait Bindings<R: RuntimeBuilder> {
+    /// Binds every driver into the builder and returns it.
+    fn bind(self, runtime: R) -> R;
+}
+
+/// A reusable assembly unit installed into an enclosing Program.
+///
+/// A Subprogram declares its own Components, Ports, and capabilities into a
+/// [`ProgramBuilder`], exports what callers may use (normally a [`Port`]), and
+/// names the drivers the host must bind as a struct type. It is subordinate to the Program, not
+/// to another Component: the Components it installs are ordinary peers reached
+/// through Ports. Application-owned Components do not need to implement it.
+///
+/// Drivers never bind inside [`Self::install`]; assembly is shared by live and
+/// controlled execution. [`ProgramBuilder::install`] returns an [`Installed`]
+/// token holding the exports; the host passes it to
+/// [`RuntimeBuilder::with_subprogram`] and supplies drivers with
+/// [`WithSubprogram::and_drivers`]. The drivers type is tied to the
+/// Subprogram, so a mismatched binding is a compile error and a forgotten one is
+/// caught by the builder's existing validation.
+///
+/// ```
+/// use samara::prelude::*;
+///
+/// struct Ping;
+/// impl EffectDescriptor for Ping {
+///     type Output = ();
+///     type Error = std::convert::Infallible;
+/// }
+///
+/// protocol! { pub type Beacon => enum BeaconMessage { Tick, } }
+///
+/// struct Pinger {
+///     ping: EffectCapability<Ping>,
+/// }
+/// impl Component for Pinger {
+///     type Model = u32;
+///     type Message = BeaconMessage;
+///     fn init(&self) -> Init<u32, BeaconMessage> { Init::new(0) }
+///     fn update(&self, ticks: &mut u32, _: BeaconMessage) -> Command<BeaconMessage> {
+///         *ticks += 1;
+///         Command::effect_discarding_outcome(&self.ping, Ping)
+///     }
+/// }
+///
+/// pub struct PingerDrivers<R: RuntimeBuilder> {
+///     pub ping: R::EffectBinding<Ping>,
+/// }
+/// impl<R: RuntimeBuilder> Bindings<R> for PingerDrivers<R> {
+///     fn bind(self, runtime: R) -> R { runtime.bind_effect::<Ping>(self.ping) }
+/// }
+///
+/// impl Subprogram for Pinger {
+///     type Config = ();
+///     type Exports = Port<Beacon>;
+///     type Drivers<R: RuntimeBuilder> = PingerDrivers<R>;
+///     fn install(program: &mut ProgramBuilder, _: ()) -> Port<Beacon> {
+///         let ping = program.effect::<Ping>();
+///         let beacon = program.port::<Beacon>(PortId::new("beacon"));
+///         let pinger = program.component(ComponentId::new("pinger"), Pinger { ping });
+///         program.bind_port(&beacon, &pinger);
+///         beacon
+///     }
+/// }
+///
+/// struct NoopPing;
+/// impl EffectDriver<Ping> for NoopPing {
+///     fn execute(&self, _: Ping) -> BoxFuture<Result<(), std::convert::Infallible>> {
+///         Box::pin(async { Ok(()) })
+///     }
+/// }
+///
+/// fn assemble() -> Result<(Program, Installed<Pinger>), ProgramBuildError> {
+///     let mut program = Program::builder();
+///     let pinger = program.install::<Pinger>(());
+///     let _beacon: Port<Beacon> = pinger.exports().clone();
+///     Ok((program.build()?, pinger))
+/// }
+///
+/// let (program, pinger) = assemble()?;
+/// let live = LiveRuntime::builder(program)
+///     .with_subprogram(pinger)
+///     .and_drivers(PingerDrivers { ping: Box::new(NoopPing) })
+///     .build()?;
+/// let (program, pinger) = assemble()?;
+/// let controlled = ControlledRuntime::builder(program)
+///     .with_subprogram(pinger)
+///     .and_drivers(PingerDrivers { ping: Controlled })
+///     .build()?;
+/// # drop((live, controlled));
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+///
+/// <details>
+/// <summary>Compile-time checks</summary>
+///
+/// A drivers struct belongs to one Subprogram. Passing another Subprogram's
+/// drivers does not compile:
+///
+/// ```compile_fail
+/// use samara::prelude::*;
+/// struct A;
+/// struct B;
+/// pub struct NoDrivers;
+/// impl<R: RuntimeBuilder> Bindings<R> for NoDrivers {
+///     fn bind(self, runtime: R) -> R { runtime }
+/// }
+/// pub struct OtherDrivers;
+/// impl<R: RuntimeBuilder> Bindings<R> for OtherDrivers {
+///     fn bind(self, runtime: R) -> R { runtime }
+/// }
+/// impl Subprogram for A {
+///     type Config = ();
+///     type Exports = ();
+///     type Drivers<R: RuntimeBuilder> = NoDrivers;
+///     fn install(_: &mut ProgramBuilder, _: ()) {}
+/// }
+/// impl Subprogram for B {
+///     type Config = ();
+///     type Exports = ();
+///     type Drivers<R: RuntimeBuilder> = OtherDrivers;
+///     fn install(_: &mut ProgramBuilder, _: ()) {}
+/// }
+/// let mut program = Program::builder();
+/// let a = program.install::<A>(());
+/// let _ = LiveRuntime::builder(program.build().unwrap())
+///     .with_subprogram(a)
+///     .and_drivers(OtherDrivers);
+/// ```
+///
+/// A chain that forgets the drivers has no builder to finish:
+///
+/// ```compile_fail
+/// use samara::prelude::*;
+/// struct A;
+/// pub struct NoDrivers;
+/// impl<R: RuntimeBuilder> Bindings<R> for NoDrivers {
+///     fn bind(self, runtime: R) -> R { runtime }
+/// }
+/// impl Subprogram for A {
+///     type Config = ();
+///     type Exports = ();
+///     type Drivers<R: RuntimeBuilder> = NoDrivers;
+///     fn install(_: &mut ProgramBuilder, _: ()) {}
+/// }
+/// let mut program = Program::builder();
+/// let a = program.install::<A>(());
+/// let _ = LiveRuntime::builder(program.build().unwrap())
+///     .with_subprogram(a)
+///     .build();
+/// ```
+///
+/// </details>
+pub trait Subprogram {
+    /// What the caller supplies at assembly, such as paths or instance identity.
+    type Config;
+    /// What the caller may use after installation, normally a [`Port`].
+    type Exports;
+    /// The drivers the host must bind, one field each, generic over the profile.
+    type Drivers<R: RuntimeBuilder>: Bindings<R>;
+
+    /// Declares this Subprogram's Components, Ports, and capabilities.
+    ///
+    /// Prefer [`ProgramBuilder::install`] at call sites. Bind no drivers here.
+    fn install(program: &mut ProgramBuilder, config: Self::Config) -> Self::Exports;
+}
+
+/// Proof that a Program installed Subprogram `S`, carrying its exports.
+///
+/// [`ProgramBuilder::install`] returns it. Read the exports through
+/// [`Self::exports`] while assembling, then pass the token to
+/// [`RuntimeBuilder::with_subprogram`] and supply drivers with
+/// [`WithSubprogram::and_drivers`]. The token cannot be created any other
+/// way, so drivers are only ever bound for a Subprogram that is actually in the
+/// Program.
+///
+/// The `must_use` lint warns when the token is discarded outright. It cannot warn
+/// when the token is kept for its exports and never bound; the live and controlled
+/// builders still catch that at `build()` with the descriptor type named.
+#[must_use = "pass this token to `with_subprogram` on the live or controlled builder"]
+pub struct Installed<S: Subprogram> {
+    exports: S::Exports,
+    marker: PhantomData<fn() -> S>,
+}
+
+impl<S: Subprogram> Installed<S> {
+    /// What the Subprogram exported, normally a [`Port`] to clone and wire against.
+    pub fn exports(&self) -> &S::Exports {
+        &self.exports
+    }
+}
+
+impl<S: Subprogram> fmt::Debug for Installed<S> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Installed")
+            .field("subprogram", &std::any::type_name::<S>())
+            .finish_non_exhaustive()
+    }
+}
+
+impl ProgramBuilder {
+    /// Installs a [`Subprogram`] and returns the [`Installed`] token holding its exports.
+    ///
+    /// Bind its drivers later with [`RuntimeBuilder::with_subprogram`] and
+    /// [`WithSubprogram::and_drivers`] on the live or controlled builder. See
+    /// [`Subprogram`] for a complete example.
+    pub fn install<S: Subprogram>(&mut self, config: S::Config) -> Installed<S> {
+        Installed {
+            exports: S::install(self, config),
+            marker: PhantomData,
+        }
     }
 }
 
