@@ -1,12 +1,23 @@
+use pulse::journal::{self, Journal};
 use samara::prelude::*;
-use pulse::journal;
-
 
 #[tokio::main]
-async fn main() {
-    let mut program = Program::builder();
-    let journal = journal::install(&mut program);
+async fn main() -> anyhow::Result<()> {
+    let mut builder = Program::builder();
 
-    println!("Hello, world!");
-    
+    let journal = builder.install::<Journal>(());
+    // Monitor will be assembled here against `journal.exports()`.
+
+    let program = builder.build()?;
+
+    let runtime = LiveRuntime::builder(program)
+        .with_subprogram(journal)
+        .and_drivers(journal::Drivers::default())
+        .build()?;
+
+    let task = runtime.spawn();
+    tokio::signal::ctrl_c().await?;
+    task.shutdown(Shutdown::Drain).await?;
+
+    Ok(())
 }
