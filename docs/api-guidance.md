@@ -96,6 +96,45 @@ correlation tables.
 This separation keeps transition behavior reproducible without pretending that
 live resources are pure values.
 
+## Which Memory May Live Outside the Model?
+
+"Does it remember something between calls" is not the test for whether a
+thing must be a Component. Drivers remember constantly: the stdio Driver
+holds a lock around stdout, an HTTP Driver keeps a connection pool, a file
+Driver caches an open handle. A Source is nothing but memory between events.
+The test is whose memory it is. There are three kinds:
+
+- **Mechanism memory** is state a Driver holds that never changes what the
+  application can observe. A pooled connection and a fresh one produce the
+  same outcome; a cached handle and a reopened file produce the same bytes.
+  Delete it and things get slower, not different. Drivers may hold as much of
+  it as they like, and controlled execution never sees it, which is why
+  Drivers are allowed to be opaque.
+- **Derived memory** is state that exists because the Model currently says it
+  should. A Source is open because `subscriptions(&model)` returns its
+  descriptor right now. The runtime remembers it but accumulates nothing; it
+  reconciles toward what the Model declares. Remove the Model's wish and the
+  state goes away. This is the Subscription shape, and it is why
+  `SourceDescriptor` must be comparable.
+- **Application memory** is state that changes outcomes and cannot be
+  recomputed from the current Model: the pending latest value in a coalescing
+  store, the attempt count in a retry, the byte count that decides a rotation.
+  Delete it and behavior changes. It must live in a Model, so the thing that
+  owns it is a Component.
+
+The one-line form: would a controlled test need to know about this state to
+predict the outcome? If no, it is mechanism and belongs to the Driver. If yes
+and it is derivable from the Model, it is a Subscription. If yes and it is
+not, it is a Component. Controlled execution is the oracle because its
+contract is exactly that Driver internals are invisible and Model state is
+all that matters.
+
+The boundary is sharp in practice. A Driver that queues appends so they land
+in issue order holds mechanism memory, as long as the only promise is the
+order. The moment the application wants to know whether an append has landed,
+that is an outcome, the waiting is state that predicts behavior, and it has
+moved into a Component.
+
 ## Why Does `update` Receive No Runtime Context?
 
 A transition should depend only on its current model and input message. Giving
