@@ -74,8 +74,9 @@ The following evidence must pass before the Phase 2 audit:
 - `examples/framed_socket/src/main.rs` compiles the Layer/Driver, generated Protocol,
   provider conversion, request-continuation, and subscription-replacement
   shapes. Its direct tests cover the pure decoder and command intent.
-- Library unit tests validate the `protocol!` expansion and typed Request reply
-  association.
+- Library unit tests validate the `protocol!` expansion for unit, tuple, and
+  struct-like entries, including flattened struct notification variants and
+  typed Request reply association.
 - Rustdoc compile-fail cases validate that an arbitrary value cannot be passed
   as an EffectDescriptor, an async closure cannot replace a synchronous message
   mapper, raw descriptors cannot bypass Program-issued Effect/Source

@@ -987,16 +987,18 @@ where
 /// Defines a protocol and its request and notification types.
 ///
 /// Entries with `-> Reply` generate a [`Request`]; other entries generate a
-/// [`Notification`]. Each entry is a unit type or has one tuple field. Use
-/// `-> ()` for a request whose reply has no data.
+/// [`Notification`]. Each entry is a unit type, has one tuple field, or has
+/// named fields. Use `-> ()` for a request whose reply has no data.
 ///
 /// ```
 /// use samara::prelude::*;
 /// protocol! {
 ///     pub type Health => enum HealthMessage {
 ///         Changed(String),
+///         Degraded { service: String, attempts: u32 },
 ///         Disconnected,
 ///         Read -> bool,
+///         History { limit: usize } -> Vec<String>,
 ///     }
 /// }
 /// let mut program = Program::builder();
@@ -1005,10 +1007,13 @@ where
 /// assert_eq!(command.request_intents::<Read>().len(), 1);
 /// ```
 ///
-/// The generated message enum carries a notification's field directly, or a
-/// [`RequestInvocation`] for a request. All generated types implement `Debug`.
-/// Per-operation attributes, generics, and multiple fields are not supported;
-/// implement [`Protocol`], [`Request`], and [`Notification`] yourself for those cases.
+/// The generated message enum carries a notification's fields directly, so a
+/// tuple notification becomes a tuple variant and a struct notification becomes
+/// a struct variant. A request's variant carries a [`RequestInvocation`]. All
+/// generated types implement `Debug`.
+/// Per-operation and per-field attributes, generics, and multiple tuple fields
+/// are not supported; implement [`Protocol`], [`Request`], and [`Notification`]
+/// yourself for those cases.
 #[macro_export]
 macro_rules! protocol {
     (
@@ -1059,6 +1064,108 @@ macro_rules! protocol {
         }
 
         $($implementations)*
+    };
+
+    // A struct-like request generates a named-field operation type, while its
+    // protocol-message variant carries the operation plus correlation token.
+    (
+        @parse
+        [$($protocol_attr:tt)*]
+        [$visibility:vis]
+        [$protocol:ident]
+        [$message:ident]
+        [$($operation_items:tt)*]
+        [$($message_variants:tt)*]
+        [$($implementations:tt)*]
+        $operation:ident { $($field:ident : $field_type:ty),* $(,)? } -> $reply:ty,
+        $($remaining:tt)*
+    ) => {
+        $crate::protocol! {
+            @parse
+            [$($protocol_attr)*]
+            [$visibility]
+            [$protocol]
+            [$message]
+            [
+                $($operation_items)*
+                #[doc = concat!("Request arguments for `", stringify!($protocol), "`.")]
+                #[derive(Debug)]
+                $visibility struct $operation {
+                    $(
+                        #[doc = concat!("Request field `", stringify!($field), "`.")]
+                        $visibility $field: $field_type,
+                    )*
+                }
+            ]
+            [
+                $($message_variants)*
+                #[doc = concat!("Request `", stringify!($operation), "`.")]
+                $operation($crate::RequestInvocation<$protocol, $operation>),
+            ]
+            [
+                $($implementations)*
+                impl $crate::Request<$protocol> for $operation {
+                    type Reply = $reply;
+
+                    fn into_message(
+                        self,
+                        reply_to: $crate::ReplyTo<Self::Reply>,
+                    ) -> $message {
+                        $message::$operation($crate::RequestInvocation::new(self, reply_to))
+                    }
+                }
+            ]
+            $($remaining)*
+        }
+    };
+
+    // A struct-like notification is flattened into a struct variant of the
+    // provider-facing enum, mirroring the tuple notification below.
+    (
+        @parse
+        [$($protocol_attr:tt)*]
+        [$visibility:vis]
+        [$protocol:ident]
+        [$message:ident]
+        [$($operation_items:tt)*]
+        [$($message_variants:tt)*]
+        [$($implementations:tt)*]
+        $operation:ident { $($field:ident : $field_type:ty),* $(,)? },
+        $($remaining:tt)*
+    ) => {
+        $crate::protocol! {
+            @parse
+            [$($protocol_attr)*]
+            [$visibility]
+            [$protocol]
+            [$message]
+            [
+                $($operation_items)*
+                #[doc = concat!("Notification arguments for `", stringify!($protocol), "`.")]
+                #[derive(Debug)]
+                $visibility struct $operation {
+                    $(
+                        #[doc = concat!("Notification field `", stringify!($field), "`.")]
+                        $visibility $field: $field_type,
+                    )*
+                }
+            ]
+            [
+                $($message_variants)*
+                #[doc = concat!("Notification `", stringify!($operation), "`.")]
+                $operation { $($field: $field_type),* },
+            ]
+            [
+                $($implementations)*
+                impl $crate::Notification<$protocol> for $operation {
+                    fn into_message(self) -> $message {
+                        let $operation { $($field),* } = self;
+                        $message::$operation { $($field),* }
+                    }
+                }
+            ]
+            $($remaining)*
+        }
     };
 
     // A payload-carrying request generates a tuple operation type, while its
@@ -6335,6 +6442,9 @@ mod protocol_macro_tests {
             Observation(u8),
             Refresh,
             Lookup(u16) -> Snapshot,
+            Transition { name: String, to: u8 },
+            Recent { count: usize, newest_first: bool } -> Vec<Snapshot>,
+            Empty {},
         }
     }
 
@@ -6424,6 +6534,62 @@ mod protocol_macro_tests {
         }
 
         assert_unit_reply::<Reset>();
+    }
+
+    #[test]
+    fn generated_struct_notification_is_flattened_into_a_struct_variant() {
+        fn assert_notification<N>()
+        where
+            N: Notification<MacroProtocol>,
+        {
+        }
+
+        assert_notification::<Transition>();
+        assert_notification::<Empty>();
+        let message = <Transition as Notification<MacroProtocol>>::into_message(Transition {
+            name: "api".into(),
+            to: 2,
+        });
+
+        match message {
+            MacroProtocolMessage::Transition { name, to } => {
+                assert_eq!(name, "api");
+                assert_eq!(to, 2);
+            }
+            _ => panic!("notification became a different operation"),
+        }
+
+        assert!(matches!(
+            <Empty as Notification<MacroProtocol>>::into_message(Empty {}),
+            MacroProtocolMessage::Empty {}
+        ));
+    }
+
+    #[test]
+    fn generated_struct_request_preserves_its_fields_and_reply_type() {
+        fn assert_reply_type<R>()
+        where
+            R: Request<MacroProtocol, Reply = Vec<Snapshot>>,
+        {
+        }
+
+        assert_reply_type::<Recent>();
+        let message = <Recent as Request<MacroProtocol>>::into_message(
+            Recent {
+                count: 3,
+                newest_first: true,
+            },
+            ReplyTo::<Vec<Snapshot>>::sketch(43),
+        );
+
+        match message {
+            MacroProtocolMessage::Recent(invocation) => {
+                assert_eq!(invocation.request.count, 3);
+                assert!(invocation.request.newest_first);
+                assert_eq!(invocation.reply_to.token.correlation, 43);
+            }
+            _ => panic!("request became a different operation"),
+        }
     }
 }
 
