@@ -30,6 +30,22 @@ Teaching principles for the future guide live in [User Guide Notes](user-guide-n
   Component boundaries and reduce repeated ceremony.
 - **Optional integrations:** Feature-gate or split HTTP/JSON/TLS and platform
   integrations so consumers can use the runtime without unrelated dependencies.
+- **Owned-Model transition signature:** The time example's enum Model works
+  with `update(&self, &mut Model, Message)` without cloning the Model or
+  replacing it with a temporary default, because the cached timestamp is Copy.
+  Moving non-Copy payloads between Model variants would put more pressure on
+  this borrowed API. Evaluate that in a suitable example before proposing an
+  owned-Model transition signature; changing the kernel signature in
+  [the API contract](../api-contract.md) needs an ADR.
+- **Descriptor declaration shorthand:** A derive or small macro for
+  declaring a descriptor's Output and Error types, and less boilerplate for
+  explanatory error wrappers, should wait for evidence from another real custom
+  Effect. The time example conflated ordinary Rust error-modeling ceremony with
+  Samara-specific ceremony: `thiserror` makes an intentional domain error
+  compact, and `EffectDescriptor::Error` only requires `Send + 'static`, so a
+  custom wrapper is not required merely to satisfy Samara. The pulse journal's
+  hand-rolled `AppendLineToFile` is the next data point. Any shorthand must
+  keep the descriptor, output, error, and live/controlled boundary visible.
 
 ## URL Checker API Exercise — September 23, 2026
 
