@@ -13,17 +13,17 @@ protocol! {
 }
 
 /// Appends one line to the journal file.
-pub struct AppendLine(pub String);
+pub struct AppendLineToFile(pub String);
 
-impl EffectDescriptor for AppendLine {
+impl EffectDescriptor for AppendLineToFile {
     type Output = ();
     type Error = std::io::Error;
 }
 
 /// Asks the host what time it is. `update` never reads a clock itself.
-pub struct Now;
+pub struct GetTime;
 
-impl EffectDescriptor for Now {
+impl EffectDescriptor for GetTime {
     type Output = SystemTime;
     type Error = Infallible;
 }
@@ -42,12 +42,13 @@ enum Model {
     Idle,
 }
 
-struct FsJournal {
-    append: EffectCapability<AppendLine>,
-    clock: EffectCapability<Now>,
+/// Applies the hold policy and records confirmed transitions.
+struct Recorder {
+    append: EffectCapability<AppendLineToFile>,
+    clock: EffectCapability<GetTime>,
 }
 
-impl Component for FsJournal {
+impl Component for Recorder {
     type Model = Model;
     type Message = Message;
 
@@ -73,16 +74,22 @@ impl Component for FsJournal {
 /// `Drivers::default()` gives the file appender and system clock on the live
 /// builder (feature `live-drivers`) and [`Controlled`] markers on the controlled
 /// builder. Fill the fields by hand to substitute either.
-pub struct Drivers<R: RuntimeBuilder> {
-    pub append: R::EffectBinding<AppendLine>,
-    pub clock: R::EffectBinding<Now>,
+pub struct Drivers<R>
+where
+    R: RuntimeBuilder,
+{
+    pub append: R::EffectBinding<AppendLineToFile>,
+    pub clock: R::EffectBinding<GetTime>,
 }
 
-impl<R: RuntimeBuilder> Bindings<R> for Drivers<R> {
+impl<R> Bindings<R> for Drivers<R>
+where
+    R: RuntimeBuilder,
+{
     fn bind(self, runtime: R) -> R {
         runtime
-            .bind_effect::<AppendLine>(self.append)
-            .bind_effect::<Now>(self.clock)
+            .bind_effect::<AppendLineToFile>(self.append)
+            .bind_effect::<GetTime>(self.clock)
     }
 }
 
@@ -99,14 +106,14 @@ impl Default for Drivers<ControlledRuntimeBuilder> {
 impl Default for Drivers<LiveRuntimeBuilder> {
     fn default() -> Self {
         Self {
-            append: Box::new(FsAppend::new(FsAppend::DEFAULT_PATH)),
-            clock: Box::new(SystemClock),
+            append: Box::new(AppendLineWithTokio::new(AppendLineWithTokio::DEFAULT_PATH)),
+            clock: Box::new(GetTimeWithSystemClock),
         }
     }
 }
 
 #[cfg(feature = "live-drivers")]
-pub use live::{FsAppend, SystemClock};
+pub use live::{AppendLineWithTokio, GetTimeWithSystemClock};
 
 /// Live implementations of the journal's effects.
 #[cfg(feature = "live-drivers")]
@@ -117,14 +124,14 @@ mod live {
 
     use samara::prelude::*;
 
-    use super::{AppendLine, Now};
+    use super::{AppendLineToFile, GetTime};
 
     /// Appends lines to a file on disk.
-    pub struct FsAppend {
+    pub struct AppendLineWithTokio {
         path: PathBuf,
     }
 
-    impl FsAppend {
+    impl AppendLineWithTokio {
         /// Where [`super::Drivers::default`] writes.
         pub const DEFAULT_PATH: &str = "pulse.journal";
 
@@ -133,8 +140,8 @@ mod live {
         }
     }
 
-    impl EffectDriver<AppendLine> for FsAppend {
-        fn execute(&self, AppendLine(line): AppendLine) -> BoxFuture<Result<(), std::io::Error>> {
+    impl EffectDriver<AppendLineToFile> for AppendLineWithTokio {
+        fn execute(&self, AppendLineToFile(line): AppendLineToFile) -> BoxFuture<Result<(), std::io::Error>> {
             let path = self.path.clone();
             Box::pin(async move {
                 use tokio::io::AsyncWriteExt;
@@ -149,16 +156,16 @@ mod live {
     }
 
     /// Reads the system clock.
-    pub struct SystemClock;
+    pub struct GetTimeWithSystemClock;
 
-    impl EffectDriver<Now> for SystemClock {
-        fn execute(&self, _: Now) -> BoxFuture<Result<SystemTime, Infallible>> {
+    impl EffectDriver<GetTime> for GetTimeWithSystemClock {
+        fn execute(&self, _: GetTime) -> BoxFuture<Result<SystemTime, Infallible>> {
             Box::pin(async { Ok(SystemTime::now()) })
         }
     }
 }
 
-// The protocol type is the Subprogram, so `FsJournal`, its Model, and its
+// The protocol type is the Subprogram, so `Recorder`, its Model, and its
 // Message stay private. Implementing it on the Component would make all three
 // public, because `Component`'s associated types are part of its interface.
 impl Subprogram for Journal {
@@ -167,11 +174,11 @@ impl Subprogram for Journal {
     type Drivers<R: RuntimeBuilder> = Drivers<R>;
 
     fn install(program: &mut ProgramBuilder, _: Self::Config) -> Port<Journal> {
-        let append = program.effect::<AppendLine>();
-        let clock = program.effect::<Now>();
+        let append = program.effect::<AppendLineToFile>();
+        let clock = program.effect::<GetTime>();
         let journal = program.port::<Journal>(PortId::new(JOURNAL));
-        let fs = program.component(ComponentId::new("fs-journal"), FsJournal { append, clock });
-        program.bind_port(&journal, &fs);
+        let recorder = program.component(ComponentId::new("journal"), Recorder { append, clock });
+        program.bind_port(&journal, &recorder);
 
         journal
     }
