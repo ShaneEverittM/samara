@@ -70,6 +70,16 @@ This repository is in a documentation-first, acceptance-contract-gated implement
 - Pattern B: `Command` and `EffectDescriptor` semantics spec -> Driver and controlled-behavior tests -> runtime integration.
 - Pattern C: ADR proposal → tradeoff matrix → explicit decision → implementation.
 
+## Where Knowledge Lives
+- Project knowledge belongs in the repository: decisions in ADRs, direction
+  and plans in `docs/`, open questions in `docs/notes/`. An agent's private
+  memory may point at these but must never be the only place a decision,
+  plan, finding, or rationale is recorded. If something is worth remembering,
+  write it into the repo first and remember where it is second.
+- Private memory is for things that are not project knowledge: how Shane
+  prefers to work, which machine or branch is current, where a conversation
+  left off.
+
 ## Required PR Contents
 - Invariant impact summary.
 - Failure mode analysis.

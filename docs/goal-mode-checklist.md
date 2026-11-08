@@ -119,6 +119,39 @@ Audit packet: [Phase 6 Live Tokio Runtime](audits/phase-6-live-tokio-runtime.md)
 - [ ] Complete onboarding docs and record known gaps, failure modes, and deferrals.
 - [ ] Perform a final vision and developer-experience audit.
 
+## Release Plan
+
+Stated November 8, 2026. Releases are sequenced API-first; each stage has its
+own definition of what counts as a problem.
+
+- **0.1: land the design.** Phase 7 complete. The API is authored in the
+  abstract first (ideal snippets with prose, written before the compiler is
+  consulted), and the runtime is implemented as a black box to fit it, with no
+  constraint on how it works internally. During 0.1, runtime cost is not a
+  reason to reject an API shape; it is a reason to write the cost down.
+- **0.2: make the runtime as efficient as possible without changing the
+  API.** The conformance suite and controlled-execution contracts are what
+  make this safe: semantics are pinned by topology-neutral tests, so the
+  implementation is free. Anything that weakens them is a 0.1 regression, not
+  a 0.2 optimization. A benchmark application with many Components, sustained
+  Source traffic, and many small effects should exist before 0.2 begins, so
+  there is a target.
+- **0.3, 0.4, ... 0.N: trade API for performance, only if 0.2 was not
+  enough.** Worsen the API one deliberate step at a time, each step justified
+  by a measurement that names the shape it blames, until performance is
+  acceptable. This stage may not be needed; most known costs are Driver-side
+  or allocation-side and should fall to 0.2.
+- **1.0** when performance is acceptable.
+
+Cost ledger. API choices made for developer experience that are known to cost
+at runtime, recorded so 0.2 and 0.3 start from a list rather than a profile:
+
+- Live Subprogram Drivers are boxed per binding (one allocation at startup).
+- Every effect carries a boxed outcome mapper.
+- Internal delivery is unbounded (ADR-0004).
+
+Add to this ledger whenever a cheaper shape is rejected for a better one.
+
 ## Goal Template
 
 ```text
