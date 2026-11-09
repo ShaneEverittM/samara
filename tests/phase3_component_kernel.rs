@@ -103,20 +103,25 @@ impl KernelComponent {
 }
 
 impl Component for KernelComponent {
+    type Config = Self;
     type Model = OwnedModel;
     type Message = KernelMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
-        self.init_calls.fetch_add(1, Ordering::SeqCst);
+    fn init(config: &Self::Config) -> Init<Self::Model, Self::Message> {
+        config.init_calls.fetch_add(1, Ordering::SeqCst);
         Init::new(OwnedModel {
             state: KernelModel::default(),
-            drops: self.model_drops.clone(),
+            drops: config.model_drops.clone(),
         })
     }
 
-    fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        config: &Self::Config,
+        model: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         match message {
-            KernelMessage::Add(amount) => model.state.total += amount * self.scale,
+            KernelMessage::Add(amount) => model.state.total += amount * config.scale,
         }
         Command::none()
     }
@@ -125,11 +130,11 @@ impl Component for KernelComponent {
 #[test]
 fn v1_same_input_produces_equivalent_model_and_command_intent() {
     let (component, _, _, _) = KernelComponent::fixture();
-    let mut left = component.init().model;
-    let mut right = component.init().model;
+    let mut left = KernelComponent::init(&component).model;
+    let mut right = KernelComponent::init(&component).model;
 
-    let left_command = component.update(&mut left, KernelMessage::Add(7));
-    let right_command = component.update(&mut right, KernelMessage::Add(7));
+    let left_command = KernelComponent::update(&component, &mut left, KernelMessage::Add(7));
+    let right_command = KernelComponent::update(&component, &mut right, KernelMessage::Add(7));
 
     assert!(left_command.is_none());
     assert!(right_command.is_none());
@@ -165,14 +170,18 @@ fn component_identity_is_explicit_and_not_registration_order() {
     let mut left_program = Program::builder();
     let (left_first, _, _, _) = KernelComponent::fixture();
     let (left_second, _, _, _) = KernelComponent::fixture();
-    let alpha_left = left_program.component(ComponentId::new("alpha"), left_first);
-    let beta_left = left_program.component(ComponentId::new("beta"), left_second);
+    let alpha_left =
+        left_program.component::<KernelComponent>(ComponentId::new("alpha"), left_first);
+    let beta_left =
+        left_program.component::<KernelComponent>(ComponentId::new("beta"), left_second);
 
     let mut right_program = Program::builder();
     let (right_first, _, _, _) = KernelComponent::fixture();
     let (right_second, _, _, _) = KernelComponent::fixture();
-    let beta_right = right_program.component(ComponentId::new("beta"), right_first);
-    let alpha_right = right_program.component(ComponentId::new("alpha"), right_second);
+    let beta_right =
+        right_program.component::<KernelComponent>(ComponentId::new("beta"), right_first);
+    let alpha_right =
+        right_program.component::<KernelComponent>(ComponentId::new("alpha"), right_second);
 
     assert_eq!(alpha_left.id(), alpha_right.id());
     assert_eq!(beta_left.id(), beta_right.id());
@@ -184,7 +193,7 @@ fn registration_transfers_configuration_and_model_ownership_to_program() {
     let (component, init_calls, configuration_drops, model_drops) = KernelComponent::fixture();
     let mut builder = Program::builder();
 
-    let component_ref = builder.component(ComponentId::new("owned"), component);
+    let component_ref = builder.component::<KernelComponent>(ComponentId::new("owned"), component);
 
     assert_eq!(component_ref.id(), &ComponentId::new("owned"));
     assert_eq!(configuration_drops.load(Ordering::SeqCst), 0);

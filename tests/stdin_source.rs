@@ -53,14 +53,19 @@ struct StdinProbe {
 }
 
 impl Component for StdinProbe {
+    type Config = Self;
     type Model = StdinModel;
     type Message = StdinMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::default()
     }
 
-    fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        _config: &Self::Config,
+        model: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         match message {
             StdinMessage::Input(SourceEvent::Item(line)) => model.lines.push(line),
             StdinMessage::Input(SourceEvent::Failed(error)) => {
@@ -73,12 +78,12 @@ impl Component for StdinProbe {
         Command::none()
     }
 
-    fn subscriptions(&self, model: &Self::Model) -> Subscriptions<Self::Message> {
+    fn subscriptions(config: &Self::Config, model: &Self::Model) -> Subscriptions<Self::Message> {
         if model.terminal.is_some() {
             Subscriptions::none()
         } else {
             Subscriptions::one(Subscription::source(
-                &self.stdin,
+                &config.stdin,
                 SubscriptionId::new(STDIN_SUBSCRIPTION),
                 StdinLines::new(),
             ))
@@ -93,7 +98,7 @@ fn stdin_program() -> (
 ) {
     let mut builder = Program::builder();
     let stdin = builder.source::<StdinLines>();
-    let probe = builder.component(
+    let probe = builder.component::<StdinProbe>(
         ComponentId::new("stdin-probe"),
         StdinProbe {
             stdin: stdin.clone(),

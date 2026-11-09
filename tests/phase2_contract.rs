@@ -62,19 +62,24 @@ impl ContractComponent {
 }
 
 impl Component for ContractComponent {
+    type Config = Self;
     type Model = ContractModel;
     type Message = ContractMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(ContractModel::default())
     }
 
-    fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        config: &Self::Config,
+        model: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         match message {
             ContractMessage::Add(amount) => {
                 model.total += amount;
                 Command::effect_with(
-                    &self.save,
+                    &config.save,
                     SaveTotal { value: model.total },
                     ContractMessage::Saved,
                 )
@@ -95,15 +100,15 @@ impl Component for ContractComponent {
         }
     }
 
-    fn subscriptions(&self, model: &Self::Model) -> Subscriptions<Self::Message> {
+    fn subscriptions(config: &Self::Config, model: &Self::Model) -> Subscriptions<Self::Message> {
         if model.input_closed {
             return Subscriptions::none();
         }
 
         Subscriptions::one(Subscription::source_with(
-            &self.source,
+            &config.source,
             SubscriptionId::new(INPUT_SUBSCRIPTION),
-            self.input.clone(),
+            config.input.clone(),
             ContractMessage::Input,
         ))
     }
@@ -113,11 +118,11 @@ impl Component for ContractComponent {
 fn v1_same_input_produces_equivalent_model_and_command_intent() {
     let mut program = Program::builder();
     let component = ContractComponent::new(&mut program);
-    let mut left = component.init().model;
-    let mut right = component.init().model;
+    let mut left = ContractComponent::init(&component).model;
+    let mut right = ContractComponent::init(&component).model;
 
-    let left_command = component.update(&mut left, ContractMessage::Add(7));
-    let right_command = component.update(&mut right, ContractMessage::Add(7));
+    let left_command = ContractComponent::update(&component, &mut left, ContractMessage::Add(7));
+    let right_command = ContractComponent::update(&component, &mut right, ContractMessage::Add(7));
 
     assert_eq!(left, right);
     assert_eq!(
@@ -130,9 +135,9 @@ fn v1_same_input_produces_equivalent_model_and_command_intent() {
 fn v3_effect_command_exposes_typed_descriptor() {
     let mut program = Program::builder();
     let component = ContractComponent::new(&mut program);
-    let mut model = component.init().model;
+    let mut model = ContractComponent::init(&component).model;
 
-    let command = component.update(&mut model, ContractMessage::Add(11));
+    let command = ContractComponent::update(&component, &mut model, ContractMessage::Add(11));
 
     assert_eq!(
         command.effect_intent::<SaveTotal>(),
@@ -148,9 +153,9 @@ fn v3_effect_command_exposes_typed_descriptor() {
 fn v4_subscription_separates_component_identity_from_source_descriptor() {
     let mut program = Program::builder();
     let component = ContractComponent::new(&mut program);
-    let model = component.init().model;
+    let model = ContractComponent::init(&component).model;
 
-    let subscriptions = component.subscriptions(&model);
+    let subscriptions = ContractComponent::subscriptions(&component, &model);
     let subscription = subscriptions.iter().next().expect("one input desire");
 
     assert_eq!(subscription.id(), &SubscriptionId::new(INPUT_SUBSCRIPTION));
@@ -167,7 +172,7 @@ fn component_kernel_accepts_non_sync_configuration() {
 
     let mut program = Program::builder();
     let contract = ContractComponent::new(&mut program);
-    let component = program.component(ComponentId::new("contract"), contract);
+    let component = program.component::<ContractComponent>(ComponentId::new("contract"), contract);
 
     assert_eq!(component.id(), &ComponentId::new("contract"));
 }

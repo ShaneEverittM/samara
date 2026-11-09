@@ -28,14 +28,19 @@ impl From<ProbeProtocolMessage> for ProviderMessage {
 struct Provider;
 
 impl Component for Provider {
+    type Config = Self;
     type Model = Vec<u64>;
     type Message = ProviderMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::default()
     }
 
-    fn update(&self, seen: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        _config: &Self::Config,
+        seen: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         match message {
             ProviderMessage::Protocol(ProbeProtocolMessage::Ask(invocation)) => {
                 let Ask((value, delay)) = invocation.request;
@@ -86,14 +91,19 @@ struct Requester {
 }
 
 impl Component for Requester {
+    type Config = Self;
     type Model = Vec<Observation>;
     type Message = RequesterMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::default()
     }
 
-    fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        config: &Self::Config,
+        model: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         match message {
             RequesterMessage::Start {
                 request,
@@ -101,7 +111,7 @@ impl Component for Requester {
                 key,
             } => match (timeout, key) {
                 (Some(timeout), Some(key)) => Command::request_timeout_with(
-                    self.port.clone(),
+                    config.port.clone(),
                     request,
                     timeout,
                     move |outcome| {
@@ -112,13 +122,13 @@ impl Component for Requester {
                     },
                 ),
                 (Some(timeout), None) => {
-                    Command::request_timeout(self.port.clone(), request, timeout)
+                    Command::request_timeout(config.port.clone(), request, timeout)
                 }
-                (None, _) => Command::request(self.port.clone(), request),
+                (None, _) => Command::request(config.port.clone(), request),
             },
             RequesterMessage::Outcome(observation) => {
                 model.push(observation.clone());
-                Command::effect_discarding_outcome(&self.observe, observation)
+                Command::effect_discarding_outcome(&config.observe, observation)
             }
         }
     }
@@ -135,9 +145,9 @@ fn fixture() -> Fixture {
     let mut builder = Program::builder();
     let port = builder.port(PortId::new("probe"));
     let observe = builder.effect::<Observation>();
-    let provider = builder.component(ComponentId::new("provider"), Provider);
+    let provider = builder.component::<Provider>(ComponentId::new("provider"), Provider);
     builder.bind_port(&port, &provider);
-    let requester = builder.component(
+    let requester = builder.component::<Requester>(
         ComponentId::new("requester"),
         Requester {
             port: port.clone(),

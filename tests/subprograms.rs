@@ -1,6 +1,6 @@
-//! Acceptance evidence for `Subprogram`, `RuntimeBuilder`, and `Bindings`:
-//! a Subprogram declares its capabilities once and both execution profiles
-//! bind them through the same drivers type.
+//! Acceptance evidence for `Subprogram`, `Requirements`, and `Drivers`: a
+//! Subprogram lists its boundaries once as a type; the live builder takes a
+//! matching tuple of drivers and the controlled builder takes nothing.
 
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -30,7 +30,9 @@ protocol! {
     }
 }
 
-struct Recorder {
+struct Recorder;
+
+struct RecorderCapabilities {
     stamp: EffectCapability<Stamp>,
     pulses: SourceCapability<Pulses>,
 }
@@ -48,18 +50,23 @@ impl From<LedgerMessage> for RecorderMessage {
 }
 
 impl Component for Recorder {
+    type Config = RecorderCapabilities;
     type Model = Vec<String>;
     type Message = RecorderMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_: &RecorderCapabilities) -> Init<Vec<String>, RecorderMessage> {
         Init::new(Vec::new())
     }
 
-    fn update(&self, entries: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        config: &RecorderCapabilities,
+        entries: &mut Vec<String>,
+        message: RecorderMessage,
+    ) -> Command<RecorderMessage> {
         match message {
             RecorderMessage::Ledger(LedgerMessage::Record(entry)) => {
                 entries.push(entry);
-                Command::effect_with(&self.stamp, Stamp, RecorderMessage::Stamped)
+                Command::effect_with(&config.stamp, Stamp, RecorderMessage::Stamped)
             }
             RecorderMessage::Ledger(LedgerMessage::Count(call)) => {
                 Command::reply(call.reply_to, entries.len())
@@ -76,35 +83,16 @@ impl Component for Recorder {
         }
     }
 
-    fn subscriptions(&self, _: &Self::Model) -> Subscriptions<Self::Message> {
+    fn subscriptions(
+        config: &RecorderCapabilities,
+        _: &Vec<String>,
+    ) -> Subscriptions<RecorderMessage> {
         Subscriptions::one(Subscription::source_with(
-            &self.pulses,
+            &config.pulses,
             SubscriptionId::new("pulses"),
             Pulses,
             RecorderMessage::Pulse,
         ))
-    }
-}
-
-struct RecorderDrivers<R: RuntimeBuilder> {
-    stamp: R::EffectBinding<Stamp>,
-    pulses: R::SourceBinding<Pulses>,
-}
-
-impl<R: RuntimeBuilder> Bindings<R> for RecorderDrivers<R> {
-    fn bind(self, runtime: R) -> R {
-        runtime
-            .bind_effect::<Stamp>(self.stamp)
-            .bind_source::<Pulses>(self.pulses)
-    }
-}
-
-impl Default for RecorderDrivers<ControlledRuntimeBuilder> {
-    fn default() -> Self {
-        Self {
-            stamp: Controlled,
-            pulses: Controlled,
-        }
     }
 }
 
@@ -122,13 +110,16 @@ struct RecorderExports {
 impl Subprogram for Recorder {
     type Config = RecorderConfig;
     type Exports = RecorderExports;
-    type Drivers<R: RuntimeBuilder> = RecorderDrivers<R>;
+    type Requires = (Effect<Stamp>, Source<Pulses>);
 
     fn install(program: &mut ProgramBuilder, config: RecorderConfig) -> RecorderExports {
         let stamp = program.effect::<Stamp>();
         let pulses = program.source::<Pulses>();
         let ledger = program.port::<Ledger>(PortId::new(config.port));
-        let recorder = program.component(ComponentId::new("recorder"), Recorder { stamp, pulses });
+        let recorder = program.component::<Recorder>(
+            ComponentId::new("recorder"),
+            RecorderCapabilities { stamp, pulses },
+        );
         program.bind_port(&ledger, &recorder);
         RecorderExports { ledger, recorder }
     }
@@ -157,6 +148,14 @@ impl SourceDriver<Pulses> for SilentPulses {
     }
 }
 
+impl ShipsDrivers for Recorder {
+    type Drivers = (CountingStamp, SilentPulses);
+
+    fn drivers() -> Self::Drivers {
+        (CountingStamp::default(), SilentPulses)
+    }
+}
+
 fn assemble() -> (Program, Installed<Recorder>) {
     let mut program = Program::builder();
     let recorder = program.install::<Recorder>(RecorderConfig { port: "ledger" });
@@ -177,10 +176,7 @@ async fn live_builder_binds_every_requirement_through_with_subprogram() {
     let stamp = CountingStamp::default();
     let runtime = LiveRuntime::builder(program)
         .with_subprogram(recorder)
-        .and_drivers(RecorderDrivers {
-            stamp: Box::new(stamp.clone()),
-            pulses: Box::new(SilentPulses),
-        })
+        .and_drivers((stamp.clone(), SilentPulses))
         .build()
         .expect("every requirement is bound");
     let client = runtime.port_handle(&ledger).expect("ledger handle");
@@ -199,6 +195,16 @@ async fn live_builder_binds_every_requirement_through_with_subprogram() {
 }
 
 #[test]
+fn live_builder_accepts_the_drivers_a_subprogram_vendors() {
+    let (program, recorder) = assemble();
+    LiveRuntime::builder(program)
+        .with_subprogram(recorder)
+        .and_its_vendored_drivers()
+        .build()
+        .expect("vendored drivers satisfy the requirements");
+}
+
+#[test]
 fn live_build_fails_when_subprogram_drivers_are_not_bound() {
     let (program, _) = assemble();
     let error = LiveRuntime::builder(program)
@@ -214,7 +220,6 @@ fn controlled_builder_registers_every_requirement_through_with_subprogram() {
     let recorder = installed.exports().recorder.clone();
     let mut runtime = ControlledRuntime::builder(program)
         .with_subprogram(installed)
-        .and_drivers(RecorderDrivers::default())
         .build()
         .expect("every requirement is controlled");
 

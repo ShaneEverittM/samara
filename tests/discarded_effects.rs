@@ -49,20 +49,21 @@ struct PrintProbe {
 }
 
 impl Component for PrintProbe {
+    type Config = Self;
     type Model = PrintModel;
     type Message = PrintMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(PrintModel::default())
     }
 
     fn update(
-        &self,
+        config: &Self::Config,
         model: &mut Self::Model,
         PrintMessage::Start: Self::Message,
     ) -> Command<Self::Message> {
         model.transitions += 1;
-        samara::println!(&self.stdout, "transition {}", model.transitions)
+        samara::println!(&config.stdout, "transition {}", model.transitions)
     }
 }
 
@@ -70,7 +71,8 @@ impl Component for PrintProbe {
 fn controlled_discarded_outcome_is_traced_without_scheduling_a_message() {
     let mut program = Program::builder();
     let stdout = program.effect::<PrintStdout>();
-    let probe = program.component(ComponentId::new("discarded-print"), PrintProbe { stdout });
+    let probe =
+        program.component::<PrintProbe>(ComponentId::new("discarded-print"), PrintProbe { stdout });
     let mut runtime = ControlledRuntime::builder(program.build().unwrap())
         .control_effect::<PrintStdout>()
         .build()
@@ -163,16 +165,21 @@ struct GateProbe {
 }
 
 impl Component for GateProbe {
+    type Config = Self;
     type Model = ();
     type Message = GateMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(())
     }
 
-    fn update(&self, _model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        config: &Self::Config,
+        _model: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         match message {
-            GateMessage::Start => Command::effect_discarding_outcome(&self.effect, GateEffect),
+            GateMessage::Start => Command::effect_discarding_outcome(&config.effect, GateEffect),
             GateMessage::Noop => Command::none(),
         }
     }
@@ -215,7 +222,8 @@ impl EffectDriver<GateEffect> for GatedDriver {
 fn gated_program() -> (Program, ComponentRef<GateProbe>) {
     let mut program = Program::builder();
     let effect = program.effect::<GateEffect>();
-    let probe = program.component(ComponentId::new("discarded-gate"), GateProbe { effect });
+    let probe =
+        program.component::<GateProbe>(ComponentId::new("discarded-gate"), GateProbe { effect });
     (program.build().unwrap(), probe)
 }
 

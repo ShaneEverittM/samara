@@ -19,6 +19,10 @@ name = "samara"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+# First-party filesystem effects: AppendToFile, ReplaceFile, ReadFile, RemoveFile, FsDriver.
+fs = ["tokio/fs"]
+
 [dependencies]
 bytes = "1.10.1"
 futures-util = "0.3.31"

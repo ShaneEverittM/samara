@@ -107,20 +107,25 @@ struct PipelineComponent {
 }
 
 impl Component for PipelineComponent {
+    type Config = Self;
     type Model = PipelineModel;
     type Message = PipelineMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(PipelineModel::default())
     }
 
-    fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        config: &Self::Config,
+        model: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         match message {
-            PipelineMessage::Start => HttpRequest::get(self.url.clone())
+            PipelineMessage::Start => HttpRequest::get(config.url.clone())
                 .on_response()
                 .require_success()
                 .json::<Payload>()
-                .into_command_with(&self.http, PipelineMessage::Finished),
+                .into_command_with(&config.http, PipelineMessage::Finished),
             PipelineMessage::Finished(outcome) => {
                 let result = match outcome {
                     EffectOutcome::Succeeded(payload) => PipelineResult::Succeeded(payload.value),
@@ -135,7 +140,7 @@ impl Component for PipelineComponent {
                     EffectOutcome::Cancelled(reason) => PipelineResult::Cancelled(reason),
                 };
                 model.result = Some(result.clone());
-                Command::effect_with(&self.observe, ObservePipelineResult(result), |_| {
+                Command::effect_with(&config.observe, ObservePipelineResult(result), |_| {
                     PipelineMessage::Observed
                 })
             }
@@ -156,7 +161,7 @@ fn pipeline_program(url: impl Into<String>) -> (Program, ComponentRef<PipelineCo
     let mut builder = Program::builder();
     let http = builder.effect::<HttpRequest>();
     let observe = builder.effect::<ObservePipelineResult>();
-    let component = builder.component(
+    let component = builder.component::<PipelineComponent>(
         ComponentId::new("http-pipeline"),
         PipelineComponent {
             http,

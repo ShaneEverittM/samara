@@ -3,19 +3,10 @@ name = "pulse"
 version = "0.1.0"
 edition = "2024"
 
-[features]
-default = ["live-drivers"]
-# Ships FsAppend and SystemClock and `Drivers::default()` for the live builder.
-live-drivers = ["tokio/fs"]
-
-[[bin]]
-name = "pulse"
-required-features = ["live-drivers"]
-
 [dependencies]
 anyhow = "1.0.104"
 chrono = { version = "0.4.45", features = ["serde"] }
-samara = { path = "../.." }
+samara = { path = "../..", features = ["fs"] }
 serde = { version = "1.0.229", features = ["derive"] }
 thiserror = "2.0.19"
 tokio = { version = "1.45.1", features = ["macros", "rt-multi-thread", "signal"] }

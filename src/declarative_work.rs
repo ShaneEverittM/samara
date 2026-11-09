@@ -173,15 +173,16 @@ mod tests {
     }
 
     impl Component for DesiredComponent {
+        type Config = Self;
         type Model = Option<&'static str>;
         type Message = DesiredMessage;
 
-        fn init(&self) -> Init<Self::Model, Self::Message> {
+        fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
             Init::new(Some("one"))
         }
 
         fn update(
-            &self,
+            _config: &Self::Config,
             model: &mut Self::Model,
             message: Self::Message,
         ) -> Command<Self::Message> {
@@ -193,10 +194,13 @@ mod tests {
             Command::none()
         }
 
-        fn subscriptions(&self, model: &Self::Model) -> Subscriptions<Self::Message> {
+        fn subscriptions(
+            config: &Self::Config,
+            model: &Self::Model,
+        ) -> Subscriptions<Self::Message> {
             match model {
                 Some(binding) => Subscriptions::one(Subscription::source_with(
-                    &self.source,
+                    &config.source,
                     SubscriptionId::new("input"),
                     StreamDescriptor::<u64>::named(*binding),
                     DesiredMessage::Input,
@@ -257,8 +261,10 @@ mod tests {
     fn v4_component_kernel_reconciles_the_committed_model_projection() {
         let mut program = Program::builder();
         let source = program.source::<StreamDescriptor<u64>>();
-        let mut kernel =
-            ComponentKernel::new(ComponentId::new("desired"), DesiredComponent { source });
+        let mut kernel = ComponentKernel::<DesiredComponent>::new(
+            ComponentId::new("desired"),
+            DesiredComponent { source },
+        );
 
         assert!(matches!(
             kernel

@@ -64,17 +64,22 @@ impl HttpTimeServer {
 }
 
 impl Component for HttpTimeServer {
+    type Config = Self;
     type Model = HttpTimeModel;
     type Message = HttpTimeMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(HttpTimeModel::Idle { current_time: None }).with_command(Command::after(
             Duration::from_secs(1),
             HttpTimeMessage::Tick,
         ))
     }
 
-    fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        config: &Self::Config,
+        model: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         use HttpTimeMessage::{GetTime, PollFinished, Tick};
         use HttpTimeModel::{Idle, Polling};
 
@@ -88,7 +93,7 @@ impl Component for HttpTimeServer {
                     .on_response()
                     .require_success()
                     .json::<TimeResponse>()
-                    .into_command(&self.http);
+                    .into_command(&config.http);
 
                 Command::batch([get, Self::TICK])
             }
@@ -101,7 +106,7 @@ impl Component for HttpTimeServer {
                     Ok(time) => (Some(time), Command::none()),
                     Err(error) => (
                         state.current_time(),
-                        samara::eprintln!(&self.stderr, "Failed to get time: {error}"),
+                        samara::eprintln!(&config.stderr, "Failed to get time: {error}"),
                     ),
                 };
                 *state = Idle { current_time };
@@ -184,26 +189,31 @@ struct Cli {
 }
 
 impl Component for Cli {
+    type Config = Self;
     type Model = CliModel;
     type Message = CliMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::default().with_command(samara::println!(
-            &self.stdout,
+            &config.stdout,
             "Commands: `print <text>` or `time`"
         ))
     }
 
-    fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        config: &Self::Config,
+        model: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         match message {
             CliMessage::Command(CliCommand::Print(text)) => {
-                samara::println!(&self.stdout, "{text}")
+                samara::println!(&config.stdout, "{text}")
             }
             CliMessage::Command(CliCommand::GetTime) => {
-                Command::request(self.time_server.clone(), GetCurrentTime)
+                Command::request(config.time_server.clone(), GetCurrentTime)
             }
             CliMessage::InvalidCommand(command) => samara::eprintln!(
-                &self.stderr,
+                &config.stderr,
                 "Unknown command `{command}`; use `print <text>` or `time`"
             ),
             CliMessage::InputEnded => {
@@ -212,33 +222,36 @@ impl Component for Cli {
             }
             CliMessage::InputFailed(error) => {
                 model.input_closed = true;
-                samara::eprintln!(&self.stderr, "Failed to read standard input: {error}")
+                samara::eprintln!(&config.stderr, "Failed to read standard input: {error}")
             }
             CliMessage::TimeReceived(RequestOutcome::Replied(Some(time))) => {
-                samara::println!(&self.stdout, "Current time: {time}")
+                samara::println!(&config.stdout, "Current time: {time}")
             }
             CliMessage::TimeReceived(RequestOutcome::Replied(None)) => {
-                samara::println!(&self.stdout, "The time server has not received a value yet")
+                samara::println!(
+                    &config.stdout,
+                    "The time server has not received a value yet"
+                )
             }
             CliMessage::TimeReceived(RequestOutcome::Failed(error)) => {
-                samara::eprintln!(&self.stderr, "Time request failed: {error:?}")
+                samara::eprintln!(&config.stderr, "Time request failed: {error:?}")
             }
             CliMessage::TimeReceived(RequestOutcome::TimedOut) => {
-                samara::eprintln!(&self.stderr, "Time request timed out")
+                samara::eprintln!(&config.stderr, "Time request timed out")
             }
             CliMessage::TimeReceived(RequestOutcome::Cancelled) => {
-                samara::eprintln!(&self.stderr, "Time request was cancelled")
+                samara::eprintln!(&config.stderr, "Time request was cancelled")
             }
         }
     }
 
-    fn subscriptions(&self, model: &Self::Model) -> Subscriptions<Self::Message> {
+    fn subscriptions(config: &Self::Config, model: &Self::Model) -> Subscriptions<Self::Message> {
         if model.input_closed {
             return Subscriptions::none();
         }
 
         Subscriptions::one(Subscription::source_with(
-            &self.input,
+            &config.input,
             SubscriptionId::new(CLI_SUBSCRIPTION),
             StdinLines::new(),
             |event| match event {
@@ -293,7 +306,7 @@ async fn main() -> Result<()> {
     let time_port = builder.port::<TimeServerProtocol>(PortId::new(TIME_SERVER_PORT));
 
     // The concrete provider happens to obtain time over HTTP.
-    let http_time_server = builder.component(
+    let http_time_server = builder.component::<HttpTimeServer>(
         ComponentId::new("http-time-server"),
         HttpTimeServer {
             http,
@@ -306,7 +319,7 @@ async fn main() -> Result<()> {
 
     // Raw terminal lines cross the runtime boundary as an ongoing Source. The
     // CLI owns parsing, presentation, and its dependency on the time service.
-    builder.component(
+    builder.component::<Cli>(
         ComponentId::new("cli"),
         Cli {
             input: cli_input.clone(),
@@ -380,9 +393,10 @@ mod tests {
     #[test]
     fn cli_commands_declare_print_and_time_request_intent() {
         let cli = cli_fixture();
-        let mut model = cli.init().model;
+        let mut model = Cli::init(&cli).model;
 
-        let print = cli.update(
+        let print = Cli::update(
+            &cli,
             &mut model,
             CliMessage::Command(CliCommand::Print("hello Samara".to_owned())),
         );
@@ -394,7 +408,7 @@ mod tests {
             "hello Samara\n"
         );
 
-        let time = cli.update(&mut model, CliMessage::Command(CliCommand::GetTime));
+        let time = Cli::update(&cli, &mut model, CliMessage::Command(CliCommand::GetTime));
         let requests = time.request_intents::<GetCurrentTime>();
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].0, &PortId::new(TIME_SERVER_PORT));
@@ -403,8 +417,8 @@ mod tests {
     #[test]
     fn cli_subscription_parses_input_and_withdraws_after_eof() {
         let cli = cli_fixture();
-        let mut model = cli.init().model;
-        let subscriptions = cli.subscriptions(&model);
+        let mut model = Cli::init(&cli).model;
+        let subscriptions = Cli::subscriptions(&cli, &model);
         let subscription = subscriptions
             .iter()
             .next()
@@ -422,21 +436,22 @@ mod tests {
             CliMessage::Command(CliCommand::Print(text)) if text == "from stdin"
         ));
 
-        let command = cli.update(&mut model, CliMessage::InputEnded);
+        let command = Cli::update(&cli, &mut model, CliMessage::InputEnded);
         assert!(command.is_none());
         assert!(model.input_closed);
-        assert_eq!(cli.subscriptions(&model).iter().count(), 0);
+        assert_eq!(Cli::subscriptions(&cli, &model).iter().count(), 0);
     }
 
     #[test]
     fn cli_prints_the_time_request_reply() {
         let cli = cli_fixture();
-        let mut model = cli.init().model;
+        let mut model = Cli::init(&cli).model;
         let time = DateTime::parse_from_rfc3339("2026-07-25T12:34:56Z")
             .expect("the fixture timestamp is valid")
             .with_timezone(&Utc);
 
-        let command = cli.update(
+        let command = Cli::update(
+            &cli,
             &mut model,
             CliMessage::TimeReceived(RequestOutcome::Replied(Some(time))),
         );
@@ -452,8 +467,8 @@ mod tests {
     #[test]
     fn cli_reports_and_withdraws_failed_stdin() {
         let cli = cli_fixture();
-        let mut model = cli.init().model;
-        let subscriptions = cli.subscriptions(&model);
+        let mut model = Cli::init(&cli).model;
+        let subscriptions = Cli::subscriptions(&cli, &model);
         let subscription = subscriptions
             .iter()
             .next()
@@ -467,9 +482,9 @@ mod tests {
             CliMessage::InputFailed(error) if error == &failure
         ));
 
-        let command = cli.update(&mut model, message);
+        let command = Cli::update(&cli, &mut model, message);
         assert!(model.input_closed);
-        assert_eq!(cli.subscriptions(&model).iter().count(), 0);
+        assert_eq!(Cli::subscriptions(&cli, &model).iter().count(), 0);
         assert_eq!(
             command
                 .effect_intent::<PrintStderr>()

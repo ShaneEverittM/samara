@@ -221,14 +221,19 @@ impl From<EchoProtocolMessage> for ProviderMessage {
 struct EchoProvider;
 
 impl Component for EchoProvider {
+    type Config = Self;
     type Model = ();
     type Message = ProviderMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(())
     }
 
-    fn update(&self, _model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        _config: &Self::Config,
+        _model: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         let ProviderMessage::Protocol(EchoProtocolMessage::Echo(invocation)) = message;
         Command::reply(invocation.reply_to, invocation.request.0)
     }
@@ -261,19 +266,24 @@ struct Requester {
 }
 
 impl Component for Requester {
+    type Config = Self;
     type Model = RequesterModel;
     type Message = RequesterMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(RequesterModel::default())
     }
 
-    fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        config: &Self::Config,
+        model: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         match message {
-            RequesterMessage::StartDefault => Command::request(self.echo.clone(), Echo(11)),
+            RequesterMessage::StartDefault => Command::request(config.echo.clone(), Echo(11)),
             RequesterMessage::StartExplicit => {
                 let context = "second request";
-                Command::request_with(self.echo.clone(), Echo(12), move |outcome| {
+                Command::request_with(config.echo.clone(), Echo(12), move |outcome| {
                     RequesterMessage::Explicit { context, outcome }
                 })
             }
@@ -293,9 +303,9 @@ impl Component for Requester {
 fn request_default_uses_from_and_request_with_preserves_context() {
     let mut builder = Program::builder();
     let echo = builder.port::<EchoProtocol>(PortId::new("echo"));
-    let provider = builder.component(ComponentId::new("provider"), EchoProvider);
+    let provider = builder.component::<EchoProvider>(ComponentId::new("provider"), EchoProvider);
     builder.bind_port(&echo, &provider);
-    let requester = builder.component(
+    let requester = builder.component::<Requester>(
         ComponentId::new("requester"),
         Requester { echo: echo.clone() },
     );

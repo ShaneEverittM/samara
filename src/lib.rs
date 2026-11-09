@@ -20,14 +20,15 @@
 //! enum Message { Add(u64) }
 //!
 //! impl Component for Counter {
+//!     type Config = Self;
 //!     type Model = u64;
 //!     type Message = Message;
 //!
-//!     fn init(&self) -> Init<u64, Message> {
+//!     fn init(_config: &Self::Config) -> Init<u64, Message> {
 //!         Init::new(0)
 //!     }
 //!
-//!     fn update(&self, count: &mut u64, message: Message) -> Command<Message> {
+//!     fn update(_config: &Self::Config, count: &mut u64, message: Message) -> Command<Message> {
 //!         match message {
 //!             Message::Add(amount) => *count += amount,
 //!         }
@@ -36,7 +37,7 @@
 //! }
 //!
 //! let mut builder = Program::builder();
-//! let counter = builder.component(ComponentId::new("counter"), Counter);
+//! let counter = builder.component::<Counter>(ComponentId::new("counter"), Counter);
 //! let mut runtime = ControlledRuntime::builder(builder.build()?).build()?;
 //! runtime.send(&counter, Message::Add(3))?;
 //! runtime.run_until_idle()?;
@@ -75,9 +76,12 @@ use std::{
     time::Duration,
 };
 
+mod clock;
 mod component_kernel;
 mod controlled_runtime;
 mod declarative_work;
+#[cfg(feature = "fs")]
+mod fs;
 mod http_redirect;
 mod live_runtime;
 
@@ -93,6 +97,11 @@ use controlled_runtime::ControlledCore;
 /// assert!(status.is_success());
 /// assert_eq!(status.as_u16(), 200);
 /// ```
+pub use clock::{ReadSystemTime, SystemClockDriver};
+#[cfg(feature = "fs")]
+pub use fs::{
+    AppendToFile, FsDriver, FsError, FsErrorKind, FsOperation, ReadFile, RemoveFile, ReplaceFile,
+};
 pub use http::StatusCode;
 
 /// Common types and traits for writing components and building runtimes.
@@ -106,21 +115,27 @@ pub use http::StatusCode;
 /// Formatting macros are used as `samara::println!`, `samara::eprintln!`, etc.,
 /// to distinguish them from Rust's immediate I/O macros.
 pub mod prelude {
+    #[cfg(feature = "fs")]
     pub use crate::{
-        Bindings, BoxFuture, CancelReason, Command, Component, ComponentHandle, ComponentId,
-        ComponentRef, Controlled, ControlledRuntime, ControlledRuntimeBuilder, Decoder,
-        DriverStopped, EffectCapability, EffectDescriptor, EffectDriver, EffectInvocation,
-        EffectOutcome, EffectOutcomeKind, Framed, FramedError, FramedLayer, HttpError,
-        HttpErrorKind, HttpJsonError, HttpRequest, HttpResponse, HttpResponseError,
-        HttpStatusError, Init, Installed, LiveRuntime, LiveRuntimeBuilder, LogicalTime,
-        Notification, PendingEffect, PendingWork, Port, PortHandle, PortId, PrintStderr,
-        PrintStdout, Program, ProgramBuildError, ProgramBuilder, Protocol, ReplyTo, Request,
-        RequestError, RequestInvocation, RequestOutcome, RequestOutcomeKind, RunReport,
-        RuntimeBuilder, RuntimeError, RuntimeTask, Shutdown, ShutdownReport, SourceCapability,
-        SourceDescriptor, SourceDriver, SourceEvent, SourceEventKind, SourceSink, StatusCode,
-        StdinError, StdinErrorKind, StdinLines, StreamDescriptor, Subprogram, Subscription,
-        SubscriptionAction, SubscriptionId, Subscriptions, TcpBytes, TcpError, TcpErrorKind,
-        TraceCommandKind, TraceEvent, TraceId, TraceRecord, WithSubprogram, protocol,
+        AppendToFile, FsDriver, FsError, FsErrorKind, FsOperation, ReadFile, RemoveFile,
+        ReplaceFile,
+    };
+    pub use crate::{
+        BoxFuture, CancelReason, Command, Component, ComponentHandle, ComponentId, ComponentRef,
+        ControlledRuntime, ControlledRuntimeBuilder, Decoder, DriverStopped, Drivers, Effect,
+        EffectCapability, EffectDescriptor, EffectDriver, EffectInvocation, EffectOutcome,
+        EffectOutcomeKind, Framed, FramedError, FramedLayer, HttpError, HttpErrorKind,
+        HttpJsonError, HttpRequest, HttpResponse, HttpResponseError, HttpStatusError, Init,
+        Installed, LiveRuntime, LiveRuntimeBuilder, LogicalTime, Notification, PendingEffect,
+        PendingWork, Port, PortHandle, PortId, PrintStderr, PrintStdout, Program,
+        ProgramBuildError, ProgramBuilder, Protocol, ReadSystemTime, ReplyTo, Request,
+        RequestError, RequestInvocation, RequestOutcome, RequestOutcomeKind, Requirements,
+        RunReport, RuntimeError, RuntimeTask, ShipsDrivers, Shutdown, ShutdownReport, Source,
+        SourceCapability, SourceDescriptor, SourceDriver, SourceEvent, SourceEventKind, SourceSink,
+        StatusCode, StdinError, StdinErrorKind, StdinLines, StreamDescriptor, Subprogram,
+        Subscription, SubscriptionAction, SubscriptionId, Subscriptions, SystemClockDriver,
+        TcpBytes, TcpError, TcpErrorKind, TraceCommandKind, TraceEvent, TraceId, TraceRecord,
+        WithSubprogram, protocol,
     };
 }
 
@@ -702,29 +717,32 @@ where
     }
 }
 
-/// A part of an application with its own state and messages.
+/// A kind of part of an application, with its own configuration, state, and messages.
 ///
-/// Put changing application state in `Model`. Keep configuration, capabilities,
-/// and ports on the component itself. Samara owns the model and calls `update`
-/// for each message, never overlapping updates to the same component.
+/// The type you implement `Component` on is only a name for the kind. Its
+/// immutable configuration, such as capabilities and ports, is a separate
+/// `Config` value supplied at registration. Its changing application state is
+/// the `Model`, which Samara owns. Samara calls `update` for each message, never
+/// overlapping updates to the same component.
 ///
-/// All three methods must be deterministic and free of I/O, blocking, locks, and
-/// clock reads. Return commands and subscriptions to request work.
+/// All three functions must be deterministic and free of I/O, blocking, locks,
+/// and clock reads. Return commands and subscriptions to request work.
 ///
 /// ```
 /// use samara::prelude::*;
 /// struct Counter;
 /// impl Component for Counter {
+///     type Config = ();
 ///     type Model = u64;
 ///     type Message = u64;
-///     fn init(&self) -> Init<u64, u64> { Init::new(0) }
-///     fn update(&self, count: &mut u64, amount: u64) -> Command<u64> {
+///     fn init(_: &()) -> Init<u64, u64> { Init::new(0) }
+///     fn update(_: &(), count: &mut u64, amount: u64) -> Command<u64> {
 ///         *count += amount;
 ///         Command::none()
 ///     }
 /// }
-/// let mut model = Counter.init().model;
-/// assert!(Counter.update(&mut model, 3).is_none());
+/// let mut model = Counter::init(&()).model;
+/// assert!(Counter::update(&(), &mut model, 3).is_none());
 /// assert_eq!(model, 3);
 /// ```
 ///
@@ -740,35 +758,44 @@ where
 /// struct OtherMessage;
 ///
 /// fn deliver_wrong_type<C: Component>(
-///     component: &C,
+///     config: &C::Config,
 ///     model: &mut C::Model,
 ///     message: OtherMessage,
 /// ) -> Command<C::Message> {
-///     component.update(model, message)
+///     C::update(config, model, message)
 /// }
 /// ```
 ///
 /// </details>
-pub trait Component: Send + 'static {
+pub trait Component: 'static {
+    /// This component's immutable configuration: capabilities, ports, and settings.
+    ///
+    /// Use `()` when there is none. Samara stores one value per registered
+    /// component and passes it to every function by shared reference.
+    type Config: Send + 'static;
     /// This component's mutable application state.
     type Model: Send + 'static;
     /// Messages this component handles in `update`.
     type Message: Send + 'static;
 
     /// Creates the starting model and optional startup work. Called when the component is registered.
-    fn init(&self) -> Init<Self::Model, Self::Message>;
+    fn init(config: &Self::Config) -> Init<Self::Model, Self::Message>;
 
     /// Handles one message, updates the model, and returns the next actions.
     ///
     /// Use [`Command::none`] when no work is needed. Do not perform I/O here.
-    fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message>;
+    fn update(
+        config: &Self::Config,
+        model: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message>;
 
     /// Returns the inputs this component wants for the current model.
     ///
     /// Called for the initial model and after each update. Samara starts new inputs,
     /// keeps unchanged ones, and stops those omitted from the returned set.
     /// The default returns no subscriptions. See [`Subscription`] for comparison rules.
-    fn subscriptions(&self, _model: &Self::Model) -> Subscriptions<Self::Message> {
+    fn subscriptions(_config: &Self::Config, _model: &Self::Model) -> Subscriptions<Self::Message> {
         Subscriptions::none()
     }
 }
@@ -2620,23 +2647,24 @@ impl<Message> From<Vec<Subscription<Message>>> for Subscriptions<Message> {
 /// use std::convert::Infallible;
 /// struct Sum { input: SourceCapability<StreamDescriptor<u64>> }
 /// impl Component for Sum {
+///     type Config = Self;
 ///     type Model = u64;
 ///     type Message = SourceEvent<u64, Infallible>;
-///     fn init(&self) -> Init<u64, Self::Message> { Init::new(0) }
-///     fn update(&self, sum: &mut u64, event: Self::Message) -> Command<Self::Message> {
+///     fn init(_config: &Self::Config) -> Init<u64, Self::Message> { Init::new(0) }
+///     fn update(_config: &Self::Config, sum: &mut u64, event: Self::Message) -> Command<Self::Message> {
 ///         if let SourceEvent::Item(value) = event { *sum += value; }
 ///         Command::none()
 ///     }
-///     fn subscriptions(&self, _: &u64) -> Subscriptions<Self::Message> {
+///     fn subscriptions(config: &Self::Config, _: &u64) -> Subscriptions<Self::Message> {
 ///         Subscriptions::one(Subscription::source(
-///             &self.input, SubscriptionId::new("values"), StreamDescriptor::named("numbers"),
+///             &config.input, SubscriptionId::new("values"), StreamDescriptor::named("numbers"),
 ///         ))
 ///     }
 /// }
 /// fn program() -> Result<(Program, ComponentRef<Sum>, SourceCapability<StreamDescriptor<u64>>), ProgramBuildError> {
 ///     let mut builder = Program::builder();
 ///     let input = builder.source::<StreamDescriptor<u64>>();
-///     let sum = builder.component(ComponentId::new("sum"), Sum { input: input.clone() });
+///     let sum = builder.component::<Sum>(ComponentId::new("sum"), Sum { input: input.clone() });
 ///     Ok((builder.build()?, sum, input))
 /// }
 /// let (program_under_test, sum, input) = program()?;
@@ -2735,13 +2763,14 @@ impl<T: Send + 'static> StreamSourceDescriptor for StreamDescriptor<T> {
 /// struct Model { lines: Vec<String>, error: Option<StdinError>, open: bool }
 ///
 /// impl Component for Reader {
+///     type Config = Self;
 ///     type Model = Model;
 ///     type Message = SourceEvent<String, StdinError>;
 ///
-///     fn init(&self) -> Init<Model, Self::Message> {
+///     fn init(_config: &Self::Config) -> Init<Model, Self::Message> {
 ///         Init::new(Model { lines: Vec::new(), error: None, open: true })
 ///     }
-///     fn update(&self, model: &mut Model, event: Self::Message) -> Command<Self::Message> {
+///     fn update(_config: &Self::Config, model: &mut Model, event: Self::Message) -> Command<Self::Message> {
 ///         match event {
 ///             SourceEvent::Item(line) => model.lines.push(line),
 ///             SourceEvent::Ended => model.open = false,
@@ -2752,10 +2781,10 @@ impl<T: Send + 'static> StreamSourceDescriptor for StreamDescriptor<T> {
 ///         }
 ///         Command::none()
 ///     }
-///     fn subscriptions(&self, model: &Model) -> Subscriptions<Self::Message> {
+///     fn subscriptions(config: &Self::Config, model: &Model) -> Subscriptions<Self::Message> {
 ///         if !model.open { return Subscriptions::none(); }
 ///         Subscriptions::one(Subscription::source(
-///             &self.input, SubscriptionId::new("input"), StdinLines::new(),
+///             &config.input, SubscriptionId::new("input"), StdinLines::new(),
 ///         ))
 ///     }
 /// }
@@ -2763,7 +2792,7 @@ impl<T: Send + 'static> StreamSourceDescriptor for StreamDescriptor<T> {
 /// fn program() -> Result<(Program, ComponentRef<Reader>), ProgramBuildError> {
 ///     let mut builder = Program::builder();
 ///     let input = builder.source::<StdinLines>();
-///     let reader = builder.component(ComponentId::new("reader"), Reader { input });
+///     let reader = builder.component::<Reader>(ComponentId::new("reader"), Reader { input });
 ///     Ok((builder.build()?, reader))
 /// }
 ///
@@ -4281,6 +4310,13 @@ impl Program {
             .find(|requirement| requirement.token.same_as(token))
     }
 
+    #[cfg(feature = "fs")]
+    pub(crate) fn declares_effect_type<D: EffectDescriptor>(&self) -> bool {
+        self.effect_requirements
+            .iter()
+            .any(|requirement| requirement.descriptor_type == TypeId::of::<D>())
+    }
+
     pub(crate) fn declares_effect(&self, token: &CapabilityToken, descriptor: TypeId) -> bool {
         token.belongs_to(&self.program)
             && self
@@ -4705,14 +4741,15 @@ impl ProgramBuilder {
         }
     }
 
-    /// Registers a component and returns its address.
+    /// Registers a component of kind `C` with its configuration and returns its address.
     ///
-    /// Calls [`Component::init`] now and stores the starting model and command.
-    /// The command runs when the runtime starts. Component names must be unique;
-    /// registration order does not determine live execution order.
+    /// Name the kind explicitly: `program.component::<Counter>(id, ())`. Calls
+    /// [`Component::init`] now and stores the configuration, starting model, and
+    /// command. The command runs when the runtime starts. Component names must be
+    /// unique; registration order does not determine live execution order.
     ///
     /// See the [crate example](crate) or [`Self::bind_port`].
-    pub fn component<C>(&mut self, id: ComponentId, component: C) -> ComponentRef<C>
+    pub fn component<C>(&mut self, id: ComponentId, config: C::Config) -> ComponentRef<C>
     where
         C: Component,
     {
@@ -4722,7 +4759,7 @@ impl ProgramBuilder {
             marker: PhantomData,
         };
         self.components
-            .push(Box::new(ComponentKernel::new(id, component)));
+            .push(Box::new(ComponentKernel::<C>::new(id, config)));
 
         component_ref
     }
@@ -4761,10 +4798,11 @@ impl ProgramBuilder {
     ///
     /// struct Counter;
     /// impl Component for Counter {
+    ///     type Config = Self;
     ///     type Model = u64;
     ///     type Message = CountMessage;
-    ///     fn init(&self) -> Init<u64, CountMessage> { Init::new(42) }
-    ///     fn update(&self, count: &mut u64, message: CountMessage) -> Command<CountMessage> {
+    ///     fn init(_config: &Self::Config) -> Init<u64, CountMessage> { Init::new(42) }
+    ///     fn update(_config: &Self::Config, count: &mut u64, message: CountMessage) -> Command<CountMessage> {
     ///         match message {
     ///             CountMessage::Read(call) => Command::reply(call.reply_to, *count),
     ///         }
@@ -4773,12 +4811,13 @@ impl ProgramBuilder {
     ///
     /// struct Client { counter: Port<Count> }
     /// impl Component for Client {
+    ///     type Config = Self;
     ///     type Model = Option<u64>;
     ///     type Message = RequestOutcome<u64>;
-    ///     fn init(&self) -> Init<Self::Model, Self::Message> {
-    ///         Init::default().with_command(Command::request(self.counter.clone(), Read))
+    ///     fn init(config: &Self::Config) -> Init<Self::Model, Self::Message> {
+    ///         Init::default().with_command(Command::request(config.counter.clone(), Read))
     ///     }
-    ///     fn update(&self, value: &mut Option<u64>, reply: Self::Message) -> Command<Self::Message> {
+    ///     fn update(_config: &Self::Config, value: &mut Option<u64>, reply: Self::Message) -> Command<Self::Message> {
     ///         if let RequestOutcome::Replied(count) = reply { *value = Some(count); }
     ///         Command::none()
     ///     }
@@ -4786,9 +4825,9 @@ impl ProgramBuilder {
     ///
     /// let mut builder = Program::builder();
     /// let port = builder.port::<Count>(PortId::new("counter"));
-    /// let counter = builder.component(ComponentId::new("counter"), Counter);
+    /// let counter = builder.component::<Counter>(ComponentId::new("counter"), Counter);
     /// builder.bind_port(&port, &counter);
-    /// let client = builder.component(ComponentId::new("client"), Client { counter: port });
+    /// let client = builder.component::<Client>(ComponentId::new("client"), Client { counter: port });
     /// let mut runtime = ControlledRuntime::builder(builder.build()?).build()?;
     /// runtime.run_until_idle()?;
     /// assert_eq!(*runtime.state(&client)?, Some(42));
@@ -5154,10 +5193,11 @@ pub struct LiveRuntimeBuilder {
 /// use samara::prelude::*;
 /// struct Counter;
 /// impl Component for Counter {
+///     type Config = Self;
 ///     type Model = u64;
 ///     type Message = u64;
-///     fn init(&self) -> Init<u64, u64> { Init::new(0) }
-///     fn update(&self, count: &mut u64, amount: u64) -> Command<u64> {
+///     fn init(_config: &Self::Config) -> Init<u64, u64> { Init::new(0) }
+///     fn update(_config: &Self::Config, count: &mut u64, amount: u64) -> Command<u64> {
 ///         *count += amount;
 ///         Command::none()
 ///     }
@@ -5165,7 +5205,7 @@ pub struct LiveRuntimeBuilder {
 /// let tokio = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
 /// tokio.block_on(async {
 ///     let mut builder = Program::builder();
-///     let counter = builder.component(ComponentId::new("counter"), Counter);
+///     let counter = builder.component::<Counter>(ComponentId::new("counter"), Counter);
 ///     let runtime = LiveRuntime::builder(builder.build()?).build()?;
 ///     let sender = runtime.handle(&counter)?;
 ///     let task = runtime.spawn();
@@ -5373,6 +5413,54 @@ impl LiveRuntimeBuilder {
         self
     }
 
+    /// Enables [`ReadSystemTime`] effects answered by the operating system clock.
+    ///
+    /// ```
+    /// use samara::prelude::*;
+    /// let mut program = Program::builder();
+    /// let clock = program.effect::<ReadSystemTime>();
+    /// let runtime = LiveRuntime::builder(program.build()?).bind_system_time().build()?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn bind_system_time(mut self) -> Self {
+        self.bindings
+            .bind_effect::<ReadSystemTime, _>(SystemClockDriver);
+        self
+    }
+
+    /// Enables [`AppendToFile`], [`ReplaceFile`], [`ReadFile`], and [`RemoveFile`]
+    /// effects, resolving every path under `root`. Requires the `fs` feature.
+    ///
+    /// Provisional. Paths that are absolute or contain `..` fail with
+    /// [`FsErrorKind::OutsideRoot`]. The root is created lazily by the first write.
+    /// Only the effects the Program declares are bound, so a Program that reads
+    /// nothing does not need a [`ReadFile`] binding.
+    ///
+    /// ```
+    /// use samara::prelude::*;
+    /// let mut program = Program::builder();
+    /// let journal = program.effect::<AppendToFile>();
+    /// let runtime = LiveRuntime::builder(program.build()?).bind_fs("./data").build()?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    #[cfg(feature = "fs")]
+    pub fn bind_fs(mut self, root: impl Into<std::path::PathBuf>) -> Self {
+        let driver = FsDriver::new(root);
+        if self.program.declares_effect_type::<AppendToFile>() {
+            self.bindings.bind_effect::<AppendToFile, _>(driver.clone());
+        }
+        if self.program.declares_effect_type::<ReplaceFile>() {
+            self.bindings.bind_effect::<ReplaceFile, _>(driver.clone());
+        }
+        if self.program.declares_effect_type::<ReadFile>() {
+            self.bindings.bind_effect::<ReadFile, _>(driver.clone());
+        }
+        if self.program.declares_effect_type::<RemoveFile>() {
+            self.bindings.bind_effect::<RemoveFile, _>(driver);
+        }
+        self
+    }
+
     /// Checks the bindings and returns a runtime ready to start.
     ///
     /// Every declared effect and source needs one matching implementation, even if
@@ -5455,10 +5543,11 @@ impl<C: Component> ComponentHandle<C> {
 /// protocol! { type Count => enum CountMessage { Read -> u64, } }
 /// struct Counter;
 /// impl Component for Counter {
+///     type Config = Self;
 ///     type Model = u64;
 ///     type Message = CountMessage;
-///     fn init(&self) -> Init<u64, CountMessage> { Init::new(42) }
-///     fn update(&self, count: &mut u64, message: CountMessage) -> Command<CountMessage> {
+///     fn init(_config: &Self::Config) -> Init<u64, CountMessage> { Init::new(42) }
+///     fn update(_config: &Self::Config, count: &mut u64, message: CountMessage) -> Command<CountMessage> {
 ///         match message {
 ///             CountMessage::Read(call) => Command::reply(call.reply_to, *count),
 ///         }
@@ -5468,7 +5557,7 @@ impl<C: Component> ComponentHandle<C> {
 /// tokio.block_on(async {
 ///     let mut builder = Program::builder();
 ///     let count = builder.port::<Count>(PortId::new("count"));
-///     let counter = builder.component(ComponentId::new("counter"), Counter);
+///     let counter = builder.component::<Counter>(ComponentId::new("counter"), Counter);
 ///     builder.bind_port(&count, &counter);
 ///     let runtime = LiveRuntime::builder(builder.build()?).build()?;
 ///     let client = runtime.port_handle(&count)?;
@@ -5845,14 +5934,15 @@ pub struct ControlledRuntimeBuilder {
 /// use samara::prelude::*;
 /// struct Check { http: EffectCapability<HttpRequest> }
 /// impl Component for Check {
+///     type Config = Self;
 ///     type Model = Option<StatusCode>;
 ///     type Message = EffectOutcome<HttpResponse, HttpError>;
-///     fn init(&self) -> Init<Self::Model, Self::Message> {
+///     fn init(config: &Self::Config) -> Init<Self::Model, Self::Message> {
 ///         Init::default().with_command(Command::effect(
-///             &self.http, HttpRequest::get("https://example.test/health"),
+///             &config.http, HttpRequest::get("https://example.test/health"),
 ///         ))
 ///     }
-///     fn update(&self, status: &mut Self::Model, outcome: Self::Message) -> Command<Self::Message> {
+///     fn update(_config: &Self::Config, status: &mut Self::Model, outcome: Self::Message) -> Command<Self::Message> {
 ///         if let EffectOutcome::Succeeded(response) = outcome {
 ///             *status = Some(response.status());
 ///         }
@@ -5861,7 +5951,7 @@ pub struct ControlledRuntimeBuilder {
 /// }
 /// let mut builder = Program::builder();
 /// let http = builder.effect::<HttpRequest>();
-/// let check = builder.component(ComponentId::new("check"), Check { http });
+/// let check = builder.component::<Check>(ComponentId::new("check"), Check { http });
 /// let mut runtime = ControlledRuntime::builder(builder.build()?)
 ///     .control_effect::<HttpRequest>().build()?;
 /// runtime.run_until_idle()?;
@@ -6019,18 +6109,19 @@ impl ControlledRuntime {
     /// use std::time::Duration;
     /// struct Timer;
     /// impl Component for Timer {
+    ///     type Config = Self;
     ///     type Model = bool;
     ///     type Message = ();
-    ///     fn init(&self) -> Init<bool, ()> {
+    ///     fn init(_config: &Self::Config) -> Init<bool, ()> {
     ///         Init::new(false).with_command(Command::after(Duration::from_secs(2), ()))
     ///     }
-    ///     fn update(&self, fired: &mut bool, _: ()) -> Command<()> {
+    ///     fn update(_config: &Self::Config, fired: &mut bool, _: ()) -> Command<()> {
     ///         *fired = true;
     ///         Command::none()
     ///     }
     /// }
     /// let mut builder = Program::builder();
-    /// let timer = builder.component(ComponentId::new("timer"), Timer);
+    /// let timer = builder.component::<Timer>(ComponentId::new("timer"), Timer);
     /// let mut runtime = ControlledRuntime::builder(builder.build()?).build()?;
     /// runtime.advance(Duration::from_secs(1))?;
     /// assert!(!*runtime.state(&timer)?);
@@ -6140,137 +6231,22 @@ impl ControlledRuntimeBuilder {
     }
 }
 
-/// Binds effects and sources without naming the execution profile.
-///
-/// [`LiveRuntimeBuilder`] and [`ControlledRuntimeBuilder`] both implement it. A
-/// live binding is a boxed driver; a controlled binding is the [`Controlled`]
-/// marker, because tests supply outcomes through the harness and no driver runs.
-/// The associated types carry that difference so a [`Subprogram`] can state the
-/// drivers it needs once, generic over the profile. Only binding is shared: spawning,
-/// stepping, and supplying outcomes stay on the concrete builders.
-///
-/// Direct callers can keep using [`LiveRuntimeBuilder::bind_effect`] and
-/// [`ControlledRuntimeBuilder::control_effect`]; these methods are a second path
-/// for profile-generic code. See [`Subprogram`] for a complete example.
-pub trait RuntimeBuilder: Sized {
-    /// What binding effect type `D` takes in this profile.
-    type EffectBinding<D: EffectDescriptor>;
-    /// What binding source type `S` takes in this profile.
-    type SourceBinding<S: SourceDescriptor>;
-
-    /// Binds effect type `D` for this profile.
-    fn bind_effect<D: EffectDescriptor>(self, binding: Self::EffectBinding<D>) -> Self;
-
-    /// Binds source type `S` for this profile.
-    fn bind_source<S: SourceDescriptor>(self, binding: Self::SourceBinding<S>) -> Self;
-
-    /// Starts binding an installed [`Subprogram`]'s drivers.
-    ///
-    /// Takes the [`Installed`] token from [`ProgramBuilder::install`] and returns a
-    /// step that holds this builder until [`WithSubprogram::and_drivers`]
-    /// supplies them. Nothing else can be called on the builder in between, so a
-    /// chain that forgets the drivers does not compile.
-    fn with_subprogram<S: Subprogram>(self, installed: Installed<S>) -> WithSubprogram<Self, S> {
-        drop(installed);
-        WithSubprogram {
-            builder: self,
-            marker: PhantomData,
-        }
-    }
-}
-
-/// A builder waiting for an installed Subprogram's drivers.
-///
-/// Returned by [`RuntimeBuilder::with_subprogram`]. Call
-/// [`Self::and_drivers`] to bind them and get the builder back.
-#[must_use = "call `and_drivers` to bind the Subprogram's drivers and recover the builder"]
-pub struct WithSubprogram<B: RuntimeBuilder, S: Subprogram> {
-    builder: B,
-    marker: PhantomData<fn() -> S>,
-}
-
-impl<B: RuntimeBuilder, S: Subprogram> WithSubprogram<B, S> {
-    /// Binds the Subprogram's drivers and returns the builder.
-    ///
-    /// The profile is the builder's own, so a live host writes boxed drivers and a
-    /// controlled test writes [`Controlled`] markers into the same struct.
-    pub fn and_drivers(self, drivers: S::Drivers<B>) -> B {
-        drivers.bind(self.builder)
-    }
-}
-
-/// The binding for an effect or source under controlled execution.
-///
-/// Controlled tests supply outcomes and events through the harness, so no driver
-/// is needed. Pass it wherever [`RuntimeBuilder::EffectBinding`] or
-/// [`RuntimeBuilder::SourceBinding`] names it for [`ControlledRuntimeBuilder`].
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Controlled;
-
-impl<D: EffectDescriptor> EffectDriver<D> for Box<dyn EffectDriver<D>> {
-    fn execute(&self, descriptor: D) -> BoxFuture<Result<D::Output, D::Error>> {
-        (**self).execute(descriptor)
-    }
-}
-
-impl<D: SourceDescriptor> SourceDriver<D> for Box<dyn SourceDriver<D>> {
-    fn run(&self, descriptor: D, sink: SourceSink<D>) -> BoxFuture<()> {
-        (**self).run(descriptor, sink)
-    }
-}
-
-impl RuntimeBuilder for LiveRuntimeBuilder {
-    type EffectBinding<D: EffectDescriptor> = Box<dyn EffectDriver<D>>;
-    type SourceBinding<S: SourceDescriptor> = Box<dyn SourceDriver<S>>;
-
-    fn bind_effect<D: EffectDescriptor>(self, binding: Box<dyn EffectDriver<D>>) -> Self {
-        LiveRuntimeBuilder::bind_effect::<D, _>(self, binding)
-    }
-
-    fn bind_source<S: SourceDescriptor>(self, binding: Box<dyn SourceDriver<S>>) -> Self {
-        LiveRuntimeBuilder::bind_source::<S, _>(self, binding)
-    }
-}
-
-impl RuntimeBuilder for ControlledRuntimeBuilder {
-    type EffectBinding<D: EffectDescriptor> = Controlled;
-    type SourceBinding<S: SourceDescriptor> = Controlled;
-
-    fn bind_effect<D: EffectDescriptor>(self, Controlled: Controlled) -> Self {
-        self.control_effect::<D>()
-    }
-
-    fn bind_source<S: SourceDescriptor>(self, Controlled: Controlled) -> Self {
-        self.control_source::<S>()
-    }
-}
-
-/// A Subprogram's drivers for one execution profile.
-///
-/// Implement it once for a struct with one field per declared effect or source,
-/// typed through [`RuntimeBuilder::EffectBinding`] and
-/// [`RuntimeBuilder::SourceBinding`]. The same implementation then serves live and
-/// controlled builders. See [`Subprogram`] for a complete example.
-pub trait Bindings<R: RuntimeBuilder> {
-    /// Binds every driver into the builder and returns it.
-    fn bind(self, runtime: R) -> R;
-}
-
 /// A reusable assembly unit installed into an enclosing Program.
 ///
 /// A Subprogram declares its own Components, Ports, and capabilities into a
 /// [`ProgramBuilder`], exports what callers may use (normally a [`Port`]), and
-/// names the drivers the host must bind as a struct type. It is subordinate to the Program, not
-/// to another Component: the Components it installs are ordinary peers reached
-/// through Ports. Application-owned Components do not need to implement it.
+/// lists the world boundaries it needs as [`Self::Requires`]. It is subordinate
+/// to the Program, not to another Component: the Components it installs are
+/// ordinary peers reached through Ports. Application-owned Components do not
+/// need to implement it.
 ///
 /// Drivers never bind inside [`Self::install`]; assembly is shared by live and
 /// controlled execution. [`ProgramBuilder::install`] returns an [`Installed`]
-/// token holding the exports; the host passes it to
-/// [`RuntimeBuilder::with_subprogram`] and supplies drivers with
-/// [`WithSubprogram::and_drivers`]. The drivers type is tied to the
-/// Subprogram, so a mismatched binding is a compile error and a forgotten one is
-/// caught by the builder's existing validation.
+/// token holding the exports. A live host passes it to
+/// [`LiveRuntimeBuilder::with_subprogram`] and supplies drivers with
+/// [`WithSubprogram::and_drivers`]; a controlled test passes it to
+/// [`ControlledRuntimeBuilder::with_subprogram`] and is done, because controlled
+/// bindings carry no information beyond the descriptor type.
 ///
 /// ```
 /// use samara::prelude::*;
@@ -6283,34 +6259,29 @@ pub trait Bindings<R: RuntimeBuilder> {
 ///
 /// protocol! { pub type Beacon => enum BeaconMessage { Tick, } }
 ///
-/// struct Pinger {
+/// struct Pinger;
+/// struct PingerConfig {
 ///     ping: EffectCapability<Ping>,
 /// }
 /// impl Component for Pinger {
+///     type Config = PingerConfig;
 ///     type Model = u32;
 ///     type Message = BeaconMessage;
-///     fn init(&self) -> Init<u32, BeaconMessage> { Init::new(0) }
-///     fn update(&self, ticks: &mut u32, _: BeaconMessage) -> Command<BeaconMessage> {
+///     fn init(_: &PingerConfig) -> Init<u32, BeaconMessage> { Init::new(0) }
+///     fn update(config: &PingerConfig, ticks: &mut u32, _: BeaconMessage) -> Command<BeaconMessage> {
 ///         *ticks += 1;
-///         Command::effect_discarding_outcome(&self.ping, Ping)
+///         Command::effect_discarding_outcome(&config.ping, Ping)
 ///     }
-/// }
-///
-/// pub struct PingerDrivers<R: RuntimeBuilder> {
-///     pub ping: R::EffectBinding<Ping>,
-/// }
-/// impl<R: RuntimeBuilder> Bindings<R> for PingerDrivers<R> {
-///     fn bind(self, runtime: R) -> R { runtime.bind_effect::<Ping>(self.ping) }
 /// }
 ///
 /// impl Subprogram for Pinger {
 ///     type Config = ();
 ///     type Exports = Port<Beacon>;
-///     type Drivers<R: RuntimeBuilder> = PingerDrivers<R>;
+///     type Requires = Effect<Ping>;
 ///     fn install(program: &mut ProgramBuilder, _: ()) -> Port<Beacon> {
 ///         let ping = program.effect::<Ping>();
 ///         let beacon = program.port::<Beacon>(PortId::new("beacon"));
-///         let pinger = program.component(ComponentId::new("pinger"), Pinger { ping });
+///         let pinger = program.component::<Pinger>(ComponentId::new("pinger"), PingerConfig { ping });
 ///         program.bind_port(&beacon, &pinger);
 ///         beacon
 ///     }
@@ -6333,12 +6304,11 @@ pub trait Bindings<R: RuntimeBuilder> {
 /// let (program, pinger) = assemble()?;
 /// let live = LiveRuntime::builder(program)
 ///     .with_subprogram(pinger)
-///     .and_drivers(PingerDrivers { ping: Box::new(NoopPing) })
+///     .and_drivers(NoopPing)
 ///     .build()?;
 /// let (program, pinger) = assemble()?;
 /// let controlled = ControlledRuntime::builder(program)
 ///     .with_subprogram(pinger)
-///     .and_drivers(PingerDrivers { ping: Controlled })
 ///     .build()?;
 /// # drop((live, controlled));
 /// # Ok::<(), Box<dyn std::error::Error>>(())
@@ -6347,53 +6317,44 @@ pub trait Bindings<R: RuntimeBuilder> {
 /// <details>
 /// <summary>Compile-time checks</summary>
 ///
-/// A drivers struct belongs to one Subprogram. Passing another Subprogram's
-/// drivers does not compile:
+/// A driver must implement the requirement at its position. Supplying a driver
+/// for a different effect does not compile:
 ///
 /// ```compile_fail
 /// use samara::prelude::*;
+/// struct Ping;
+/// impl EffectDescriptor for Ping { type Output = (); type Error = std::convert::Infallible; }
+/// struct Pong;
+/// impl EffectDescriptor for Pong { type Output = (); type Error = std::convert::Infallible; }
+/// struct NoopPong;
+/// impl EffectDriver<Pong> for NoopPong {
+///     fn execute(&self, _: Pong) -> BoxFuture<Result<(), std::convert::Infallible>> {
+///         Box::pin(async { Ok(()) })
+///     }
+/// }
 /// struct A;
-/// struct B;
-/// pub struct NoDrivers;
-/// impl<R: RuntimeBuilder> Bindings<R> for NoDrivers {
-///     fn bind(self, runtime: R) -> R { runtime }
-/// }
-/// pub struct OtherDrivers;
-/// impl<R: RuntimeBuilder> Bindings<R> for OtherDrivers {
-///     fn bind(self, runtime: R) -> R { runtime }
-/// }
 /// impl Subprogram for A {
 ///     type Config = ();
 ///     type Exports = ();
-///     type Drivers<R: RuntimeBuilder> = NoDrivers;
-///     fn install(_: &mut ProgramBuilder, _: ()) {}
-/// }
-/// impl Subprogram for B {
-///     type Config = ();
-///     type Exports = ();
-///     type Drivers<R: RuntimeBuilder> = OtherDrivers;
-///     fn install(_: &mut ProgramBuilder, _: ()) {}
+///     type Requires = Effect<Ping>;
+///     fn install(program: &mut ProgramBuilder, _: ()) { program.effect::<Ping>(); }
 /// }
 /// let mut program = Program::builder();
 /// let a = program.install::<A>(());
 /// let _ = LiveRuntime::builder(program.build().unwrap())
 ///     .with_subprogram(a)
-///     .and_drivers(OtherDrivers);
+///     .and_drivers(NoopPong);
 /// ```
 ///
-/// A chain that forgets the drivers has no builder to finish:
+/// A live chain that forgets the drivers has no builder to finish:
 ///
 /// ```compile_fail
 /// use samara::prelude::*;
 /// struct A;
-/// pub struct NoDrivers;
-/// impl<R: RuntimeBuilder> Bindings<R> for NoDrivers {
-///     fn bind(self, runtime: R) -> R { runtime }
-/// }
 /// impl Subprogram for A {
 ///     type Config = ();
 ///     type Exports = ();
-///     type Drivers<R: RuntimeBuilder> = NoDrivers;
+///     type Requires = ();
 ///     fn install(_: &mut ProgramBuilder, _: ()) {}
 /// }
 /// let mut program = Program::builder();
@@ -6409,8 +6370,9 @@ pub trait Subprogram {
     type Config;
     /// What the caller may use after installation, normally a [`Port`].
     type Exports;
-    /// The drivers the host must bind, one field each, generic over the profile.
-    type Drivers<R: RuntimeBuilder>: Bindings<R>;
+    /// The world boundaries the host must drive: one [`Effect`] or [`Source`]
+    /// marker, or a tuple of them (nesting allowed), or `()` for none.
+    type Requires: Requirements;
 
     /// Declares this Subprogram's Components, Ports, and capabilities.
     ///
@@ -6418,14 +6380,241 @@ pub trait Subprogram {
     fn install(program: &mut ProgramBuilder, config: Self::Config) -> Self::Exports;
 }
 
+/// Names a required effect in [`Subprogram::Requires`].
+///
+/// Live, the matching position in [`WithSubprogram::and_drivers`] takes any
+/// [`EffectDriver<D>`]. Controlled, the effect is taken over by the harness.
+pub struct Effect<D: EffectDescriptor>(PhantomData<fn() -> D>);
+
+/// Names a required source in [`Subprogram::Requires`].
+///
+/// Live, the matching position in [`WithSubprogram::and_drivers`] takes any
+/// [`SourceDriver<S>`]. Controlled, events come from the harness.
+pub struct Source<S: SourceDescriptor>(PhantomData<fn() -> S>);
+
+/// A requirement list: an [`Effect`], a [`Source`], `()`, or a tuple of lists.
+///
+/// Implemented by the crate for tuples up to eight elements. The only operation
+/// is registering every element with a controlled builder, which is what
+/// [`ControlledRuntimeBuilder::with_subprogram`] does.
+pub trait Requirements {
+    /// Takes control of every requirement in the list.
+    fn control(runtime: ControlledRuntimeBuilder) -> ControlledRuntimeBuilder;
+}
+
+impl<D: EffectDescriptor> Requirements for Effect<D> {
+    fn control(runtime: ControlledRuntimeBuilder) -> ControlledRuntimeBuilder {
+        runtime.control_effect::<D>()
+    }
+}
+
+impl<S: SourceDescriptor> Requirements for Source<S> {
+    fn control(runtime: ControlledRuntimeBuilder) -> ControlledRuntimeBuilder {
+        runtime.control_source::<S>()
+    }
+}
+
+impl Requirements for () {
+    fn control(runtime: ControlledRuntimeBuilder) -> ControlledRuntimeBuilder {
+        runtime
+    }
+}
+
+/// Live drivers satisfying a [`Requirements`] list, position by position.
+///
+/// Any [`EffectDriver<D>`] satisfies `Effect<D>`, any [`SourceDriver<S>`]
+/// satisfies `Source<S>`, `()` satisfies `()`, and a tuple satisfies a tuple of
+/// the same length when each element satisfies the element at its position.
+/// Implemented by the crate; applications do not implement it.
+pub trait Drivers<Requires: Requirements> {
+    /// Binds every driver into the live builder in list order.
+    fn bind(self, runtime: LiveRuntimeBuilder) -> LiveRuntimeBuilder;
+}
+
+impl<D: EffectDescriptor, T: EffectDriver<D>> Drivers<Effect<D>> for T {
+    fn bind(self, runtime: LiveRuntimeBuilder) -> LiveRuntimeBuilder {
+        runtime.bind_effect::<D, T>(self)
+    }
+}
+
+impl<S: SourceDescriptor, T: SourceDriver<S>> Drivers<Source<S>> for T {
+    fn bind(self, runtime: LiveRuntimeBuilder) -> LiveRuntimeBuilder {
+        runtime.bind_source::<S, T>(self)
+    }
+}
+
+impl Drivers<()> for () {
+    fn bind(self, runtime: LiveRuntimeBuilder) -> LiveRuntimeBuilder {
+        runtime
+    }
+}
+
+macro_rules! requirement_tuples {
+    ($(($($requirement:ident $driver:ident),+))+) => {$(
+        impl<$($requirement: Requirements),+> Requirements for ($($requirement,)+) {
+            fn control(runtime: ControlledRuntimeBuilder) -> ControlledRuntimeBuilder {
+                $(let runtime = $requirement::control(runtime);)+
+                runtime
+            }
+        }
+
+        impl<$($requirement: Requirements, $driver: Drivers<$requirement>),+> Drivers<($($requirement,)+)>
+            for ($($driver,)+)
+        {
+            #[allow(non_snake_case)]
+            fn bind(self, runtime: LiveRuntimeBuilder) -> LiveRuntimeBuilder {
+                let ($($driver,)+) = self;
+                $(let runtime = $driver.bind(runtime);)+
+                runtime
+            }
+        }
+    )+};
+}
+
+requirement_tuples! {
+    (R1 T1)
+    (R1 T1, R2 T2)
+    (R1 T1, R2 T2, R3 T3)
+    (R1 T1, R2 T2, R3 T3, R4 T4)
+    (R1 T1, R2 T2, R3 T3, R4 T4, R5 T5)
+    (R1 T1, R2 T2, R3 T3, R4 T4, R5 T5, R6 T6)
+    (R1 T1, R2 T2, R3 T3, R4 T4, R5 T5, R6 T6, R7 T7)
+    (R1 T1, R2 T2, R3 T3, R4 T4, R5 T5, R6 T6, R7 T7, R8 T8)
+}
+
+impl<D: EffectDescriptor> EffectDriver<D> for Box<dyn EffectDriver<D>> {
+    fn execute(&self, descriptor: D) -> BoxFuture<Result<D::Output, D::Error>> {
+        (**self).execute(descriptor)
+    }
+}
+
+impl<D: SourceDescriptor> SourceDriver<D> for Box<dyn SourceDriver<D>> {
+    fn run(&self, descriptor: D, sink: SourceSink<D>) -> BoxFuture<()> {
+        (**self).run(descriptor, sink)
+    }
+}
+
+/// A live builder waiting for an installed Subprogram's drivers.
+///
+/// Returned by [`LiveRuntimeBuilder::with_subprogram`]. Nothing else can be
+/// called until [`Self::and_drivers`] supplies them, so a chain that forgets
+/// the drivers does not compile.
+#[must_use = "call `and_drivers` to supply the Subprogram's drivers and recover the builder"]
+pub struct WithSubprogram<S: Subprogram> {
+    builder: LiveRuntimeBuilder,
+    marker: PhantomData<fn() -> S>,
+}
+
+impl<S: Subprogram> WithSubprogram<S> {
+    /// Binds drivers for every entry in [`Subprogram::Requires`], in order, and
+    /// returns the builder.
+    ///
+    /// Pass one driver for a single requirement or a tuple matching the
+    /// requirement tuple. A driver that implements several effects is passed
+    /// once per position; cloning is fine.
+    pub fn and_drivers(self, drivers: impl Drivers<S::Requires>) -> LiveRuntimeBuilder {
+        drivers.bind(self.builder)
+    }
+
+    /// Binds the drivers the Subprogram vendors through [`ShipsDrivers`] and
+    /// returns the builder.
+    pub fn and_its_vendored_drivers(self) -> LiveRuntimeBuilder
+    where
+        S: ShipsDrivers,
+    {
+        self.and_drivers(S::drivers())
+    }
+}
+
+/// A [`Subprogram`] that vendors live drivers for its own requirements.
+///
+/// Optional. Implement it when a Subprogram has a sensible default way to meet
+/// [`Subprogram::Requires`], such as a first-party filesystem driver rooted at
+/// the working directory. Hosts call [`WithSubprogram::and_its_vendored_drivers`] or
+/// pass `S::drivers()` to [`WithSubprogram::and_drivers`]; hosts with their own
+/// drivers ignore it. A library will usually gate this impl behind a feature so
+/// consumers bringing their own drivers do not pay for the vendored ones.
+///
+/// ```
+/// use samara::prelude::*;
+///
+/// struct Ping;
+/// impl EffectDescriptor for Ping {
+///     type Output = ();
+///     type Error = std::convert::Infallible;
+/// }
+/// struct NoopPing;
+/// impl EffectDriver<Ping> for NoopPing {
+///     fn execute(&self, _: Ping) -> BoxFuture<Result<(), std::convert::Infallible>> {
+///         Box::pin(async { Ok(()) })
+///     }
+/// }
+///
+/// struct Pinger;
+/// impl Subprogram for Pinger {
+///     type Config = ();
+///     type Exports = ();
+///     type Requires = Effect<Ping>;
+///     fn install(program: &mut ProgramBuilder, _: ()) {
+///         let _ping = program.effect::<Ping>();
+///     }
+/// }
+/// impl ShipsDrivers for Pinger {
+///     type Drivers = NoopPing;
+///     fn drivers() -> NoopPing { NoopPing }
+/// }
+///
+/// let mut program = Program::builder();
+/// let pinger = program.install::<Pinger>(());
+/// let runtime = LiveRuntime::builder(program.build()?)
+///     .with_subprogram(pinger)
+///     .and_its_vendored_drivers()
+///     .build()?;
+/// # drop(runtime);
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+pub trait ShipsDrivers: Subprogram {
+    /// The concrete drivers, satisfying [`Subprogram::Requires`] position by position.
+    type Drivers: Drivers<Self::Requires>;
+
+    /// Constructs the vendored drivers.
+    fn drivers() -> Self::Drivers;
+}
+
+impl LiveRuntimeBuilder {
+    /// Starts binding an installed [`Subprogram`]'s drivers.
+    ///
+    /// Takes the [`Installed`] token from [`ProgramBuilder::install`] and returns
+    /// a step that holds this builder until [`WithSubprogram::and_drivers`]
+    /// supplies them. See [`Subprogram`] for a complete example.
+    pub fn with_subprogram<S: Subprogram>(self, installed: Installed<S>) -> WithSubprogram<S> {
+        drop(installed);
+        WithSubprogram {
+            builder: self,
+            marker: PhantomData,
+        }
+    }
+}
+
+impl ControlledRuntimeBuilder {
+    /// Takes control of every effect and source in an installed [`Subprogram`]'s
+    /// [`Subprogram::Requires`].
+    ///
+    /// Controlled bindings carry no information beyond the descriptor type, so
+    /// no drivers are supplied. See [`Subprogram`] for a complete example.
+    pub fn with_subprogram<S: Subprogram>(self, installed: Installed<S>) -> Self {
+        drop(installed);
+        S::Requires::control(self)
+    }
+}
+
 /// Proof that a Program installed Subprogram `S`, carrying its exports.
 ///
 /// [`ProgramBuilder::install`] returns it. Read the exports through
 /// [`Self::exports`] while assembling, then pass the token to
-/// [`RuntimeBuilder::with_subprogram`] and supply drivers with
-/// [`WithSubprogram::and_drivers`]. The token cannot be created any other
-/// way, so drivers are only ever bound for a Subprogram that is actually in the
-/// Program.
+/// `with_subprogram` on the live or controlled builder. The token cannot be
+/// created any other way, so drivers are only ever bound for a Subprogram that
+/// is actually in the Program.
 ///
 /// The `must_use` lint warns when the token is discarded outright. It cannot warn
 /// when the token is kept for its exports and never bound; the live and controlled
@@ -6455,9 +6644,8 @@ impl<S: Subprogram> fmt::Debug for Installed<S> {
 impl ProgramBuilder {
     /// Installs a [`Subprogram`] and returns the [`Installed`] token holding its exports.
     ///
-    /// Bind its drivers later with [`RuntimeBuilder::with_subprogram`] and
-    /// [`WithSubprogram::and_drivers`] on the live or controlled builder. See
-    /// [`Subprogram`] for a complete example.
+    /// Bind its drivers later with `with_subprogram` on the live or controlled
+    /// builder. See [`Subprogram`] for a complete example.
     pub fn install<S: Subprogram>(&mut self, config: S::Config) -> Installed<S> {
         Installed {
             exports: S::install(self, config),
@@ -6997,21 +7185,26 @@ mod request_authority_tests {
     struct Replier;
 
     impl Component for Replier {
+        type Config = Self;
         type Model = ();
         type Message = ReplyTo<u64>;
 
-        fn init(&self) -> Init<(), Self::Message> {
+        fn init(_config: &Self::Config) -> Init<(), Self::Message> {
             Init::default()
         }
 
-        fn update(&self, _: &mut (), reply_to: Self::Message) -> Command<Self::Message> {
+        fn update(
+            _config: &Self::Config,
+            _: &mut (),
+            reply_to: Self::Message,
+        ) -> Command<Self::Message> {
             Command::reply(reply_to, 7)
         }
     }
 
     fn fixture() -> (Program, ComponentRef<Replier>, ReplyTo<u64>) {
         let mut builder = Program::builder();
-        let replier = builder.component(ComponentId::new("replier"), Replier);
+        let replier = builder.component::<Replier>(ComponentId::new("replier"), Replier);
         let token = RequestToken::new(0, Arc::new(()));
         token.expire();
         (builder.build().unwrap(), replier, ReplyTo::runtime(token))

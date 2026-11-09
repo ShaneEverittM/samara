@@ -46,24 +46,33 @@ enum CounterMessage {
     InputClosed,
 }
 
-/// One Counter instance and its immutable logical input wiring.
+/// The Counter kind. The type is only a name; see `CounterConfig` and
+/// `CounterModel` for what one Counter is wired with and what it owns.
+struct Counter;
+
+/// One Counter's immutable logical input wiring.
 ///
 /// Both fields are inert logical configuration. The live `Receiver` remains at
 /// runtime assembly, outside this value and `CounterModel`.
-struct Counter {
+struct CounterConfig {
     input: SourceCapability<StreamDescriptor<u64>>,
     increments: StreamDescriptor<u64>,
 }
 
 impl Component for Counter {
+    type Config = CounterConfig;
     type Model = CounterModel;
     type Message = CounterMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_: &CounterConfig) -> Init<CounterModel, CounterMessage> {
         Init::new(CounterModel::default())
     }
 
-    fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        _: &CounterConfig,
+        model: &mut CounterModel,
+        message: CounterMessage,
+    ) -> Command<CounterMessage> {
         match message {
             CounterMessage::Increment(amount) => {
                 // This is the whole state transition. It performs no channel
@@ -79,7 +88,10 @@ impl Component for Counter {
         Command::none()
     }
 
-    fn subscriptions(&self, model: &Self::Model) -> Subscriptions<Self::Message> {
+    fn subscriptions(
+        config: &CounterConfig,
+        model: &CounterModel,
+    ) -> Subscriptions<CounterMessage> {
         if model.input_closed {
             // Once the source reports normal completion, retaining desire for
             // it would ask reconciliation to start the same source again.
@@ -87,9 +99,9 @@ impl Component for Counter {
         }
 
         Subscriptions::one(Subscription::source_with(
-            &self.input,
+            &config.input,
             SubscriptionId::new(INCREMENT_SUBSCRIPTION),
-            self.increments.clone(),
+            config.increments.clone(),
             |event| match event {
                 SourceEvent::Item(amount) => CounterMessage::Increment(amount),
                 SourceEvent::Ended => CounterMessage::InputClosed,
@@ -113,9 +125,9 @@ fn program(
 ) {
     let mut program = Program::builder();
     let input = program.source::<StreamDescriptor<u64>>();
-    let counter = program.component(
+    let counter = program.component::<Counter>(
         ComponentId::new("counter"),
-        Counter {
+        CounterConfig {
             input: input.clone(),
             increments,
         },
@@ -179,26 +191,25 @@ mod tests {
     fn component_logic_is_directly_testable() {
         let increments = StreamDescriptor::named(INCREMENT_INPUT);
         let mut program = Program::builder();
-        let counter = Counter {
+        let config = CounterConfig {
             input: program.source::<StreamDescriptor<u64>>(),
             increments: increments.clone(),
         };
-        let mut model = counter.init().model;
+        let mut model = Counter::init(&config).model;
 
         assert_eq!(
-            counter
-                .subscriptions(&model)
+            Counter::subscriptions(&config, &model)
                 .find::<StreamDescriptor<u64>>(&SubscriptionId::new(INCREMENT_SUBSCRIPTION)),
             Some(&increments)
         );
 
-        let command = counter.update(&mut model, CounterMessage::Increment(2));
+        let command = Counter::update(&config, &mut model, CounterMessage::Increment(2));
         assert_eq!(model.total, 2);
         assert!(command.is_none());
 
-        let _ = counter.update(&mut model, CounterMessage::InputClosed);
+        let _ = Counter::update(&config, &mut model, CounterMessage::InputClosed);
         assert!(model.input_closed);
-        assert_eq!(counter.subscriptions(&model).iter().count(), 0);
+        assert_eq!(Counter::subscriptions(&config, &model).iter().count(), 0);
     }
 
     /// Specifies the controlled counterpart of `run_live` using the same

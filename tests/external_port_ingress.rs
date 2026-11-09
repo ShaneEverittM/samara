@@ -94,14 +94,19 @@ impl From<BindingProtocolMessage> for PanickingBindingProviderMessage {
 struct PanickingBindingProvider;
 
 impl Component for PanickingBindingProvider {
+    type Config = Self;
     type Model = ();
     type Message = PanickingBindingProviderMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(())
     }
 
-    fn update(&self, _model: &mut Self::Model, _message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        _config: &Self::Config,
+        _model: &mut Self::Model,
+        _message: Self::Message,
+    ) -> Command<Self::Message> {
         Command::none()
     }
 }
@@ -126,14 +131,19 @@ struct Provider {
 }
 
 impl Component for Provider {
+    type Config = Self;
     type Model = u64;
     type Message = ProviderMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(0)
     }
 
-    fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        config: &Self::Config,
+        model: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         match message {
             ProviderMessage::Protocol(HostProtocolMessage::Set(value)) => {
                 *model = value;
@@ -141,7 +151,7 @@ impl Component for Provider {
             }
             ProviderMessage::Protocol(HostProtocolMessage::RecordIngress(value))
             | ProviderMessage::RecordIngressDirect(value) => {
-                Command::effect_discarding_outcome(&self.ingress_observed, IngressObserved(value))
+                Command::effect_discarding_outcome(&config.ingress_observed, IngressObserved(value))
             }
             ProviderMessage::Protocol(HostProtocolMessage::Read(request)) => {
                 Command::reply(request.reply_to, *model)
@@ -153,7 +163,7 @@ impl Component for Provider {
                     Duration::from_millis(10)
                 };
                 Command::batch([
-                    Command::effect_with(&self.request_observed, RequestObserved, |_| {
+                    Command::effect_with(&config.request_observed, RequestObserved, |_| {
                         ProviderMessage::Signalled
                     }),
                     Command::after(
@@ -168,7 +178,7 @@ impl Component for Provider {
             ProviderMessage::Protocol(HostProtocolMessage::Held(request)) => {
                 let reply_to = request.reply_to;
                 Command::effect_with(
-                    &self.await_release,
+                    &config.await_release,
                     AwaitRelease(request.request.0),
                     move |outcome| match outcome {
                         EffectOutcome::Succeeded(value) => {
@@ -180,7 +190,7 @@ impl Component for Provider {
                 )
             }
             ProviderMessage::Protocol(HostProtocolMessage::Never(_request)) => {
-                Command::effect_with(&self.request_observed, RequestObserved, |_| {
+                Command::effect_with(&config.request_observed, RequestObserved, |_| {
                     ProviderMessage::Signalled
                 })
             }
@@ -280,7 +290,7 @@ fn program() -> (Program, Port<HostProtocol>) {
     let ingress_observed = builder.effect::<IngressObserved>();
     let request_observed = builder.effect::<RequestObserved>();
     let await_release = builder.effect::<AwaitRelease>();
-    let provider = builder.component(
+    let provider = builder.component::<Provider>(
         ComponentId::new("provider"),
         Provider {
             ingress_observed,
@@ -295,7 +305,7 @@ fn program() -> (Program, Port<HostProtocol>) {
 fn panicking_binding_program() -> (Program, Port<BindingProtocol>) {
     let mut builder = Program::builder();
     let port = builder.port(PortId::new("panicking-binding"));
-    let provider = builder.component(
+    let provider = builder.component::<PanickingBindingProvider>(
         ComponentId::new("panicking-binding-provider"),
         PanickingBindingProvider,
     );
@@ -381,7 +391,7 @@ async fn cloned_port_handles_deliver_each_notification_exactly_once() -> Result<
     let ingress_observed = builder.effect::<IngressObserved>();
     let request_observed = builder.effect::<RequestObserved>();
     let await_release = builder.effect::<AwaitRelease>();
-    let provider = builder.component(
+    let provider = builder.component::<Provider>(
         ComponentId::new("cloned-provider"),
         Provider {
             ingress_observed,
@@ -573,7 +583,7 @@ async fn component_and_port_ingress_share_one_shutdown_cutoff() -> Result<(), Ru
     let ingress_observed = builder.effect::<IngressObserved>();
     let request_observed = builder.effect::<RequestObserved>();
     let await_release = builder.effect::<AwaitRelease>();
-    let provider = builder.component(
+    let provider = builder.component::<Provider>(
         ComponentId::new("race-provider"),
         Provider {
             ingress_observed,

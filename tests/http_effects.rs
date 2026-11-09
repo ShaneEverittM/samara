@@ -65,18 +65,24 @@ struct HttpSequence {
 }
 
 impl Component for HttpSequence {
+    type Config = Self;
     type Model = HttpModel;
     type Message = HttpMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(HttpModel::default())
     }
 
-    fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        config: &Self::Config,
+        model: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         match message {
             HttpMessage::Start => Command::effect_with(
-                &self.http,
-                self.requests
+                &config.http,
+                config
+                    .requests
                     .first()
                     .expect("nonempty test sequence")
                     .clone(),
@@ -88,10 +94,10 @@ impl Component for HttpSequence {
                     EffectOutcome::Failed(error) => SeenHttp::Error(error),
                     EffectOutcome::Cancelled(_) => SeenHttp::Cancelled,
                 });
-                if let Some(request) = self.requests.get(model.seen.len()) {
-                    Command::effect_with(&self.http, request.clone(), HttpMessage::Finished)
+                if let Some(request) = config.requests.get(model.seen.len()) {
+                    Command::effect_with(&config.http, request.clone(), HttpMessage::Finished)
                 } else {
-                    Command::effect_with(&self.observe, ObserveHttp(model.seen.clone()), |_| {
+                    Command::effect_with(&config.observe, ObserveHttp(model.seen.clone()), |_| {
                         HttpMessage::Observed
                     })
                 }
@@ -127,7 +133,7 @@ fn http_program(requests: Vec<HttpRequest>) -> (Program, ComponentRef<HttpSequen
     let mut builder = Program::builder();
     let http = builder.effect::<HttpRequest>();
     let observe = builder.effect::<ObserveHttp>();
-    let probe = builder.component(
+    let probe = builder.component::<HttpSequence>(
         ComponentId::new("http-sequence"),
         HttpSequence {
             http,

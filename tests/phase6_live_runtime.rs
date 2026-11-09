@@ -58,18 +58,23 @@ struct CounterModel {
 }
 
 impl Component for Counter {
+    type Config = Self;
     type Model = CounterModel;
     type Message = CounterMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(CounterModel::default())
     }
 
-    fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        config: &Self::Config,
+        model: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         match message {
             CounterMessage::Input(SourceEvent::Item(value)) | CounterMessage::Add(value) => {
                 model.total += value;
-                Command::effect_with(&self.record, Record(model.total), |_| {
+                Command::effect_with(&config.record, Record(model.total), |_| {
                     CounterMessage::Recorded
                 })
             }
@@ -82,14 +87,14 @@ impl Component for Counter {
         }
     }
 
-    fn subscriptions(&self, model: &Self::Model) -> Subscriptions<Self::Message> {
+    fn subscriptions(config: &Self::Config, model: &Self::Model) -> Subscriptions<Self::Message> {
         if model.closed {
             Subscriptions::none()
         } else {
             Subscriptions::one(Subscription::source_with(
-                &self.input,
+                &config.input,
                 SubscriptionId::new("input"),
-                self.input_descriptor.clone(),
+                config.input_descriptor.clone(),
                 CounterMessage::Input,
             ))
         }
@@ -106,7 +111,7 @@ fn counter_program(
     let mut program = Program::builder();
     let input = program.source::<StreamDescriptor<u64>>();
     let record = program.effect::<Record>();
-    let counter = program.component(
+    let counter = program.component::<Counter>(
         ComponentId::new("counter"),
         Counter {
             input: input.clone(),
@@ -198,18 +203,23 @@ struct CancelProbe {
 }
 
 impl Component for CancelProbe {
+    type Config = Self;
     type Model = ();
     type Message = CancelMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(())
     }
 
-    fn update(&self, _model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        config: &Self::Config,
+        _model: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         match message {
             CancelMessage::Start => {
-                let mapper_calls = self.mapper_calls.clone();
-                Command::effect_with(&self.effect, Hang, move |_| {
+                let mapper_calls = config.mapper_calls.clone();
+                Command::effect_with(&config.effect, Hang, move |_| {
                     mapper_calls.fetch_add(1, Ordering::SeqCst);
                     CancelMessage::UnexpectedOutcome
                 })
@@ -226,7 +236,7 @@ async fn phase6_scope_cancel_drops_effect_without_invoking_mapper() {
     let dropped = Arc::new(AtomicBool::new(false));
     let (entered, entered_rx) = tokio::sync::oneshot::channel();
     let effect = program.effect::<Hang>();
-    let probe = program.component(
+    let probe = program.component::<CancelProbe>(
         ComponentId::new("cancel-probe"),
         CancelProbe {
             mapper_calls: mapper_calls.clone(),
@@ -260,7 +270,7 @@ async fn phase6_cancelled_shutdown_future_detaches_no_runtime_work() {
     let dropped = Arc::new(AtomicBool::new(false));
     let (entered, entered_rx) = tokio::sync::oneshot::channel();
     let effect = program.effect::<Hang>();
-    let probe = program.component(
+    let probe = program.component::<CancelProbe>(
         ComponentId::new("shutdown-future-cancel"),
         CancelProbe {
             mapper_calls: mapper_calls.clone(),
@@ -323,7 +333,7 @@ async fn shutdown_escalation_joins_pending_effect_without_mapping() {
     let dropped = Arc::new(AtomicBool::new(false));
     let (entered, entered_rx) = tokio::sync::oneshot::channel();
     let effect = program.effect::<Hang>();
-    let probe = program.component(
+    let probe = program.component::<CancelProbe>(
         ComponentId::new("escalation-effect"),
         CancelProbe {
             mapper_calls: mapper_calls.clone(),
@@ -369,17 +379,18 @@ async fn shutdown_escalation_joins_pending_effect_without_mapping() {
 }
 
 impl Component for InitialCancelProbe {
+    type Config = Self;
     type Model = ();
     type Message = ();
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
-        let mapper_calls = self.mapper_calls.clone();
-        Init::new(()).with_command(Command::effect_with(&self.effect, Hang, move |_| {
+    fn init(config: &Self::Config) -> Init<Self::Model, Self::Message> {
+        let mapper_calls = config.mapper_calls.clone();
+        Init::new(()).with_command(Command::effect_with(&config.effect, Hang, move |_| {
             mapper_calls.fetch_add(1, Ordering::SeqCst);
         }))
     }
 
-    fn update(&self, _model: &mut Self::Model, (): ()) -> Command<Self::Message> {
+    fn update(_config: &Self::Config, _model: &mut Self::Model, (): ()) -> Command<Self::Message> {
         Command::none()
     }
 }
@@ -401,7 +412,7 @@ async fn phase6_cancel_stops_driving_without_mapping_scope_abort() {
     let driver_calls = Arc::new(AtomicUsize::new(0));
     let mut program = Program::builder();
     let effect = program.effect::<Hang>();
-    let _ = program.component(
+    let _ = program.component::<InitialCancelProbe>(
         ComponentId::new("immediate-cancel"),
         InitialCancelProbe {
             mapper_calls: mapper_calls.clone(),
@@ -434,7 +445,7 @@ async fn shutdown_escalation_before_owner_poll_cannot_restart_work() {
     let driver_calls = Arc::new(AtomicUsize::new(0));
     let mut program = Program::builder();
     let effect = program.effect::<Hang>();
-    program.component(
+    program.component::<InitialCancelProbe>(
         ComponentId::new("early-escalation"),
         InitialCancelProbe {
             mapper_calls: mapper_calls.clone(),
@@ -482,15 +493,16 @@ struct PanicProbe {
 }
 
 impl Component for PanicProbe {
+    type Config = Self;
     type Model = ();
     type Message = ();
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(())
     }
 
-    fn update(&self, _model: &mut Self::Model, (): ()) -> Command<Self::Message> {
-        Command::effect_with(&self.effect, PanicEffect, |_| ())
+    fn update(config: &Self::Config, _model: &mut Self::Model, (): ()) -> Command<Self::Message> {
+        Command::effect_with(&config.effect, PanicEffect, |_| ())
     }
 }
 
@@ -498,7 +510,8 @@ impl Component for PanicProbe {
 async fn phase6_driver_panic_faults_and_cleans_scope() {
     let mut program = Program::builder();
     let effect = program.effect::<PanicEffect>();
-    let probe = program.component(ComponentId::new("panic-probe"), PanicProbe { effect });
+    let probe =
+        program.component::<PanicProbe>(ComponentId::new("panic-probe"), PanicProbe { effect });
     let runtime = LiveRuntime::builder(program.build().expect("valid program"))
         .bind_effect::<PanicEffect, _>(PanickingDriver)
         .build()
@@ -519,7 +532,8 @@ async fn phase6_driver_panic_faults_and_cleans_scope() {
 async fn shutdown_requests_preserve_completed_fault() {
     let mut program = Program::builder();
     let effect = program.effect::<PanicEffect>();
-    let probe = program.component(ComponentId::new("preserved-fault"), PanicProbe { effect });
+    let probe =
+        program.component::<PanicProbe>(ComponentId::new("preserved-fault"), PanicProbe { effect });
     let runtime = LiveRuntime::builder(program.build().expect("valid program"))
         .bind_effect::<PanicEffect, _>(PanickingDriver)
         .build()
@@ -624,28 +638,35 @@ struct SourceModel {
 }
 
 impl Component for SourceProbe {
+    type Config = Self;
     type Model = SourceModel;
     type Message = SourceMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(SourceModel {
             generation: Some(1),
             items: Vec::new(),
         })
     }
 
-    fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        config: &Self::Config,
+        model: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         match message {
-            SourceMessage::Event(SourceEvent::Item(value)) if self.causal_timer => Command::after(
-                std::time::Duration::from_millis(1),
-                SourceMessage::Timer(value),
-            ),
+            SourceMessage::Event(SourceEvent::Item(value)) if config.causal_timer => {
+                Command::after(
+                    std::time::Duration::from_millis(1),
+                    SourceMessage::Timer(value),
+                )
+            }
             SourceMessage::Event(SourceEvent::Item(value)) => {
                 model.items.push(value);
                 Command::none()
             }
             SourceMessage::Event(SourceEvent::Failed(error)) => {
-                Command::effect_with(&self.observe, Observe(Observation::Failed(error)), |_| {
+                Command::effect_with(&config.observe, Observe(Observation::Failed(error)), |_| {
                     SourceMessage::Observed
                 })
             }
@@ -655,7 +676,7 @@ impl Component for SourceProbe {
                 } else {
                     Observation::ItemsThenEnded(model.items.clone())
                 };
-                Command::effect_with(&self.observe, Observe(observation), |_| {
+                Command::effect_with(&config.observe, Observe(observation), |_| {
                     SourceMessage::Observed
                 })
             }
@@ -668,7 +689,7 @@ impl Component for SourceProbe {
                 Command::none()
             }
             SourceMessage::Timer(value) => {
-                Command::effect_with(&self.observe, Observe(Observation::Timer(value)), |_| {
+                Command::effect_with(&config.observe, Observe(Observation::Timer(value)), |_| {
                     SourceMessage::Observed
                 })
             }
@@ -676,12 +697,12 @@ impl Component for SourceProbe {
         }
     }
 
-    fn subscriptions(&self, model: &Self::Model) -> Subscriptions<Self::Message> {
+    fn subscriptions(config: &Self::Config, model: &Self::Model) -> Subscriptions<Self::Message> {
         model
             .generation
             .map_or_else(Subscriptions::none, |generation| {
                 Subscriptions::one(Subscription::source_with(
-                    &self.source,
+                    &config.source,
                     SubscriptionId::new("scripted"),
                     ScriptedSource { generation },
                     SourceMessage::Event,
@@ -703,7 +724,7 @@ fn source_fixture(causal_timer: bool) -> SourceFixture {
     let mut program = Program::builder();
     let source = program.source::<ScriptedSource>();
     let observe = program.effect::<Observe>();
-    let component = program.component(
+    let component = program.component::<SourceProbe>(
         ComponentId::new("source-probe"),
         SourceProbe {
             causal_timer,
@@ -809,7 +830,7 @@ async fn phase6_silent_source_return_ends_once() {
     let mut program = Program::builder();
     let source = program.source::<ScriptedSource>();
     let observe = program.effect::<Observe>();
-    let _component = program.component(
+    let _component = program.component::<SourceProbe>(
         ComponentId::new("silent-source"),
         SourceProbe {
             causal_timer: false,
@@ -874,7 +895,7 @@ async fn phase6_source_driver_panics_fault_and_clean_the_scope() {
         let mut program = Program::builder();
         let source = program.source::<ScriptedSource>();
         let observe = program.effect::<Observe>();
-        let _ = program.component(
+        let _ = program.component::<SourceProbe>(
             ComponentId::new(format!("source-panic-{mode:?}")),
             SourceProbe {
                 causal_timer: false,
@@ -1018,18 +1039,25 @@ enum AdmissionMessage {
 }
 
 impl Component for AdmissionProbe {
+    type Config = Self;
     type Model = u64;
     type Message = AdmissionMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(0)
     }
 
-    fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        config: &Self::Config,
+        model: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         match message {
             AdmissionMessage::Add => {
                 *model += 1;
-                Command::effect_with(&self.record, Record(*model), |_| AdmissionMessage::Recorded)
+                Command::effect_with(&config.record, Record(*model), |_| {
+                    AdmissionMessage::Recorded
+                })
             }
             AdmissionMessage::Recorded => Command::none(),
         }
@@ -1039,7 +1067,7 @@ impl Component for AdmissionProbe {
 async fn admitted_burst(count: usize) -> Vec<u64> {
     let mut program = Program::builder();
     let record = program.effect::<Record>();
-    let probe = program.component(
+    let probe = program.component::<AdmissionProbe>(
         ComponentId::new("admission-probe"),
         AdmissionProbe { record },
     );
@@ -1091,7 +1119,7 @@ async fn phase6_accepted_internal_delivery_has_no_silent_drop() {
 async fn phase6_shutdown_closes_external_ingress() -> Result<(), RuntimeError> {
     let mut program = Program::builder();
     let record = program.effect::<Record>();
-    let probe = program.component(
+    let probe = program.component::<AdmissionProbe>(
         ComponentId::new("closed-ingress"),
         AdmissionProbe { record },
     );
@@ -1123,14 +1151,15 @@ struct InitialEffectComponent {
 }
 
 impl Component for InitialEffectComponent {
+    type Config = Self;
     type Model = ();
     type Message = ();
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
-        Init::new(()).with_command(Command::effect_with(&self.effect, InitialEffect, |_| ()))
+    fn init(config: &Self::Config) -> Init<Self::Model, Self::Message> {
+        Init::new(()).with_command(Command::effect_with(&config.effect, InitialEffect, |_| ()))
     }
 
-    fn update(&self, _model: &mut Self::Model, (): ()) -> Command<Self::Message> {
+    fn update(_config: &Self::Config, _model: &mut Self::Model, (): ()) -> Command<Self::Message> {
         Command::none()
     }
 }
@@ -1147,7 +1176,7 @@ impl EffectDriver<InitialEffect> for NoopInitialDriver {
 async fn phase6_knowable_live_binding_errors_fail_build() {
     let mut program = Program::builder();
     let effect = program.effect::<InitialEffect>();
-    let _ = program.component(
+    let _ = program.component::<InitialEffectComponent>(
         ComponentId::new("initial-effect"),
         InitialEffectComponent { effect },
     );
@@ -1159,7 +1188,7 @@ async fn phase6_knowable_live_binding_errors_fail_build() {
 
     let mut program = Program::builder();
     let effect = program.effect::<InitialEffect>();
-    let _ = program.component(
+    let _ = program.component::<InitialEffectComponent>(
         ComponentId::new("duplicate-effect"),
         InitialEffectComponent { effect },
     );
@@ -1174,7 +1203,7 @@ async fn phase6_knowable_live_binding_errors_fail_build() {
     let mut program = Program::builder();
     let source = program.source::<ScriptedSource>();
     let observe = program.effect::<Observe>();
-    let _ = program.component(
+    let _ = program.component::<SourceProbe>(
         ComponentId::new("missing-source"),
         SourceProbe {
             causal_timer: false,
@@ -1195,7 +1224,7 @@ async fn phase6_knowable_live_binding_errors_fail_build() {
     let mut program = Program::builder();
     let source = program.source::<ScriptedSource>();
     let observe = program.effect::<Observe>();
-    let _ = program.component(
+    let _ = program.component::<SourceProbe>(
         ComponentId::new("duplicate-source"),
         SourceProbe {
             causal_timer: false,
@@ -1242,17 +1271,22 @@ struct DynamicProbe {
 }
 
 impl Component for DynamicProbe {
+    type Config = Self;
     type Model = ();
     type Message = DynamicMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(())
     }
 
-    fn update(&self, _model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        config: &Self::Config,
+        _model: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         match message {
             DynamicMessage::Trigger => {
-                Command::effect_with(&self.effect, DynamicEffect, |_| DynamicMessage::Mapped)
+                Command::effect_with(&config.effect, DynamicEffect, |_| DynamicMessage::Mapped)
             }
             DynamicMessage::Mapped => panic!("a missing binding must not invoke its mapper"),
         }
@@ -1263,7 +1297,8 @@ impl Component for DynamicProbe {
 fn phase6_declared_missing_binding_rejects_live_build() {
     let mut program = Program::builder();
     let effect = program.effect::<DynamicEffect>();
-    let _probe = program.component(ComponentId::new("dynamic"), DynamicProbe { effect });
+    let _probe =
+        program.component::<DynamicProbe>(ComponentId::new("dynamic"), DynamicProbe { effect });
     let _trigger = DynamicMessage::Trigger;
     let error = LiveRuntime::builder(program.build().expect("valid program"))
         .build()
@@ -1344,36 +1379,41 @@ struct QueryProbe {
 }
 
 impl Component for QueryProbe {
+    type Config = Self;
     type Model = ();
     type Message = QueryMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(())
     }
 
-    fn update(&self, _model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        config: &Self::Config,
+        _model: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         match message {
             QueryMessage::Start => {
-                let success_calls = self.mapper_calls.clone();
-                let failure_calls = self.mapper_calls.clone();
+                let success_calls = config.mapper_calls.clone();
+                let failure_calls = config.mapper_calls.clone();
                 Command::batch([
-                    Command::effect_with(&self.query, Query { fail: false }, move |outcome| {
+                    Command::effect_with(&config.query, Query { fail: false }, move |outcome| {
                         success_calls.fetch_add(1, Ordering::SeqCst);
                         QueryMessage::Outcome(outcome)
                     }),
-                    Command::effect_with(&self.query, Query { fail: true }, move |outcome| {
+                    Command::effect_with(&config.query, Query { fail: true }, move |outcome| {
                         failure_calls.fetch_add(1, Ordering::SeqCst);
                         QueryMessage::Outcome(outcome)
                     }),
                 ])
             }
             QueryMessage::Outcome(EffectOutcome::Succeeded(value)) => Command::effect_with(
-                &self.observe,
+                &config.observe,
                 ObserveQuery(QueryObservation::Succeeded(value)),
                 |_| QueryMessage::Observed,
             ),
             QueryMessage::Outcome(EffectOutcome::Failed(error)) => Command::effect_with(
-                &self.observe,
+                &config.observe,
                 ObserveQuery(QueryObservation::Failed(error)),
                 |_| QueryMessage::Observed,
             ),
@@ -1393,7 +1433,7 @@ async fn phase6_effect_success_and_failure_map_exactly_once() -> Result<(), Runt
     let mut program = Program::builder();
     let query = program.effect::<Query>();
     let observe = program.effect::<ObserveQuery>();
-    let probe = program.component(
+    let probe = program.component::<QueryProbe>(
         ComponentId::new("query"),
         QueryProbe {
             mapper_calls: mapper_calls.clone(),
@@ -1473,21 +1513,26 @@ struct DrainGateProbe {
 }
 
 impl Component for DrainGateProbe {
+    type Config = Self;
     type Model = bool;
     type Message = DrainGateMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(false)
     }
 
-    fn update(&self, desired: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        config: &Self::Config,
+        desired: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         match message {
             DrainGateMessage::Trigger => {
-                Command::effect_with(&self.gate, GateEffect, |_| DrainGateMessage::WantSource)
+                Command::effect_with(&config.gate, GateEffect, |_| DrainGateMessage::WantSource)
             }
             DrainGateMessage::WantSource => {
                 *desired = true;
-                Command::effect_with(&self.observe, Observe(Observation::Timer(99)), |_| {
+                Command::effect_with(&config.observe, Observe(Observation::Timer(99)), |_| {
                     DrainGateMessage::Observed
                 })
             }
@@ -1495,10 +1540,10 @@ impl Component for DrainGateProbe {
         }
     }
 
-    fn subscriptions(&self, desired: &Self::Model) -> Subscriptions<Self::Message> {
+    fn subscriptions(config: &Self::Config, desired: &Self::Model) -> Subscriptions<Self::Message> {
         if *desired {
             Subscriptions::one(Subscription::source_with(
-                &self.source,
+                &config.source,
                 SubscriptionId::new("late-source"),
                 ScriptedSource { generation: 1 },
                 |_| DrainGateMessage::Noop,
@@ -1521,7 +1566,7 @@ async fn phase6_drain_realizes_no_new_sources() {
     let gate = program.effect::<GateEffect>();
     let observe = program.effect::<Observe>();
     let source = program.source::<ScriptedSource>();
-    let probe = program.component(
+    let probe = program.component::<DrainGateProbe>(
         ComponentId::new("drain-gate"),
         DrainGateProbe {
             gate,
@@ -1575,7 +1620,7 @@ async fn phase6_successful_shutdown_owns_zero_work() -> Result<(), RuntimeError>
     for mode in [Shutdown::Drain, Shutdown::Cancel] {
         let mut program = Program::builder();
         let record = program.effect::<Record>();
-        let _ = program.component(
+        let _ = program.component::<AdmissionProbe>(
             ComponentId::new(format!("empty-{mode:?}")),
             AdmissionProbe { record },
         );
@@ -1641,20 +1686,25 @@ struct EchoProvider {
 }
 
 impl Component for EchoProvider {
+    type Config = Self;
     type Model = ();
     type Message = EchoProviderMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(())
     }
 
-    fn update(&self, _model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        config: &Self::Config,
+        _model: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         match message {
             EchoProviderMessage::Protocol(EchoProtocolMessage::Echo(invocation)) => {
-                if self.reply {
+                if config.reply {
                     Command::reply(invocation.reply_to, invocation.request.0)
                 } else {
-                    Command::effect_with(&self.seen, ProviderSeen, |_| EchoProviderMessage::Seen)
+                    Command::effect_with(&config.seen, ProviderSeen, |_| EchoProviderMessage::Seen)
                 }
             }
             EchoProviderMessage::Seen => Command::none(),
@@ -1697,24 +1747,29 @@ struct EchoRequester {
 }
 
 impl Component for EchoRequester {
+    type Config = Self;
     type Model = ();
     type Message = EchoRequesterMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(())
     }
 
-    fn update(&self, _model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        config: &Self::Config,
+        _model: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         match message {
             EchoRequesterMessage::Start => {
-                let continuation_calls = self.continuation_calls.clone();
-                Command::request_with(self.echo.clone(), Echo(42), move |outcome| {
+                let continuation_calls = config.continuation_calls.clone();
+                Command::request_with(config.echo.clone(), Echo(42), move |outcome| {
                     continuation_calls.fetch_add(1, Ordering::SeqCst);
                     EchoRequesterMessage::Outcome(outcome)
                 })
             }
             EchoRequesterMessage::Outcome(RequestOutcome::Replied(value)) => {
-                Command::effect_with(&self.observe, ObserveReply(value), |_| {
+                Command::effect_with(&config.observe, ObserveReply(value), |_| {
                     EchoRequesterMessage::Observed
                 })
             }
@@ -1734,12 +1789,12 @@ fn echo_program(
     let echo = program.port(PortId::new("echo"));
     let seen = program.effect::<ProviderSeen>();
     let observe = program.effect::<ObserveReply>();
-    let provider = program.component(
+    let provider = program.component::<EchoProvider>(
         ComponentId::new("echo-provider"),
         EchoProvider { reply, seen },
     );
     program.bind_port(&echo, &provider);
-    let requester = program.component(
+    let requester = program.component::<EchoRequester>(
         ComponentId::new("echo-requester"),
         EchoRequester {
             echo,
@@ -1894,29 +1949,34 @@ struct IndependentProbe {
 }
 
 impl Component for IndependentProbe {
+    type Config = Self;
     type Model = ();
     type Message = IndependentMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(())
     }
 
-    fn update(&self, _model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        config: &Self::Config,
+        _model: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         match message {
             IndependentMessage::Start => Command::batch([
                 Command::effect_with(
-                    &self.independent,
+                    &config.independent,
                     Independent('A'),
                     IndependentMessage::Completed,
                 ),
                 Command::effect_with(
-                    &self.independent,
+                    &config.independent,
                     Independent('B'),
                     IndependentMessage::Completed,
                 ),
             ]),
             IndependentMessage::Completed(EffectOutcome::Succeeded(label)) => {
-                Command::effect_with(&self.record, RecordOrder(label), |_| {
+                Command::effect_with(&config.record, RecordOrder(label), |_| {
                     IndependentMessage::Recorded
                 })
             }
@@ -1939,7 +1999,7 @@ async fn forced_independent_order(first: char, second: char) -> Vec<char> {
     let mut program = Program::builder();
     let independent = program.effect::<Independent>();
     let record = program.effect::<RecordOrder>();
-    let probe = program.component(
+    let probe = program.component::<IndependentProbe>(
         ComponentId::new("independent"),
         IndependentProbe {
             independent,
@@ -2013,7 +2073,7 @@ fn query_program(mapper_calls: Arc<AtomicUsize>) -> (Program, ComponentRef<Query
     let mut program = Program::builder();
     let query = program.effect::<Query>();
     let observe = program.effect::<ObserveQuery>();
-    let probe = program.component(
+    let probe = program.component::<QueryProbe>(
         ComponentId::new("query-parity"),
         QueryProbe {
             mapper_calls,

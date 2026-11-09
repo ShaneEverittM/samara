@@ -43,18 +43,31 @@ struct OutputProbe {
 }
 
 impl Component for OutputProbe {
+    type Config = Self;
     type Model = OutputModel;
     type Message = OutputMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(OutputModel::default())
     }
 
-    fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        config: &Self::Config,
+        model: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         match message {
             OutputMessage::Start => Command::batch([
-                Command::effect_with(&self.stdout, PrintStdout::text(""), OutputMessage::Finished),
-                Command::effect_with(&self.stderr, PrintStderr::text(""), OutputMessage::Finished),
+                Command::effect_with(
+                    &config.stdout,
+                    PrintStdout::text(""),
+                    OutputMessage::Finished,
+                ),
+                Command::effect_with(
+                    &config.stderr,
+                    PrintStderr::text(""),
+                    OutputMessage::Finished,
+                ),
             ]),
             OutputMessage::Finished(outcome) => {
                 let succeeded = match outcome {
@@ -68,7 +81,7 @@ impl Component for OutputProbe {
                         false
                     }
                 };
-                if let Some(observe) = &self.observe {
+                if let Some(observe) = &config.observe {
                     Command::effect_with(observe, ObserveOutput(succeeded), |_| {
                         OutputMessage::Observed
                     })
@@ -86,7 +99,7 @@ fn output_program(observe: bool) -> (Program, ComponentRef<OutputProbe>) {
     let stdout = builder.effect::<PrintStdout>();
     let stderr = builder.effect::<PrintStderr>();
     let observe = observe.then(|| builder.effect::<ObserveOutput>());
-    let probe = builder.component(
+    let probe = builder.component::<OutputProbe>(
         ComponentId::new("standard-output"),
         OutputProbe {
             stdout,

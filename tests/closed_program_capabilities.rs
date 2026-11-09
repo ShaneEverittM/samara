@@ -29,17 +29,22 @@ struct EffectComponent {
 }
 
 impl Component for EffectComponent {
+    type Config = Self;
     type Model = Option<u64>;
     type Message = EffectMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(None)
     }
 
-    fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        config: &Self::Config,
+        model: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         match message {
             EffectMessage::Trigger => {
-                Command::effect_with(&self.effect, LateEffect(41), |outcome| match outcome {
+                Command::effect_with(&config.effect, LateEffect(41), |outcome| match outcome {
                     EffectOutcome::Succeeded(value) => EffectMessage::Finished(value),
                     EffectOutcome::Failed(never) => match never {},
                     EffectOutcome::Cancelled(_) => EffectMessage::Finished(0),
@@ -56,7 +61,8 @@ impl Component for EffectComponent {
 fn effect_program() -> (Program, ComponentRef<EffectComponent>) {
     let mut program = Program::builder();
     let effect = program.effect::<LateEffect>();
-    let component = program.component(ComponentId::new("effect"), EffectComponent { effect });
+    let component = program
+        .component::<EffectComponent>(ComponentId::new("effect"), EffectComponent { effect });
     (program.build().expect("valid closed Program"), component)
 }
 
@@ -97,14 +103,19 @@ struct SourceComponent {
 }
 
 impl Component for SourceComponent {
+    type Config = Self;
     type Model = bool;
     type Message = SourceMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
-        Init::new(self.initially_enabled)
+    fn init(config: &Self::Config) -> Init<Self::Model, Self::Message> {
+        Init::new(config.initially_enabled)
     }
 
-    fn update(&self, enabled: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        _config: &Self::Config,
+        enabled: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         match message {
             SourceMessage::Enable => *enabled = true,
             SourceMessage::Event(_event) => {}
@@ -112,10 +123,10 @@ impl Component for SourceComponent {
         Command::none()
     }
 
-    fn subscriptions(&self, enabled: &Self::Model) -> Subscriptions<Self::Message> {
+    fn subscriptions(config: &Self::Config, enabled: &Self::Model) -> Subscriptions<Self::Message> {
         if *enabled {
             Subscriptions::one(Subscription::source_with(
-                &self.source,
+                &config.source,
                 SubscriptionId::new("late"),
                 LateSource,
                 SourceMessage::Event,
@@ -129,7 +140,7 @@ impl Component for SourceComponent {
 fn source_program() -> (Program, ComponentRef<SourceComponent>) {
     let mut program = Program::builder();
     let source = program.source::<LateSource>();
-    let component = program.component(
+    let component = program.component::<SourceComponent>(
         ComponentId::new("source"),
         SourceComponent {
             source,
@@ -181,7 +192,7 @@ fn foreign_source_program(initially_enabled: bool) -> (Program, ComponentRef<Sou
 
     let mut owner = Program::builder();
     let _owner_source = owner.source::<LateSource>();
-    let component = owner.component(
+    let component = owner.component::<SourceComponent>(
         ComponentId::new("foreign-source"),
         SourceComponent {
             source: foreign_source,
@@ -317,17 +328,22 @@ struct InitialEffectComponent {
 }
 
 impl Component for InitialEffectComponent {
+    type Config = Self;
     type Model = ();
     type Message = ();
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(()).with_command(Command::effect_discarding_outcome(
-            &self.effect,
+            &config.effect,
             LateEffect(1),
         ))
     }
 
-    fn update(&self, _model: &mut Self::Model, _message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        _config: &Self::Config,
+        _model: &mut Self::Model,
+        _message: Self::Message,
+    ) -> Command<Self::Message> {
         Command::none()
     }
 }
@@ -338,7 +354,7 @@ fn initial_foreign_effect_program() -> Program {
 
     let mut owner = Program::builder();
     let _owner_effect = owner.effect::<LateEffect>();
-    owner.component(
+    owner.component::<InitialEffectComponent>(
         ComponentId::new("initial-foreign-effect"),
         InitialEffectComponent {
             effect: foreign_effect,
@@ -371,14 +387,19 @@ fn initially_visible_foreign_effect_capability_is_rejected_during_profile_build(
 struct UnitComponent;
 
 impl Component for UnitComponent {
+    type Config = Self;
     type Model = ();
     type Message = ();
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(())
     }
 
-    fn update(&self, _model: &mut Self::Model, _message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        _config: &Self::Config,
+        _model: &mut Self::Model,
+        _message: Self::Message,
+    ) -> Command<Self::Message> {
         Command::none()
     }
 }
@@ -388,24 +409,30 @@ struct InitialForeignSend {
 }
 
 impl Component for InitialForeignSend {
+    type Config = Self;
     type Model = ();
     type Message = ();
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
-        Init::new(()).with_command(Command::send(self.target.clone(), ()))
+    fn init(config: &Self::Config) -> Init<Self::Model, Self::Message> {
+        Init::new(()).with_command(Command::send(config.target.clone(), ()))
     }
 
-    fn update(&self, _model: &mut Self::Model, _message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        _config: &Self::Config,
+        _model: &mut Self::Model,
+        _message: Self::Message,
+    ) -> Command<Self::Message> {
         Command::none()
     }
 }
 
 fn initial_foreign_send_program() -> Program {
     let mut foreign = Program::builder();
-    let target = foreign.component(ComponentId::new("foreign-target"), UnitComponent);
+    let target =
+        foreign.component::<UnitComponent>(ComponentId::new("foreign-target"), UnitComponent);
 
     let mut owner = Program::builder();
-    owner.component(
+    owner.component::<InitialForeignSend>(
         ComponentId::new("initial-foreign-send"),
         InitialForeignSend { target },
     );
@@ -424,14 +451,19 @@ struct InitialForeignNotification {
 }
 
 impl Component for InitialForeignNotification {
+    type Config = Self;
     type Model = ();
     type Message = ();
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
-        Init::new(()).with_command(Command::notify(self.port.clone(), Signal))
+    fn init(config: &Self::Config) -> Init<Self::Model, Self::Message> {
+        Init::new(()).with_command(Command::notify(config.port.clone(), Signal))
     }
 
-    fn update(&self, _model: &mut Self::Model, _message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        _config: &Self::Config,
+        _model: &mut Self::Model,
+        _message: Self::Message,
+    ) -> Command<Self::Message> {
         Command::none()
     }
 }
@@ -441,14 +473,19 @@ struct InitialForeignRequest {
 }
 
 impl Component for InitialForeignRequest {
+    type Config = Self;
     type Model = ();
     type Message = ();
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
-        Init::new(()).with_command(Command::request_with(self.port.clone(), Read, |_| ()))
+    fn init(config: &Self::Config) -> Init<Self::Model, Self::Message> {
+        Init::new(()).with_command(Command::request_with(config.port.clone(), Read, |_| ()))
     }
 
-    fn update(&self, _model: &mut Self::Model, _message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        _config: &Self::Config,
+        _model: &mut Self::Model,
+        _message: Self::Message,
+    ) -> Command<Self::Message> {
         Command::none()
     }
 }
@@ -458,12 +495,12 @@ fn initial_foreign_port_program(request: bool) -> Program {
     let port = foreign.port(PortId::new("foreign"));
     let mut owner = Program::builder();
     if request {
-        owner.component(
+        owner.component::<InitialForeignRequest>(
             ComponentId::new("initial-foreign-request"),
             InitialForeignRequest { port },
         );
     } else {
-        owner.component(
+        owner.component::<InitialForeignNotification>(
             ComponentId::new("initial-foreign-notification"),
             InitialForeignNotification { port },
         );
@@ -505,7 +542,7 @@ fn dynamically_used_foreign_effect_capability_is_rejected_before_controlled_beha
 
     let mut owner = Program::builder();
     let _owner_requirement = owner.effect::<LateEffect>();
-    let component = owner.component(
+    let component = owner.component::<EffectComponent>(
         ComponentId::new("foreign-effect"),
         EffectComponent {
             effect: foreign_effect,
@@ -534,7 +571,7 @@ async fn run_forever_surfaces_dynamic_foreign_capability_before_live_driver() {
 
     let mut owner = Program::builder();
     let _owner_requirement = owner.effect::<LateEffect>();
-    let component = owner.component(
+    let component = owner.component::<EffectComponent>(
         ComponentId::new("foreign-live-effect"),
         EffectComponent {
             effect: foreign_effect,
@@ -680,38 +717,49 @@ struct DualStreamComponent {
 }
 
 impl Component for DualStreamComponent {
+    type Config = Self;
     type Model = (u64, u64);
     type Message = DualStreamMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new((0, 0))
     }
 
-    fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        config: &Self::Config,
+        model: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         match message {
             DualStreamMessage::First(SourceEvent::Item(value)) => {
                 model.0 += value;
-                self.observe.as_ref().map_or_else(Command::none, |observe| {
-                    Command::effect_discarding_outcome(
-                        observe,
-                        RecordDualStream {
-                            lane: "first",
-                            value,
-                        },
-                    )
-                })
+                config
+                    .observe
+                    .as_ref()
+                    .map_or_else(Command::none, |observe| {
+                        Command::effect_discarding_outcome(
+                            observe,
+                            RecordDualStream {
+                                lane: "first",
+                                value,
+                            },
+                        )
+                    })
             }
             DualStreamMessage::Second(SourceEvent::Item(value)) => {
                 model.1 += value;
-                self.observe.as_ref().map_or_else(Command::none, |observe| {
-                    Command::effect_discarding_outcome(
-                        observe,
-                        RecordDualStream {
-                            lane: "second",
-                            value,
-                        },
-                    )
-                })
+                config
+                    .observe
+                    .as_ref()
+                    .map_or_else(Command::none, |observe| {
+                        Command::effect_discarding_outcome(
+                            observe,
+                            RecordDualStream {
+                                lane: "second",
+                                value,
+                            },
+                        )
+                    })
             }
             DualStreamMessage::First(SourceEvent::Failed(never))
             | DualStreamMessage::Second(SourceEvent::Failed(never)) => match never {},
@@ -720,18 +768,18 @@ impl Component for DualStreamComponent {
         }
     }
 
-    fn subscriptions(&self, _model: &Self::Model) -> Subscriptions<Self::Message> {
+    fn subscriptions(config: &Self::Config, _model: &Self::Model) -> Subscriptions<Self::Message> {
         vec![
             Subscription::source_with(
-                &self.first,
+                &config.first,
                 SubscriptionId::new("first"),
-                self.descriptor.clone(),
+                config.descriptor.clone(),
                 DualStreamMessage::First,
             ),
             Subscription::source_with(
-                &self.second,
+                &config.second,
                 SubscriptionId::new("second"),
-                self.descriptor.clone(),
+                config.descriptor.clone(),
                 DualStreamMessage::Second,
             ),
         ]
@@ -745,7 +793,7 @@ fn exact_stream_input_is_disambiguated_by_capability_not_equal_descriptor()
     let mut program = Program::builder();
     let first = program.source::<StreamDescriptor<u64>>();
     let second = program.source::<StreamDescriptor<u64>>();
-    let component = program.component(
+    let component = program.component::<DualStreamComponent>(
         ComponentId::new("dual-stream"),
         DualStreamComponent {
             first: first.clone(),
@@ -773,7 +821,7 @@ async fn live_exact_streams_with_equal_descriptors_route_by_capability() -> Resu
     let first = program.source::<StreamDescriptor<u64>>();
     let second = program.source::<StreamDescriptor<u64>>();
     let observe = program.effect::<RecordDualStream>();
-    program.component(
+    program.component::<DualStreamComponent>(
         ComponentId::new("live-dual-stream"),
         DualStreamComponent {
             first: first.clone(),
@@ -878,27 +926,35 @@ struct FramedStreamComponent {
 }
 
 impl Component for FramedStreamComponent {
+    type Config = Self;
     type Model = Vec<u64>;
     type Message = FramedStreamMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(Vec::new())
     }
 
-    fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        config: &Self::Config,
+        model: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         let FramedStreamMessage::Event(event) = message;
         match event {
             SourceEvent::Item(value) => {
                 model.push(value);
-                self.observe.as_ref().map_or_else(Command::none, |observe| {
-                    Command::effect_discarding_outcome(
-                        observe,
-                        RecordDualStream {
-                            lane: "framed",
-                            value,
-                        },
-                    )
-                })
+                config
+                    .observe
+                    .as_ref()
+                    .map_or_else(Command::none, |observe| {
+                        Command::effect_discarding_outcome(
+                            observe,
+                            RecordDualStream {
+                                lane: "framed",
+                                value,
+                            },
+                        )
+                    })
             }
             SourceEvent::Failed(FramedError::Source(never))
             | SourceEvent::Failed(FramedError::Decode(never)) => match never {},
@@ -906,9 +962,9 @@ impl Component for FramedStreamComponent {
         }
     }
 
-    fn subscriptions(&self, _model: &Self::Model) -> Subscriptions<Self::Message> {
+    fn subscriptions(config: &Self::Config, _model: &Self::Model) -> Subscriptions<Self::Message> {
         Subscriptions::one(Subscription::source_with(
-            &self.source,
+            &config.source,
             SubscriptionId::new("framed-stream"),
             Framed::new(StreamDescriptor::named("raw"), IncrementDecoder),
             FramedStreamMessage::Event,
@@ -923,7 +979,7 @@ fn framed_stream_program() -> (
 ) {
     let mut program = Program::builder();
     let source = program.source::<FramedStream>();
-    let component = program.component(
+    let component = program.component::<FramedStreamComponent>(
         ComponentId::new("framed-stream"),
         FramedStreamComponent {
             source: source.clone(),
@@ -962,7 +1018,7 @@ async fn live_exact_stream_bridge_runs_composed_layers_before_component_mapping(
     let mut program = Program::builder();
     let source = program.source::<FramedStream>();
     let observe = program.effect::<RecordDualStream>();
-    program.component(
+    program.component::<FramedStreamComponent>(
         ComponentId::new("live-framed-stream"),
         FramedStreamComponent {
             source: source.clone(),

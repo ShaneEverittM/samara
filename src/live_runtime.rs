@@ -2939,22 +2939,23 @@ mod tests {
     }
 
     impl Component for CutoffComponent {
+        type Config = Self;
         type Model = bool;
         type Message = CutoffMessage;
 
-        fn init(&self) -> Init<Self::Model, Self::Message> {
+        fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
             Init::new(false)
         }
 
         fn update(
-            &self,
+            config: &Self::Config,
             started: &mut Self::Model,
             message: Self::Message,
         ) -> Command<Self::Message> {
             match message {
                 CutoffMessage::Start => {
                     *started = true;
-                    Command::effect_with(&self.effect, CutoffIntent, |_| CutoffMessage::Outcome)
+                    Command::effect_with(&config.effect, CutoffIntent, |_| CutoffMessage::Outcome)
                 }
                 CutoffMessage::Outcome => Command::none(),
             }
@@ -2985,10 +2986,11 @@ mod tests {
     }
 
     impl Component for GenerationComponent {
+        type Config = Self;
         type Model = GenerationModel;
         type Message = GenerationMessage;
 
-        fn init(&self) -> Init<Self::Model, Self::Message> {
+        fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
             Init::new(GenerationModel {
                 generation: 1,
                 items: Vec::new(),
@@ -2996,7 +2998,7 @@ mod tests {
         }
 
         fn update(
-            &self,
+            _config: &Self::Config,
             model: &mut Self::Model,
             message: Self::Message,
         ) -> Command<Self::Message> {
@@ -3009,9 +3011,12 @@ mod tests {
             Command::none()
         }
 
-        fn subscriptions(&self, model: &Self::Model) -> Subscriptions<Self::Message> {
+        fn subscriptions(
+            config: &Self::Config,
+            model: &Self::Model,
+        ) -> Subscriptions<Self::Message> {
             Subscriptions::one(Subscription::source_with(
-                &self.source,
+                &config.source,
                 SubscriptionId::new("generation"),
                 GenerationSource(model.generation),
                 GenerationMessage::Event,
@@ -3068,26 +3073,30 @@ mod tests {
     }
 
     impl Component for FramedDrainComponent {
+        type Config = Self;
         type Model = ();
         type Message = SourceEvent<u64, FramedError<Infallible, &'static str>>;
 
-        fn init(&self) -> Init<Self::Model, Self::Message> {
+        fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
             Init::new(())
         }
 
         fn update(
-            &self,
+            _config: &Self::Config,
             _model: &mut Self::Model,
             _message: Self::Message,
         ) -> Command<Self::Message> {
             Command::none()
         }
 
-        fn subscriptions(&self, _model: &Self::Model) -> Subscriptions<Self::Message> {
+        fn subscriptions(
+            config: &Self::Config,
+            _model: &Self::Model,
+        ) -> Subscriptions<Self::Message> {
             Subscriptions::one(Subscription::source_with(
-                &self.source,
+                &config.source,
                 SubscriptionId::new("framed-drain"),
-                Framed::new(GenerationSource(1), self.decoder.clone()),
+                Framed::new(GenerationSource(1), config.decoder.clone()),
                 std::convert::identity,
             ))
         }
@@ -3135,7 +3144,7 @@ mod tests {
     fn generation_core() -> GenerationFixture {
         let mut builder = Program::builder();
         let source = builder.source::<GenerationSource>();
-        let component = builder.component(
+        let component = builder.component::<GenerationComponent>(
             ComponentId::new("generation"),
             GenerationComponent { source },
         );
@@ -3204,7 +3213,7 @@ mod tests {
     async fn phase6_cancel_cutoff_starts_no_work_from_a_committed_transition() {
         let mut builder = Program::builder();
         let effect = builder.effect::<CutoffIntent>();
-        let component = builder.component(
+        let component = builder.component::<CutoffComponent>(
             ComponentId::new("cancel-cutoff"),
             CutoffComponent { effect },
         );
@@ -3335,7 +3344,7 @@ mod tests {
         let finish_calls = Arc::new(AtomicUsize::new(0));
         let mut builder = Program::builder();
         let source = builder.source::<Framed<GenerationSource, DrainFailDecoder>>();
-        let _ = builder.component(
+        let _ = builder.component::<FramedDrainComponent>(
             ComponentId::new("framed-drain"),
             FramedDrainComponent {
                 source,
@@ -3395,7 +3404,7 @@ mod tests {
     async fn phase6_drain_preserves_a_source_panic_completed_before_cutoff() {
         let mut builder = Program::builder();
         let source = builder.source::<GenerationSource>();
-        let component = builder.component(
+        let component = builder.component::<GenerationComponent>(
             ComponentId::new("drain-panic"),
             GenerationComponent { source },
         );
@@ -3439,7 +3448,7 @@ mod tests {
         for observe_drain in [false, true] {
             let mut builder = Program::builder();
             let source = builder.source::<GenerationSource>();
-            let component = builder.component(
+            let component = builder.component::<GenerationComponent>(
                 ComponentId::new("escalation-panic"),
                 GenerationComponent { source },
             );

@@ -1,4 +1,4 @@
-use pulse::journal::{self, Journal};
+use pulse::journal::Journal;
 use samara::prelude::*;
 
 #[tokio::main]
@@ -12,7 +12,7 @@ async fn main() -> anyhow::Result<()> {
 
     let runtime = LiveRuntime::builder(program)
         .with_subprogram(journal)
-        .and_drivers(journal::Drivers::default())
+        .and_its_vendored_drivers()
         .build()?;
 
     let task = runtime.spawn();

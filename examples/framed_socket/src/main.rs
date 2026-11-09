@@ -261,15 +261,16 @@ impl From<HealthProtocolMessage> for HealthMessage {
 struct Health;
 
 impl Component for Health {
+    type Config = Self;
     type Model = HealthModel;
     type Message = HealthMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(HealthModel::default())
     }
 
     fn update(
-        &self,
+        _config: &Self::Config,
         model: &mut Self::Model,
         HealthMessage::Protocol(message): Self::Message,
     ) -> Command<Self::Message> {
@@ -424,36 +425,41 @@ fn health_checked(
 }
 
 impl Component for Telemetry {
+    type Config = Self;
     type Model = TelemetryModel;
     type Message = TelemetryMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(TelemetryModel::default())
     }
 
-    fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        telemetry: &Self::Config,
+        model: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         match message {
             TelemetryMessage::Connect(config) => {
                 // Changing the Model changes the desired subscription returned
                 // below; the runtime performs the actual start or replacement.
                 model.desired = Some(config.clone());
                 model.last_failure = None;
-                Command::notify(self.health.clone(), Connecting(config.endpoint))
+                Command::notify(telemetry.health.clone(), Connecting(config.endpoint))
             }
             TelemetryMessage::Disconnect => {
                 // Removing desire is enough. Reconciliation and cancellation
                 // are runtime work, not reducer-side effects.
                 model.desired = None;
-                Command::notify(self.health.clone(), Disconnected)
+                Command::notify(telemetry.health.clone(), Disconnected)
             }
             TelemetryMessage::Socket(SourceEvent::Item(frame)) => {
                 model.received += 1;
                 // One transition can declare independent intents without
                 // performing either operation inline.
                 Command::batch([
-                    Command::notify(self.health.clone(), FrameSeen),
+                    Command::notify(telemetry.health.clone(), FrameSeen),
                     Command::effect_with(
-                        &self.storage,
+                        &telemetry.storage,
                         StoreFrame { frame },
                         TelemetryMessage::Stored,
                     ),
@@ -465,11 +471,11 @@ impl Component for Telemetry {
                 model.desired = None;
                 let error = format!("{error:?}");
                 model.last_failure = Some(error.clone());
-                Command::notify(self.health.clone(), Failed(error))
+                Command::notify(telemetry.health.clone(), Failed(error))
             }
             TelemetryMessage::Socket(SourceEvent::Ended) => {
                 model.desired = None;
-                Command::notify(self.health.clone(), Disconnected)
+                Command::notify(telemetry.health.clone(), Disconnected)
             }
             TelemetryMessage::Stored(EffectOutcome::Succeeded(_frame_id)) => {
                 // Async completion re-enters the Component only as a Message.
@@ -489,7 +495,7 @@ impl Component for Telemetry {
                 // order is intentionally not assumed; each pure mapper captures
                 // the domain key needed to interpret its eventual reply.
                 Command::batch(probes.map(|probe| {
-                    Command::request_with(self.health.clone(), Read, move |event| {
+                    Command::request_with(telemetry.health.clone(), Read, move |event| {
                         TelemetryMessage::HealthChecked { probe, event }
                     })
                 }))
@@ -501,7 +507,10 @@ impl Component for Telemetry {
         }
     }
 
-    fn subscriptions(&self, model: &Self::Model) -> Subscriptions<Self::Message> {
+    fn subscriptions(
+        telemetry: &Self::Config,
+        model: &Self::Model,
+    ) -> Subscriptions<Self::Message> {
         // Subscriptions are a pure projection of current Model state, analogous
         // to declarative resource desire rather than imperative task spawning.
         let Some(config) = &model.desired else {
@@ -513,7 +522,7 @@ impl Component for Telemetry {
         // descriptor replaces it while keeping the logical subscription
         // identity.
         Subscriptions::one(Subscription::source_with(
-            &self.socket,
+            &telemetry.socket,
             SubscriptionId::new(SOCKET),
             Framed::new(
                 TcpBytes {
@@ -575,13 +584,13 @@ fn program() -> (Program, AppRefs) {
     // A named Port permits multiple independently bound instances of the same
     // protocol; the protocol's Rust type alone is not a global service key.
     let health_port = program.port(PortId::new(HEALTH));
-    let health = program.component(ComponentId::new("health"), Health);
+    let health = program.component::<Health>(ComponentId::new("health"), Health);
 
     // Assembly selects the provider; `HealthMessage` declares the canonical
     // Protocol conversion through its `From` implementation.
     program.bind_port(&health_port, &health);
 
-    let telemetry = program.component(
+    let telemetry = program.component::<Telemetry>(
         ComponentId::new("telemetry"),
         Telemetry {
             health: health_port.clone(),
@@ -801,15 +810,23 @@ mod tests {
             storage: builder.effect::<StoreFrame>(),
             socket: builder.source::<TelemetryFeed>(),
         };
-        let mut model = component.init().model;
+        let mut model = Telemetry::init(&component).model;
         let id = SubscriptionId::new(SOCKET);
 
-        let _ = component.update(&mut model, TelemetryMessage::Connect(config("one:7000", 1)));
-        let first = component.subscriptions(&model);
+        let _ = Telemetry::update(
+            &component,
+            &mut model,
+            TelemetryMessage::Connect(config("one:7000", 1)),
+        );
+        let first = Telemetry::subscriptions(&component, &model);
         let first = first.find::<TelemetryFeed>(&id).unwrap();
 
-        let _ = component.update(&mut model, TelemetryMessage::Connect(config("two:7000", 2)));
-        let second = component.subscriptions(&model);
+        let _ = Telemetry::update(
+            &component,
+            &mut model,
+            TelemetryMessage::Connect(config("two:7000", 2)),
+        );
+        let second = Telemetry::subscriptions(&component, &model);
         let second = second.find::<TelemetryFeed>(&id).unwrap();
 
         assert_ne!(first, second);
@@ -824,7 +841,7 @@ mod tests {
         let mut builder = Program::builder();
         let primary = builder.port::<HealthProtocol>(PortId::new("health/primary"));
         let fallback = builder.port::<HealthProtocol>(PortId::new("health/fallback"));
-        let provider = builder.component(ComponentId::new("health"), Health);
+        let provider = builder.component::<Health>(ComponentId::new("health"), Health);
 
         builder.bind_port(&primary, &provider);
         builder.bind_port(&fallback, &provider);
@@ -851,10 +868,13 @@ mod tests {
             storage: builder.effect::<StoreFrame>(),
             socket: builder.source::<TelemetryFeed>(),
         };
-        let mut model = component.init().model;
+        let mut model = Telemetry::init(&component).model;
 
-        let command =
-            component.update(&mut model, TelemetryMessage::Connect(config("one:7000", 1)));
+        let command = Telemetry::update(
+            &component,
+            &mut model,
+            TelemetryMessage::Connect(config("one:7000", 1)),
+        );
         let notifications = command.notification_intents::<Connecting>();
 
         assert_eq!(notifications.len(), 1);
@@ -879,9 +899,10 @@ mod tests {
             storage: builder.effect::<StoreFrame>(),
             socket: builder.source::<TelemetryFeed>(),
         };
-        let mut model = component.init().model;
+        let mut model = Telemetry::init(&component).model;
 
-        let command = component.update(
+        let command = Telemetry::update(
+            &component,
             &mut model,
             TelemetryMessage::CheckHealth([ProbeId(17), ProbeId(29)]),
         );
@@ -903,8 +924,8 @@ mod tests {
         let first = health_checked(ProbeId(17))(RequestOutcome::Replied(snapshot.clone()));
         let second = health_checked(ProbeId(29))(RequestOutcome::TimedOut);
 
-        let _ = component.update(&mut model, second);
-        let _ = component.update(&mut model, first);
+        let _ = Telemetry::update(&component, &mut model, second);
+        let _ = Telemetry::update(&component, &mut model, first);
         assert_eq!(
             model.health_checks,
             vec![
