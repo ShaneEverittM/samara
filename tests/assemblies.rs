@@ -156,7 +156,7 @@ impl VendorsDrivers for Recorder {
     }
 }
 
-fn assemble() -> (Program, Installed<Recorder>) {
+fn assemble() -> (Program, InstalledAssembly<Recorder>) {
     let mut program = Program::builder();
     let recorder = program.install::<Recorder>(RecorderConfig { port: "ledger" });
     (program.build().expect("program assembles"), recorder)

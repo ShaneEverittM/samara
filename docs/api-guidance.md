@@ -788,7 +788,7 @@ as a consequence: nothing in the public surface needs them.
 `install` binds no Drivers. Assembly is shared by live and controlled
 execution, binding is an execution-profile decision, and controlled execution
 must never run a live Driver. `ProgramBuilder::install` returns an
-`Installed<A>` token holding the exports. A live host writes
+`InstalledAssembly<A>` token holding the exports. A live host writes
 `with_assembly(installed).and_drivers(drivers)`, where `drivers` is any
 `EffectDriver` or `SourceDriver` for a single requirement or a tuple matching
 the requirement tuple position by position; no boxing and no bindings struct.
@@ -827,7 +827,7 @@ Assembly they do not own and is tracked in the follow-ups.
 
 The gap between `install` and `and_drivers` is deliberate. A Program is
 profile-neutral and one assembly serves both builders, so binding cannot live
-in `install` without merging the two. The `Installed` token and the
+in `install` without merging the two. The `InstalledAssembly` token and the
 `WithAssembly` step are the typed bridge across that gap. See the
 [Assembly design note](notes/assembly-design.md).
 

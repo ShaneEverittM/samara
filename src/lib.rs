@@ -121,7 +121,7 @@ pub mod prelude {
         DriverStopped, Drivers, Effect, EffectCapability, EffectDescriptor, EffectDriver,
         EffectInvocation, EffectOutcome, EffectOutcomeKind, Framed, FramedError, FramedLayer,
         HttpError, HttpErrorKind, HttpJsonError, HttpRequest, HttpResponse, HttpResponseError,
-        HttpStatusError, Init, Installed, LiveRuntime, LiveRuntimeBuilder, LogicalTime,
+        HttpStatusError, Init, InstalledAssembly, LiveRuntime, LiveRuntimeBuilder, LogicalTime,
         PendingEffect, PendingWork, Port, PortHandle, PortId, PrintStderr, PrintStdout, Program,
         ProgramBuildError, ProgramBuilder, ReadSystemTime, ReplyTo, RequestError, RequestIntent,
         RequestOutcome, RequestOutcomeKind, Requirements, RunReport, RuntimeError, RuntimeTask,
@@ -6043,7 +6043,7 @@ impl ControlledRuntimeBuilder {
 /// need to implement it.
 ///
 /// Drivers never bind inside [`Self::install`]; assembly is shared by live and
-/// controlled execution. [`ProgramBuilder::install`] returns an [`Installed`]
+/// controlled execution. [`ProgramBuilder::install`] returns an [`InstalledAssembly`]
 /// token holding the exports. A live host passes it to
 /// [`LiveRuntimeBuilder::with_assembly`] and supplies drivers with
 /// [`WithAssembly::and_drivers`]; a controlled test passes it to
@@ -6096,7 +6096,7 @@ impl ControlledRuntimeBuilder {
 ///     }
 /// }
 ///
-/// fn assemble() -> Result<(Program, Installed<Pinger>), ProgramBuildError> {
+/// fn assemble() -> Result<(Program, InstalledAssembly<Pinger>), ProgramBuildError> {
 ///     let mut program = Program::builder();
 ///     let pinger = program.install::<Pinger>(());
 ///     let _beacon: Port<BeaconMessage> = pinger.exports().clone();
@@ -6386,10 +6386,10 @@ pub trait VendorsDrivers: Assembly {
 impl LiveRuntimeBuilder {
     /// Starts binding an installed [`Assembly`]'s drivers.
     ///
-    /// Takes the [`Installed`] token from [`ProgramBuilder::install`] and returns
+    /// Takes the [`InstalledAssembly`] token from [`ProgramBuilder::install`] and returns
     /// a step that holds this builder until [`WithAssembly::and_drivers`]
     /// supplies them. See [`Assembly`] for a complete example.
-    pub fn with_assembly<S: Assembly>(self, installed: Installed<S>) -> WithAssembly<S> {
+    pub fn with_assembly<S: Assembly>(self, installed: InstalledAssembly<S>) -> WithAssembly<S> {
         drop(installed);
         WithAssembly {
             builder: self,
@@ -6404,7 +6404,7 @@ impl ControlledRuntimeBuilder {
     ///
     /// Controlled bindings carry no information beyond the descriptor type, so
     /// no drivers are supplied. See [`Assembly`] for a complete example.
-    pub fn with_assembly<S: Assembly>(self, installed: Installed<S>) -> Self {
+    pub fn with_assembly<S: Assembly>(self, installed: InstalledAssembly<S>) -> Self {
         drop(installed);
         S::Requires::control(self)
     }
@@ -6422,34 +6422,34 @@ impl ControlledRuntimeBuilder {
 /// when the token is kept for its exports and never bound; the live and controlled
 /// builders still catch that at `build()` with the descriptor type named.
 #[must_use = "pass this token to `with_assembly` on the live or controlled builder"]
-pub struct Installed<S: Assembly> {
+pub struct InstalledAssembly<S: Assembly> {
     exports: S::Exports,
     marker: PhantomData<fn() -> S>,
 }
 
-impl<S: Assembly> Installed<S> {
+impl<S: Assembly> InstalledAssembly<S> {
     /// What the Assembly exported, normally a [`Port`] to clone and wire against.
     pub fn exports(&self) -> &S::Exports {
         &self.exports
     }
 }
 
-impl<S: Assembly> fmt::Debug for Installed<S> {
+impl<S: Assembly> fmt::Debug for InstalledAssembly<S> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("Installed")
+            .debug_struct("InstalledAssembly")
             .field("assembly", &std::any::type_name::<S>())
             .finish_non_exhaustive()
     }
 }
 
 impl ProgramBuilder {
-    /// Installs a [`Assembly`] and returns the [`Installed`] token holding its exports.
+    /// Installs a [`Assembly`] and returns the [`InstalledAssembly`] token holding its exports.
     ///
     /// Bind its drivers later with `with_assembly` on the live or controlled
     /// builder. See [`Assembly`] for a complete example.
-    pub fn install<S: Assembly>(&mut self, config: S::Config) -> Installed<S> {
-        Installed {
+    pub fn install<S: Assembly>(&mut self, config: S::Config) -> InstalledAssembly<S> {
+        InstalledAssembly {
             exports: S::install(self, config),
             marker: PhantomData,
         }

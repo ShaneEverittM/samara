@@ -142,7 +142,7 @@ The following evidence must pass before the Phase 2 audit:
   profile builds, and `PortHandle::send`, `request_to`, and
   `request_to_timeout` live.
 - `tests/assemblies.rs` validates `Assembly`, `Requires`, `Drivers`,
-  `VendorsDrivers`, and `Installed` (ADR-0013): `ProgramBuilder::install`
+  `VendorsDrivers`, and `InstalledAssembly` (ADR-0013): `ProgramBuilder::install`
   returns a token carrying the exports, `with_assembly(token).and_drivers(..)`
   binds a driver tuple position by position on the live builder,
   `and_its_vendored_drivers()` binds what the Assembly vendors,

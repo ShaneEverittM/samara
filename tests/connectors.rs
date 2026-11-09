@@ -162,7 +162,7 @@ fn couple(message: AuditMessage) -> JournalMessage {
     }
 }
 
-fn assemble() -> (Program, Installed<Journal>, ComponentRef<Monitor>) {
+fn assemble() -> (Program, InstalledAssembly<Journal>, ComponentRef<Monitor>) {
     let mut program = Program::builder();
     let audit = program.port::<AuditMessage>(PortId::new("audit"));
     let journal = program.install::<Journal>(());
@@ -381,7 +381,9 @@ impl Component for Teller {
     }
 }
 
-fn assemble_tally(patience: Option<Duration>) -> (Program, Installed<Tally>, ComponentRef<Teller>) {
+fn assemble_tally(
+    patience: Option<Duration>,
+) -> (Program, InstalledAssembly<Tally>, ComponentRef<Teller>) {
     let mut program = Program::builder();
     let tally = program.install::<Tally>(());
     let teller = program.component::<Teller>(

@@ -59,7 +59,7 @@ The authoritative description is the `Assembly` rustdoc in `src/lib.rs`,
 with its full example and two compile-fail cases, and `tests/assemblies.rs`.
 In one paragraph: `Assembly` has `Config`, `Exports`, and `Requires`, and
 an `install` associated function that declares into a `ProgramBuilder`;
-`ProgramBuilder::install` returns a `must_use` `Installed<A>` token carrying
+`ProgramBuilder::install` returns a `must_use` `InstalledAssembly<A>` token carrying
 the exports. The live builder's `with_assembly(token)` returns a
 `WithAssembly` step whose only method, `and_drivers`, takes any value
 implementing `Drivers<Requires>` (a single driver or a tuple matching the
@@ -78,7 +78,7 @@ pulse journal (`examples/pulse/src/journal.rs`) is the worked example: one
 - The link between installing and binding is both a type association and a
   value. A driver at the wrong position is a compile error naming the
   expected `Effect<D>`, adding a requirement breaks every live call site at
-  compile time, and `with_assembly` takes the `Installed<A>` token that only
+  compile time, and `with_assembly` takes the `InstalledAssembly<A>` token that only
   `ProgramBuilder::install` can create, so drivers cannot be bound for an
   Assembly the Program never installed.
 - The controlled profile is never spelled by an Assembly or its tests. A
@@ -123,7 +123,7 @@ pulse journal (`examples/pulse/src/journal.rs`) is the worked example: one
   the same Program. That divide is what lets `main` and the controlled tests
   share one assembly, and it is what ADR-0008's two validation stages
   formalize. The gap between installing and binding is the price of that
-  divide, and `Installed` plus `WithAssembly` are the typed bridge across
+  divide, and `InstalledAssembly` plus `WithAssembly` are the typed bridge across
   it: the token proves the Program side happened, and the waiting step forces
   the Runtime side to finish. Forgetting the bridge entirely is caught by
   `build()` with the descriptor named, which is the same contract `Result`
@@ -200,7 +200,7 @@ pulse journal (`examples/pulse/src/journal.rs`) is the worked example: one
 ## Relation to existing contracts
 
 - Additive public API apart from the kernel signature, which ADR-0013
-  records: `Assembly`, `Installed`, `WithAssembly`, `Effect`, `Source`,
+  records: `Assembly`, `InstalledAssembly`, `WithAssembly`, `Effect`, `Source`,
   `Requirements`, `Drivers`, `VendorsDrivers`, `ProgramBuilder::install`, and
   `with_assembly` on each builder. No runtime semantics change, so ADR-0002,
   ADR-0003, and ADR-0004 are unaffected.
