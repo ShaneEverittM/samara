@@ -130,11 +130,11 @@ pub mod prelude {
         PendingWork, Port, PortHandle, PortId, PrintStderr, PrintStdout, Program,
         ProgramBuildError, ProgramBuilder, Protocol, ReadSystemTime, ReplyTo, Request,
         RequestError, RequestInvocation, RequestOutcome, RequestOutcomeKind, Requirements,
-        RunReport, RuntimeError, RuntimeTask, ShipsDrivers, Shutdown, ShutdownReport, Source,
-        SourceCapability, SourceDescriptor, SourceDriver, SourceEvent, SourceEventKind, SourceSink,
-        StatusCode, StdinError, StdinErrorKind, StdinLines, StreamDescriptor, Subprogram,
-        Subscription, SubscriptionAction, SubscriptionId, Subscriptions, SystemClockDriver,
-        TcpBytes, TcpError, TcpErrorKind, TraceCommandKind, TraceEvent, TraceId, TraceRecord,
+        RunReport, RuntimeError, RuntimeTask, Shutdown, ShutdownReport, Source, SourceCapability,
+        SourceDescriptor, SourceDriver, SourceEvent, SourceEventKind, SourceSink, StatusCode,
+        StdinError, StdinErrorKind, StdinLines, StreamDescriptor, Subprogram, Subscription,
+        SubscriptionAction, SubscriptionId, Subscriptions, SystemClockDriver, TcpBytes, TcpError,
+        TcpErrorKind, TraceCommandKind, TraceEvent, TraceId, TraceRecord, VendorsDrivers,
         WithSubprogram, protocol,
     };
 }
@@ -6516,11 +6516,11 @@ impl<S: Subprogram> WithSubprogram<S> {
         drivers.bind(self.builder)
     }
 
-    /// Binds the drivers the Subprogram vendors through [`ShipsDrivers`] and
+    /// Binds the drivers the Subprogram vendors through [`VendorsDrivers`] and
     /// returns the builder.
     pub fn and_its_vendored_drivers(self) -> LiveRuntimeBuilder
     where
-        S: ShipsDrivers,
+        S: VendorsDrivers,
     {
         self.and_drivers(S::drivers())
     }
@@ -6559,7 +6559,7 @@ impl<S: Subprogram> WithSubprogram<S> {
 ///         let _ping = program.effect::<Ping>();
 ///     }
 /// }
-/// impl ShipsDrivers for Pinger {
+/// impl VendorsDrivers for Pinger {
 ///     type Drivers = NoopPing;
 ///     fn drivers() -> NoopPing { NoopPing }
 /// }
@@ -6573,7 +6573,7 @@ impl<S: Subprogram> WithSubprogram<S> {
 /// # drop(runtime);
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
-pub trait ShipsDrivers: Subprogram {
+pub trait VendorsDrivers: Subprogram {
     /// The concrete drivers, satisfying [`Subprogram::Requires`] position by position.
     type Drivers: Drivers<Self::Requires>;
 

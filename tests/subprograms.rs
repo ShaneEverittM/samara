@@ -148,7 +148,7 @@ impl SourceDriver<Pulses> for SilentPulses {
     }
 }
 
-impl ShipsDrivers for Recorder {
+impl VendorsDrivers for Recorder {
     type Drivers = (CountingStamp, SilentPulses);
 
     fn drivers() -> Self::Drivers {

@@ -82,7 +82,7 @@ impl Subprogram for Journal {
 /// The drivers `pulse` vendors for the journal: the crate's filesystem driver
 /// rooted at the working directory, and the system clock. Hosts may pass any
 /// other pair that drives the same two effects to `and_drivers` instead.
-impl ShipsDrivers for Journal {
+impl VendorsDrivers for Journal {
     type Drivers = (FsDriver, SystemClockDriver);
 
     fn drivers() -> Self::Drivers {
