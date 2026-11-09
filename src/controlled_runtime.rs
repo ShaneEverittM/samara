@@ -1006,7 +1006,7 @@ impl ControlledCore {
                             component.clone(),
                             None,
                             work,
-                            "ReplyTo belongs to another Program",
+                            "ReplyWith belongs to another Program",
                         ));
                     }
                     if !token.is_expired() {
@@ -1019,7 +1019,7 @@ impl ControlledCore {
                                 component.clone(),
                                 None,
                                 work,
-                                "ReplyTo no longer names an outstanding Request",
+                                "ReplyWith no longer names an outstanding Request",
                             ));
                         };
                         if self.requests[index].reply_type != reply_type {

@@ -13,7 +13,7 @@ enum HttpTimeMessage {
     Tick,
 
     // Received when we are asked for our current time; the token routes the reply.
-    GetTime(ReplyTo<Option<DateTime<Utc>>>),
+    GetTime(ReplyWith<Option<DateTime<Utc>>>),
 
     // One terminal Message keeps poll cleanup common to every outcome.
     PollFinished(Result<DateTime<Utc>, GetTimeError>),
@@ -34,7 +34,7 @@ impl From<EffectOutcome<TimeResponse, HttpResponseError>> for HttpTimeMessage {
 impl From<TimeServerMessage> for HttpTimeMessage {
     fn from(value: TimeServerMessage) -> Self {
         match value {
-            TimeServerMessage::GetCurrentTime(reply_to) => Self::GetTime(reply_to),
+            TimeServerMessage::GetCurrentTime(reply_with) => Self::GetTime(reply_with),
         }
     }
 }
@@ -119,7 +119,7 @@ impl Component for HttpTimeServer {
             (Idle { .. }, PollFinished(_)) => Command::none(),
 
             // Cached reads are available in either state.
-            (state, GetTime(reply_to)) => Command::reply(reply_to, state.current_time()),
+            (state, GetTime(reply_with)) => Command::reply(reply_with, state.current_time()),
         }
     }
 }
@@ -288,7 +288,7 @@ struct TimeResponse {
 enum TimeServerMessage {
     /// Asks for the provider's most recently observed time; `None` until it
     /// has one.
-    GetCurrentTime(ReplyTo<Option<DateTime<Utc>>>),
+    GetCurrentTime(ReplyWith<Option<DateTime<Utc>>>),
 }
 
 #[cfg(unix)]

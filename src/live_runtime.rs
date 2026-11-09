@@ -48,7 +48,7 @@ use crate::{
     BoxFuture, CapabilityToken, Command, CommandKind, ComponentId, DriverStopped, EffectDescriptor,
     EffectDriver, EffectOutcome, ErasedRequestMapper, ErasedSourceEvent, HttpError, HttpRequest,
     HttpResponse, MessageRoute, MessageTarget, Port, PortId, PrintStderr, PrintStdout, Program,
-    ReplyTo, RequestOutcome, RequestToken, RuntimeError, Shutdown, ShutdownReport,
+    ReplyWith, RequestOutcome, RequestToken, RuntimeError, Shutdown, ShutdownReport,
     SourceCapability, SourceDescriptor, SourceDriver, SourceEvent, SourcePlan, SourceRequirement,
     SourceSink, StreamDescriptor, StreamSourceDescriptor, SubscriptionId, TcpBytes, TcpError,
     TraceId,
@@ -1412,7 +1412,7 @@ impl<P, R, Build> ErasedLivePortRequest for LivePortRequestTo<P, R, Build>
 where
     P: Send + 'static,
     R: Send + 'static,
-    Build: FnOnce(ReplyTo<R>) -> P + Send + 'static,
+    Build: FnOnce(ReplyWith<R>) -> P + Send + 'static,
 {
     fn port(&self) -> &PortId {
         self.port.id()
@@ -1439,7 +1439,7 @@ where
             build, completion, ..
         } = *self;
         let conversion: ProtocolRequestConversion =
-            Box::new(move |token| Box::new(build(ReplyTo::runtime(token))));
+            Box::new(move |token| Box::new(build(ReplyWith::runtime(token))));
         let completion: HostReplyCompletion = Box::new(move |outcome| {
             let _ = completion.send(crate::typed_request_outcome::<R>(outcome));
         });
@@ -1496,7 +1496,7 @@ impl LiveEvent {
     where
         P: Send + 'static,
         R: Send + 'static,
-        Build: FnOnce(ReplyTo<R>) -> P + Send + 'static,
+        Build: FnOnce(ReplyWith<R>) -> P + Send + 'static,
     {
         Self::PortIngress(LivePortIngress::Request(Box::new(LivePortRequestTo {
             port,
@@ -2156,7 +2156,7 @@ impl LiveCore {
                             component.clone(),
                             None,
                             work,
-                            "ReplyTo belongs to another Program",
+                            "ReplyWith belongs to another Program",
                         ));
                     }
                     if token.is_expired() {
@@ -2171,7 +2171,7 @@ impl LiveCore {
                             component.clone(),
                             None,
                             work,
-                            "ReplyTo no longer names an outstanding Request",
+                            "ReplyWith no longer names an outstanding Request",
                         ));
                     };
                     if self.requests[index].reply_type != reply_type {

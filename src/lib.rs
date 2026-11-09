@@ -123,7 +123,7 @@ pub mod prelude {
         HttpError, HttpErrorKind, HttpJsonError, HttpRequest, HttpResponse, HttpResponseError,
         HttpStatusError, Init, InstalledAssembly, LiveRuntime, LiveRuntimeBuilder, LogicalTime,
         PendingEffect, PendingWork, Port, PortHandle, PortId, PrintStderr, PrintStdout, Program,
-        ProgramBuildError, ProgramBuilder, ReadSystemTime, ReplyTo, RequestError, RequestIntent,
+        ProgramBuildError, ProgramBuilder, ReadSystemTime, ReplyWith, RequestError, RequestIntent,
         RequestOutcome, RequestOutcomeKind, Requirements, RunReport, RuntimeError, RuntimeTask,
         Shutdown, ShutdownReport, Source, SourceCapability, SourceDescriptor, SourceDriver,
         SourceEvent, SourceEventKind, SourceSink, StatusCode, StdinError, StdinErrorKind,
@@ -854,16 +854,16 @@ pub enum RequestError {
 ///
 /// ```compile_fail
 /// #![deny(unused_must_use)]
-/// use samara::ReplyTo;
+/// use samara::ReplyWith;
 ///
-/// fn discard(reply_to: ReplyTo<()>) {
-///     reply_to;
+/// fn discard(reply_with: ReplyWith<()>) {
+///     reply_with;
 /// }
 /// ```
 ///
 /// </details>
-#[must_use = "a ReplyTo must be consumed by Command::reply"]
-pub struct ReplyTo<Reply> {
+#[must_use = "a ReplyWith must be consumed by Command::reply"]
+pub struct ReplyWith<Reply> {
     token: Arc<RequestToken>,
     marker: PhantomData<fn(Reply)>,
 }
@@ -903,7 +903,7 @@ impl RequestToken {
     }
 }
 
-impl<Reply> ReplyTo<Reply> {
+impl<Reply> ReplyWith<Reply> {
     #[cfg(test)]
     fn sketch(correlation: u64) -> Self {
         Self::runtime(RequestToken::new(correlation, Arc::new(())))
@@ -917,9 +917,12 @@ impl<Reply> ReplyTo<Reply> {
     }
 }
 
-impl<Reply> fmt::Debug for ReplyTo<Reply> {
+impl<Reply> fmt::Debug for ReplyWith<Reply> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.debug_tuple("ReplyTo").field(&"<opaque>").finish()
+        formatter
+            .debug_tuple("ReplyWith")
+            .field(&"<opaque>")
+            .finish()
     }
 }
 
@@ -1137,7 +1140,7 @@ where
     Message: Send + 'static,
     M: Send + 'static,
     R: Send + 'static,
-    Build: FnOnce(ReplyTo<R>) -> M + Send + 'static,
+    Build: FnOnce(ReplyWith<R>) -> M + Send + 'static,
     Map: FnOnce(RequestOutcome<R>) -> Message + Send + 'static,
 {
     fn target(&self) -> MessageTarget<'_> {
@@ -1178,7 +1181,7 @@ where
             map,
             ..
         } = *self;
-        let message = address.into_message(build(ReplyTo::runtime(token)));
+        let message = address.into_message(build(ReplyWith::runtime(token)));
         let mapper = Box::new(move |outcome| map(typed_request_outcome::<R>(outcome)));
         (message, mapper)
     }
@@ -1189,7 +1192,8 @@ where
 
     fn into_inspection(self: Box<Self>) -> (Box<dyn Any + Send>, ErasedRequestMapper<Message>) {
         let Self { build, map, .. } = *self;
-        let message: Box<dyn Any + Send> = Box::new(build(ReplyTo::runtime(RequestToken::inert())));
+        let message: Box<dyn Any + Send> =
+            Box::new(build(ReplyWith::runtime(RequestToken::inert())));
         let mapper = Box::new(move |outcome| map(typed_request_outcome::<R>(outcome)));
         (message, mapper)
     }
@@ -1203,7 +1207,7 @@ trait ErasedReplyCommand: Send {
 }
 
 struct Reply<Reply> {
-    reply_to: ReplyTo<Reply>,
+    reply_with: ReplyWith<Reply>,
     reply: Reply,
 }
 
@@ -1291,7 +1295,7 @@ pub struct RequestIntent<M, Message> {
 impl<M, Message> RequestIntent<M, Message> {
     /// Maps a reply outcome through the request's continuation.
     ///
-    /// `R` must be the reply type the constructor's `ReplyTo<R>` named; a
+    /// `R` must be the reply type the constructor's `ReplyWith<R>` named; a
     /// mismatch panics, since a unit test has nothing else to do with it.
     pub fn reply<R: Send + 'static>(self, outcome: RequestOutcome<R>) -> Message {
         (self.mapper)(match outcome {
@@ -1329,7 +1333,7 @@ where
     }
 
     fn into_parts(self: Box<Self>) -> (Arc<RequestToken>, Box<dyn Any + Send>) {
-        (self.reply_to.token, Box::new(self.reply))
+        (self.reply_with.token, Box::new(self.reply))
     }
 }
 
@@ -1536,8 +1540,8 @@ impl<Message> Command<Message> {
     /// Sends a request to a [`Port`], [`Connector`], or [`ComponentRef`] and maps its reply to a message.
     ///
     /// `request` is a constructor that takes the reply token, such as
-    /// `TallyMessage::total` or `|reply_to| LedgerMessage::Total(reply_to)`; its
-    /// `ReplyTo<R>` parameter fixes the reply type, and `map` must accept
+    /// `TallyMessage::total` or `|reply_with| LedgerMessage::Total(reply_with)`; its
+    /// `ReplyWith<R>` parameter fixes the reply type, and `map` must accept
     /// `RequestOutcome<R>`. The pairing of request and reply lives in the
     /// constructor's signature, so no request trait is needed. Both functions
     /// must be pure. There is no timeout; see [`Self::request_to_timeout`]. Inspect
@@ -1547,14 +1551,14 @@ impl<Message> Command<Message> {
     /// use samara::prelude::*;
     /// // A library's opaque message with a published request constructor.
     /// pub struct TallyMessage(Inner);
-    /// enum Inner { Total(ReplyTo<u64>) }
-    /// impl TallyMessage { pub fn total(reply_to: ReplyTo<u64>) -> Self { Self(Inner::Total(reply_to)) } }
+    /// enum Inner { Total(ReplyWith<u64>) }
+    /// impl TallyMessage { pub fn total(reply_with: ReplyWith<u64>) -> Self { Self(Inner::Total(reply_with)) } }
     /// # struct Tally;
     /// # impl Component for Tally {
     /// #     type Config = (); type Model = u64; type Message = TallyMessage;
     /// #     fn init(_: &()) -> Init<u64, TallyMessage> { Init::new(0) }
-    /// #     fn update(_: &(), total: &mut u64, TallyMessage(Inner::Total(reply_to)): TallyMessage) -> Command<TallyMessage> {
-    /// #         Command::reply(reply_to, *total)
+    /// #     fn update(_: &(), total: &mut u64, TallyMessage(Inner::Total(reply_with)): TallyMessage) -> Command<TallyMessage> {
+    /// #         Command::reply(reply_with, *total)
     /// #     }
     /// # }
     /// let mut program = Program::builder();
@@ -1568,7 +1572,7 @@ impl<Message> Command<Message> {
         Message: Send + 'static,
         T: Addressable,
         R: Send + 'static,
-        Build: FnOnce(ReplyTo<R>) -> T::Message + Send + 'static,
+        Build: FnOnce(ReplyWith<R>) -> T::Message + Send + 'static,
         Map: FnOnce(RequestOutcome<R>) -> Message + Send + 'static,
     {
         Self(CommandKind::Request(Box::new(AddressedRequest {
@@ -1596,7 +1600,7 @@ impl<Message> Command<Message> {
         Message: Send + 'static,
         T: Addressable,
         R: Send + 'static,
-        Build: FnOnce(ReplyTo<R>) -> T::Message + Send + 'static,
+        Build: FnOnce(ReplyWith<R>) -> T::Message + Send + 'static,
         Map: FnOnce(RequestOutcome<R>) -> Message + Send + 'static,
     {
         Self(CommandKind::Request(Box::new(AddressedRequest {
@@ -1613,11 +1617,11 @@ impl<Message> Command<Message> {
     /// The token is consumed, so the same request cannot be answered twice. Delivery
     /// happens after the provider's update returns. A reply after the caller's timeout
     /// is ignored. See [`ProgramBuilder::connect`] for an example.
-    pub fn reply<ReplyValue>(reply_to: ReplyTo<ReplyValue>, reply: ReplyValue) -> Self
+    pub fn reply<ReplyValue>(reply_with: ReplyWith<ReplyValue>, reply: ReplyValue) -> Self
     where
         ReplyValue: Send + 'static,
     {
-        Self(CommandKind::Reply(Box::new(Reply { reply_to, reply })))
+        Self(CommandKind::Reply(Box::new(Reply { reply_with, reply })))
     }
 
     /// Schedules a message for this component after `delay`.
@@ -1795,7 +1799,7 @@ impl<Message> Command<Message> {
     ///
     /// ```
     /// use samara::prelude::*;
-    /// enum LedgerMessage { Total(ReplyTo<u64>) }
+    /// enum LedgerMessage { Total(ReplyWith<u64>) }
     /// enum ClerkMessage { Total(RequestOutcome<u64>) }
     /// let mut program = Program::builder();
     /// let ledger = program.port::<LedgerMessage>(PortId::new("ledger"));
@@ -3691,7 +3695,7 @@ impl<S: SourceDescriptor> fmt::Debug for SourceCapability<S> {
 ///
 /// ```
 /// use samara::prelude::*;
-/// enum HealthMessage { Check(ReplyTo<bool>) }
+/// enum HealthMessage { Check(ReplyWith<bool>) }
 /// let mut program = Program::builder();
 /// let health = program.port::<HealthMessage>(PortId::new("primary"));
 /// assert_eq!(health.id(), &PortId::new("primary"));
@@ -4598,7 +4602,7 @@ impl ProgramBuilder {
     ///
     /// ```
     /// use samara::prelude::*;
-    /// enum CountMessage { Read(ReplyTo<u64>) }
+    /// enum CountMessage { Read(ReplyWith<u64>) }
     ///
     /// enum CounterMessage {
     ///     Count(CountMessage),
@@ -4613,7 +4617,7 @@ impl ProgramBuilder {
     ///     fn init(_: &()) -> Init<u64, CounterMessage> { Init::new(42) }
     ///     fn update(_: &(), count: &mut u64, message: CounterMessage) -> Command<CounterMessage> {
     ///         match message {
-    ///             CounterMessage::Count(CountMessage::Read(reply_to)) => Command::reply(reply_to, *count),
+    ///             CounterMessage::Count(CountMessage::Read(reply_with)) => Command::reply(reply_with, *count),
     ///             CounterMessage::Tick => { *count += 1; Command::none() }
     ///         }
     ///     }
@@ -5353,7 +5357,7 @@ impl<C: Component> ComponentHandle<C> {
 ///
 /// ```
 /// use samara::prelude::*;
-/// enum CountMessage { Read(ReplyTo<u64>) }
+/// enum CountMessage { Read(ReplyWith<u64>) }
 /// struct Counter;
 /// impl Component for Counter {
 ///     type Config = ();
@@ -5362,7 +5366,7 @@ impl<C: Component> ComponentHandle<C> {
 ///     fn init(_config: &Self::Config) -> Init<u64, CountMessage> { Init::new(42) }
 ///     fn update(_config: &Self::Config, count: &mut u64, message: CountMessage) -> Command<CountMessage> {
 ///         match message {
-///             CountMessage::Read(reply_to) => Command::reply(reply_to, *count),
+///             CountMessage::Read(reply_with) => Command::reply(reply_with, *count),
 ///         }
 ///     }
 /// }
@@ -5460,7 +5464,7 @@ impl<P: Send + 'static> PortHandle<P> {
 
     /// Sends a request built from its reply token and waits for the reply.
     ///
-    /// `request` is a constructor taking `ReplyTo<R>`, as for
+    /// `request` is a constructor taking `ReplyWith<R>`, as for
     /// [`Command::request_to`]; the awaited value is `R`. Dropping this future
     /// after sending stops waiting but does not cancel the provider's work. An
     /// unanswered request can keep Drain waiting; see
@@ -5468,7 +5472,7 @@ impl<P: Send + 'static> PortHandle<P> {
     ///
     /// ```no_run
     /// use samara::prelude::*;
-    /// enum LedgerMessage { Total(ReplyTo<u64>) }
+    /// enum LedgerMessage { Total(ReplyWith<u64>) }
     /// async fn total(client: &PortHandle<LedgerMessage>) -> Result<u64, RuntimeError> {
     ///     client.request_to(LedgerMessage::Total).await
     /// }
@@ -5476,7 +5480,7 @@ impl<P: Send + 'static> PortHandle<P> {
     pub async fn request_to<R, Build>(&self, request: Build) -> Result<R, RuntimeError>
     where
         R: Send + 'static,
-        Build: FnOnce(ReplyTo<R>) -> P + Send + 'static,
+        Build: FnOnce(ReplyWith<R>) -> P + Send + 'static,
     {
         match self.request_to_inner(request, None).await? {
             RequestOutcome::Replied(reply) => Ok(reply),
@@ -5497,7 +5501,7 @@ impl<P: Send + 'static> PortHandle<P> {
     ) -> Result<RequestOutcome<R>, RuntimeError>
     where
         R: Send + 'static,
-        Build: FnOnce(ReplyTo<R>) -> P + Send + 'static,
+        Build: FnOnce(ReplyWith<R>) -> P + Send + 'static,
     {
         self.request_to_inner(request, Some(timeout)).await
     }
@@ -5509,7 +5513,7 @@ impl<P: Send + 'static> PortHandle<P> {
     ) -> Result<RequestOutcome<R>, RuntimeError>
     where
         R: Send + 'static,
-        Build: FnOnce(ReplyTo<R>) -> P + Send + 'static,
+        Build: FnOnce(ReplyWith<R>) -> P + Send + 'static,
     {
         let deadline = timeout
             .map(|timeout| {
@@ -6823,7 +6827,7 @@ mod request_authority_tests {
     impl Component for Replier {
         type Config = ();
         type Model = ();
-        type Message = ReplyTo<u64>;
+        type Message = ReplyWith<u64>;
 
         fn init(_config: &Self::Config) -> Init<(), Self::Message> {
             Init::default()
@@ -6832,18 +6836,18 @@ mod request_authority_tests {
         fn update(
             _config: &Self::Config,
             _: &mut (),
-            reply_to: Self::Message,
+            reply_with: Self::Message,
         ) -> Command<Self::Message> {
-            Command::reply(reply_to, 7)
+            Command::reply(reply_with, 7)
         }
     }
 
-    fn fixture() -> (Program, ComponentRef<Replier>, ReplyTo<u64>) {
+    fn fixture() -> (Program, ComponentRef<Replier>, ReplyWith<u64>) {
         let mut builder = Program::builder();
         let replier = builder.component::<Replier>(ComponentId::new("replier"), ());
         let token = RequestToken::new(0, Arc::new(()));
         token.expire();
-        (builder.build().unwrap(), replier, ReplyTo::runtime(token))
+        (builder.build().unwrap(), replier, ReplyWith::runtime(token))
     }
 
     #[test]

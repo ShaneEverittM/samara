@@ -1198,7 +1198,7 @@ impl Component for OwnershipComponent {
                 Command::effect_with(&config.effect, ProbeEffect(1), OwnershipMessage::Effect),
                 Command::request_to(
                     config.port.clone(),
-                    |reply_to| EchoProtocolMessage::Echo(1, reply_to),
+                    |reply_with| EchoProtocolMessage::Echo(1, reply_with),
                     OwnershipMessage::Request,
                 ),
             ]),
@@ -1378,7 +1378,7 @@ fn v10_reading_controlled_trace_after_drive_has_no_feedback_path() {
 /// its own reply token.
 #[derive(Debug)]
 enum EchoProtocolMessage {
-    Echo(u64, ReplyTo<u64>),
+    Echo(u64, ReplyWith<u64>),
 }
 
 #[derive(Debug)]
@@ -1412,11 +1412,11 @@ impl Component for EchoProvider {
         _model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
-        let EchoProviderMessage::Protocol(EchoProtocolMessage::Echo(value, reply_to)) = message;
+        let EchoProviderMessage::Protocol(EchoProtocolMessage::Echo(value, reply_with)) = message;
         if config.reply {
-            Command::reply(reply_to, value)
+            Command::reply(reply_with, value)
         } else {
-            let _unanswered = reply_to;
+            let _unanswered = reply_with;
             Command::none()
         }
     }
@@ -1459,7 +1459,7 @@ impl Component for EchoRequester {
             EchoRequesterMessage::Start => Command::batch((0..config.requests).map(|slot| {
                 Command::request_to(
                     config.port.clone(),
-                    |reply_to| EchoProtocolMessage::Echo(7, reply_to),
+                    |reply_with| EchoProtocolMessage::Echo(7, reply_with),
                     move |outcome| EchoRequesterMessage::Replied { slot, outcome },
                 )
             })),

@@ -173,7 +173,7 @@ The following evidence must pass before the Phase 2 audit:
 - Rustdoc compile-fail cases validate that an arbitrary value cannot be passed
   as an EffectDescriptor, an async closure cannot replace a synchronous message
   mapper, raw descriptors cannot bypass Program-issued Effect/Source
-  capabilities, and discarding either `ReplyTo` or `Command` violates its
+  capabilities, and discarding either `ReplyWith` or `Command` violates its
   `#[must_use]` contract when the lint is denied.
 - Discarded-outcome conformance tests prove controlled outcomes remain traced
   without scheduling a Message and live Drain/Cancel retain structured

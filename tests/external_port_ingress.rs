@@ -15,17 +15,17 @@ use samara::prelude::*;
 enum HostMessage {
     Set(u64),
     RecordIngress(u64),
-    Read(ReplyTo<u64>),
-    Delayed(u64, ReplyTo<u64>),
-    Held(u64, ReplyTo<u64>),
-    Never(ReplyTo<()>),
-    Crash(ReplyTo<()>),
+    Read(ReplyWith<u64>),
+    Delayed(u64, ReplyWith<u64>),
+    Held(u64, ReplyWith<u64>),
+    Never(ReplyWith<()>),
+    Crash(ReplyWith<()>),
 }
 
 /// The vocabulary of a Port whose binding conversion panics for every message.
 enum BindingMessage {
     Signal,
-    Ask(ReplyTo<()>),
+    Ask(ReplyWith<()>),
 }
 
 struct PanickingBindingProviderMessage;
@@ -53,7 +53,10 @@ impl Component for PanickingBindingProvider {
 enum ProviderMessage {
     Host(HostMessage),
     RecordIngressDirect(u64),
-    CompleteDelayed { reply_to: ReplyTo<u64>, value: u64 },
+    CompleteDelayed {
+        reply_with: ReplyWith<u64>,
+        value: u64,
+    },
     Signalled,
 }
 
@@ -88,8 +91,10 @@ impl Component for Provider {
             | ProviderMessage::RecordIngressDirect(value) => {
                 Command::effect_discarding_outcome(&config.ingress_observed, IngressObserved(value))
             }
-            ProviderMessage::Host(HostMessage::Read(reply_to)) => Command::reply(reply_to, *model),
-            ProviderMessage::Host(HostMessage::Delayed(value, reply_to)) => {
+            ProviderMessage::Host(HostMessage::Read(reply_with)) => {
+                Command::reply(reply_with, *model)
+            }
+            ProviderMessage::Host(HostMessage::Delayed(value, reply_with)) => {
                 let delay = if value == 11 {
                     Duration::from_millis(50)
                 } else {
@@ -99,29 +104,34 @@ impl Component for Provider {
                     Command::effect_with(&config.request_observed, RequestObserved, |_| {
                         ProviderMessage::Signalled
                     }),
-                    Command::after(delay, ProviderMessage::CompleteDelayed { reply_to, value }),
+                    Command::after(
+                        delay,
+                        ProviderMessage::CompleteDelayed { reply_with, value },
+                    ),
                 ])
             }
-            ProviderMessage::Host(HostMessage::Held(value, reply_to)) => {
+            ProviderMessage::Host(HostMessage::Held(value, reply_with)) => {
                 Command::effect_with(&config.await_release, AwaitRelease(value), move |outcome| {
                     match outcome {
                         EffectOutcome::Succeeded(value) => {
-                            ProviderMessage::CompleteDelayed { reply_to, value }
+                            ProviderMessage::CompleteDelayed { reply_with, value }
                         }
                         EffectOutcome::Failed(never) => match never {},
                         EffectOutcome::Cancelled(_) => ProviderMessage::Signalled,
                     }
                 })
             }
-            ProviderMessage::Host(HostMessage::Never(_reply_to)) => {
+            ProviderMessage::Host(HostMessage::Never(_reply_with)) => {
                 Command::effect_with(&config.request_observed, RequestObserved, |_| {
                     ProviderMessage::Signalled
                 })
             }
-            ProviderMessage::Host(HostMessage::Crash(_reply_to)) => {
+            ProviderMessage::Host(HostMessage::Crash(_reply_with)) => {
                 panic!("provider crashed while handling an external request")
             }
-            ProviderMessage::CompleteDelayed { reply_to, value } => Command::reply(reply_to, value),
+            ProviderMessage::CompleteDelayed { reply_with, value } => {
+                Command::reply(reply_with, value)
+            }
             ProviderMessage::Signalled => Command::none(),
         }
     }
@@ -275,8 +285,8 @@ fn panicking_binding_program() -> (Program, Port<BindingMessage>) {
     builder.connect(
         &port,
         &provider.accepting(|message| {
-            if let BindingMessage::Ask(reply_to) = message {
-                let _ = reply_to;
+            if let BindingMessage::Ask(reply_with) = message {
+                let _ = reply_with;
             }
             panic!("provider binding conversion panic")
         }),
@@ -414,8 +424,8 @@ async fn concurrent_external_requests_keep_their_own_typed_reply() -> Result<(),
     // The second request replies first; a FIFO-only implementation would swap
     // these values instead of following each runtime-owned correlation.
     let (left, right) = tokio::join!(
-        host.request_to(|reply_to| HostMessage::Delayed(11, reply_to)),
-        host.request_to(|reply_to| HostMessage::Delayed(29, reply_to))
+        host.request_to(|reply_with| HostMessage::Delayed(11, reply_with)),
+        host.request_to(|reply_with| HostMessage::Delayed(29, reply_with))
     );
     assert_eq!(left?, 11);
     assert_eq!(right?, 29);
@@ -432,7 +442,7 @@ async fn drain_preserves_an_admitted_external_request() -> Result<(), RuntimeErr
     let task = runtime.spawn();
 
     let request = tokio::spawn(async move {
-        host.request_to(|reply_to| HostMessage::Delayed(73, reply_to))
+        host.request_to(|reply_with| HostMessage::Delayed(73, reply_with))
             .await
     });
     observations
@@ -510,7 +520,7 @@ async fn dropping_the_waiter_does_not_cancel_runtime_owned_request_work() -> Res
     let task = runtime.spawn();
 
     let request = tokio::spawn(async move {
-        host.request_to(|reply_to| HostMessage::Held(5, reply_to))
+        host.request_to(|reply_with| HostMessage::Held(5, reply_with))
             .await
     });
     request_started
@@ -669,7 +679,9 @@ async fn request_conversion_panics_are_contained_as_runtime_faults() -> Result<(
     // so its panic is contained as a runtime fault rather than unwinding the
     // host task.
     let request_error = host
-        .request_to(|_reply_to: ReplyTo<()>| -> HostMessage { panic!("request conversion panic") })
+        .request_to(|_reply_with: ReplyWith<()>| -> HostMessage {
+            panic!("request conversion panic")
+        })
         .await
         .expect_err("conversion panic faults the runtime");
     assert!(

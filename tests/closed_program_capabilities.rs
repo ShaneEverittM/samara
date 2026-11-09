@@ -452,7 +452,7 @@ fn initial_foreign_send_program() -> Program {
 #[allow(dead_code)]
 enum ForeignMessage {
     Signal,
-    Read(ReplyTo<()>),
+    Read(ReplyWith<()>),
 }
 
 struct InitialForeignPortSend;

@@ -13,8 +13,8 @@ use samara::prelude::*;
 #[derive(Debug)]
 enum LedgerMessage {
     Add(u64),
-    Total(ReplyTo<u64>),
-    Park(ReplyTo<u64>),
+    Total(ReplyWith<u64>),
+    Park(ReplyWith<u64>),
 }
 
 struct Ledger;
@@ -26,7 +26,7 @@ enum LedgerProviderMessage {
 #[derive(Default)]
 struct LedgerModel {
     total: u64,
-    parked: Vec<ReplyTo<u64>>,
+    parked: Vec<ReplyWith<u64>>,
 }
 
 impl Component for Ledger {
@@ -48,9 +48,9 @@ impl Component for Ledger {
                 model.total += amount;
                 Command::none()
             }
-            LedgerMessage::Total(reply_to) => Command::reply(reply_to, model.total),
-            LedgerMessage::Park(reply_to) => {
-                model.parked.push(reply_to);
+            LedgerMessage::Total(reply_with) => Command::reply(reply_with, model.total),
+            LedgerMessage::Park(reply_with) => {
+                model.parked.push(reply_with);
                 Command::none()
             }
         }

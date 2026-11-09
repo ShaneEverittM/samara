@@ -18,7 +18,7 @@ pub enum JournalMessage {
     /// Asks for the most recent `count` recorded transitions.
     Recent {
         count: usize,
-        reply_to: ReplyTo<Vec<String>>,
+        reply_with: ReplyWith<Vec<String>>,
     },
 }
 

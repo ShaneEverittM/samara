@@ -231,7 +231,7 @@ boundary to provider-neutral Ports:
 - Successful send means accepted for runtime-managed conversion and delivery,
   not that the provider transition completed.
 - An admitted host request uses the same Port binding, message variant,
-  opaque correlation, and `ReplyTo` path as `Command::request_to`, but its
+  opaque correlation, and `ReplyWith` path as `Command::request_to`, but its
   awaited success is `R` directly. It creates neither a requester Component
   Message nor `RequestOutcome::Replied`.
 - Drain closes new Port ingress and retains admitted Notifications, Requests,
@@ -549,8 +549,8 @@ exposed and renames the consumer-owned one:
   under ADR-0008's existing rule.
 - `Command::send(target, message)` takes any `Addressable`.
   `Command::request_to(target, constructor, map)` and `request_to_timeout`
-  address a request to an `Addressable`: `constructor: FnOnce(ReplyTo<R>) ->
-  T::Message` is a function the provider published, its `ReplyTo<R>`
+  address a request to an `Addressable`: `constructor: FnOnce(ReplyWith<R>) ->
+  T::Message` is a function the provider published, its `ReplyWith<R>`
   parameter fixes the reply type, and the runtime mints the token and routes
   the message exactly as for a Port request, including ADR-0011 deadlines.
   Initial work addressed to a foreign Connector fails profile build under
@@ -570,17 +570,17 @@ interaction and leaves one way for a Command to reach a Component:
   `Command::request_to(target, constructor, map)`, and
   `Command::request_to_timeout(target, constructor, timeout, map)` accept any
   of them and deliver a value of the destination's message type.
-- A request is a message variant carrying `ReplyTo<R>`; `constructor:
-  FnOnce(ReplyTo<R>) -> M` fixes `R`, and `map: FnOnce(RequestOutcome<R>) ->
+- A request is a message variant carrying `ReplyWith<R>`; `constructor:
+  FnOnce(ReplyWith<R>) -> M` fixes `R`, and `map: FnOnce(RequestOutcome<R>) ->
   Message` is checked against it. The provider answers with
-  `Command::reply(reply_to, value)`.
+  `Command::reply(reply_with, value)`.
 - A Port-addressed send resolves through the Port's binding at
   interpretation and is traced as `TraceCommandKind::Send` with
   `target_port` set and `target_component` empty. `TraceCommandKind::Notify`
   no longer exists.
 - `Command::send_intents::<M>()` searches batches for sends of `M`.
   `Command::into_request_to::<M>()` extracts a top-level request as a
-  `RequestIntent` whose `message` was built with an inert `ReplyTo` and whose
+  `RequestIntent` whose `message` was built with an inert `ReplyWith` and whose
   `reply(outcome)` runs the continuation. The inert token belongs to no
   Program and is rejected as foreign if a reply is ever attempted through it.
 - Removed: `messages!`, `Notification`, `Request`, `RequestInvocation`,
@@ -652,7 +652,7 @@ Phase 2 is ready for human acceptance when:
 1. The root crate contains the candidate façade and the old PoC is absent from
    the active build.
 2. All three reference Components compile against `samara`.
-3. The executable Phase 2 tests and doctests pass, including the `ReplyTo`
+3. The executable Phase 2 tests and doctests pass, including the `ReplyWith`
    `#[must_use]` compile contract.
 4. Every V1-V12 requirement maps to named scenarios and a planned phase.
 5. Missing semantics and non-executable promises are listed rather than hidden

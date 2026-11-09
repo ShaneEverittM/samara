@@ -19,7 +19,7 @@ mod journal_lib {
             from: String,
             to: String,
         },
-        Recent(usize, ReplyTo<Vec<String>>),
+        Recent(usize, ReplyWith<Vec<String>>),
     }
 
     struct Recorder;
@@ -47,10 +47,10 @@ mod journal_lib {
                     entries.push(format!("{name}: {from} -> {to}"));
                     Command::none()
                 }
-                JournalMessage::Recent(count, reply_to) => {
+                JournalMessage::Recent(count, reply_with) => {
                     let count = count.min(entries.len());
                     let recent = entries[entries.len() - count..].to_vec();
-                    Command::reply(reply_to, recent)
+                    Command::reply(reply_with, recent)
                 }
             }
         }
@@ -83,7 +83,7 @@ pub enum AuditMessage {
         from: String,
         to: String,
     },
-    Tail(usize, ReplyTo<Vec<String>>),
+    Tail(usize, ReplyWith<Vec<String>>),
 }
 
 struct Monitor;
@@ -136,7 +136,7 @@ impl Component for Monitor {
                 ),
                 Command::request_to(
                     config.audit.clone(),
-                    |reply_to| AuditMessage::Tail(1, reply_to),
+                    |reply_with| AuditMessage::Tail(1, reply_with),
                     MonitorMessage::Tail,
                 ),
             ]),
@@ -158,7 +158,7 @@ fn couple(message: AuditMessage) -> JournalMessage {
             from,
             to,
         },
-        AuditMessage::Tail(count, reply_to) => JournalMessage::Recent(count, reply_to),
+        AuditMessage::Tail(count, reply_with) => JournalMessage::Recent(count, reply_with),
     }
 }
 
@@ -247,8 +247,8 @@ mod tally_lib {
 
     enum Inner {
         Add(u64),
-        Total(ReplyTo<u64>),
-        Park(ReplyTo<u64>),
+        Total(ReplyWith<u64>),
+        Park(ReplyWith<u64>),
     }
 
     impl TallyMessage {
@@ -256,14 +256,14 @@ mod tally_lib {
             Self(Inner::Add(amount))
         }
 
-        /// A request: the `ReplyTo<u64>` parameter is what types the reply.
-        pub fn total(reply_to: ReplyTo<u64>) -> Self {
-            Self(Inner::Total(reply_to))
+        /// A request: the `ReplyWith<u64>` parameter is what types the reply.
+        pub fn total(reply_with: ReplyWith<u64>) -> Self {
+            Self(Inner::Total(reply_with))
         }
 
         /// A request the provider accepts and never answers.
-        pub fn park(reply_to: ReplyTo<u64>) -> Self {
-            Self(Inner::Park(reply_to))
+        pub fn park(reply_with: ReplyWith<u64>) -> Self {
+            Self(Inner::Park(reply_with))
         }
     }
 
@@ -271,7 +271,7 @@ mod tally_lib {
 
     struct CounterModel {
         total: u64,
-        parked: Vec<ReplyTo<u64>>,
+        parked: Vec<ReplyWith<u64>>,
     }
 
     impl Component for Counter {
@@ -296,9 +296,9 @@ mod tally_lib {
                     model.total += amount;
                     Command::none()
                 }
-                Inner::Total(reply_to) => Command::reply(reply_to, model.total),
-                Inner::Park(reply_to) => {
-                    model.parked.push(reply_to);
+                Inner::Total(reply_with) => Command::reply(reply_with, model.total),
+                Inner::Park(reply_with) => {
+                    model.parked.push(reply_with);
                     Command::none()
                 }
             }
@@ -495,7 +495,7 @@ impl Component for DirectMonitor {
                 ),
                 Command::request_to(
                     config.audit.clone(),
-                    |reply_to| AuditMessage::Tail(1, reply_to),
+                    |reply_with| AuditMessage::Tail(1, reply_with),
                     MonitorMessage::Tail,
                 ),
             ]),

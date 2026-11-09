@@ -27,7 +27,7 @@ impl SourceDescriptor for Pulses {
 /// carries its own reply token.
 pub enum LedgerMessage {
     Record(String),
-    Count(ReplyTo<usize>),
+    Count(ReplyWith<usize>),
 }
 
 struct Recorder;
@@ -68,8 +68,8 @@ impl Component for Recorder {
                 entries.push(entry);
                 Command::effect_with(&config.stamp, Stamp, RecorderMessage::Stamped)
             }
-            RecorderMessage::Ledger(LedgerMessage::Count(reply_to)) => {
-                Command::reply(reply_to, entries.len())
+            RecorderMessage::Ledger(LedgerMessage::Count(reply_with)) => {
+                Command::reply(reply_with, entries.len())
             }
             RecorderMessage::Stamped(EffectOutcome::Succeeded(stamp)) => {
                 entries.push(format!("stamp {stamp}"));

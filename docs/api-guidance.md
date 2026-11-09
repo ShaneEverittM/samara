@@ -539,7 +539,7 @@ library's Component kind never becomes nameable outside its crate.
 A Connector is also an address in its own right. A Component may hold a `Connector<M>`
 in its `Config` and reach it with `Command::send`, or with
 `Command::request_to(connector, Constructor, map)` where `Constructor` is a
-function the provider published that takes a `ReplyTo<R>`; the reply type is
+function the provider published that takes a `ReplyWith<R>`; the reply type is
 fixed by that parameter and checked against `map`. `Connector::accepting` adapts
 a library's Connector to the holder's vocabulary once, so the holder's Components
 never name the library's types even without a Port.
@@ -548,7 +548,7 @@ Elm has no private messages; it gets both the public API and the hiding from
 one mechanism, exporting `Msg` as an opaque type and publishing constructor
 functions for the callable subset. A Rust library can do the same with a
 public newtype over a private enum as its `Component::Message`, public
-constructor functions including ones that take a `ReplyTo`, and a Connector of it,
+constructor functions including ones that take a `ReplyWith`, and a Connector of it,
 and both sides of a Port binding are written the same way. Elm never needed a
 request trait because its queries were function calls on a shared Model and
 its asynchronous replies were typed by the `expect` argument, which is what
@@ -592,8 +592,8 @@ naming the Component kind.
 A Command names its destination, a `Port<M>`, `Connector<M>`, or
 `ComponentRef<C>`, and delivers a value of `M`. `Command::send` delivers a
 one-way message. `Command::request_to` delivers a message whose variant
-carries a `ReplyTo<R>`: the caller passes the variant's constructor, the
-runtime mints the token, and the constructor's `ReplyTo<R>` parameter fixes
+carries a `ReplyWith<R>`: the caller passes the variant's constructor, the
+runtime mints the token, and the constructor's `ReplyWith<R>` parameter fixes
 the reply type the continuation must accept. That is the whole request
 protocol. No trait names a request, no macro generates one, and the pairing
 of request and reply is written once, in the variant, where the data is
@@ -633,7 +633,7 @@ For a Component-issued Request, the request continuation is a one-shot message
 mapper: it says what Component Message should be produced when the Request
 terminates. For a live host Request, the awaiting host future is the completion
 destination and successful completion returns `R` directly. Each dynamic
-occurrence is a message variant carrying its arguments and a `ReplyTo<R>` for
+occurrence is a message variant carrying its arguments and a `ReplyWith<R>` for
 the provider. Opaque runtime bookkeeping distinguishes that
 invocation from every other invocation. Captured values, such as a domain
 request ID, preserve a Component's reason for making the Request.
@@ -643,10 +643,10 @@ late-reply bookkeeping. Components should never allocate or compare transport
 correlation IDs. Domain correlation remains explicit application data because
 only the application knows what a reply means.
 
-### Why Is `ReplyTo` a Checked Obligation Rather Than Merely a Token?
+### Why Is `ReplyWith` a Checked Obligation Rather Than Merely a Token?
 
 
-A non-cloneable `ReplyTo` consumed by `Command::reply` prevents a provider from
+A non-cloneable `ReplyWith` consumed by `Command::reply` prevents a provider from
 replying twice through the same authority. Rust ownership alone cannot require
 the provider to use that authority: it can still be dropped, stored
 indefinitely, or deliberately forgotten. The type therefore provides an
@@ -655,7 +655,7 @@ at-most-once guarantee, not an exactly-once guarantee.
 Samara should make an unresolved reply difficult to miss through layered
 checks:
 
-- `ReplyTo` is marked `#[must_use]` so discarding a `ReplyTo`-valued expression
+- `ReplyWith` is marked `#[must_use]` so discarding a `ReplyWith`-valued expression
   receives a compiler diagnostic. This lint is an early warning, not proof that
   a bound value was eventually consumed.
 - When reply-obligation diagnostics are enabled, especially in controlled

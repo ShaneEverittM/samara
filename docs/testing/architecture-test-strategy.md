@@ -107,7 +107,7 @@ Evidence: `src/component_kernel.rs`
 - Validate the public descriptor and Command boundary cannot substitute an
   opaque async closure for an identifiable EffectDescriptor or a synchronous
   message mapper.
-- Public API lint checks must verify that discarding a `ReplyTo`-valued
+- Public API lint checks must verify that discarding a `ReplyWith`-valued
   expression or a `Command` triggers its `#[must_use]` diagnostic under
   `#![deny(unused_must_use)]`, without claiming that the lint proves eventual
   consumption.
@@ -121,7 +121,7 @@ Evidence: `src/component_kernel.rs`
   `<details><summary>Compile-time checks</summary>` block, so `cargo test
   --doc` runs it and the matrix can cite it by item name.
 
-Evidence: `src/lib.rs` (`Component`, `Command`, `ReplyTo`,
+Evidence: `src/lib.rs` (`Component`, `Command`, `ReplyWith`,
 `EffectCapability`, `SourceCapability`, `ComponentHandle`, `PortHandle`,
 `Assembly`).
 

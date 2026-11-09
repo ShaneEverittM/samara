@@ -311,7 +311,7 @@ labels, not additional Samara runtime concepts.
 **Port message type** — The message enum a `Port<M>` or `Connector<M>`
 carries: the complete vocabulary of one dependency, written by hand. A
 one-way variant carries only its data; a request variant also carries a
-`ReplyTo<R>`, which is what types its reply. Name the enum for what it
+`ReplyWith<R>`, which is what types its reply. Name the enum for what it
 contains, such as `HealthMessage`; directional names such as `HealthInbound`
 are avoided. The word *protocol* is reserved for wire protocols.
 
@@ -331,7 +331,7 @@ one of its own Ports with `connect` after adapting it with `accepting`,
 writing the coupling between the two vocabularies once at that site, or
 holds it directly and addresses it with
 `Command::send` and `Command::request_to`, whose request is a constructor
-function the provider published taking `ReplyTo<R>`. `Connector::accepting`
+function the provider published taking `ReplyWith<R>`. `Connector::accepting`
 adapts a Connector to the holder's vocabulary. Like `ComponentRef` and `Port`, a
 Connector grants no delivery capability.
 
@@ -358,16 +358,16 @@ reply token, delivered with `Command::send` or `PortHandle::send`. The sender
 gets no correlated outcome. There is no trait; the word only distinguishes it
 from a request in prose.
 
-**Request** — A message variant carrying a `ReplyTo<R>`. A Component issues
+**Request** — A message variant carrying a `ReplyWith<R>`. A Component issues
 one with `Command::request_to(target, constructor, map)`, passing the
 variant's constructor; the runtime mints the token, the constructor's
-`ReplyTo<R>` fixes the reply type, and the typed `RequestOutcome<R>` arrives
+`ReplyWith<R>` fixes the reply type, and the typed `RequestOutcome<R>` arrives
 later through `map` as an ordinary Message. A live host issues the same
 constructor through `PortHandle::request_to` and awaits `R` directly
 (ADR-0016).
 
 **Reply** — The successful response type `R` named by a request variant's
-`ReplyTo<R>`. A provider emits a value of that type with `Command::reply`.
+`ReplyWith<R>`. A provider emits a value of that type with `Command::reply`.
 
 **Request outcome / `RequestOutcome`** — The single terminal result of a
 Component-issued Request, mapped to a requester Message: `Replied`, or
@@ -391,9 +391,9 @@ callers neither create nor compare transport-correlation identifiers.
 meaning of a Request or Reply. It is commonly captured by the request
 continuation and returned in the resulting Component Message.
 
-**`ReplyTo`** — The current provisional name for an opaque, one-shot authority
-that permits a provider to emit the correctly typed Reply. It is inert data,
-not a channel, future, or runtime handle.
+**`ReplyWith<R>`** — The opaque, one-shot authority carried by a request
+variant that obliges and permits its holder to reply with an `R`. It is inert
+data, not a channel, future, or runtime handle; `Command::reply` consumes it.
 
 **`ComponentRef`** — The current provisional name for an inert typed logical
 address issued during Program assembly when direct coupling to another
@@ -537,9 +537,9 @@ to hold.
 | Layer and Driver | A Layer composes declarations inside the program boundary; a Driver terminates a descriptor into the selected live world. |
 | Adapter and a code abstraction | Adapter is the conceptual category; Layer and Driver are the code-level roles Samara currently names. |
 | Component Message and Port message | A Component Message is private transition input; a Port message is a value of the provider-neutral vocabulary crossing a Port. A library written the Elm way makes one opaque type serve as both. |
-| Request and reply token | A request is a message variant; its `ReplyTo<R>` field is the one-shot authority to answer it and the type that fixes the reply. |
+| Request and reply token | A request is a message variant; its `ReplyWith<R>` field is the one-shot authority to answer it and the type that fixes the reply. |
 | Port and provider | A Port is an inert dependency; the provider is the Component selected during assembly. |
-| Send and request | `Command::send` delivers a variant with no reply token and gets no outcome; `Command::request_to` delivers one built around a `ReplyTo<R>` and maps the `RequestOutcome<R>` through its continuation. `PortHandle::send` and `PortHandle::request_to` are the live host's forms, the latter with a direct waiter. |
+| Send and request | `Command::send` delivers a variant with no reply token and gets no outcome; `Command::request_to` delivers one built around a `ReplyWith<R>` and maps the `RequestOutcome<R>` through its continuation. `PortHandle::send` and `PortHandle::request_to` are the live host's forms, the latter with a direct waiter. |
 | Protocol and wire protocol | A Samara Protocol is a typed Component boundary; a wire protocol defines external data exchange. |
 | Message and event | Boundary events and outcomes are mapped into Component Messages; trace events remain out of band. |
 | Per-Component serialization and ordering | Non-overlapping transitions do not create a global order or imply unspecified FIFO behavior. |
@@ -562,7 +562,7 @@ to hold.
 | Result mapper | Message mapper | Name what the pure function produces. A request's one-shot mapper is its request continuation. |
 | Source meaning a descriptor | SourceDescriptor | Reserve *Source* for the runtime-scoped ongoing realization. |
 | `MpscSource<T>`, `MpscInput<T>` | `StreamDescriptor<T>` | Name the inert logical stream independently of its live adapter; reserve Source for its runtime realization. |
-| `Incoming<P, R>`, `RequestInvocation<M, R>` | a request variant carrying `ReplyTo<R>` | The dynamic request occurrence is the message itself (ADR-0016). |
+| `Incoming<P, R>`, `RequestInvocation<M, R>` | a request variant carrying `ReplyWith<R>` | The dynamic request occurrence is the message itself (ADR-0016). |
 | Protocol, `Protocol::Message`, `protocol!`, `HealthProtocolMessage` | Port message type, `messages!`, `HealthMessage` | Removed November 8, 2026 (ADR-0015). The marker type named one associated type and nothing else; a Port is typed by the message type it carries. ADRs 0006 to 0014 keep the old word. |
 | `Protocol::Inbound`, `HealthInbound` | `HealthMessage` | Name what the enum contains, not its direction. |
 | `ActorRef`, `Addr`, `PortRef`, `RuntimeRef` | `ComponentRef`, `Connector`, `ComponentHandle`, `Port`, or `PortHandle` | Choose the term that distinguishes kind-typed logical address, Message-typed logical address, live private-Message ingress, inert consumer-owned dependency, or live Port ingress. |
@@ -570,10 +570,10 @@ to hold.
 | `Connectable`, `connect_with`, `connector_with`, `to_connector` | `connect(&port, &connector)`, `ComponentRef::connector`, `accepting` | A Port takes a Connector and nothing else (ADR-0015 amendment, November 8, 2026); the conversion lives on the Connector side, under one verb. |
 | Recipient, Address | Connector | Working names while the provider-owned address was designed; *Connector* pairs with *Port* and names the thing held rather than a role. |
 | `Installed<A>` | `InstalledAssembly<A>` | Renamed November 8, 2026 so `with_assembly(installed_assembly)` reads as a sentence; the token keeps the `must_use` nudge and `.exports()`. |
-| `messages!`, `Notification<M>`, `Request<M>`, `RequestInvocation`, `Command::notify`, `request`, `request_with`, `request_timeout`, `request_timeout_with`, `TraceCommandKind::Notify` | `Command::send`, `Command::request_to`, `request_to_timeout`; a request variant carrying `ReplyTo<R>`; `TraceCommandKind::Send` with `target_port` | Removed November 8, 2026 (ADR-0016). The trait form and the constructor form gave the same guarantee twice; the message type is the protocol. |
+| `messages!`, `Notification<M>`, `Request<M>`, `RequestInvocation`, `Command::notify`, `request`, `request_with`, `request_timeout`, `request_timeout_with`, `TraceCommandKind::Notify` | `Command::send`, `Command::request_to`, `request_to_timeout`; a request variant carrying `ReplyWith<R>`; `TraceCommandKind::Send` with `target_port` | Removed November 8, 2026 (ADR-0016). The trait form and the constructor form gave the same guarantee twice; the message type is the protocol. |
 | `ask` | `request` | Use `Command::request` for command-now, Message-later Component request/reply and `PortHandle::request` for the deliberately awaitable live host boundary. |
 | `tell`, `notify` | `send` | One-way delivery to a Port, Connector, or ComponentRef is `send`; *notify* survives only as prose for a variant without a reply token. |
-| `ReplyToken` | `ReplyTo` | `ReplyTo` is the current provisional spelling; do not canonize both. |
+| `ReplyToken`, `ReplyTo` | `ReplyWith` | Renamed November 8, 2026: in a variant, `Total(ReplyWith<u64>)` states the obligation, reply with a `u64`, where `ReplyTo` named a destination only the runtime knows. |
 | Simulated execution | Controlled execution | Use *controlled* for the semantic profile; use *simulation* for the workload or product use case. |
 | Mailbox loop | Runtime topology | A mailbox or event loop may be an implementation technique, not the definition of a Component. |
 | Effect handler, interpreter, backend, source adapter | Driver or controlled behavior, qualified by role | Use *Driver* for a terminal live-world code boundary, *Layer* for declarative composition, and *Adapter* only as the umbrella concept. Controlled execution supplies behavior without falling through to live Drivers. |

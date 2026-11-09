@@ -43,7 +43,7 @@ enum QuotaProtocolMessage {
         /// The proposed increment.
         amount: u64,
         /// Runtime-owned correlation; neither side sees a correlation ID.
-        reply_to: ReplyTo<Reservation>,
+        reply_with: ReplyWith<Reservation>,
     },
 }
 
@@ -104,7 +104,7 @@ impl Component for Quota {
         match message {
             QuotaMessage::Protocol(QuotaProtocolMessage::Reserve {
                 amount: requested,
-                reply_to,
+                reply_with,
             }) => {
                 // This is an ordinary deterministic transition: decide from
                 // current state, update owned state, and describe a reply. The
@@ -119,7 +119,7 @@ impl Component for Quota {
                     }
                 };
 
-                Command::reply(reply_to, reservation)
+                Command::reply(reply_with, reservation)
             }
         }
     }
@@ -224,7 +224,7 @@ impl Component for Counter {
                 // into the requester's ordinary message stream.
                 Command::request_to(
                     config.quota.clone(),
-                    move |reply_to| QuotaProtocolMessage::Reserve { amount, reply_to },
+                    move |reply_with| QuotaProtocolMessage::Reserve { amount, reply_with },
                     CounterMessage::Reserved,
                 )
             }

@@ -160,7 +160,7 @@ a journal Component; exploratory proposals, not accepted API decisions.
 
 - [x] **Connectors as first-class addresses.** Landed November 8, 2026
   (ADR-0014): `Command::send` over any address, `Command::request_to` and
-  `request_to_timeout` minting the `ReplyTo` against a Connector from a published
+  `request_to_timeout` minting the `ReplyWith` against a Connector from a published
   constructor function, and `Connector::accepting`, Elm 0.16's `forwardTo`. A
   library written the Elm way, an opaque Message with constructor functions,
   now needs no shared enum and no Port; `tests/connectors.rs` has one.
@@ -170,7 +170,7 @@ a journal Component; exploratory proposals, not accepted API decisions.
 - [ ] **Constructor-function derive.** ADR-0016 left one sending API, with
   `M::Variant { .. }` spelled at every call site. If that proves noisy once
   the examples have lived with it, a small derive that emits `pub fn
-  variant(args) -> Self` constructors (and `fn request(args, reply_to)` for
+  variant(args) -> Self` constructors (and `fn request(args, reply_with)` for
   reply-token variants) is the remedy; it must not reintroduce a request
   trait or a second Command form.
 

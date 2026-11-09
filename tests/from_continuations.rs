@@ -194,7 +194,7 @@ fn http_pipeline_default_uses_from_and_into_command_with_is_explicit() {
 /// The provider's vocabulary, written by hand: the request variant carries
 /// its own reply token.
 enum EchoProtocolMessage {
-    Echo(u64, ReplyTo<u64>),
+    Echo(u64, ReplyWith<u64>),
 }
 
 enum ProviderMessage {
@@ -223,8 +223,8 @@ impl Component for EchoProvider {
         _model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
-        let ProviderMessage::Protocol(EchoProtocolMessage::Echo(value, reply_to)) = message;
-        Command::reply(reply_to, value)
+        let ProviderMessage::Protocol(EchoProtocolMessage::Echo(value, reply_with)) = message;
+        Command::reply(reply_with, value)
     }
 }
 
@@ -275,14 +275,14 @@ impl Component for Requester {
             // `From<RequestOutcome<u64>>` impl above still decides the variant.
             RequesterMessage::StartDefault => Command::request_to(
                 config.echo.clone(),
-                |reply_to| EchoProtocolMessage::Echo(11, reply_to),
+                |reply_with| EchoProtocolMessage::Echo(11, reply_with),
                 RequesterMessage::from,
             ),
             RequesterMessage::StartExplicit => {
                 let context = "second request";
                 Command::request_to(
                     config.echo.clone(),
-                    |reply_to| EchoProtocolMessage::Echo(12, reply_to),
+                    |reply_with| EchoProtocolMessage::Echo(12, reply_with),
                     move |outcome| RequesterMessage::Explicit { context, outcome },
                 )
             }

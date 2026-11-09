@@ -11,7 +11,7 @@ enum ProbeProtocolMessage {
     Ask {
         value: u64,
         delay: Option<Duration>,
-        reply_to: ReplyTo<u64>,
+        reply_with: ReplyWith<u64>,
     },
 }
 
@@ -20,17 +20,17 @@ enum ProbeProtocolMessage {
 fn ask(
     value: u64,
     delay: Option<Duration>,
-) -> impl FnOnce(ReplyTo<u64>) -> ProbeProtocolMessage + Send + 'static {
-    move |reply_to| ProbeProtocolMessage::Ask {
+) -> impl FnOnce(ReplyWith<u64>) -> ProbeProtocolMessage + Send + 'static {
+    move |reply_with| ProbeProtocolMessage::Ask {
         value,
         delay,
-        reply_to,
+        reply_with,
     }
 }
 
 enum ProviderMessage {
     Protocol(ProbeProtocolMessage),
-    Reply(ReplyTo<u64>, u64),
+    Reply(ReplyWith<u64>, u64),
 }
 
 impl From<ProbeProtocolMessage> for ProviderMessage {
@@ -59,17 +59,17 @@ impl Component for Provider {
             ProviderMessage::Protocol(ProbeProtocolMessage::Ask {
                 value,
                 delay,
-                reply_to,
+                reply_with,
             }) => {
                 assert_ne!(value, u64::MAX, "provider fault fixture");
                 seen.push(value);
                 match delay {
-                    Some(Duration::ZERO) => Command::reply(reply_to, value),
-                    Some(delay) => Command::after(delay, ProviderMessage::Reply(reply_to, value)),
+                    Some(Duration::ZERO) => Command::reply(reply_with, value),
+                    Some(delay) => Command::after(delay, ProviderMessage::Reply(reply_with, value)),
                     None => Command::none(),
                 }
             }
-            ProviderMessage::Reply(reply_to, value) => Command::reply(reply_to, value),
+            ProviderMessage::Reply(reply_with, value) => Command::reply(reply_with, value),
         }
     }
 }

@@ -1663,7 +1663,7 @@ async fn phase6_successful_shutdown_owns_zero_work() -> Result<(), RuntimeError>
 
 /// The echo Port's vocabulary; the request carries its own reply token.
 enum EchoMessage {
-    Echo(u64, ReplyTo<u64>),
+    Echo(u64, ReplyWith<u64>),
 }
 
 enum EchoProviderMessage {
@@ -1717,9 +1717,9 @@ impl Component for EchoProvider {
         message: Self::Message,
     ) -> Command<Self::Message> {
         match message {
-            EchoProviderMessage::Echo(EchoMessage::Echo(value, reply_to)) => {
+            EchoProviderMessage::Echo(EchoMessage::Echo(value, reply_with)) => {
                 if config.reply {
-                    Command::reply(reply_to, value)
+                    Command::reply(reply_with, value)
                 } else {
                     Command::effect_with(&config.seen, ProviderSeen, |_| EchoProviderMessage::Seen)
                 }
@@ -1784,7 +1784,7 @@ impl Component for EchoRequester {
                 let continuation_calls = config.continuation_calls.clone();
                 Command::request_to(
                     config.echo.clone(),
-                    |reply_to| EchoMessage::Echo(42, reply_to),
+                    |reply_with| EchoMessage::Echo(42, reply_with),
                     move |outcome| {
                         continuation_calls.fetch_add(1, Ordering::SeqCst);
                         EchoRequesterMessage::Outcome(outcome)

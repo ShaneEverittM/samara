@@ -218,7 +218,7 @@ struct HealthModel {
 /// Requesters depend on this message enum through a `Port<HealthProtocolMessage>`;
 /// they do not depend on `Health`, `HealthMessage`, or its Model
 /// representation. It is a plain, hand-written enum: a request variant carries
-/// the `ReplyTo` that types its reply.
+/// the `ReplyWith` that types its reply.
 #[derive(Debug)]
 enum HealthProtocolMessage {
     // One-way health observations with no correlated terminal result.
@@ -228,7 +228,7 @@ enum HealthProtocolMessage {
     Failed(String),
 
     // A correlated snapshot request carrying a runtime-created reply token.
-    Read(ReplyTo<HealthSnapshot>),
+    Read(ReplyWith<HealthSnapshot>),
 }
 
 /// Typed response named by `Read`'s reply token at the message declaration site.
@@ -296,12 +296,12 @@ impl Component for Health {
                 model.status = format!("failed: {error}");
                 Command::none()
             }
-            HealthProtocolMessage::Read(reply_to) => {
-                // `ReplyTo` identifies this dynamic request. The provider
+            HealthProtocolMessage::Read(reply_with) => {
+                // `ReplyWith` identifies this dynamic request. The provider
                 // returns a typed reply intent without inspecting correlation
                 // IDs or sending directly from async code.
                 Command::reply(
-                    reply_to,
+                    reply_with,
                     HealthSnapshot {
                         status: model.status.clone(),
                         frames_seen: model.frames_seen,
