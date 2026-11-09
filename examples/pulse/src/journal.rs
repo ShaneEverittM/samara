@@ -3,8 +3,7 @@ use samara::prelude::*;
 /// Where the recorder appends, relative to the root the host binds.
 pub const JOURNAL_FILE: &str = "pulse.journal";
 
-/// The journal's public vocabulary, carried by the `Port<JournalMessage>` the
-/// Assembly exports.
+/// The journal's public vocabulary: what the Assembly's `Connector` accepts.
 #[derive(Debug)]
 pub enum JournalMessage {
     /// Records one confirmed transition.
@@ -72,23 +71,31 @@ impl Assembly for Journal {
     type Requires = (Effect<AppendToFile>, Effect<ReadSystemTime>);
 
     fn install(program: &mut ProgramBuilder, _: Self::Config) -> (Connector<JournalMessage>, ()) {
+        // Register the effects, so the Runtime is prepared
+        // to service them, and so the user can supply drivers.
         let append = program.effect::<AppendToFile>();
         let clock = program.effect::<ReadSystemTime>();
+
+        // Install the Component, so the Runtime will run it.
         let recorder = program.component::<Recorder>(
             ComponentId::new("journal"),
             RecorderConfig { append, clock },
         );
+
+        // Wrap the Component with a Connector to hide the implementation.
         (recorder.accepting(Message::Journal), ())
     }
 }
 
-/// The drivers `pulse` vendors for the journal: the crate's filesystem driver
-/// rooted at the working directory, and the system clock. Hosts may pass any
-/// other pair that drives the same two effects to `and_drivers` instead.
+// In a "real" library, this would be behind feature flags and would
+// transitively enable Samara features for filesystem and time.
+// Additionally, an Assembly need not provide these if the user
+// wants to ship their own. The only concern is good documentation
+// on the contract of the Effects we use.
 impl VendorsDrivers for Journal {
     type Drivers = (FsDriver, SystemClockDriver);
 
-    fn drivers() -> Self::Drivers {
+    fn vendor() -> Self::Drivers {
         (FsDriver::new("."), SystemClockDriver)
     }
 }
