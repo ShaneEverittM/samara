@@ -264,7 +264,7 @@ impl From<RequestOutcome<u64>> for RequesterMessage {
 struct Requester;
 
 struct RequesterConfig {
-    echo: Port<EchoProtocol>,
+    echo: Jack<EchoProtocol>,
 }
 
 impl Component for Requester {
@@ -304,9 +304,9 @@ impl Component for Requester {
 #[test]
 fn request_default_uses_from_and_request_with_preserves_context() {
     let mut builder = Program::builder();
-    let echo = builder.port::<EchoProtocol>(PortId::new("echo"));
+    let echo = builder.jack::<EchoProtocol>(JackId::new("echo"));
     let provider = builder.component::<EchoProvider>(ComponentId::new("provider"), ());
-    builder.bind_port(&echo, &provider);
+    builder.plug_in(&echo, &provider);
     let requester = builder.component::<Requester>(
         ComponentId::new("requester"),
         RequesterConfig { echo: echo.clone() },

@@ -6,7 +6,7 @@ use samara::prelude::*;
 use serde::Deserialize;
 
 const CLI_SUBSCRIPTION: &str = "commands";
-const TIME_SERVER_PORT: &str = "TimeServer";
+const TIME_SERVER_JACK: &str = "TimeServer";
 
 enum HttpTimeMessage {
     // A tick to drive our model.
@@ -148,7 +148,7 @@ enum CliMessage {
     /// Process standard input failed before reaching EOF.
     InputFailed(StdinError),
 
-    /// Terminal outcome of a request sent to the time-server Port.
+    /// Terminal outcome of a request sent to the time-server Jack.
     TimeReceived(RequestOutcome<Option<DateTime<Utc>>>),
 }
 
@@ -189,7 +189,7 @@ struct CliConfig {
     stdout: EffectCapability<PrintStdout>,
     stderr: EffectCapability<PrintStderr>,
 
-    time_server: Port<TimeServerProtocol>,
+    time_server: Jack<TimeServerProtocol>,
 }
 
 impl Component for Cli {
@@ -306,8 +306,8 @@ async fn main() -> Result<()> {
     let stderr = builder.effect::<PrintStderr>();
     let cli_input = builder.source::<StdinLines>();
 
-    // A Port names the provider-neutral time service consumed by the CLI.
-    let time_port = builder.port::<TimeServerProtocol>(PortId::new(TIME_SERVER_PORT));
+    // A Jack names the provider-neutral time service consumed by the CLI.
+    let time_jack = builder.jack::<TimeServerProtocol>(JackId::new(TIME_SERVER_JACK));
 
     // The concrete provider happens to obtain time over HTTP.
     let http_time_server = builder.component::<HttpTimeServer>(
@@ -319,7 +319,7 @@ async fn main() -> Result<()> {
     );
 
     // Program assembly chooses which concrete Component provides that service.
-    builder.bind_port(&time_port, &http_time_server);
+    builder.plug_in(&time_jack, &http_time_server);
 
     // Raw terminal lines cross the runtime boundary as an ongoing Source. The
     // CLI owns parsing, presentation, and its dependency on the time service.
@@ -327,13 +327,13 @@ async fn main() -> Result<()> {
         ComponentId::new("cli"),
         CliConfig {
             input: cli_input.clone(),
-            time_server: time_port,
+            time_server: time_jack,
             stdout,
             stderr,
         },
     );
 
-    // Build the program, this catches errors like unbound ports, etc.
+    // Build the program, this catches errors like unbound jacks, etc.
     let program = builder.build()?;
 
     // Configure a runtime for real usage...
@@ -388,7 +388,7 @@ mod tests {
         let mut builder = Program::builder();
         CliConfig {
             input: builder.source::<StdinLines>(),
-            time_server: builder.port(PortId::new(TIME_SERVER_PORT)),
+            time_server: builder.jack(JackId::new(TIME_SERVER_JACK)),
             stdout: builder.effect::<PrintStdout>(),
             stderr: builder.effect::<PrintStderr>(),
         }
@@ -415,7 +415,7 @@ mod tests {
         let time = Cli::update(&cli, &mut model, CliMessage::Command(CliCommand::GetTime));
         let requests = time.request_intents::<GetCurrentTime>();
         assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].0, &PortId::new(TIME_SERVER_PORT));
+        assert_eq!(requests[0].0, &JackId::new(TIME_SERVER_JACK));
     }
 
     #[test]

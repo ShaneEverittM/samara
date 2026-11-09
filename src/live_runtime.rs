@@ -47,7 +47,7 @@ use crate::controlled_runtime::{
 use crate::{
     BoxFuture, CapabilityToken, Command, CommandKind, ComponentId, DriverStopped, EffectDescriptor,
     EffectDriver, EffectOutcome, ErasedRequestMapper, ErasedSourceEvent, HttpError, HttpRequest,
-    HttpResponse, Notification, Port, PortId, PrintStderr, PrintStdout, Program, Protocol, ReplyTo,
+    HttpResponse, Jack, JackId, Notification, PrintStderr, PrintStdout, Program, Protocol, ReplyTo,
     Request, RequestOutcome, RequestToken, RuntimeError, Shutdown, ShutdownReport,
     SourceCapability, SourceDescriptor, SourceDriver, SourceEvent, SourcePlan, SourceRequirement,
     SourceSink, StreamDescriptor, StreamSourceDescriptor, SubscriptionId, TcpBytes, TcpError,
@@ -1355,47 +1355,47 @@ pub(crate) struct LiveIngress {
     pub(crate) message: ErasedValue,
 }
 
-pub(crate) enum LivePortIngress {
-    Notification(Box<dyn ErasedLivePortNotification>),
-    Request(Box<dyn ErasedLivePortRequest>),
+pub(crate) enum LiveJackIngress {
+    Notification(Box<dyn ErasedLiveJackNotification>),
+    Request(Box<dyn ErasedLiveJackRequest>),
 }
 
-pub(crate) trait ErasedLivePortNotification: Send {
-    fn port(&self) -> &PortId;
-    fn port_program(&self) -> &Arc<()>;
+pub(crate) trait ErasedLiveJackNotification: Send {
+    fn jack(&self) -> &JackId;
+    fn jack_program(&self) -> &Arc<()>;
     fn protocol_type(&self) -> TypeId;
     fn into_message(self: Box<Self>) -> ErasedValue;
 }
 
-pub(crate) trait ErasedLivePortRequest: Send {
-    fn port(&self) -> &PortId;
-    fn port_program(&self) -> &Arc<()>;
+pub(crate) trait ErasedLiveJackRequest: Send {
+    fn jack(&self) -> &JackId;
+    fn jack_program(&self) -> &Arc<()>;
     fn protocol_type(&self) -> TypeId;
     fn reply_type(&self) -> TypeId;
     fn deadline(&self) -> Option<tokio::time::Instant>;
     fn into_conversion(self: Box<Self>) -> (ProtocolRequestConversion, HostReplyCompletion);
 }
 
-struct TypedLivePortNotification<P, N>
+struct TypedLiveJackNotification<P, N>
 where
     P: Protocol,
     N: Notification<P>,
 {
-    port: Port<P>,
+    jack: Jack<P>,
     notification: N,
 }
 
-impl<P, N> ErasedLivePortNotification for TypedLivePortNotification<P, N>
+impl<P, N> ErasedLiveJackNotification for TypedLiveJackNotification<P, N>
 where
     P: Protocol,
     N: Notification<P>,
 {
-    fn port(&self) -> &PortId {
-        self.port.id()
+    fn jack(&self) -> &JackId {
+        self.jack.id()
     }
 
-    fn port_program(&self) -> &Arc<()> {
-        &self.port.program
+    fn jack_program(&self) -> &Arc<()> {
+        &self.jack.program
     }
 
     fn protocol_type(&self) -> TypeId {
@@ -1407,28 +1407,28 @@ where
     }
 }
 
-struct TypedLivePortRequest<P, R>
+struct TypedLiveJackRequest<P, R>
 where
     P: Protocol,
     R: Request<P>,
 {
-    port: Port<P>,
+    jack: Jack<P>,
     request: R,
     deadline: Option<tokio::time::Instant>,
     completion: oneshot::Sender<RequestOutcome<R::Reply>>,
 }
 
-impl<P, R> ErasedLivePortRequest for TypedLivePortRequest<P, R>
+impl<P, R> ErasedLiveJackRequest for TypedLiveJackRequest<P, R>
 where
     P: Protocol,
     R: Request<P>,
 {
-    fn port(&self) -> &PortId {
-        self.port.id()
+    fn jack(&self) -> &JackId {
+        self.jack.id()
     }
 
-    fn port_program(&self) -> &Arc<()> {
-        &self.port.program
+    fn jack_program(&self) -> &Arc<()> {
+        &self.jack.program
     }
 
     fn protocol_type(&self) -> TypeId {
@@ -1460,7 +1460,7 @@ where
 
 pub(crate) enum LiveEvent {
     Message(QueuedMessage),
-    PortIngress(LivePortIngress),
+    JackIngress(LiveJackIngress),
     SourceEvent {
         stamp: SourceStamp,
         terminal_type: TypeId,
@@ -1491,18 +1491,18 @@ impl LiveEvent {
         })
     }
 
-    pub(crate) fn port_notification<P, N>(port: Port<P>, notification: N) -> Self
+    pub(crate) fn jack_notification<P, N>(jack: Jack<P>, notification: N) -> Self
     where
         P: Protocol,
         N: Notification<P>,
     {
-        Self::PortIngress(LivePortIngress::Notification(Box::new(
-            TypedLivePortNotification { port, notification },
+        Self::JackIngress(LiveJackIngress::Notification(Box::new(
+            TypedLiveJackNotification { jack, notification },
         )))
     }
 
-    pub(crate) fn port_request<P, R>(
-        port: Port<P>,
+    pub(crate) fn jack_request<P, R>(
+        jack: Jack<P>,
         request: R,
         deadline: Option<tokio::time::Instant>,
         completion: oneshot::Sender<RequestOutcome<R::Reply>>,
@@ -1511,8 +1511,8 @@ impl LiveEvent {
         P: Protocol,
         R: Request<P>,
     {
-        Self::PortIngress(LivePortIngress::Request(Box::new(TypedLivePortRequest {
-            port,
+        Self::JackIngress(LiveJackIngress::Request(Box::new(TypedLiveJackRequest {
+            jack,
             request,
             deadline,
             completion,
@@ -1665,11 +1665,11 @@ impl LiveCore {
         })
     }
 
-    fn binding_index(&self, protocol: TypeId, port: &PortId) -> Option<usize> {
+    fn binding_index(&self, protocol: TypeId, jack: &JackId) -> Option<usize> {
         self.program
             .bindings
             .iter()
-            .position(|binding| binding.protocol_type() == protocol && binding.port_id() == port)
+            .position(|binding| binding.protocol_type() == protocol && binding.jack_id() == jack)
     }
 
     fn source_index(
@@ -1995,22 +1995,22 @@ impl LiveCore {
                     }));
                 }
                 CommandKind::Notify(command) => {
-                    let port = command.port().clone();
+                    let jack = command.jack().clone();
                     let protocol = command.protocol_type_id();
-                    if !Arc::ptr_eq(command.port_program(), &self.program.program) {
+                    if !Arc::ptr_eq(command.jack_program(), &self.program.program) {
                         return Err(self.runtime_fault(
                             component.clone(),
                             None,
                             work,
-                            "notification Port belongs to another Program",
+                            "notification Jack belongs to another Program",
                         ));
                     }
-                    let Some(binding_index) = self.binding_index(protocol, &port) else {
+                    let Some(binding_index) = self.binding_index(protocol, &jack) else {
                         return Err(self.runtime_fault(
                             component.clone(),
                             None,
                             work,
-                            "notification Port has no runtime binding",
+                            "notification Jack has no runtime binding",
                         ));
                     };
                     let protocol_message = command.into_message();
@@ -2025,22 +2025,22 @@ impl LiveCore {
                     let _ = self.scope.accept_finite(LiveEvent::Message(message));
                 }
                 CommandKind::Request(command) => {
-                    let port = command.port().clone();
+                    let jack = command.jack().clone();
                     let protocol = command.protocol_type_id();
-                    if !Arc::ptr_eq(command.port_program(), &self.program.program) {
+                    if !Arc::ptr_eq(command.jack_program(), &self.program.program) {
                         return Err(self.runtime_fault(
                             component.clone(),
                             None,
                             work,
-                            "request Port belongs to another Program",
+                            "request Jack belongs to another Program",
                         ));
                     }
-                    let Some(binding_index) = self.binding_index(protocol, &port) else {
+                    let Some(binding_index) = self.binding_index(protocol, &jack) else {
                         return Err(self.runtime_fault(
                             component.clone(),
                             None,
                             work,
-                            "request Port has no runtime binding",
+                            "request Jack has no runtime binding",
                         ));
                     };
                     let deadline = match command.timeout() {
@@ -2339,26 +2339,26 @@ impl LiveCore {
         Ok(())
     }
 
-    fn process_port_ingress(&mut self, ingress: LivePortIngress) -> Result<(), RuntimeError> {
+    fn process_jack_ingress(&mut self, ingress: LiveJackIngress) -> Result<(), RuntimeError> {
         let work = self.work();
         match ingress {
-            LivePortIngress::Notification(notification) => {
-                let port = notification.port().clone();
+            LiveJackIngress::Notification(notification) => {
+                let jack = notification.jack().clone();
                 let protocol_type = notification.protocol_type();
-                if !Arc::ptr_eq(notification.port_program(), &self.program.program) {
+                if !Arc::ptr_eq(notification.jack_program(), &self.program.program) {
                     return Err(self.runtime_fault(
-                        ComponentId::new("<external-port>"),
+                        ComponentId::new("<external-jack>"),
                         None,
                         work,
-                        "notification Port belongs to another Program",
+                        "notification Jack belongs to another Program",
                     ));
                 }
-                let Some(binding_index) = self.binding_index(protocol_type, &port) else {
+                let Some(binding_index) = self.binding_index(protocol_type, &jack) else {
                     return Err(self.runtime_fault(
-                        ComponentId::new("<external-port>"),
+                        ComponentId::new("<external-jack>"),
                         None,
                         work,
-                        "notification Port has no runtime binding",
+                        "notification Jack has no runtime binding",
                     ));
                 };
                 let (provider, target_message_type, message_type_name) = {
@@ -2405,23 +2405,23 @@ impl LiveCore {
                 };
                 let _ = self.scope.accept_finite(LiveEvent::Message(message));
             }
-            LivePortIngress::Request(request) => {
-                let port = request.port().clone();
+            LiveJackIngress::Request(request) => {
+                let jack = request.jack().clone();
                 let protocol_type = request.protocol_type();
-                if !Arc::ptr_eq(request.port_program(), &self.program.program) {
+                if !Arc::ptr_eq(request.jack_program(), &self.program.program) {
                     return Err(self.runtime_fault(
-                        ComponentId::new("<external-port>"),
+                        ComponentId::new("<external-jack>"),
                         None,
                         work,
-                        "request Port belongs to another Program",
+                        "request Jack belongs to another Program",
                     ));
                 }
-                let Some(binding_index) = self.binding_index(protocol_type, &port) else {
+                let Some(binding_index) = self.binding_index(protocol_type, &jack) else {
                     return Err(self.runtime_fault(
-                        ComponentId::new("<external-port>"),
+                        ComponentId::new("<external-jack>"),
                         None,
                         work,
-                        "request Port has no runtime binding",
+                        "request Jack has no runtime binding",
                     ));
                 };
                 let (provider, target_message_type, message_type_name) = {
@@ -2437,7 +2437,7 @@ impl LiveCore {
                 let reply_type = request.reply_type();
                 let deadline = request.deadline();
                 let token = RequestToken::new(correlation, self.program.program.clone());
-                let owner = ComponentId::new("<external-port>");
+                let owner = ComponentId::new("<external-jack>");
                 let deadline_task =
                     self.schedule_request_deadline(correlation, deadline, &owner, work);
                 let (conversion, completion) = request.into_conversion();
@@ -2829,7 +2829,7 @@ impl LiveCore {
                     }
                     let result = match event {
                         LiveEvent::Message(message) => self.process_message(message),
-                        LiveEvent::PortIngress(ingress) => self.process_port_ingress(ingress),
+                        LiveEvent::JackIngress(ingress) => self.process_jack_ingress(ingress),
                         LiveEvent::SourceEvent { stamp, terminal_type, event } => {
                             self.process_source_event(stamp, terminal_type, event)
                         }

@@ -56,18 +56,18 @@ impl Component for Recorder {
 // public, because `Component`'s associated types are part of its interface.
 impl Assembly for Journal {
     type Config = ();
-    type Exports = Port<Journal>;
+    type Exports = Jack<Journal>;
     type Requires = (Effect<AppendToFile>, Effect<ReadSystemTime>);
 
-    fn install(program: &mut ProgramBuilder, _: Self::Config) -> Port<Journal> {
+    fn install(program: &mut ProgramBuilder, _: Self::Config) -> Jack<Journal> {
         let append = program.effect::<AppendToFile>();
         let clock = program.effect::<ReadSystemTime>();
-        let journal = program.port::<Journal>(PortId::new(JOURNAL));
+        let journal = program.jack::<Journal>(JackId::new(JOURNAL));
         let recorder = program.component::<Recorder>(
             ComponentId::new("journal"),
             RecorderConfig { append, clock },
         );
-        program.bind_port_with(&journal, &recorder, Message::Protocol);
+        program.plug_in_with(&journal, &recorder, Message::Protocol);
 
         journal
     }

@@ -27,6 +27,7 @@ Governing documents:
 - [ADR-0008: Closed Program Capabilities](adr/0008-closed-program-capabilities.md)
 - [ADR-0009: First-Party Standard-Input Line Source](adr/0009-first-party-stdin-lines.md)
 - [ADR-0013: Component Kinds, Assemblies, and Provisional First-Party Effects](adr/0013-component-kinds-assemblies-and-first-party-effects.md)
+- [ADR-0014: Jacks and Plugs](adr/0014-jacks-and-plugs.md)
 - [Architecture Test Strategy](testing/architecture-test-strategy.md)
 - [v0 Acceptance Matrix](testing/v0-acceptance-matrix.md)
 
@@ -152,7 +153,7 @@ at runtime, recorded so 0.2 and 0.3 start from a list rather than a profile:
 - `Assembly::Requires` is a positional tuple; a named-field form was deferred
   (ADR-0013).
 - Every effect carries a boxed outcome mapper.
-- Every Port binding carries a boxed conversion, including `bind_port`'s
+- Every Jack binding carries a boxed conversion, including `plug_in`'s
   `From` (one allocation at assembly, one indirect call per delivered
   message).
 - Internal delivery is unbounded (ADR-0004).

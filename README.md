@@ -43,7 +43,7 @@ setup. The root validation commands still cover every example package.
 
 - [`examples/minimal`](examples/minimal/src/main.rs) — the shallow Tokio
   `mpsc -> Component Message` onboarding path.
-- [`examples/api_pressure`](examples/api_pressure/src/main.rs) — Ports, correlated
+- [`examples/api_pressure`](examples/api_pressure/src/main.rs) — Jacks, correlated
   requests, effects, subscriptions, and logical time.
 - [`examples/framed_socket`](examples/framed_socket/src/main.rs) — source layering,
   TCP Driver shape, provider-neutral Protocols, failures, and structured

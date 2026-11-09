@@ -8,7 +8,7 @@
 //! - `Telemetry` owns application state and declares the feed it currently
 //!   wants as a reconciled subscription.
 //! - Storage is a one-shot effect; health reporting crosses a named protocol
-//!   Port through both notifications and correlated requests.
+//!   Jack through both notifications and correlated requests.
 //! - Live and controlled runtimes consume the same Component definitions and
 //!   differ only in how runtime decisions and interactions with the world are
 //!   supplied.
@@ -216,9 +216,9 @@ struct HealthModel {
 protocol! {
     /// Public interaction contract offered by the health provider.
     ///
-    /// Requesters depend on this protocol through a `Port<HealthProtocol>`; they
+    /// Requesters depend on this protocol through a `Jack<HealthProtocol>`; they
     /// do not depend on `Health`, `HealthMessage`, or its Model representation.
-    /// The generated marker remains a normal, nameable Port parameter.
+    /// The generated marker remains a normal, nameable Jack parameter.
     type HealthProtocol => enum HealthProtocolMessage {
         // One-way health observations with no correlated terminal result.
         Connecting(Endpoint),
@@ -243,11 +243,11 @@ struct HealthSnapshot {
 
 /// Private message vocabulary of the health Component.
 ///
-/// Port users never need to name this type; assembly supplies the conversion
+/// Jack users never need to name this type; assembly supplies the conversion
 /// from a public protocol message to this Component-specific message.
 #[derive(Debug)]
 enum HealthMessage {
-    /// An operation delivered through a bound `HealthProtocol` Port.
+    /// An operation delivered through a bound `HealthProtocol` Jack.
     Protocol(HealthProtocolMessage),
 }
 
@@ -398,14 +398,14 @@ struct StoreError(String);
 
 /// Telemetry Component definition and its immutable, assembly-supplied wiring.
 ///
-/// The Port belongs here because it is a stable dependency of this Component
+/// The Jack belongs here because it is a stable dependency of this Component
 /// instance. Mutable feed state belongs in `TelemetryModel`; live connection
 /// and decoder state belong in the runtime Driver and framing Layer.
 struct Telemetry;
 
 struct TelemetryConfig {
     /// Named protocol dependency, independent of the provider's message enum.
-    health: Port<HealthProtocol>,
+    health: Jack<HealthProtocol>,
 
     /// Declared finite storage boundary.
     storage: EffectCapability<StoreFrame>,
@@ -567,7 +567,7 @@ struct AppRefs {
     health: ComponentRef<Health>,
 
     /// Named protocol boundary bound to the health provider.
-    health_port: Port<HealthProtocol>,
+    health_jack: Jack<HealthProtocol>,
 
     /// Reference used by the host to send telemetry messages.
     telemetry: ComponentRef<Telemetry>,
@@ -575,7 +575,7 @@ struct AppRefs {
 
 /// Declares the Component graph and resolves protocol dependency injection.
 ///
-/// Port declaration, provider binding, and consumer construction happen in one
+/// Jack declaration, provider binding, and consumer construction happen in one
 /// explicit composition root. The runtime receives a closed `Program` rather
 /// than asking Components to discover dependencies dynamically.
 fn program() -> (Program, AppRefs) {
@@ -583,19 +583,19 @@ fn program() -> (Program, AppRefs) {
     let storage = program.effect::<StoreFrame>();
     let socket = program.source::<TelemetryFeed>();
 
-    // A named Port permits multiple independently bound instances of the same
+    // A named Jack permits multiple independently bound instances of the same
     // protocol; the protocol's Rust type alone is not a global service key.
-    let health_port = program.port(PortId::new(HEALTH));
+    let health_jack = program.jack(JackId::new(HEALTH));
     let health = program.component::<Health>(ComponentId::new("health"), ());
 
     // Assembly selects the provider; `HealthMessage` declares the canonical
     // Protocol conversion through its `From` implementation.
-    program.bind_port(&health_port, &health);
+    program.plug_in(&health_jack, &health);
 
     let telemetry = program.component::<Telemetry>(
         ComponentId::new("telemetry"),
         TelemetryConfig {
-            health: health_port.clone(),
+            health: health_jack.clone(),
             storage,
             socket,
         },
@@ -605,7 +605,7 @@ fn program() -> (Program, AppRefs) {
         program.build().expect("the example graph is valid"),
         AppRefs {
             health,
-            health_port,
+            health_jack,
             telemetry,
         },
     )
@@ -734,7 +734,7 @@ fn main() {
 mod tests {
     use super::*;
 
-    /// Activates the controlled path through Port notification, composed Source
+    /// Activates the controlled path through Jack notification, composed Source
     /// Layers, typed effects, replacement, and failure input.
     #[test]
     fn controlled_reference_program_runs_end_to_end() -> Result<(), RuntimeError> {
@@ -806,7 +806,7 @@ mod tests {
     #[test]
     fn same_subscription_identity_exposes_changed_configuration() {
         let mut builder = Program::builder();
-        let health = builder.port(PortId::new(HEALTH));
+        let health = builder.jack(JackId::new(HEALTH));
         let component = TelemetryConfig {
             health,
             storage: builder.effect::<StoreFrame>(),
@@ -836,17 +836,17 @@ mod tests {
         assert_eq!(second.source.endpoint, Endpoint::new("two:7000"));
     }
 
-    /// Proves named Ports, rather than protocol types, identify dependencies at
+    /// Proves named Jacks, rather than protocol types, identify dependencies at
     /// assembly time, so one protocol may have multiple bindings.
     #[test]
     fn named_ports_bind_independently_even_for_the_same_protocol() {
         let mut builder = Program::builder();
-        let primary = builder.port::<HealthProtocol>(PortId::new("health/primary"));
-        let fallback = builder.port::<HealthProtocol>(PortId::new("health/fallback"));
+        let primary = builder.jack::<HealthProtocol>(JackId::new("health/primary"));
+        let fallback = builder.jack::<HealthProtocol>(JackId::new("health/fallback"));
         let provider = builder.component::<Health>(ComponentId::new("health"), ());
 
-        builder.bind_port(&primary, &provider);
-        builder.bind_port(&fallback, &provider);
+        builder.plug_in(&primary, &provider);
+        builder.plug_in(&fallback, &provider);
 
         let converted: HealthMessage = HealthProtocolMessage::FrameSeen.into();
         assert!(matches!(
@@ -855,8 +855,8 @@ mod tests {
         ));
 
         assert_ne!(primary, fallback);
-        assert_eq!(primary.id(), &PortId::new("health/primary"));
-        assert_eq!(fallback.id(), &PortId::new("health/fallback"));
+        assert_eq!(primary.id(), &JackId::new("health/primary"));
+        assert_eq!(fallback.id(), &JackId::new("health/fallback"));
     }
 
     /// Proves consumers emit public protocol notifications without importing or
@@ -864,7 +864,7 @@ mod tests {
     #[test]
     fn telemetry_emits_protocol_notifications_without_provider_messages() {
         let mut builder = Program::builder();
-        let health = builder.port(PortId::new(HEALTH));
+        let health = builder.jack(JackId::new(HEALTH));
         let component = TelemetryConfig {
             health,
             storage: builder.effect::<StoreFrame>(),
@@ -880,7 +880,7 @@ mod tests {
         let notifications = command.notification_intents::<Connecting>();
 
         assert_eq!(notifications.len(), 1);
-        assert_eq!(notifications[0].0, &PortId::new(HEALTH));
+        assert_eq!(notifications[0].0, &JackId::new(HEALTH));
         assert_eq!(notifications[0].1.0, Endpoint::new("one:7000"));
     }
 
@@ -895,7 +895,7 @@ mod tests {
         }
 
         let mut builder = Program::builder();
-        let health = builder.port(PortId::new(HEALTH));
+        let health = builder.jack(JackId::new(HEALTH));
         let component = TelemetryConfig {
             health,
             storage: builder.effect::<StoreFrame>(),
@@ -914,7 +914,7 @@ mod tests {
         assert!(
             requests
                 .iter()
-                .all(|(port, _)| *port == &PortId::new(HEALTH))
+                .all(|(jack, _)| *jack == &JackId::new(HEALTH))
         );
         assert_reply_type(requests[0].1);
         assert_reply_type(requests[1].1);

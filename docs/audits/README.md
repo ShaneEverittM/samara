@@ -49,7 +49,7 @@ profile-build validation; the packet's API spellings predate that.
 ## Phase 6: Live Tokio Runtime
 
 Accepted September 22, 2026 (packet dated July 23, 2026). The same Program,
-Component, Command, descriptor, Layer, and Port contracts ran against live
+Component, Command, descriptor, Layer, and Jack contracts ran against live
 terminal Drivers inside one structured runtime scope, with atomic admission
 closure at shutdown, per-Component serialization, and no program-wide order
 for independent live events. One runtime-owned dispatcher and unbounded

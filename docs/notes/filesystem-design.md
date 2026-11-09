@@ -98,7 +98,7 @@ Open questions:
 ## Owned and Shared handles
 
 - **Owned:** exactly one Component holds the token, enforced at build the way a
-  Port must be bound exactly once. Appends land in that Component's issue
+  Jack must be bound exactly once. Appends land in that Component's issue
   order and nothing else interleaves. Precedent for exact versus type-wide
   binding: stdin is an exact source boundary.
 - **Shared:** several Components hold the token. Each append is atomic and each

@@ -1767,7 +1767,7 @@ enum EchoRequesterMessage {
 struct EchoRequester;
 
 struct EchoRequesterConfig {
-    echo: Port<EchoProtocol>,
+    echo: Jack<EchoProtocol>,
     continuation_calls: Arc<AtomicUsize>,
     observe: EffectCapability<ObserveReply>,
 }
@@ -1812,14 +1812,14 @@ fn echo_program(
     continuation_calls: Arc<AtomicUsize>,
 ) -> (Program, ComponentRef<EchoRequester>) {
     let mut program = Program::builder();
-    let echo = program.port(PortId::new("echo"));
+    let echo = program.jack(JackId::new("echo"));
     let seen = program.effect::<ProviderSeen>();
     let observe = program.effect::<ObserveReply>();
     let provider = program.component::<EchoProvider>(
         ComponentId::new("echo-provider"),
         EchoProviderConfig { reply, seen },
     );
-    program.bind_port(&echo, &provider);
+    program.plug_in(&echo, &provider);
     let requester = program.component::<EchoRequester>(
         ComponentId::new("echo-requester"),
         EchoRequesterConfig {

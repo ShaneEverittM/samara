@@ -456,7 +456,7 @@ protocol! {
 struct InitialForeignNotification;
 
 struct InitialForeignNotificationConfig {
-    port: Port<ForeignProtocol>,
+    jack: Jack<ForeignProtocol>,
 }
 
 impl Component for InitialForeignNotification {
@@ -465,7 +465,7 @@ impl Component for InitialForeignNotification {
     type Message = ();
 
     fn init(config: &Self::Config) -> Init<Self::Model, Self::Message> {
-        Init::new(()).with_command(Command::notify(config.port.clone(), Signal))
+        Init::new(()).with_command(Command::notify(config.jack.clone(), Signal))
     }
 
     fn update(
@@ -480,7 +480,7 @@ impl Component for InitialForeignNotification {
 struct InitialForeignRequest;
 
 struct InitialForeignRequestConfig {
-    port: Port<ForeignProtocol>,
+    jack: Jack<ForeignProtocol>,
 }
 
 impl Component for InitialForeignRequest {
@@ -489,7 +489,7 @@ impl Component for InitialForeignRequest {
     type Message = ();
 
     fn init(config: &Self::Config) -> Init<Self::Model, Self::Message> {
-        Init::new(()).with_command(Command::request_with(config.port.clone(), Read, |_| ()))
+        Init::new(()).with_command(Command::request_with(config.jack.clone(), Read, |_| ()))
     }
 
     fn update(
@@ -501,30 +501,30 @@ impl Component for InitialForeignRequest {
     }
 }
 
-fn initial_foreign_port_program(request: bool) -> Program {
+fn initial_foreign_jack_program(request: bool) -> Program {
     let mut foreign = Program::builder();
-    let port = foreign.port(PortId::new("foreign"));
+    let jack = foreign.jack(JackId::new("foreign"));
     let mut owner = Program::builder();
     if request {
         owner.component::<InitialForeignRequest>(
             ComponentId::new("initial-foreign-request"),
-            InitialForeignRequestConfig { port },
+            InitialForeignRequestConfig { jack },
         );
     } else {
         owner.component::<InitialForeignNotification>(
             ComponentId::new("initial-foreign-notification"),
-            InitialForeignNotificationConfig { port },
+            InitialForeignNotificationConfig { jack },
         );
     }
     owner.build().expect("valid owner Program")
 }
 
 #[test]
-fn initially_visible_foreign_component_and_port_capabilities_fail_profile_build() {
+fn initially_visible_foreign_component_and_jack_capabilities_fail_profile_build() {
     for program in [
         initial_foreign_send_program(),
-        initial_foreign_port_program(false),
-        initial_foreign_port_program(true),
+        initial_foreign_jack_program(false),
+        initial_foreign_jack_program(true),
     ] {
         let error = LiveRuntime::builder(program)
             .build()
@@ -535,8 +535,8 @@ fn initially_visible_foreign_component_and_port_capabilities_fail_profile_build(
 
     for program in [
         initial_foreign_send_program(),
-        initial_foreign_port_program(false),
-        initial_foreign_port_program(true),
+        initial_foreign_jack_program(false),
+        initial_foreign_jack_program(true),
     ] {
         let error = ControlledRuntime::builder(program)
             .build()

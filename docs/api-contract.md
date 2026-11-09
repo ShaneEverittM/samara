@@ -105,7 +105,7 @@ The July 25 API revision adopts one consistent continuation convention without
 changing these lifecycle semantics or the concrete
 `Component::update(...) -> Command<Message>` boundary:
 
-- `Command::effect(&capability, effect)`, `Command::request(port, request)`,
+- `Command::effect(&capability, effect)`, `Command::request(jack, request)`,
   `Subscription::source(&capability, id, descriptor)`, and
   `HttpResponsePipeline::into_command(&capability)` use the standard
   `Message: From<BoundaryValue>` conversion as their default mapper.
@@ -211,38 +211,38 @@ The ADR freezes observable first-cut behavior, not task topology, queue
 representation, exact public module naming, or a mature product policy for
 overload, shutdown deadlines, Driver recovery, or bridge restartability.
 
-## Accepted and Implemented Contract: Live Port Ingress
+## Accepted and Implemented Contract: Live Jack Ingress
 
 [ADR-0006](adr/0006-live-port-ingress.md) extends the existing live ingress
-boundary to provider-neutral Ports:
+boundary to provider-neutral Jacks:
 
-- `LiveRuntime::port_handle(&Port<P>)` returns a cloneable `PortHandle<P>` only
-  when the Port belongs to that runtime's exact Program and has its exact built
+- `LiveRuntime::jack_handle(&Jack<P>)` returns a cloneable `JackHandle<P>` only
+  when the Jack belongs to that runtime's exact Program and has its exact built
   Protocol-and-name binding. Foreign or absent exact bindings fail synchronously
   with `RuntimeError`.
-- `Port<P>` remains inert logical wiring suitable for Component configuration.
-  `PortHandle<P>` is a live capability for surrounding Tokio code and exposes no
+- `Jack<P>` remains inert logical wiring suitable for Component configuration.
+  `JackHandle<P>` is a live capability for surrounding Tokio code and exposes no
   provider, Model, transition, channel, or runtime topology.
-- `PortHandle::notify` and `PortHandle::request` attempt admission when their
+- `JackHandle::notify` and `JackHandle::request` attempt admission when their
   futures are first polled. They share the same atomic cutoff as
   `ComponentHandle` and the owning `RuntimeTask`.
 - Successful notify means accepted for runtime-managed conversion and delivery,
   not that the provider transition completed.
-- An admitted host Request uses the same Port binding, `RequestInvocation`,
+- An admitted host Request uses the same Jack binding, `RequestInvocation`,
   opaque correlation, and `ReplyTo` path as `Command::request`, but its awaited
   success is `R::Reply` directly. It creates neither a requester Component
   Message nor `RequestOutcome::Replied`.
-- Drain closes new Port ingress and retains admitted Notifications, Requests,
+- Drain closes new Jack ingress and retains admitted Notifications, Requests,
   Replies, and their causal finite work. An unanswered host Request may keep
   Drain pending forever.
 - Cancel or non-fault scope closure before Reply wakes the external waiter with
   `RuntimeError` without manufacturing a RequestOutcome. A runtime fault wakes
-  it with the preserved scope fault and rejects later Port ingress with that
+  it with the preserved scope fault and rejects later Jack ingress with that
   same error.
 - Dropping an unpolled Request future admits nothing. Dropping or timing out an
   already admitted waiter does not cancel provider delivery, release the
   outstanding Request, or relax Drain; it relinquishes only host observation.
-- `PortHandle` is live-only. ControlledRuntime gains no corresponding handle;
+- `JackHandle` is live-only. ControlledRuntime gains no corresponding handle;
   deterministic tests continue to use the existing controlled drive and
   inspection surfaces.
 
@@ -254,7 +254,7 @@ remain deferred.
 
 [ADR-0011](adr/0011-request-timeouts.md) adds opt-in
 `Command::request_timeout`, `Command::request_timeout_with`, and
-`PortHandle::request_timeout`. Existing request forms remain unbounded.
+`JackHandle::request_timeout`. Existing request forms remain unbounded.
 
 - Component durations start at Command interpretation; host durations start at
   admission on first poll, including queued time. Controlled deadlines use
@@ -484,7 +484,7 @@ around values issued by one `ProgramBuilder`:
 - `effect::<D>() -> EffectCapability<D>` and
   `source::<S>() -> SourceCapability<S>` both declare a dependency and produce
   the only public authority that can issue work through that dependency.
-- Component references and Ports remain the corresponding Program-issued
+- Component references and Jacks remain the corresponding Program-issued
   values for concrete and provider-neutral Component communication.
 - Component configuration stores these inert values. They expose no I/O,
   runtime handle, Driver, or controlled-world operation.
@@ -519,10 +519,33 @@ one of several independently bindable receivers.
 Raw descriptors cannot construct Commands or Subscriptions. HTTP pipeline
 lowering, standard-output macros, and Source bridge helpers also require their
 matching capability so a convenience API cannot reopen an undeclared path.
-Initial foreign Effect, Source, ComponentRef, and Port capabilities and foreign
+Initial foreign Effect, Source, ComponentRef, and Jack capabilities and foreign
 exact bindings fail profile build. A deliberately hidden foreign capability
 first reached after execution starts is a Component-conformance fault rejected
 before Driver or controlled behavior, not a supported form of dynamic assembly.
+
+## Accepted and Implemented Contract: Jacks and Plugs
+
+[ADR-0014](adr/0014-jacks-and-plugs.md) names the two ways a Component is
+exposed and renames the consumer-owned one:
+
+- `Jack<P>` (formerly `Port<P>`) is a consumer-owned, named, inert dependency
+  on a Protocol, created with `ProgramBuilder::jack` and filled at assembly
+  with `plug_in` or `plug_in_with`. `JackId`, `JackHandle`, and
+  `LiveRuntime::jack_handle` follow the rename; their semantics are those of
+  ADR-0006.
+- `Plug<M>` is a provider-owned, inert address: a `ComponentRef<C>` erased to
+  the Message type it accepts, obtained with `ComponentRef::plug` (a `From`
+  conversion) or `ComponentRef::plug_with` (an explicit pure conversion). It
+  grants no delivery capability and its `Debug` output names `M`, not `C`.
+- `Pluggable` is implemented for `ComponentRef<C>` and `Plug<M>`; `plug_in`
+  and `plug_in_with` accept either. A Jack binding is stored as the Jack and a
+  `Plug<P::Message>`, so both forms share one boxed conversion.
+- A Plug from another `ProgramBuilder` fails `build()` as a foreign provider
+  under ADR-0008's existing rule.
+- `Plug` is a binding target only in this slice. Direct `Command::send` and a
+  request form addressed to a Plug are recorded in the framework follow-ups
+  and need an ADR amendment before implementation.
 
 ## Deliberately Unfrozen Surfaces
 

@@ -14,8 +14,8 @@ use std::{
 use crate::declarative_work::SubscriptionChange;
 use crate::{
     CapabilityToken, Command, CommandKind, Component, ComponentId, ComponentRef, EffectDescriptor,
-    EffectOutcome, EffectOutcomeKind, ErasedRequestMapper, ErasedSourceEvent, LogicalTime,
-    PendingEffect, PendingWork, PortId, Program, RequestOutcome, RequestOutcomeKind, RequestToken,
+    EffectOutcome, EffectOutcomeKind, ErasedRequestMapper, ErasedSourceEvent, JackId, LogicalTime,
+    PendingEffect, PendingWork, Program, RequestOutcome, RequestOutcomeKind, RequestToken,
     RunReport, RuntimeError, ShutdownReport, SourceCapability, SourceDescriptor, SourceEvent,
     SourcePlan, StreamDescriptor, StreamSourceDescriptor, Subscription, SubscriptionAction,
     SubscriptionId, TraceCommandKind, TraceEvent, TraceId, TraceRecord,
@@ -504,11 +504,11 @@ impl ControlledCore {
         })
     }
 
-    fn binding_index(&self, protocol: TypeId, port: &PortId) -> Option<usize> {
+    fn binding_index(&self, protocol: TypeId, jack: &JackId) -> Option<usize> {
         self.program
             .bindings
             .iter()
-            .position(|binding| binding.protocol_type() == protocol && binding.port_id() == port)
+            .position(|binding| binding.protocol_type() == protocol && binding.jack_id() == jack)
     }
 
     fn source_index(
@@ -674,7 +674,7 @@ impl ControlledCore {
         kind: TraceCommandKind,
         detail_type: &'static str,
         target_component: Option<ComponentId>,
-        target_port: Option<PortId>,
+        target_jack: Option<JackId>,
     ) -> TraceId {
         self.push_child(
             cause,
@@ -683,7 +683,7 @@ impl ControlledCore {
                 kind,
                 detail_type,
                 target_component,
-                target_port,
+                target_jack,
             },
         )
     }
@@ -787,7 +787,7 @@ impl ControlledCore {
                     );
                 }
                 CommandKind::Notify(command) => {
-                    let port = command.port().clone();
+                    let jack = command.jack().clone();
                     let protocol = command.protocol_type_id();
                     let detail_type = command.notification_type_name();
                     let work = self.command_trace(
@@ -796,22 +796,22 @@ impl ControlledCore {
                         TraceCommandKind::Notify,
                         detail_type,
                         None,
-                        Some(port.clone()),
+                        Some(jack.clone()),
                     );
-                    if !Arc::ptr_eq(command.port_program(), &self.program.program) {
+                    if !Arc::ptr_eq(command.jack_program(), &self.program.program) {
                         return Err(self.set_fault(
                             component.clone(),
                             None,
                             work,
-                            "notification Port belongs to another Program",
+                            "notification Jack belongs to another Program",
                         ));
                     }
-                    let Some(binding_index) = self.binding_index(protocol, &port) else {
+                    let Some(binding_index) = self.binding_index(protocol, &jack) else {
                         return Err(self.set_fault(
                             component.clone(),
                             None,
                             work,
-                            "notification Port has no runtime binding",
+                            "notification Jack has no runtime binding",
                         ));
                     };
                     let protocol_message = command.into_message();
@@ -838,7 +838,7 @@ impl ControlledCore {
                     );
                 }
                 CommandKind::Request(command) => {
-                    let port = command.port().clone();
+                    let jack = command.jack().clone();
                     let protocol = command.protocol_type_id();
                     let request_type = command.request_type_name();
                     let reply_type = command.reply_type_id();
@@ -849,22 +849,22 @@ impl ControlledCore {
                         TraceCommandKind::Request,
                         request_type,
                         None,
-                        Some(port.clone()),
+                        Some(jack.clone()),
                     );
-                    if !Arc::ptr_eq(command.port_program(), &self.program.program) {
+                    if !Arc::ptr_eq(command.jack_program(), &self.program.program) {
                         return Err(self.set_fault(
                             component.clone(),
                             None,
                             work,
-                            "request Port belongs to another Program",
+                            "request Jack belongs to another Program",
                         ));
                     }
-                    let Some(binding_index) = self.binding_index(protocol, &port) else {
+                    let Some(binding_index) = self.binding_index(protocol, &jack) else {
                         return Err(self.set_fault(
                             component.clone(),
                             None,
                             work,
-                            "request Port has no runtime binding",
+                            "request Jack has no runtime binding",
                         ));
                     };
                     let deadline = match command.timeout() {

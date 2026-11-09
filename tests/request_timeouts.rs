@@ -88,7 +88,7 @@ impl From<RequestOutcome<u64>> for RequesterMessage {
 struct Requester;
 
 struct RequesterConfig {
-    port: Port<ProbeProtocol>,
+    jack: Jack<ProbeProtocol>,
     observe: EffectCapability<Observation>,
 }
 
@@ -113,7 +113,7 @@ impl Component for Requester {
                 key,
             } => match (timeout, key) {
                 (Some(timeout), Some(key)) => Command::request_timeout_with(
-                    config.port.clone(),
+                    config.jack.clone(),
                     request,
                     timeout,
                     move |outcome| {
@@ -124,9 +124,9 @@ impl Component for Requester {
                     },
                 ),
                 (Some(timeout), None) => {
-                    Command::request_timeout(config.port.clone(), request, timeout)
+                    Command::request_timeout(config.jack.clone(), request, timeout)
                 }
-                (None, _) => Command::request(config.port.clone(), request),
+                (None, _) => Command::request(config.jack.clone(), request),
             },
             RequesterMessage::Outcome(observation) => {
                 model.push(observation.clone());
@@ -140,19 +140,19 @@ struct Fixture {
     program: Program,
     requester: ComponentRef<Requester>,
     provider: ComponentRef<Provider>,
-    port: Port<ProbeProtocol>,
+    jack: Jack<ProbeProtocol>,
 }
 
 fn fixture() -> Fixture {
     let mut builder = Program::builder();
-    let port = builder.port(PortId::new("probe"));
+    let jack = builder.jack(JackId::new("probe"));
     let observe = builder.effect::<Observation>();
     let provider = builder.component::<Provider>(ComponentId::new("provider"), ());
-    builder.bind_port(&port, &provider);
+    builder.plug_in(&jack, &provider);
     let requester = builder.component::<Requester>(
         ComponentId::new("requester"),
         RequesterConfig {
-            port: port.clone(),
+            jack: jack.clone(),
             observe,
         },
     );
@@ -160,7 +160,7 @@ fn fixture() -> Fixture {
         program: builder.build().unwrap(),
         requester,
         provider,
-        port,
+        jack,
     }
 }
 
@@ -500,10 +500,10 @@ async fn live_reply_cancels_deadline_task_without_delaying_drain() {
 
 #[tokio::test(start_paused = true)]
 async fn host_timeout_includes_time_queued_before_owner_starts() {
-    let Fixture { program, port, .. } = fixture();
+    let Fixture { program, jack, .. } = fixture();
     let (runtime, _observed) = live(program);
-    let port = runtime.port_handle(&port).unwrap();
-    let mut request = Box::pin(port.request_timeout(ask(7, Some(Duration::ZERO)), SECOND));
+    let jack = runtime.jack_handle(&jack).unwrap();
+    let mut request = Box::pin(jack.request_timeout(ask(7, Some(Duration::ZERO)), SECOND));
     assert!(futures_util::poll!(request.as_mut()).is_pending());
     tokio::time::advance(SECOND * 2).await;
     let task = runtime.spawn();
@@ -513,10 +513,10 @@ async fn host_timeout_includes_time_queued_before_owner_starts() {
 
 #[tokio::test(start_paused = true)]
 async fn dropped_host_waiter_keeps_deadline_and_drain_releases_unanswered_request() {
-    let Fixture { program, port, .. } = fixture();
+    let Fixture { program, jack, .. } = fixture();
     let (runtime, _observed) = live(program);
-    let port = runtime.port_handle(&port).unwrap();
-    let mut request = Box::pin(port.request_timeout(ask(7, None), SECOND));
+    let jack = runtime.jack_handle(&jack).unwrap();
+    let mut request = Box::pin(jack.request_timeout(ask(7, None), SECOND));
     assert!(futures_util::poll!(request.as_mut()).is_pending());
     drop(request);
     let task = runtime.spawn();
@@ -535,12 +535,12 @@ async fn dropped_host_waiter_keeps_deadline_and_drain_releases_unanswered_reques
 #[tokio::test(start_paused = true)]
 async fn live_zero_and_equal_deadlines_timeout() {
     for duration in [Duration::ZERO, SECOND] {
-        let Fixture { program, port, .. } = fixture();
+        let Fixture { program, jack, .. } = fixture();
         let (runtime, _observed) = live(program);
-        let port = runtime.port_handle(&port).unwrap();
+        let jack = runtime.jack_handle(&jack).unwrap();
         let task = runtime.spawn();
         assert_eq!(
-            port.request_timeout(ask(7, Some(duration)), duration)
+            jack.request_timeout(ask(7, Some(duration)), duration)
                 .await
                 .unwrap(),
             RequestOutcome::TimedOut
@@ -551,13 +551,13 @@ async fn live_zero_and_equal_deadlines_timeout() {
 
 #[tokio::test(start_paused = true)]
 async fn live_concurrent_host_timeouts_keep_correlation() {
-    let Fixture { program, port, .. } = fixture();
+    let Fixture { program, jack, .. } = fixture();
     let (runtime, _observed) = live(program);
-    let port = runtime.port_handle(&port).unwrap();
+    let jack = runtime.jack_handle(&jack).unwrap();
     let task = runtime.spawn();
     let (late, early) = tokio::join!(
-        port.request_timeout(ask(11, Some(SECOND * 2)), SECOND),
-        port.request_timeout(ask(22, Some(Duration::ZERO)), SECOND),
+        jack.request_timeout(ask(11, Some(SECOND * 2)), SECOND),
+        jack.request_timeout(ask(22, Some(Duration::ZERO)), SECOND),
     );
     assert_eq!(late.unwrap(), RequestOutcome::TimedOut);
     assert_eq!(early.unwrap(), RequestOutcome::Replied(22));
@@ -569,18 +569,18 @@ async fn live_scope_cancel_does_not_manufacture_timeout() {
     let Fixture {
         program,
         requester,
-        port,
+        jack,
         ..
     } = fixture();
     let (runtime, mut observed) = live(program);
     let handle = runtime.handle(&requester).unwrap();
-    let port = runtime.port_handle(&port).unwrap();
+    let jack = runtime.jack_handle(&jack).unwrap();
     let task = runtime.spawn();
     handle
         .send(start(7, None, Some(SECOND * 60)))
         .await
         .unwrap();
-    let mut request = Box::pin(port.request_timeout(ask(8, None), SECOND * 60));
+    let mut request = Box::pin(jack.request_timeout(ask(8, None), SECOND * 60));
     assert!(futures_util::poll!(request.as_mut()).is_pending());
     tokio::task::yield_now().await;
     assert!(task.shutdown(Shutdown::Cancel).await.unwrap().is_clean());
@@ -590,16 +590,16 @@ async fn live_scope_cancel_does_not_manufacture_timeout() {
 
 #[tokio::test(start_paused = true)]
 async fn live_timeout_preserves_runtime_fault_and_rejects_overflow() {
-    let Fixture { program, port, .. } = fixture();
+    let Fixture { program, jack, .. } = fixture();
     let (runtime, _observed) = live(program);
-    let port = runtime.port_handle(&port).unwrap();
+    let jack = runtime.jack_handle(&jack).unwrap();
     let task = runtime.spawn();
-    let overflow = port
+    let overflow = jack
         .request_timeout(ask(7, None), Duration::MAX)
         .await
         .unwrap_err();
     assert!(overflow.to_string().contains("deadline"));
-    let fault = port
+    let fault = jack
         .request_timeout(ask(u64::MAX, None), SECOND)
         .await
         .unwrap_err();

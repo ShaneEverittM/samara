@@ -3,7 +3,7 @@
 - Status: Accepted
 - Date: November 8, 2026
 - Deciders: Samara maintainers
-- Scope: The `Component` trait signature, the reuse unit (`Assembly`), Port
+- Scope: The `Component` trait signature, the reuse unit (`Assembly`), Jack
   binding conversion, and first-party clock and filesystem effects
 
 ## Context
@@ -45,12 +45,12 @@ pub trait Component: 'static {
 ```
 
 The implementing type is only a name for the kind and is never stored. Its
-wiring (capabilities, Ports, settings) is `Config`, supplied at registration
+wiring (capabilities, Jacks, settings) is `Config`, supplied at registration
 and held by the kernel; its behavioral state is `Model`. Registration names
 the kind explicitly, `component::<Recorder>(id, config)`, because `C` cannot
 be inferred from `C::Config`. Dynamic dispatch over `Component` is not
 supported; it was already unreachable in practice, since the trait's
-associated types have no defaults, and Ports are the dispatch mechanism.
+associated types have no defaults, and Jacks are the dispatch mechanism.
 
 ### An Assembly declares its requirements as a type
 
@@ -79,12 +79,12 @@ Assembly` names and constructs concrete drivers, bound with
 `and_its_vendored_drivers()`; libraries are expected to feature-gate that
 impl. `RuntimeBuilder`, `Bindings`, and `Controlled` are removed.
 
-### Port binding has an explicit-conversion form
+### Jack binding has an explicit-conversion form
 
-`ProgramBuilder::bind_port_with(&port, &provider, map)` takes a pure
+`ProgramBuilder::plug_in_with(&jack, &provider, map)` takes a pure
 `Fn(P::Message) -> C::Message`, normally the enum variant wrapping the protocol
 message, following the paired convention of `effect_with` and `source_with`.
-`bind_port` remains the `From` shortcut.
+`plug_in` remains the `From` shortcut.
 
 ### First-party clock and filesystem effects, provisional
 
@@ -134,7 +134,7 @@ module may change shape without a further ADR until it is declared stable.
 - The "observationally read-only configuration" conformance obligation moves
   from `&self` to `&Config` unchanged.
 - Cost ledger additions: drivers are concrete at the call site and boxed once
-  per binding inside `and_drivers`; Port bindings carry a boxed conversion
+  per binding inside `and_drivers`; Jack bindings carry a boxed conversion
   (one allocation per binding, one indirect call per delivered message);
   `Requires` is positional.
 - Every `Component` implementor changes signature. Mechanical; the compiler
@@ -145,7 +145,7 @@ module may change shape without a further ADR until it is declared stable.
 `tests/assemblies.rs`; the `Assembly` and `VendorsDrivers` rustdoc with two
 compile-fail cases; `tests/fs_effects.rs` (controlled intents by relative
 path, live walk in a temp root, `OutsideRoot`, declared-only and duplicate
-binding); the `bind_port_with` doctest; `examples/pulse` and `examples/url` as
+binding); the `plug_in_with` doctest; `examples/pulse` and `examples/url` as
 worked examples of the kind/config split.
 
 ## Rollback

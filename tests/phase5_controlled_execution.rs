@@ -55,25 +55,25 @@ fn phase5_program_build_rejects_duplicate_component_id() {
 }
 
 #[test]
-fn phase5_program_build_rejects_duplicate_protocol_and_port_id() {
+fn phase5_program_build_rejects_duplicate_protocol_and_jack_id() {
     let mut builder = Program::builder();
-    let _ = builder.port::<AssemblyProtocol>(PortId::new("service"));
-    let _ = builder.port::<AssemblyProtocol>(PortId::new("service"));
+    let _ = builder.jack::<AssemblyProtocol>(JackId::new("service"));
+    let _ = builder.jack::<AssemblyProtocol>(JackId::new("service"));
 
     assert!(builder.build().is_err());
 }
 
 #[test]
-fn phase5_program_build_requires_exactly_one_binding_per_port() {
+fn phase5_program_build_requires_exactly_one_binding_per_jack() {
     let mut unbound = Program::builder();
-    let _ = unbound.port::<AssemblyProtocol>(PortId::new("service"));
+    let _ = unbound.jack::<AssemblyProtocol>(JackId::new("service"));
     assert!(unbound.build().is_err());
 
     let mut duplicate = Program::builder();
-    let port = duplicate.port::<AssemblyProtocol>(PortId::new("service"));
+    let jack = duplicate.jack::<AssemblyProtocol>(JackId::new("service"));
     let provider = duplicate.component::<Empty>(ComponentId::new("provider"), ());
-    duplicate.bind_port(&port, &provider);
-    duplicate.bind_port(&port, &provider);
+    duplicate.plug_in(&jack, &provider);
+    duplicate.plug_in(&jack, &provider);
     assert!(duplicate.build().is_err());
 }
 
@@ -83,8 +83,8 @@ fn phase5_program_build_rejects_provider_from_another_builder() {
     let provider = provider_builder.component::<Empty>(ComponentId::new("provider"), ());
 
     let mut consumer_builder = Program::builder();
-    let port = consumer_builder.port::<AssemblyProtocol>(PortId::new("service"));
-    consumer_builder.bind_port(&port, &provider);
+    let jack = consumer_builder.jack::<AssemblyProtocol>(JackId::new("service"));
+    consumer_builder.plug_in(&jack, &provider);
 
     assert!(consumer_builder.build().is_err());
 }
@@ -103,13 +103,13 @@ impl Protocol for RightProtocol {
 struct Left;
 
 struct LeftConfig {
-    _right: Port<RightProtocol>,
+    _right: Jack<RightProtocol>,
 }
 
 struct Right;
 
 struct RightConfig {
-    _left: Port<LeftProtocol>,
+    _left: Jack<LeftProtocol>,
 }
 
 impl Component for Left {
@@ -149,24 +149,24 @@ impl Component for Right {
 }
 
 #[test]
-fn phase5_program_build_allows_port_cycles() {
+fn phase5_program_build_allows_jack_cycles() {
     let mut builder = Program::builder();
-    let left_port = builder.port::<LeftProtocol>(PortId::new("left"));
-    let right_port = builder.port::<RightProtocol>(PortId::new("right"));
+    let left_jack = builder.jack::<LeftProtocol>(JackId::new("left"));
+    let right_jack = builder.jack::<RightProtocol>(JackId::new("right"));
     let left = builder.component::<Left>(
         ComponentId::new("left"),
         LeftConfig {
-            _right: right_port.clone(),
+            _right: right_jack.clone(),
         },
     );
     let right = builder.component::<Right>(
         ComponentId::new("right"),
         RightConfig {
-            _left: left_port.clone(),
+            _left: left_jack.clone(),
         },
     );
-    builder.bind_port(&left_port, &left);
-    builder.bind_port(&right_port, &right);
+    builder.plug_in(&left_jack, &left);
+    builder.plug_in(&right_jack, &right);
 
     assert!(builder.build().is_ok());
 }
@@ -1188,7 +1188,7 @@ enum OwnershipMessage {
 struct OwnershipComponent;
 
 struct OwnershipComponentConfig {
-    port: Port<EchoProtocol>,
+    jack: Jack<EchoProtocol>,
     effect: EffectCapability<ProbeEffect>,
     input: SourceCapability<StreamDescriptor<u64>>,
 }
@@ -1213,7 +1213,7 @@ impl Component for OwnershipComponent {
         match message {
             OwnershipMessage::Kick => Command::batch([
                 Command::effect_with(&config.effect, ProbeEffect(1), OwnershipMessage::Effect),
-                Command::request_with(config.port.clone(), Echo(1), OwnershipMessage::Request),
+                Command::request_with(config.jack.clone(), Echo(1), OwnershipMessage::Request),
             ]),
             OwnershipMessage::Effect(outcome) => {
                 let _ = outcome;
@@ -1243,18 +1243,18 @@ impl Component for OwnershipComponent {
 
 fn ownership_runtime() -> (ControlledRuntime, ComponentRef<OwnershipComponent>) {
     let mut builder = Program::builder();
-    let port = builder.port::<EchoProtocol>(PortId::new("echo"));
+    let jack = builder.jack::<EchoProtocol>(JackId::new("echo"));
     let provider = builder.component::<EchoProvider>(
         ComponentId::new("provider"),
         EchoProviderConfig { reply: false },
     );
-    builder.bind_port(&port, &provider);
+    builder.plug_in(&jack, &provider);
     let effect = builder.effect::<ProbeEffect>();
     let input = builder.source::<StreamDescriptor<u64>>();
     let component = builder.component::<OwnershipComponent>(
         ComponentId::new("owner"),
         OwnershipComponentConfig {
-            port,
+            jack,
             effect,
             input: input.clone(),
         },
@@ -1465,7 +1465,7 @@ struct EchoRequesterModel(Vec<(usize, u64)>);
 struct EchoRequester;
 
 struct EchoRequesterConfig {
-    port: Port<EchoProtocol>,
+    jack: Jack<EchoProtocol>,
     requests: usize,
 }
 
@@ -1485,7 +1485,7 @@ impl Component for EchoRequester {
     ) -> Command<Self::Message> {
         match message {
             EchoRequesterMessage::Start => Command::batch((0..config.requests).map(|slot| {
-                Command::request_with(config.port.clone(), Echo(7), move |outcome| {
+                Command::request_with(config.jack.clone(), Echo(7), move |outcome| {
                     EchoRequesterMessage::Replied { slot, outcome }
                 })
             })),
@@ -1503,13 +1503,13 @@ impl Component for EchoRequester {
 
 fn echo_program(reply: bool, requests: usize) -> (Program, ComponentRef<EchoRequester>) {
     let mut builder = Program::builder();
-    let port = builder.port::<EchoProtocol>(PortId::new("echo"));
+    let jack = builder.jack::<EchoProtocol>(JackId::new("echo"));
     let provider = builder
         .component::<EchoProvider>(ComponentId::new("provider"), EchoProviderConfig { reply });
-    builder.bind_port(&port, &provider);
+    builder.plug_in(&jack, &provider);
     let requester = builder.component::<EchoRequester>(
         ComponentId::new("requester"),
-        EchoRequesterConfig { port, requests },
+        EchoRequesterConfig { jack, requests },
     );
     (builder.build().unwrap(), requester)
 }

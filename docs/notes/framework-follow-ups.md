@@ -105,7 +105,7 @@ not accepted API decisions or a review of the unfinished application.
   source events, and effect outcomes, not just individual update calls. Reuse
   the runtime's transition and command machinery so isolated tests preserve
   execution semantics. Define how capabilities are supplied and how external
-  effects, sources, and ports are explicitly controlled or stubbed.
+  effects, sources, and jacks are explicitly controlled or stubbed.
   LiveRuntime and ControlledRuntime both accept a Program without sharing a
   runtime interface; preserve that flexibility and let ComponentRuntime expose
   APIs suited to isolated tests. Prioritize this over per-Component transition
@@ -155,15 +155,27 @@ a journal Component; exploratory proposals, not accepted API decisions.
   (ADR-0013); design, rejected alternatives, and remaining open items are in
   the [Assembly design note](assembly-design.md). Still open from it:
   identity scoping through `Config`, named `Requires` positions, and a
-  Port-level controlled ingress so an Assembly can be tested from outside its
+  Jack-level controlled ingress so an Assembly can be tested from outside its
   module.
+
+- [ ] **Plugs as first-class addresses.** `Plug<M>` is a Jack binding target
+  only (ADR-0014). Three small extensions would let a library be used with no
+  Jack at all: `Command::send` over any `Pluggable`; a `Command::request_to`
+  that mints the `ReplyTo` against a Plug from a constructor function,
+  `|reply_to| JournalMessage::recent(1, reply_to)`, inferring the reply type
+  from the constructor's signature as Elm infers it from `expect`; and a
+  public `Plug::with_input`, Elm 0.16's `forwardTo`. The send form is thirty
+  lines on the existing Send arm. The request form skips the binding lookup
+  in both runtimes' Request arms, needs an initial-command validation arm and
+  a Message-keyed intent inspector, and wants an amendment to ADR-0014; no
+  change to ordering, isolation, or determinism.
 
 - [ ] **No small-scale composition: `Command::map` and `Subscriptions::map`
   are missing.** Nothing lifts a `Command<Child>` into a `Command<Parent>` or
   a `Subscriptions<Child>` into a `Subscriptions<Parent>`; the existing `map_*`
   methods are test inspectors. Without Elm's `Cmd.map` and `Sub.map`, every
   reusable piece of stateful logic, however small, must become a Component
-  with a Port, a `From` impl, and a protocol. The pulse journal raised it:
+  with a Jack, a `From` impl, and a protocol. The pulse journal raised it:
   on the merits it is roughly 60/40 an Assembly over an embedded
   sub-reducer, but the question could not be decided because only one shape
   exists. Both maps are implementable from what Commands already carry.

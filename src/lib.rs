@@ -51,7 +51,7 @@
 //! - [`StdinLines`]: connect a component to input, with live and controlled examples.
 //! - [`Command`]: request work, send messages, and schedule timers.
 //! - [`HttpRequest`]: fetch a URL and handle its response.
-//! - [`ProgramBuilder::bind_port`]: connect components through a shared protocol.
+//! - [`ProgramBuilder::plug_in`]: connect components through a shared protocol.
 //! - [`EffectDriver`] and [`SourceDriver`]: implement your own I/O.
 //! - [`RuntimeTask`]: shut down a running application and wait for cleanup.
 //!
@@ -126,9 +126,9 @@ pub mod prelude {
         Effect, EffectCapability, EffectDescriptor, EffectDriver, EffectInvocation, EffectOutcome,
         EffectOutcomeKind, Framed, FramedError, FramedLayer, HttpError, HttpErrorKind,
         HttpJsonError, HttpRequest, HttpResponse, HttpResponseError, HttpStatusError, Init,
-        Installed, LiveRuntime, LiveRuntimeBuilder, LogicalTime, Notification, PendingEffect,
-        PendingWork, Port, PortHandle, PortId, PrintStderr, PrintStdout, Program,
-        ProgramBuildError, ProgramBuilder, Protocol, ReadSystemTime, ReplyTo, Request,
+        Installed, Jack, JackHandle, JackId, LiveRuntime, LiveRuntimeBuilder, LogicalTime,
+        Notification, PendingEffect, PendingWork, Plug, Pluggable, PrintStderr, PrintStdout,
+        Program, ProgramBuildError, ProgramBuilder, Protocol, ReadSystemTime, ReplyTo, Request,
         RequestError, RequestInvocation, RequestOutcome, RequestOutcomeKind, Requirements,
         RunReport, RuntimeError, RuntimeTask, Shutdown, ShutdownReport, Source, SourceCapability,
         SourceDescriptor, SourceDriver, SourceEvent, SourceEventKind, SourceSink, StatusCode,
@@ -286,18 +286,18 @@ impl ComponentId {
 
 /// The name of a protocol connection within a Program.
 ///
-/// A port is identified by its protocol type and name. Use different names for
+/// A jack is identified by its protocol type and name. Use different names for
 /// two providers of the same protocol, such as `"primary"` and `"fallback"`.
 ///
 /// ```
-/// use samara::PortId;
-/// let id = PortId::new("input");
-/// assert_eq!(id, PortId::new("input"));
+/// use samara::JackId;
+/// let id = JackId::new("input");
+/// assert_eq!(id, JackId::new("input"));
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct PortId(Arc<str>);
+pub struct JackId(Arc<str>);
 
-impl PortId {
+impl JackId {
     /// Creates a name from a string.
     pub fn new(value: impl Into<Arc<str>>) -> Self {
         Self(value.into())
@@ -719,7 +719,7 @@ where
 /// A kind of part of an application, with its own configuration, state, and messages.
 ///
 /// The type you implement `Component` on is only a name for the kind. Its
-/// immutable configuration, such as capabilities and ports, is a separate
+/// immutable configuration, such as capabilities and jacks, is a separate
 /// `Config` value supplied at registration. Its changing application state is
 /// the `Model`, which Samara owns. Samara calls `update` for each message, never
 /// overlapping updates to the same component.
@@ -745,7 +745,7 @@ where
 /// assert_eq!(model, 3);
 /// ```
 ///
-/// See [`StdinLines`] for subscriptions and [`ProgramBuilder::bind_port`] for
+/// See [`StdinLines`] for subscriptions and [`ProgramBuilder::plug_in`] for
 /// communication between components.
 ///
 /// <details>
@@ -767,7 +767,7 @@ where
 ///
 /// </details>
 pub trait Component: 'static {
-    /// This component's immutable configuration: capabilities, ports, and settings.
+    /// This component's immutable configuration: capabilities, jacks, and settings.
     ///
     /// Use `()` when there is none. Samara stores one value per registered
     /// component and passes it to every function by shared reference.
@@ -799,18 +799,18 @@ pub trait Component: 'static {
     }
 }
 
-/// Defines the messages that can be sent through a [`Port`].
+/// Defines the messages that can be sent through a [`Jack`].
 ///
 /// A protocol lets callers use a service without depending on its component's
 /// message type. The provider implements `From<P::Message>` for its own message
 /// type. Use [`protocol!`] to generate request and notification types, or define
-/// them yourself. See [`ProgramBuilder::bind_port`] for a complete example.
+/// them yourself. See [`ProgramBuilder::plug_in`] for a complete example.
 pub trait Protocol: Send + Sync + 'static {
     /// Messages accepted by a provider of this protocol.
     type Message: Send + 'static;
 }
 
-/// A message sent through a [`Port`] without expecting a reply.
+/// A message sent through a [`Jack`] without expecting a reply.
 ///
 /// `into_message` must be a pure conversion. [`protocol!`] generates this
 /// implementation for entries without `-> Reply`.
@@ -819,7 +819,7 @@ pub trait Protocol: Send + Sync + 'static {
 /// use samara::prelude::*;
 /// protocol! { type Alerts => enum AlertMessage { Changed(String), } }
 /// let mut program = Program::builder();
-/// let alerts = program.port::<Alerts>(PortId::new("alerts"));
+/// let alerts = program.jack::<Alerts>(JackId::new("alerts"));
 /// let command: Command<()> = Command::notify(alerts, Changed("ready".into()));
 /// assert_eq!(command.notification_intents::<Changed>().len(), 1);
 /// ```
@@ -828,7 +828,7 @@ pub trait Notification<P: Protocol>: Send + 'static {
     fn into_message(self) -> P::Message;
 }
 
-/// A message sent through a [`Port`] that expects a reply of type `Reply`.
+/// A message sent through a [`Jack`] that expects a reply of type `Reply`.
 ///
 /// `into_message` packages the request with the reply token; it must not perform
 /// I/O. [`protocol!`] generates this implementation for entries with `-> Reply`.
@@ -838,7 +838,7 @@ pub trait Notification<P: Protocol>: Send + 'static {
 /// use samara::prelude::*;
 /// protocol! { type Catalog => enum CatalogMessage { Lookup(String) -> Option<u64>, } }
 /// let mut program = Program::builder();
-/// let catalog = program.port::<Catalog>(PortId::new("catalog"));
+/// let catalog = program.jack::<Catalog>(JackId::new("catalog"));
 /// let command = Command::request_with(catalog, Lookup("widget".into()), |outcome| outcome);
 /// assert_eq!(command.request_intents::<Lookup>().len(), 1);
 /// ```
@@ -853,7 +853,7 @@ pub trait Request<P: Protocol>: Send + 'static {
 /// The reply or timeout delivered to a request's caller.
 ///
 /// Requests have no timeout unless you use [`Command::request_timeout`] or
-/// [`PortHandle::request_timeout`]. A timeout leaves the provider's work running
+/// [`JackHandle::request_timeout`]. A timeout leaves the provider's work running
 /// and discards its later reply. Runtime cancellation does not send this value
 /// to a component. `Failed` and `Cancelled` are not produced by the built-in
 /// request implementation.
@@ -898,7 +898,7 @@ pub enum RequestError {
 /// the request: the caller keeps waiting until its timeout or runtime shutdown.
 /// An unanswered request without a timeout can keep [`Shutdown::Drain`] waiting.
 ///
-/// See [`ProgramBuilder::bind_port`] for a provider that returns a reply.
+/// See [`ProgramBuilder::plug_in`] for a provider that returns a reply.
 ///
 /// <details>
 /// <summary>Compile-time checks</summary>
@@ -969,7 +969,7 @@ impl<Reply> fmt::Debug for ReplyTo<Reply> {
 /// A received request and the token used to answer it.
 ///
 /// Read `request` and return [`Command::reply`] with `reply_to`.
-/// See [`ProgramBuilder::bind_port`] for a complete provider example.
+/// See [`ProgramBuilder::plug_in`] for a complete provider example.
 pub struct RequestInvocation<P, R>
 where
     P: Protocol,
@@ -1029,7 +1029,7 @@ where
 ///     }
 /// }
 /// let mut program = Program::builder();
-/// let health = program.port::<Health>(PortId::new("health"));
+/// let health = program.jack::<Health>(JackId::new("health"));
 /// let command = Command::request_with(health, Read, |outcome| outcome);
 /// assert_eq!(command.request_intents::<Read>().len(), 1);
 /// ```
@@ -1522,8 +1522,8 @@ impl<C: Component> ErasedSendCommand for SendTo<C> {
 }
 
 trait ErasedNotificationCommand: Send {
-    fn port(&self) -> &PortId;
-    fn port_program(&self) -> &Arc<()>;
+    fn jack(&self) -> &JackId;
+    fn jack_program(&self) -> &Arc<()>;
     fn notification(&self) -> &dyn Any;
     fn notification_type_name(&self) -> &'static str;
     fn protocol_type_id(&self) -> TypeId;
@@ -1536,7 +1536,7 @@ where
     P: Protocol,
     N: Notification<P>,
 {
-    port: Port<P>,
+    jack: Jack<P>,
     notification: N,
 }
 
@@ -1545,12 +1545,12 @@ where
     P: Protocol,
     N: Notification<P>,
 {
-    fn port(&self) -> &PortId {
-        self.port.id()
+    fn jack(&self) -> &JackId {
+        self.jack.id()
     }
 
-    fn port_program(&self) -> &Arc<()> {
-        &self.port.program
+    fn jack_program(&self) -> &Arc<()> {
+        &self.jack.program
     }
 
     fn notification(&self) -> &dyn Any {
@@ -1575,8 +1575,8 @@ where
 }
 
 trait ErasedRequestCommand<Message>: Send {
-    fn port(&self) -> &PortId;
-    fn port_program(&self) -> &Arc<()>;
+    fn jack(&self) -> &JackId;
+    fn jack_program(&self) -> &Arc<()>;
     fn request(&self) -> &dyn Any;
     fn timeout(&self) -> Option<Duration>;
     fn request_type_name(&self) -> &'static str;
@@ -1614,7 +1614,7 @@ where
     P: Protocol,
     R: Request<P>,
 {
-    port: Port<P>,
+    jack: Jack<P>,
     request: R,
     timeout: Option<Duration>,
     map: Map,
@@ -1627,12 +1627,12 @@ where
     R: Request<P>,
     Map: FnOnce(RequestOutcome<R::Reply>) -> Message + Send + 'static,
 {
-    fn port(&self) -> &PortId {
-        self.port.id()
+    fn jack(&self) -> &JackId {
+        self.jack.id()
     }
 
-    fn port_program(&self) -> &Arc<()> {
-        &self.port.program
+    fn jack_program(&self) -> &Arc<()> {
+        &self.jack.program
     }
 
     fn request(&self) -> &dyn Any {
@@ -1971,33 +1971,33 @@ impl<Message> Command<Message> {
         Self(CommandKind::Send(Box::new(SendTo { target, message })))
     }
 
-    /// Sends a notification to the component bound to a Port.
+    /// Sends a notification to the component bound to a Jack.
     ///
     /// The notification is converted with [`Notification::into_message`]. The command
     /// schedules delivery; it does not call the provider while being constructed.
     /// No reply or delivery result is sent back. See [`Notification`] for an example.
-    pub fn notify<P, N>(port: Port<P>, notification: N) -> Self
+    pub fn notify<P, N>(jack: Jack<P>, notification: N) -> Self
     where
         P: Protocol,
         N: Notification<P>,
     {
-        Self(CommandKind::Notify(Box::new(Notify { port, notification })))
+        Self(CommandKind::Notify(Box::new(Notify { jack, notification })))
     }
 
-    /// Sends a request through a Port and converts the reply with `Message::from`.
+    /// Sends a request through a Jack and converts the reply with `Message::from`.
     ///
     /// Requires `Message: From<RequestOutcome<R::Reply>>`. Use [`Self::request_with`]
     /// for a closure, or [`Self::request_timeout`] to limit how long to wait.
-    pub fn request<P, R>(port: Port<P>, request: R) -> Self
+    pub fn request<P, R>(jack: Jack<P>, request: R) -> Self
     where
         Message: From<RequestOutcome<R::Reply>> + Send + 'static,
         P: Protocol,
         R: Request<P>,
     {
-        Self::request_with(port, request, Message::from)
+        Self::request_with(jack, request, Message::from)
     }
 
-    /// Sends a request through a Port and maps its reply to a message.
+    /// Sends a request through a Jack and maps its reply to a message.
     ///
     /// The component continues handling other messages while waiting. `map` runs at
     /// most once and must not perform I/O or mutate state. You can capture an ID to
@@ -2007,14 +2007,14 @@ impl<Message> Command<Message> {
     /// use samara::prelude::*;
     /// protocol! { type Catalog => enum CatalogMessage { Lookup(String) -> Option<u64>, } }
     /// let mut program = Program::builder();
-    /// let catalog = program.port::<Catalog>(PortId::new("catalog"));
+    /// let catalog = program.jack::<Catalog>(JackId::new("catalog"));
     /// let command = Command::request_with(catalog, Lookup("widget".into()), |reply| (7, reply));
     /// assert_eq!(command.request_intents::<Lookup>().len(), 1);
     /// ```
     ///
     /// There is no timeout. An unanswered request can keep [`Shutdown::Drain`] waiting;
     /// use [`Self::request_timeout_with`] to bound the wait.
-    pub fn request_with<P, R, Map>(port: Port<P>, request: R, map: Map) -> Self
+    pub fn request_with<P, R, Map>(jack: Jack<P>, request: R, map: Map) -> Self
     where
         Message: Send + 'static,
         P: Protocol,
@@ -2022,7 +2022,7 @@ impl<Message> Command<Message> {
         Map: FnOnce(RequestOutcome<R::Reply>) -> Message + Send + 'static,
     {
         Self(CommandKind::Request(Box::new(RequestCommand {
-            port,
+            jack,
             request,
             timeout: None,
             map,
@@ -2038,13 +2038,13 @@ impl<Message> Command<Message> {
     ///
     /// Live execution uses Tokio time; controlled tests advance time themselves.
     /// See [`Self::request_timeout_with`] for a closure-based example.
-    pub fn request_timeout<P, R>(port: Port<P>, request: R, timeout: Duration) -> Self
+    pub fn request_timeout<P, R>(jack: Jack<P>, request: R, timeout: Duration) -> Self
     where
         Message: From<RequestOutcome<R::Reply>> + Send + 'static,
         P: Protocol,
         R: Request<P>,
     {
-        Self::request_timeout_with(port, request, timeout, Message::from)
+        Self::request_timeout_with(jack, request, timeout, Message::from)
     }
 
     /// Sends a request with a timeout and maps its reply or timeout to a message.
@@ -2057,14 +2057,14 @@ impl<Message> Command<Message> {
     /// use std::time::Duration;
     /// protocol! { type Health => enum HealthMessage { Check -> bool, } }
     /// let mut program = Program::builder();
-    /// let health = program.port::<Health>(PortId::new("health"));
+    /// let health = program.jack::<Health>(JackId::new("health"));
     /// let command = Command::request_timeout_with(
     ///     health, Check, Duration::from_secs(2), |outcome| outcome,
     /// );
     /// assert_eq!(command.request_intents::<Check>().len(), 1);
     /// ```
     pub fn request_timeout_with<P, R, Map>(
-        port: Port<P>,
+        jack: Jack<P>,
         request: R,
         timeout: Duration,
         map: Map,
@@ -2076,7 +2076,7 @@ impl<Message> Command<Message> {
         Map: FnOnce(RequestOutcome<R::Reply>) -> Message + Send + 'static,
     {
         Self(CommandKind::Request(Box::new(RequestCommand {
-            port,
+            jack,
             request,
             timeout: Some(timeout),
             map,
@@ -2087,7 +2087,7 @@ impl<Message> Command<Message> {
     ///
     /// The token is consumed, so the same request cannot be answered twice. Delivery
     /// happens after the provider's update returns. A reply after the caller's timeout
-    /// is ignored. See [`ProgramBuilder::bind_port`] for an example.
+    /// is ignored. See [`ProgramBuilder::plug_in`] for an example.
     pub fn reply<ReplyValue>(reply_to: ReplyTo<ReplyValue>, reply: ReplyValue) -> Self
     where
         ReplyValue: Send + 'static,
@@ -2217,11 +2217,11 @@ impl<Message> Command<Message> {
         }
     }
 
-    /// Returns notifications of type `N` with their destination Port IDs.
+    /// Returns notifications of type `N` with their destination Jack IDs.
     ///
     /// Searches batches in declaration order without delivering anything. See
     /// [`Notification`] for an example.
-    pub fn notification_intents<N: 'static>(&self) -> Vec<(&PortId, &N)> {
+    pub fn notification_intents<N: 'static>(&self) -> Vec<(&JackId, &N)> {
         let mut intents = Vec::new();
         self.collect_notification_intents(&mut intents);
         intents
@@ -2229,12 +2229,12 @@ impl<Message> Command<Message> {
 
     fn collect_notification_intents<'a, N: 'static>(
         &'a self,
-        intents: &mut Vec<(&'a PortId, &'a N)>,
+        intents: &mut Vec<(&'a JackId, &'a N)>,
     ) {
         match &self.0 {
             CommandKind::Notify(command) => {
                 if let Some(notification) = command.notification().downcast_ref() {
-                    intents.push((command.port(), notification));
+                    intents.push((command.jack(), notification));
                 }
             }
             CommandKind::Batch(commands) => {
@@ -2251,20 +2251,20 @@ impl<Message> Command<Message> {
         }
     }
 
-    /// Returns requests of type `R` with their destination Port IDs.
+    /// Returns requests of type `R` with their destination Jack IDs.
     ///
     /// Searches batches in declaration order. See [`Self::request_with`] for an example.
-    pub fn request_intents<R: 'static>(&self) -> Vec<(&PortId, &R)> {
+    pub fn request_intents<R: 'static>(&self) -> Vec<(&JackId, &R)> {
         let mut intents = Vec::new();
         self.collect_request_intents(&mut intents);
         intents
     }
 
-    fn collect_request_intents<'a, R: 'static>(&'a self, intents: &mut Vec<(&'a PortId, &'a R)>) {
+    fn collect_request_intents<'a, R: 'static>(&'a self, intents: &mut Vec<(&'a JackId, &'a R)>) {
         match &self.0 {
             CommandKind::Request(command) => {
                 if let Some(request) = command.request().downcast_ref() {
-                    intents.push((command.port(), request));
+                    intents.push((command.jack(), request));
                 }
             }
             CommandKind::Batch(commands) => {
@@ -3357,7 +3357,7 @@ impl HttpResponsePipeline<HttpResponse, HttpError> {
     /// An exhausted limit, malformed or multiple Locations, URL credentials, a
     /// non-HTTP(S) target, or an HTTPS-to-HTTP redirect produces [`HttpErrorKind::Redirect`].
     /// Host, Referer, and Proxy-Authorization are removed on every hop. A change of
-    /// scheme, host, or effective port also removes Authorization, Cookie, Cookie2,
+    /// scheme, host, or effective jack also removes Authorization, Cookie, Cookie2,
     /// and headers marked sensitive. Mark custom credential headers with
     /// `HeaderValue::set_sensitive(true)`.
     ///
@@ -4139,36 +4139,39 @@ impl<S: SourceDescriptor> fmt::Debug for SourceCapability<S> {
     }
 }
 
-/// A named connection to a component that implements a [`Protocol`].
+/// A consumer-owned, named dependency on a [`Protocol`], filled at assembly.
 ///
-/// Create it with [`ProgramBuilder::port`] and select its provider with
-/// [`ProgramBuilder::bind_port`]. Components use it with [`Command::notify`] and
-/// [`Command::request`]. Code outside the program uses a [`PortHandle`] instead.
+/// The application declares the Protocol in its own vocabulary, creates the
+/// Jack with [`ProgramBuilder::jack`], and plugs a provider in with
+/// [`ProgramBuilder::plug_in`]. Components use it with [`Command::notify`] and
+/// [`Command::request`]. Code outside the program uses a [`JackHandle`] instead.
+/// The provider-owned counterpart, an address a Component hands out itself,
+/// is [`Plug`].
 ///
 /// ```
 /// use samara::prelude::*;
 /// protocol! { type Health => enum HealthMessage { Check -> bool, } }
 /// let mut program = Program::builder();
-/// let health = program.port::<Health>(PortId::new("primary"));
-/// assert_eq!(health.id(), &PortId::new("primary"));
+/// let health = program.jack::<Health>(JackId::new("primary"));
+/// assert_eq!(health.id(), &JackId::new("primary"));
 /// ```
 ///
-/// A port does not expose the provider's model. See [`ProgramBuilder::bind_port`]
+/// A jack does not expose the provider's model. See [`ProgramBuilder::plug_in`]
 /// for a complete request/reply example.
-pub struct Port<P: Protocol> {
-    id: PortId,
+pub struct Jack<P: Protocol> {
+    id: JackId,
     program: Arc<()>,
     marker: PhantomData<fn() -> P>,
 }
 
-impl<P: Protocol> Port<P> {
-    /// Returns the port name.
-    pub fn id(&self) -> &PortId {
+impl<P: Protocol> Jack<P> {
+    /// Returns the jack name.
+    pub fn id(&self) -> &JackId {
         &self.id
     }
 }
 
-impl<P: Protocol> Clone for Port<P> {
+impl<P: Protocol> Clone for Jack<P> {
     fn clone(&self) -> Self {
         Self {
             id: self.id.clone(),
@@ -4178,17 +4181,17 @@ impl<P: Protocol> Clone for Port<P> {
     }
 }
 
-impl<P: Protocol> PartialEq for Port<P> {
+impl<P: Protocol> PartialEq for Jack<P> {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id
     }
 }
 
-impl<P: Protocol> Eq for Port<P> {}
+impl<P: Protocol> Eq for Jack<P> {}
 
-impl<P: Protocol> fmt::Debug for Port<P> {
+impl<P: Protocol> fmt::Debug for Jack<P> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.debug_tuple("Port").field(&self.id).finish()
+        formatter.debug_tuple("Jack").field(&self.id).finish()
     }
 }
 
@@ -4199,7 +4202,7 @@ impl<P: Protocol> fmt::Debug for Port<P> {
 /// or [`ControlledRuntime::state`] to inspect state in tests.
 ///
 /// See the [crate example](crate) for registration and controlled state inspection.
-/// Use a [`Port`] when a caller should depend on a protocol rather than the
+/// Use a [`Jack`] when a caller should depend on a protocol rather than the
 /// component's complete message type.
 ///
 /// <details>
@@ -4246,6 +4249,170 @@ impl<C: Component> fmt::Debug for ComponentRef<C> {
     }
 }
 
+impl<C: Component> ComponentRef<C> {
+    /// Erases this address to a provider of `M`, converting with `From`.
+    ///
+    /// See [`Plug`] for why and [`Self::plug_with`] for an explicit
+    /// conversion.
+    pub fn plug<M>(&self) -> Plug<M>
+    where
+        M: Send + 'static,
+        C::Message: From<M>,
+    {
+        self.plug_with(C::Message::from)
+    }
+
+    /// Erases this address to a provider of `M`, converting with `map`.
+    ///
+    /// `map` is usually the enum variant of the Component's Message that wraps
+    /// `M`. It must be pure. See [`Plug`] for a complete example.
+    pub fn plug_with<M, Map>(&self, map: Map) -> Plug<M>
+    where
+        M: Send + 'static,
+        Map: Fn(M) -> C::Message + Send + Sync + 'static,
+    {
+        Plug {
+            id: self.id.clone(),
+            program: self.program.clone(),
+            component_type: TypeId::of::<C>(),
+            message_type: TypeId::of::<C::Message>(),
+            message_type_name: std::any::type_name::<C::Message>(),
+            convert: Arc::new(move |message| Box::new(map(message)) as Box<dyn Any + Send>),
+        }
+    }
+}
+
+/// A provider address erased to the message type it accepts.
+///
+/// A `Plug<M>` is a [`ComponentRef`] that has forgotten which Component it
+/// points at and remembers only that the Component accepts `M`, together with
+/// the pure conversion from `M` into the Component's private Message. Like
+/// `ComponentRef` and [`Jack`] it is inert logical wiring and grants no
+/// delivery capability; a Jack is bound to it exactly as to a `ComponentRef`.
+///
+/// Its purpose is to let a reusable unit hand out a provider without naming
+/// its Component. An [`Assembly`] exports a `Plug<LibraryMessage>`; the
+/// application declares its own [`Jack`] in its own [`Protocol`] and couples
+/// the two with [`ProgramBuilder::plug_in_with`], writing the conversion
+/// from its vocabulary to the library's at the binding site. The
+/// application's Components then depend only on the Jack they own, and the
+/// library's vocabulary appears in exactly one place: the coupling.
+///
+/// ```
+/// use samara::prelude::*;
+///
+/// // A library's public vocabulary and private Component.
+/// protocol! { pub type Journal => enum JournalMessage { Note(String), } }
+/// struct Recorder;
+/// struct RecorderMessage(JournalMessage);
+/// impl Component for Recorder {
+///     type Config = ();
+///     type Model = Vec<String>;
+///     type Message = RecorderMessage;
+///     fn init(_: &()) -> Init<Vec<String>, RecorderMessage> { Init::new(Vec::new()) }
+///     fn update(_: &(), notes: &mut Vec<String>, message: RecorderMessage) -> Command<RecorderMessage> {
+///         let RecorderMessage(JournalMessage::Note(note)) = message;
+///         notes.push(note);
+///         Command::none()
+///     }
+/// }
+///
+/// // The application's own Jack, in its own vocabulary.
+/// protocol! { pub type Audit => enum AuditMessage { Changed(String), } }
+///
+/// let mut program = Program::builder();
+/// let audit = program.jack::<Audit>(JackId::new("audit"));
+/// let recorder = program.component::<Recorder>(ComponentId::new("recorder"), ());
+/// let provider: Plug<JournalMessage> = recorder.plug_with(RecorderMessage);
+/// program.plug_in_with(&audit, &provider, |message| match message {
+///     AuditMessage::Changed(what) => JournalMessage::Note(what),
+/// });
+/// # let _ = program.build()?;
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+pub struct Plug<M> {
+    id: ComponentId,
+    program: Arc<()>,
+    component_type: TypeId,
+    message_type: TypeId,
+    message_type_name: &'static str,
+    convert: Arc<dyn Fn(M) -> Box<dyn Any + Send> + Send + Sync>,
+}
+
+impl<M: Send + 'static> Plug<M> {
+    /// Returns the provider Component's name.
+    pub fn id(&self) -> &ComponentId {
+        &self.id
+    }
+
+    fn with_input<N, Map>(&self, map: Map) -> Plug<N>
+    where
+        N: Send + 'static,
+        Map: Fn(N) -> M + Send + Sync + 'static,
+    {
+        let convert = self.convert.clone();
+        Plug {
+            id: self.id.clone(),
+            program: self.program.clone(),
+            component_type: self.component_type,
+            message_type: self.message_type,
+            message_type_name: self.message_type_name,
+            convert: Arc::new(move |message| convert(map(message))),
+        }
+    }
+}
+
+impl<M> Clone for Plug<M> {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id.clone(),
+            program: self.program.clone(),
+            component_type: self.component_type,
+            message_type: self.message_type,
+            message_type_name: self.message_type_name,
+            convert: self.convert.clone(),
+        }
+    }
+}
+
+impl<M> fmt::Debug for Plug<M> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Plug")
+            .field("id", &self.id)
+            .field("accepts", &std::any::type_name::<M>())
+            .finish()
+    }
+}
+
+/// Something a Jack can be bound to: a [`ComponentRef`] or a [`Plug`].
+///
+/// [`ProgramBuilder::plug_in`] and [`ProgramBuilder::plug_in_with`] accept
+/// either. Applications do not implement it.
+pub trait Pluggable {
+    /// The message type this provider accepts.
+    type Message: Send + 'static;
+
+    /// Erases this provider to a plug of its message type.
+    fn to_plug(&self) -> Plug<Self::Message>;
+}
+
+impl<C: Component> Pluggable for ComponentRef<C> {
+    type Message = C::Message;
+
+    fn to_plug(&self) -> Plug<C::Message> {
+        self.plug_with(|message| message)
+    }
+}
+
+impl<M: Send + 'static> Pluggable for Plug<M> {
+    type Message = M;
+
+    fn to_plug(&self) -> Plug<M> {
+        self.clone()
+    }
+}
+
 /// Components and their connections, ready to run live or under test control.
 ///
 /// Build one with [`Program::builder`]. Pass it to [`LiveRuntime::builder`] or
@@ -4264,7 +4431,7 @@ impl<C: Component> fmt::Debug for ComponentRef<C> {
 pub struct Program {
     program: Arc<()>,
     components: Vec<Box<dyn ErasedComponentKernel>>,
-    bindings: Vec<Box<dyn ErasedPortBinding>>,
+    bindings: Vec<Box<dyn ErasedJackBinding>>,
     effect_requirements: Vec<EffectRequirement>,
     source_requirements: Vec<SourceRequirement>,
 }
@@ -4276,7 +4443,7 @@ impl Program {
         ProgramBuilder {
             program,
             components: Vec::new(),
-            ports: Vec::new(),
+            jacks: Vec::new(),
             bindings: Vec::new(),
             effect_requirements: Vec::new(),
             source_requirements: Vec::new(),
@@ -4358,17 +4525,17 @@ impl Program {
             })
     }
 
-    fn declares_port_target(
+    fn declares_jack_target(
         &self,
-        port_program: &Arc<()>,
-        port: &PortId,
+        jack_program: &Arc<()>,
+        jack: &JackId,
         protocol: TypeId,
     ) -> bool {
-        Arc::ptr_eq(port_program, &self.program)
+        Arc::ptr_eq(jack_program, &self.program)
             && self
                 .bindings
                 .iter()
-                .any(|binding| binding.port_id() == port && binding.protocol_type() == protocol)
+                .any(|binding| binding.jack_id() == jack && binding.protocol_type() == protocol)
     }
 }
 
@@ -4417,30 +4584,30 @@ where
                 }
             }
             CommandKind::Notify(notification) => {
-                if program.declares_port_target(
-                    notification.port_program(),
-                    notification.port(),
+                if program.declares_jack_target(
+                    notification.jack_program(),
+                    notification.jack(),
                     notification.protocol_type_id(),
                 ) {
                     Ok(())
                 } else {
                     Err(RuntimeError::harness(format!(
-                        "Component {component:?} has an initial notification Port {:?} from another Program or absent from this Program",
-                        notification.port()
+                        "Component {component:?} has an initial notification Jack {:?} from another Program or absent from this Program",
+                        notification.jack()
                     )))
                 }
             }
             CommandKind::Request(request) => {
-                if program.declares_port_target(
-                    request.port_program(),
-                    request.port(),
+                if program.declares_jack_target(
+                    request.jack_program(),
+                    request.jack(),
                     request.protocol_type_id(),
                 ) {
                     Ok(())
                 } else {
                     Err(RuntimeError::harness(format!(
-                        "Component {component:?} has an initial request Port {:?} from another Program or absent from this Program",
-                        request.port()
+                        "Component {component:?} has an initial request Jack {:?} from another Program or absent from this Program",
+                        request.jack()
                     )))
                 }
             }
@@ -4491,18 +4658,18 @@ where
     Ok(())
 }
 
-struct PortDeclaration {
+struct JackDeclaration {
     protocol_type: TypeId,
     protocol_type_name: &'static str,
-    id: PortId,
+    id: JackId,
     program: Arc<()>,
 }
 
-pub(crate) trait ErasedPortBinding: Send {
+pub(crate) trait ErasedJackBinding: Send {
     fn protocol_type(&self) -> TypeId;
     fn protocol_type_name(&self) -> &'static str;
-    fn port_id(&self) -> &PortId;
-    fn port_program(&self) -> &Arc<()>;
+    fn jack_id(&self) -> &JackId;
+    fn jack_program(&self) -> &Arc<()>;
     fn provider_id(&self) -> &ComponentId;
     fn provider_program(&self) -> &Arc<()>;
     fn provider_component_type(&self) -> TypeId;
@@ -4511,20 +4678,17 @@ pub(crate) trait ErasedPortBinding: Send {
     fn convert(&self, message: Box<dyn Any + Send>) -> Box<dyn Any + Send>;
 }
 
-struct PortBinding<P, C>
+struct JackBinding<P>
 where
     P: Protocol,
-    C: Component,
 {
-    port: Port<P>,
-    provider: ComponentRef<C>,
-    map: Box<dyn Fn(P::Message) -> C::Message + Send + Sync>,
+    jack: Jack<P>,
+    plug: Plug<P::Message>,
 }
 
-impl<P, C> ErasedPortBinding for PortBinding<P, C>
+impl<P> ErasedJackBinding for JackBinding<P>
 where
     P: Protocol,
-    C: Component,
 {
     fn protocol_type(&self) -> TypeId {
         TypeId::of::<P>()
@@ -4534,83 +4698,83 @@ where
         std::any::type_name::<P>()
     }
 
-    fn port_id(&self) -> &PortId {
-        self.port.id()
+    fn jack_id(&self) -> &JackId {
+        self.jack.id()
     }
 
-    fn port_program(&self) -> &Arc<()> {
-        &self.port.program
+    fn jack_program(&self) -> &Arc<()> {
+        &self.jack.program
     }
 
     fn provider_id(&self) -> &ComponentId {
-        self.provider.id()
+        &self.plug.id
     }
 
     fn provider_program(&self) -> &Arc<()> {
-        &self.provider.program
+        &self.plug.program
     }
 
     fn provider_component_type(&self) -> TypeId {
-        TypeId::of::<C>()
+        self.plug.component_type
     }
 
     fn provider_message_type(&self) -> TypeId {
-        TypeId::of::<C::Message>()
+        self.plug.message_type
     }
 
     fn provider_message_type_name(&self) -> &'static str {
-        std::any::type_name::<C::Message>()
+        self.plug.message_type_name
     }
 
     fn convert(&self, message: Box<dyn Any + Send>) -> Box<dyn Any + Send> {
         let message = match message.downcast::<P::Message>() {
             Ok(message) => *message,
-            Err(_) => unreachable!("a Port binding couples one Protocol Message type"),
+            Err(_) => unreachable!("a Jack binding couples one Protocol Message type"),
         };
-        Box::new((self.map)(message))
+        (self.plug.convert)(message)
     }
 }
 
-/// A problem with component registration or port wiring.
+/// A problem with component registration or jack wiring.
 ///
 /// Returned by [`ProgramBuilder::build`]. Missing I/O implementations are checked
-/// later by the runtime builder. Cyclic port connections are allowed.
+/// later by the runtime builder. Cyclic jack connections are allowed.
 ///
 /// ```
-/// use samara::{Program, PortId, Protocol, ProgramBuildError};
+/// use samara::{Program, JackId, Protocol, ProgramBuildError};
 /// struct Service;
 /// impl Protocol for Service { type Message = (); }
 /// let mut builder = Program::builder();
-/// let _service = builder.port::<Service>(PortId::new("service"));
-/// assert!(matches!(builder.build(), Err(ProgramBuildError::PortBindingCount { count: 0, .. })));
+/// let _service = builder.jack::<Service>(JackId::new("service"));
+/// assert!(matches!(builder.build(), Err(ProgramBuildError::JackBindingCount { count: 0, .. })));
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ProgramBuildError {
     /// Two components have the same name.
     DuplicateComponentId(ComponentId),
-    /// A port name was declared twice for the same protocol.
-    DuplicatePort {
+    /// A jack name was declared twice for the same protocol.
+    DuplicateJack {
         /// The protocol's Rust type name.
         protocol_type: &'static str,
-        /// The duplicated port name.
-        port: PortId,
+        /// The duplicated jack name.
+        jack: JackId,
     },
-    /// A port has no provider or more than one provider.
-    PortBindingCount {
+    /// A jack has no provider or more than one provider.
+    JackBindingCount {
         /// The protocol's Rust type name.
         protocol_type: &'static str,
-        /// The port name.
-        port: PortId,
-        /// The number of providers bound to the port.
+        /// The jack name.
+        jack: JackId,
+        /// The number of providers bound to the jack.
         count: usize,
     },
-    /// A port belongs to another builder.
-    ForeignPort {
+    /// A jack belongs to another builder.
+    ForeignJack {
         /// The protocol's Rust type name.
         protocol_type: &'static str,
-        /// The port name.
-        port: PortId,
+        /// The jack name.
+        jack: JackId,
     },
     /// A provider belongs to another builder.
     ForeignProvider {
@@ -4630,24 +4794,24 @@ impl fmt::Display for ProgramBuildError {
             Self::DuplicateComponentId(id) => {
                 write!(formatter, "duplicate Component identity {id:?}")
             }
-            Self::DuplicatePort {
+            Self::DuplicateJack {
                 protocol_type,
-                port,
-            } => write!(formatter, "duplicate Port {port:?} for {protocol_type}"),
-            Self::PortBindingCount {
+                jack,
+            } => write!(formatter, "duplicate Jack {jack:?} for {protocol_type}"),
+            Self::JackBindingCount {
                 protocol_type,
-                port,
+                jack,
                 count,
             } => write!(
                 formatter,
-                "Port {port:?} for {protocol_type} has {count} bindings; expected exactly one"
+                "Jack {jack:?} for {protocol_type} has {count} bindings; expected exactly one"
             ),
-            Self::ForeignPort {
+            Self::ForeignJack {
                 protocol_type,
-                port,
+                jack,
             } => write!(
                 formatter,
-                "Port {port:?} for {protocol_type} belongs to another ProgramBuilder"
+                "Jack {jack:?} for {protocol_type} belongs to another ProgramBuilder"
             ),
             Self::ForeignProvider { provider } => write!(
                 formatter,
@@ -4662,7 +4826,7 @@ impl fmt::Display for ProgramBuildError {
 
 impl Error for ProgramBuildError {}
 
-/// Registers components, declares their I/O, and connects ports to providers.
+/// Registers components, declares their I/O, and connects jacks to providers.
 ///
 /// Start with [`Program::builder`]. Create capabilities before passing them into
 /// components. Call [`Self::build`] once wiring is complete, then configure a
@@ -4670,12 +4834,12 @@ impl Error for ProgramBuildError {}
 /// come from this builder.
 ///
 /// See the [crate example](crate) for a component, [`StdinLines`] for input, and
-/// [`Self::bind_port`] for request/reply wiring.
+/// [`Self::plug_in`] for request/reply wiring.
 pub struct ProgramBuilder {
     program: Arc<()>,
     components: Vec<Box<dyn ErasedComponentKernel>>,
-    ports: Vec<PortDeclaration>,
-    bindings: Vec<Box<dyn ErasedPortBinding>>,
+    jacks: Vec<JackDeclaration>,
+    bindings: Vec<Box<dyn ErasedJackBinding>>,
     effect_requirements: Vec<EffectRequirement>,
     source_requirements: Vec<SourceRequirement>,
     next_capability: u64,
@@ -4751,7 +4915,7 @@ impl ProgramBuilder {
     /// command. The command runs when the runtime starts. Component names must be
     /// unique; registration order does not determine live execution order.
     ///
-    /// See the [crate example](crate) or [`Self::bind_port`].
+    /// See the [crate example](crate) or [`Self::plug_in`].
     pub fn component<C>(&mut self, id: ComponentId, config: C::Config) -> ComponentRef<C>
     where
         C: Component,
@@ -4769,33 +4933,35 @@ impl ProgramBuilder {
 
     /// Declares a named connection to a provider of protocol `P`.
     ///
-    /// Bind exactly one provider with [`Self::bind_port`]. Different names allow
-    /// several providers of the same protocol. See [`Port`] for construction.
-    pub fn port<P>(&mut self, id: PortId) -> Port<P>
+    /// Bind exactly one provider with [`Self::plug_in`]. Different names allow
+    /// several providers of the same protocol. See [`Jack`] for construction.
+    pub fn jack<P>(&mut self, id: JackId) -> Jack<P>
     where
         P: Protocol,
     {
-        self.ports.push(PortDeclaration {
+        self.jacks.push(JackDeclaration {
             protocol_type: TypeId::of::<P>(),
             protocol_type_name: std::any::type_name::<P>(),
             id: id.clone(),
             program: self.program.clone(),
         });
-        Port {
+        Jack {
             id,
             program: self.program.clone(),
             marker: PhantomData,
         }
     }
 
-    /// Connects a Port to the component that will handle its messages.
+    /// Connects a Jack to the component that will handle its messages.
     ///
-    /// The provider's message type must implement `From<P::Message>`; using the
-    /// protocol message type directly also works. When the provider's message
-    /// type wraps the protocol message in a variant without a `From` impl, use
-    /// [`Self::bind_port_with`] and pass the variant. Both the port and provider
-    /// must belong to this builder. [`Self::build`] checks that every port has
-    /// exactly one provider. Cyclic connections are allowed.
+    /// The provider is a [`ComponentRef`] or a [`Plug`] (see [`Pluggable`]).
+    /// Its message type must implement `From<P::Message>`; using the protocol
+    /// message type directly also works. When the provider's message type wraps
+    /// the protocol message in a variant without a `From` impl, or the Jack
+    /// speaks a different vocabulary than the provider, use
+    /// [`Self::plug_in_with`]. Both the jack and provider must belong to this
+    /// builder. [`Self::build`] checks that every jack has exactly one provider.
+    /// Cyclic connections are allowed.
     ///
     /// ```
     /// use samara::prelude::*;
@@ -4816,7 +4982,7 @@ impl ProgramBuilder {
     ///
     /// struct Client;
     ///
-    /// struct ClientConfig { counter: Port<Count> }
+    /// struct ClientConfig { counter: Jack<Count> }
     /// impl Component for Client {
     ///     type Config = ClientConfig;
     ///     type Model = Option<u64>;
@@ -4831,32 +4997,35 @@ impl ProgramBuilder {
     /// }
     ///
     /// let mut builder = Program::builder();
-    /// let port = builder.port::<Count>(PortId::new("counter"));
+    /// let jack = builder.jack::<Count>(JackId::new("counter"));
     /// let counter = builder.component::<Counter>(ComponentId::new("counter"), ());
-    /// builder.bind_port(&port, &counter);
-    /// let client = builder.component::<Client>(ComponentId::new("client"), ClientConfig { counter: port });
+    /// builder.plug_in(&jack, &counter);
+    /// let client = builder.component::<Client>(ComponentId::new("client"), ClientConfig { counter: jack });
     /// let mut runtime = ControlledRuntime::builder(builder.build()?).build()?;
     /// runtime.run_until_idle()?;
     /// assert_eq!(*runtime.state(&client)?, Some(42));
     /// assert!(runtime.cancel()?.is_clean());
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub fn bind_port<P, C>(&mut self, port: &Port<P>, provider: &ComponentRef<C>)
+    pub fn plug_in<P, R>(&mut self, jack: &Jack<P>, provider: &R)
     where
         P: Protocol,
-        C: Component,
-        C::Message: From<P::Message>,
+        R: Pluggable,
+        R::Message: From<P::Message>,
     {
-        self.bind_port_with(port, provider, C::Message::from);
+        self.plug_in_with(jack, provider, R::Message::from);
     }
 
-    /// Connects a Port to its provider through an explicit message conversion.
+    /// Connects a Jack to its provider through an explicit message conversion.
     ///
-    /// `map` turns each protocol message into the provider's message, the same
-    /// way [`Command::effect_with`] and [`Subscription::source_with`] map
-    /// outcomes and events. It is usually the enum variant that wraps the
-    /// protocol message, which saves writing a `From` impl. The conversion must
-    /// be pure. [`Self::bind_port`] is the shortcut for when `From` already holds.
+    /// `map` turns each protocol message into what the provider accepts, the
+    /// same way [`Command::effect_with`] and [`Subscription::source_with`] map
+    /// outcomes and events. For a [`ComponentRef`] it is usually the enum
+    /// variant that wraps the protocol message, which saves writing a `From`
+    /// impl. For a [`Plug`] exported by a library it is the coupling from
+    /// the application's vocabulary to the library's; see [`Plug`]. The
+    /// conversion must be pure. [`Self::plug_in`] is the shortcut for when
+    /// `From` already holds.
     ///
     /// ```
     /// use samara::prelude::*;
@@ -4882,32 +5051,27 @@ impl ProgramBuilder {
     /// }
     ///
     /// let mut builder = Program::builder();
-    /// let port = builder.port::<Count>(PortId::new("counter"));
+    /// let jack = builder.jack::<Count>(JackId::new("counter"));
     /// let counter = builder.component::<Counter>(ComponentId::new("counter"), ());
-    /// builder.bind_port_with(&port, &counter, CounterMessage::Count);
+    /// builder.plug_in_with(&jack, &counter, CounterMessage::Count);
     /// # let _ = builder.build()?;
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub fn bind_port_with<P, C, Map>(
-        &mut self,
-        port: &Port<P>,
-        provider: &ComponentRef<C>,
-        map: Map,
-    ) where
+    pub fn plug_in_with<P, R, Map>(&mut self, jack: &Jack<P>, provider: &R, map: Map)
+    where
         P: Protocol,
-        C: Component,
-        Map: Fn(P::Message) -> C::Message + Send + Sync + 'static,
+        R: Pluggable,
+        Map: Fn(P::Message) -> R::Message + Send + Sync + 'static,
     {
-        self.bindings.push(Box::new(PortBinding {
-            port: port.clone(),
-            provider: provider.clone(),
-            map: Box::new(map),
+        self.bindings.push(Box::new(JackBinding {
+            jack: jack.clone(),
+            plug: provider.to_plug().with_input(map),
         }));
     }
 
-    /// Checks component names and port connections and returns the Program.
+    /// Checks component names and jack connections and returns the Program.
     ///
-    /// Returns [`ProgramBuildError`] for duplicate names, missing or duplicate port
+    /// Returns [`ProgramBuildError`] for duplicate names, missing or duplicate jack
     /// bindings, or references from another builder. Does not start work. I/O drivers
     /// and test controls are checked by the runtime builder.
     pub fn build(self) -> Result<Program, ProgramBuildError> {
@@ -4920,28 +5084,28 @@ impl ProgramBuilder {
             }
         }
 
-        let mut ports = std::collections::HashSet::new();
-        for port in &self.ports {
-            let key = (port.protocol_type, port.id.clone());
-            if !ports.insert(key) {
-                return Err(ProgramBuildError::DuplicatePort {
-                    protocol_type: port.protocol_type_name,
-                    port: port.id.clone(),
+        let mut jacks = std::collections::HashSet::new();
+        for jack in &self.jacks {
+            let key = (jack.protocol_type, jack.id.clone());
+            if !jacks.insert(key) {
+                return Err(ProgramBuildError::DuplicateJack {
+                    protocol_type: jack.protocol_type_name,
+                    jack: jack.id.clone(),
                 });
             }
-            if !Arc::ptr_eq(&port.program, &self.program) {
-                return Err(ProgramBuildError::ForeignPort {
-                    protocol_type: port.protocol_type_name,
-                    port: port.id.clone(),
+            if !Arc::ptr_eq(&jack.program, &self.program) {
+                return Err(ProgramBuildError::ForeignJack {
+                    protocol_type: jack.protocol_type_name,
+                    jack: jack.id.clone(),
                 });
             }
         }
 
         for binding in &self.bindings {
-            if !Arc::ptr_eq(binding.port_program(), &self.program) {
-                return Err(ProgramBuildError::ForeignPort {
+            if !Arc::ptr_eq(binding.jack_program(), &self.program) {
+                return Err(ProgramBuildError::ForeignJack {
                     protocol_type: binding.protocol_type_name(),
-                    port: binding.port_id().clone(),
+                    jack: binding.jack_id().clone(),
                 });
             }
             if !Arc::ptr_eq(binding.provider_program(), &self.program) {
@@ -4959,18 +5123,18 @@ impl ProgramBuilder {
             }
         }
 
-        for port in &self.ports {
+        for jack in &self.jacks {
             let count = self
                 .bindings
                 .iter()
                 .filter(|binding| {
-                    binding.protocol_type() == port.protocol_type && binding.port_id() == &port.id
+                    binding.protocol_type() == jack.protocol_type && binding.jack_id() == &jack.id
                 })
                 .count();
             if count != 1 {
-                return Err(ProgramBuildError::PortBindingCount {
-                    protocol_type: port.protocol_type_name,
-                    port: port.id.clone(),
+                return Err(ProgramBuildError::JackBindingCount {
+                    protocol_type: jack.protocol_type_name,
+                    jack: jack.id.clone(),
                     count,
                 });
             }
@@ -5320,23 +5484,23 @@ impl LiveRuntime {
 
     /// Creates a protocol client for code outside the Samara program.
     ///
-    /// The port must be declared and bound in this Program. Otherwise returns an
-    /// error. Keep the handle in host code; components use [`Port`] and Commands.
-    /// See [`PortHandle`] for an example.
-    pub fn port_handle<P: Protocol>(&self, port: &Port<P>) -> Result<PortHandle<P>, RuntimeError> {
-        if !Arc::ptr_eq(&port.program, &self.program.program)
+    /// The jack must be declared and bound in this Program. Otherwise returns an
+    /// error. Keep the handle in host code; components use [`Jack`] and Commands.
+    /// See [`JackHandle`] for an example.
+    pub fn jack_handle<P: Protocol>(&self, jack: &Jack<P>) -> Result<JackHandle<P>, RuntimeError> {
+        if !Arc::ptr_eq(&jack.program, &self.program.program)
             || !self.program.bindings.iter().any(|binding| {
                 binding.protocol_type() == TypeId::of::<P>()
-                    && binding.port_id() == port.id()
-                    && Arc::ptr_eq(binding.port_program(), &port.program)
+                    && binding.jack_id() == jack.id()
+                    && Arc::ptr_eq(binding.jack_program(), &jack.program)
             })
         {
             return Err(RuntimeError::harness(
-                "live Port handle target is not part of this Program",
+                "live Jack handle target is not part of this Program",
             ));
         }
-        Ok(PortHandle {
-            port: port.clone(),
+        Ok(JackHandle {
+            jack: jack.clone(),
             scope: self.scope.clone(),
         })
     }
@@ -5593,8 +5757,8 @@ impl<C: Component> ComponentHandle<C> {
 
 /// Calls a protocol from async code outside a Samara program.
 ///
-/// Create it with [`LiveRuntime::port_handle`] before spawning the runtime.
-/// Clones use the same port. Notifications and requests still go through the
+/// Create it with [`LiveRuntime::jack_handle`] before spawning the runtime.
+/// Clones use the same jack. Notifications and requests still go through the
 /// provider's `update` method; the handle does not expose its model.
 ///
 /// ```
@@ -5615,11 +5779,11 @@ impl<C: Component> ComponentHandle<C> {
 /// let tokio = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
 /// tokio.block_on(async {
 ///     let mut builder = Program::builder();
-///     let count = builder.port::<Count>(PortId::new("count"));
+///     let count = builder.jack::<Count>(JackId::new("count"));
 ///     let counter = builder.component::<Counter>(ComponentId::new("counter"), ());
-///     builder.bind_port(&count, &counter);
+///     builder.plug_in(&count, &counter);
 ///     let runtime = LiveRuntime::builder(builder.build()?).build()?;
-///     let client = runtime.port_handle(&count)?;
+///     let client = runtime.jack_handle(&count)?;
 ///     let task = runtime.spawn();
 ///     assert_eq!(client.request(Read).await?, 42);
 ///     assert!(task.shutdown(Shutdown::Drain).await?.is_clean());
@@ -5628,21 +5792,21 @@ impl<C: Component> ComponentHandle<C> {
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 ///
-/// Components use [`Port`] and Commands instead of storing these handles.
+/// Components use [`Jack`] and Commands instead of storing these handles.
 ///
 /// <details>
 /// <summary>Compile-time checks</summary>
 ///
 /// ```compile_fail
-/// use samara::{PortHandle, Protocol};
+/// use samara::{JackHandle, Protocol};
 ///
-/// fn mutate_provider<P: Protocol>(handle: &mut PortHandle<P>) {
+/// fn mutate_provider<P: Protocol>(handle: &mut JackHandle<P>) {
 ///     handle.model_mut();
 /// }
 /// ```
 ///
 /// ```compile_fail
-/// use samara::{Command, Notification, PortHandle, Protocol};
+/// use samara::{Command, Notification, JackHandle, Protocol};
 ///
 /// struct ExampleProtocol;
 /// enum ExampleProtocolMessage { Notified }
@@ -5658,44 +5822,44 @@ impl<C: Component> ComponentHandle<C> {
 ///     }
 /// }
 ///
-/// fn misuse(handle: PortHandle<ExampleProtocol>) -> Command<()> {
+/// fn misuse(handle: JackHandle<ExampleProtocol>) -> Command<()> {
 ///     Command::notify(handle, Notify)
 /// }
 /// ```
 ///
 /// ```compile_fail
-/// use samara::{ControlledRuntime, Port, Protocol};
+/// use samara::{ControlledRuntime, Jack, Protocol};
 ///
-/// fn controlled_port_handle<P: Protocol>(runtime: &ControlledRuntime, port: &Port<P>) {
-///     let _ = runtime.port_handle(port);
+/// fn controlled_jack_handle<P: Protocol>(runtime: &ControlledRuntime, jack: &Jack<P>) {
+///     let _ = runtime.jack_handle(jack);
 /// }
 /// ```
 ///
 /// </details>
-pub struct PortHandle<P: Protocol> {
-    port: Port<P>,
+pub struct JackHandle<P: Protocol> {
+    jack: Jack<P>,
     scope: Arc<live_runtime::LiveScope>,
 }
 
-impl<P: Protocol> Clone for PortHandle<P> {
+impl<P: Protocol> Clone for JackHandle<P> {
     fn clone(&self) -> Self {
         Self {
-            port: self.port.clone(),
+            jack: self.jack.clone(),
             scope: self.scope.clone(),
         }
     }
 }
 
-impl<P: Protocol> fmt::Debug for PortHandle<P> {
+impl<P: Protocol> fmt::Debug for JackHandle<P> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_tuple("PortHandle")
-            .field(self.port.id())
+            .debug_tuple("JackHandle")
+            .field(self.jack.id())
             .finish()
     }
 }
 
-impl<P: Protocol> PortHandle<P> {
+impl<P: Protocol> JackHandle<P> {
     /// Queues a notification for the provider.
     ///
     /// Success means accepted for delivery, not handled by the provider. Returns an
@@ -5704,7 +5868,7 @@ impl<P: Protocol> PortHandle<P> {
     /// ```no_run
     /// use samara::prelude::*;
     /// protocol! { type Events => enum EventMessage { Changed(String), } }
-    /// async fn notify(client: &PortHandle<Events>) -> Result<(), RuntimeError> {
+    /// async fn notify(client: &JackHandle<Events>) -> Result<(), RuntimeError> {
     ///     client.notify(Changed("ready".into())).await
     /// }
     /// ```
@@ -5713,8 +5877,8 @@ impl<P: Protocol> PortHandle<P> {
         N: Notification<P>,
     {
         self.scope
-            .accept_ingress(live_runtime::LiveEvent::port_notification(
-                self.port.clone(),
+            .accept_ingress(live_runtime::LiveEvent::jack_notification(
+                self.jack.clone(),
                 notification,
             ))
     }
@@ -5724,7 +5888,7 @@ impl<P: Protocol> PortHandle<P> {
     /// Dropping this future after sending stops waiting but does not cancel the
     /// provider's work or release the pending request. An unanswered request can
     /// keep Drain waiting. Runtime shutdown or failure before the reply returns
-    /// [`RuntimeError`]. See [`PortHandle`] for an example.
+    /// [`RuntimeError`]. See [`JackHandle`] for an example.
     pub async fn request<R>(&self, request: R) -> Result<R::Reply, RuntimeError>
     where
         R: Request<P>,
@@ -5747,7 +5911,7 @@ impl<P: Protocol> PortHandle<P> {
     /// use samara::prelude::*;
     /// use std::time::Duration;
     /// protocol! { type Health => enum HealthMessage { Check -> bool, } }
-    /// async fn check(client: &PortHandle<Health>) -> Result<RequestOutcome<bool>, RuntimeError> {
+    /// async fn check(client: &JackHandle<Health>) -> Result<RequestOutcome<bool>, RuntimeError> {
     ///     client.request_timeout(Check, Duration::from_secs(2)).await
     /// }
     /// ```
@@ -5779,8 +5943,8 @@ impl<P: Protocol> PortHandle<P> {
             .transpose()?;
         let (completion, reply) = tokio::sync::oneshot::channel();
         self.scope
-            .accept_ingress(live_runtime::LiveEvent::port_request(
-                self.port.clone(),
+            .accept_ingress(live_runtime::LiveEvent::jack_request(
+                self.jack.clone(),
                 request,
                 deadline,
                 completion,
@@ -6294,11 +6458,11 @@ impl ControlledRuntimeBuilder {
 
 /// A reusable slice of Program assembly, installed into an enclosing Program.
 ///
-/// An Assembly declares its own Components, Ports, and capabilities into a
-/// [`ProgramBuilder`], exports what callers may use (normally a [`Port`]), and
+/// An Assembly declares its own Components, Jacks, and capabilities into a
+/// [`ProgramBuilder`], exports what callers may use (normally a [`Jack`]), and
 /// lists the world boundaries it needs as [`Self::Requires`]. It is subordinate
 /// to the Program, not to another Component: the Components it installs are
-/// ordinary peers reached through Ports. Application-owned Components do not
+/// ordinary peers reached through Jacks. Application-owned Components do not
 /// need to implement it.
 ///
 /// Drivers never bind inside [`Self::install`]; assembly is shared by live and
@@ -6337,13 +6501,13 @@ impl ControlledRuntimeBuilder {
 ///
 /// impl Assembly for Pinger {
 ///     type Config = ();
-///     type Exports = Port<Beacon>;
+///     type Exports = Jack<Beacon>;
 ///     type Requires = Effect<Ping>;
-///     fn install(program: &mut ProgramBuilder, _: ()) -> Port<Beacon> {
+///     fn install(program: &mut ProgramBuilder, _: ()) -> Jack<Beacon> {
 ///         let ping = program.effect::<Ping>();
-///         let beacon = program.port::<Beacon>(PortId::new("beacon"));
+///         let beacon = program.jack::<Beacon>(JackId::new("beacon"));
 ///         let pinger = program.component::<Pinger>(ComponentId::new("pinger"), PingerConfig { ping });
-///         program.bind_port(&beacon, &pinger);
+///         program.plug_in(&beacon, &pinger);
 ///         beacon
 ///     }
 /// }
@@ -6358,7 +6522,7 @@ impl ControlledRuntimeBuilder {
 /// fn assemble() -> Result<(Program, Installed<Pinger>), ProgramBuildError> {
 ///     let mut program = Program::builder();
 ///     let pinger = program.install::<Pinger>(());
-///     let _beacon: Port<Beacon> = pinger.exports().clone();
+///     let _beacon: Jack<Beacon> = pinger.exports().clone();
 ///     Ok((program.build()?, pinger))
 /// }
 ///
@@ -6429,13 +6593,13 @@ impl ControlledRuntimeBuilder {
 pub trait Assembly {
     /// What the caller supplies at assembly, such as paths or instance identity.
     type Config;
-    /// What the caller may use after installation, normally a [`Port`].
+    /// What the caller may use after installation, normally a [`Jack`].
     type Exports;
     /// The world boundaries the host must drive: one [`Effect`] or [`Source`]
     /// marker, or a tuple of them (nesting allowed), or `()` for none.
     type Requires: Requirements;
 
-    /// Declares this Assembly's Components, Ports, and capabilities.
+    /// Declares this Assembly's Components, Jacks, and capabilities.
     ///
     /// Prefer [`ProgramBuilder::install`] at call sites. Bind no drivers here.
     fn install(program: &mut ProgramBuilder, config: Self::Config) -> Self::Exports;
@@ -6687,7 +6851,7 @@ pub struct Installed<S: Assembly> {
 }
 
 impl<S: Assembly> Installed<S> {
-    /// What the Assembly exported, normally a [`Port`] to clone and wire against.
+    /// What the Assembly exported, normally a [`Jack`] to clone and wire against.
     pub fn exports(&self) -> &S::Exports {
         &self.exports
     }
@@ -6825,9 +6989,9 @@ pub enum TraceCommandKind {
     Effect,
     /// A message was sent to another component.
     Send,
-    /// A notification was sent through a port.
+    /// A notification was sent through a jack.
     Notify,
-    /// A request was sent through a port.
+    /// A request was sent through a jack.
     Request,
     /// A provider replied to a request.
     Reply,
@@ -6924,8 +7088,8 @@ pub enum TraceEvent {
         detail_type: &'static str,
         /// The destination component, if addressed directly.
         target_component: Option<ComponentId>,
-        /// The destination port, if used.
-        target_port: Option<PortId>,
+        /// The destination jack, if used.
+        target_jack: Option<JackId>,
     },
     /// Samara compared a component's subscriptions with its active inputs.
     SubscriptionLifecycle {
