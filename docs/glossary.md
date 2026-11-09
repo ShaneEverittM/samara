@@ -31,22 +31,24 @@ rejects logical assembly errors and closes the capability inventory; the
 profile builders then validate every declared terminal requirement before
 execution (ADR-0008).
 
-**Subprogram** — A reusable assembly unit that installs its own Components,
-Ports, and capabilities into an enclosing Program through
-`ProgramBuilder::install`, exports what callers may use (normally a Port), and
-names the Drivers it needs as a type. It is subordinate to the Program, not to
-another Component, and binds no Drivers itself. Not a *SubComponent*: Samara
-has no parent-child `update` nesting.
+**Assembly** — A reusable slice of Program assembly: a type whose `install`
+declares its own Components, Ports, and capabilities into an enclosing
+`ProgramBuilder`, exports what callers may use (normally a Port), and lists
+the world boundaries the host must drive as `Requires`. The unit of reuse in
+Samara is an Assembly, not a Component. It leaves no trace at runtime: the
+Components it installs are ordinary peers reached through Ports. Not a
+*SubComponent*: Samara has no parent-child `update` nesting.
 
-**Drivers (of a Subprogram)** — The struct with one field per capability a
-Subprogram declares, typed through `RuntimeBuilder` so one struct serves both
-profiles: live Drivers in one, the controlled harness, named by the
-`Controlled` marker, in the other. A `Default` per profile lets a host accept
-the shipped Drivers. Bound with `with_subprogram(installed).and_drivers(..)`.
+**Requires (of an Assembly)** — The type-level list of `Effect<D>` and
+`Source<S>` markers naming what an Assembly needs driven. The live builder's
+`with_assembly(installed).and_drivers(..)` takes a matching tuple of Drivers,
+position by position; the controlled builder's `with_assembly(installed)`
+takes control of every entry and needs nothing else.
 
-**RuntimeBuilder** — The profile-neutral binding surface implemented by both
-profile builders. Only binding is shared; spawning, stepping, and supplying
-outcomes stay profile-specific.
+**VendorsDrivers** — An optional trait an Assembly implements to ship concrete
+live Drivers for its `Requires`, bound with `and_its_vendored_drivers()`. A
+library normally feature-gates the impl so consumers bringing their own
+Drivers do not pay for the vendored ones.
 
 **Program boundary** — The scope within which Samara's guarantees apply. Code
 outside this boundary is part of the surrounding world and interacts with the
@@ -326,10 +328,10 @@ awaits its Reply through `PortHandle`. In both cases the runtime owns transport
 correlation.
 
 **Port binding** — The assembly-time mapping from one exact named Port to a
-provider and its private Component Message vocabulary. The provider's Message
-implements `From<Protocol::Message>`, making the pure vocabulary conversion a
-standard type relationship rather than a closure repeated at each binding.
-Multiple named Ports of the same Protocol may still be bound independently.
+provider and its private Component Message vocabulary. `bind_port` uses the
+provider Message's `From<Protocol::Message>`; `bind_port_with` takes the pure
+conversion explicitly, normally the wrapping enum variant. Multiple named
+Ports of the same Protocol may still be bound independently.
 
 **Notification** — A one-way Protocol value implementing `Notification<P>`,
 sent through `Command::notify` or a live `PortHandle`. The sender gets no

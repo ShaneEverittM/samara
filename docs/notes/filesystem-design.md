@@ -17,7 +17,7 @@ does for a request. There are no `Open` or `Close` effects. "Write only while
 open" is runtime state that outcomes delivered as later Messages cannot
 type-check; modelling it would turn a race into a different race.
 
-### Effect or Subprogram
+### Effect or Assembly
 
 The atomicity principle pairs with a second question, so any proposed
 filesystem thing is classified by two tests:
@@ -27,7 +27,7 @@ filesystem thing is classified by two tests:
 - **Does it hold application memory?** State that changes outcomes and cannot
   be recomputed from the current Model (see "Which Memory May Live Outside the
   Model?" in the [API guidance](../api-guidance.md)). Then it is a Component,
-  usually a Subprogram. Mechanism memory inside a Driver, such as a cached
+  usually an Assembly. Mechanism memory inside a Driver, such as a cached
   handle or an ordering queue, does not count.
 
 | Thing | Fail together? | Application memory? | So |
@@ -37,17 +37,17 @@ filesystem thing is classified by two tests:
 | Read a file | Single step | No | Effect |
 | Remove a file | Single step | No | Effect |
 | Watch a file | Not applicable | No, derived from the Model | Source |
-| Ordered appends | No | Only if "has it landed" matters | Driver FIFO as mechanism, else Subprogram |
-| Coalesced saves of `T` | No | Yes, the pending value | Subprogram: `Store<T>` |
-| Rotate by size or day | The rotation itself, yes | Yes, size and schedule | Subprogram issuing one `Rotate` effect |
-| Retry on I/O error | No | Yes, the attempt count | Subprogram or Layer, never the effect |
+| Ordered appends | No | Only if "has it landed" matters | Driver FIFO as mechanism, else Assembly |
+| Coalesced saves of `T` | No | Yes, the pending value | Assembly: `Store<T>` |
+| Rotate by size or day | The rotation itself, yes | Yes, size and schedule | Assembly issuing one `Rotate` effect |
+| Retry on I/O error | No | Yes, the attempt count | Assembly or Layer, never the effect |
 
 The effect set that falls out is small: `Append`, `Replace`, `Read`, `Remove`,
-plus a `Watch` source. Everything interesting is a Subprogram on top. So the
-effects do not have to be designed first: write the Subprograms (`Store<T>`,
+plus a `Watch` source. Everything interesting is an Assembly on top. So the
+effects do not have to be designed first: write the Assemblies (`Store<T>`,
 a rotating journal) on hand-rolled descriptors as pulse does, and the
 descriptors they actually issue are the first-party module. The failure mode
-in the other direction is a Subprogram that is secretly one effect, such as a
+in the other direction is an Assembly that is secretly one effect, such as a
 store that writes a temp file in one transition and renames in the next; the
 controlled runtime will let you test the partial state as if it were a
 feature.
@@ -104,7 +104,7 @@ Open questions:
 - Is Owned a property of the token (two token types) or of the binding (one
   token, the builder checks holder count)? The second keeps one descriptor
   family; the first makes the guarantee visible in Component signatures.
-- What does an Owned handle mean for a Subprogram installed twice?
+- What does an Owned handle mean for an Assembly installed twice?
 - Can a Shared handle offer any cross-Component promise, such as "no torn
   lines", and is that the Driver's job?
 

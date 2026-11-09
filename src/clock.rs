@@ -14,7 +14,7 @@ use crate::{BoxFuture, EffectDescriptor, EffectDriver};
 ///
 /// Succeeds with a [`SystemTime`] and cannot fail. Bind it live with
 /// [`LiveRuntimeBuilder::bind_system_time`](crate::LiveRuntimeBuilder::bind_system_time)
-/// or supply [`SystemClockDriver`] where a Subprogram's `Drivers` asks for one.
+/// or pass [`SystemClockDriver`] in `and_drivers` where an Assembly's `Requires` lists it.
 ///
 /// ```
 /// use samara::prelude::*;

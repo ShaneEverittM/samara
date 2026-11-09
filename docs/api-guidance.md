@@ -524,11 +524,14 @@ Component's private message enum. Program assembly binds that protocol to a
 concrete provider, allowing consumers to remain unchanged when the provider is
 replaced, wrapped, or controlled in a test.
 
-The provider's private Component Message implements
-`From<Protocol::Message>`. Consequently, `bind_port` states only which exact
-named Port reaches which provider; it does not repeat an otherwise canonical
-conversion function at every binding site. This also makes acceptance of a
-Protocol visible on the provider Message type itself.
+Port binding follows the same paired convention as effects and sources.
+`bind_port` uses the provider Message's `From<Protocol::Message>` and states
+only which exact named Port reaches which provider, which also makes
+acceptance of a Protocol visible on the provider Message type itself.
+`bind_port_with` takes the conversion explicitly, normally the enum variant
+that wraps the protocol message, for providers that would otherwise write a
+`From` impl whose body is that one variant. Both bind one Port to one
+provider; the conversion must be pure either way.
 
 Ports are named rather than globally selected by protocol type. Two dependencies
 may implement the same protocol while representing distinct roles, such as a
@@ -720,53 +723,61 @@ rejected during profile build. If deliberately hidden until a later Message,
 it is diagnosed before the target operation or terminal behavior executes;
 that defense-in-depth fault does not add a dynamic dependency to the Program.
 
-### How Does a Library Component Declare What It Needs?
+### How Does a Library Declare What It Needs?
 
-
-A reusable Component ships as a `Subprogram`. Its `install` declares the
-Component, its Port, and its Effect and Source capabilities into the caller's
+The unit of reuse is an Assembly, not a Component. A library ships a type
+implementing `Assembly`; its `install` declares one or more Components, their
+Ports, and their Effect and Source capabilities into the caller's
 `ProgramBuilder`, and returns only what the caller may use, normally the Port.
-The Component type, its `ComponentId`, and its capabilities stay private.
+The Component types, their `ComponentId`s, and their capabilities stay private
+as a consequence: nothing in the public surface needs them.
+
+"What it needs" is two questions at two scales, and the API keeps them apart:
+
+| Scale | Who asks | Declared as | Answered by |
+| --- | --- | --- | --- |
+| Wiring | A Component, of its assembler | `Component::Config`: the capability tokens, Ports, and settings one instance is built with | `install`, which issues the tokens and registers the Component |
+| World boundaries | An Assembly, of its host | `Assembly::Requires`: a type-level list of `Effect<D>` and `Source<S>` markers | The host, which drives each entry live or lets the harness take it controlled |
 
 `install` binds no Drivers. Assembly is shared by live and controlled
 execution, binding is an execution-profile decision, and controlled execution
-must never run a live Driver. The Subprogram instead names its Drivers as
-a struct with one field per capability, typed through `RuntimeBuilder`'s
-associated bindings. A live host fills the fields with boxed Drivers; a
-controlled test fills them with `Controlled`. One `Bindings` implementation
-serves both. `ProgramBuilder::install` returns an `Installed<S>` token that
-holds the exports. On either builder, `with_subprogram(installed)` consumes
-the token and returns a step that holds the builder until
-`and_drivers(drivers)` supplies them and hands it back. The
-profile is the builder's own type, so the same struct literal is written
-for live and controlled hosts. Because the drivers type belongs to `S`
-and the token can only come from `install`, a mismatched struct is a compile
-error, drivers cannot be bound for a Subprogram that is not in the
-Program, and a chain that forgets `and_drivers` has no builder left to
-call `build()` on.
-The token is `must_use`, which warns when it is discarded outright but cannot
-warn when it is kept for its exports and never bound; that case still fails
-the builder's existing validation with the descriptor type named.
+must never run a live Driver. `ProgramBuilder::install` returns an
+`Installed<A>` token holding the exports. A live host writes
+`with_assembly(installed).and_drivers(drivers)`, where `drivers` is any
+`EffectDriver` or `SourceDriver` for a single requirement or a tuple matching
+the requirement tuple position by position; no boxing and no bindings struct.
+A controlled test writes `with_assembly(installed)` and is done, because a
+controlled binding carries no information beyond the descriptor type, which
+`Requires` already names. The token is `must_use`, the `WithAssembly` step
+offers nothing but `and_drivers`, and `Requires` belongs to the Assembly, so
+a mismatched driver is a compile error naming the expected `Effect<D>`, a
+forgotten `and_drivers` leaves no builder to call `build()` on, and a
+`Requires` that disagrees with `install` fails `build()` on both profiles.
 
-Implement `Subprogram` on a marker or on the protocol type, not on the
-Component. `Component`'s associated `Model` and `Message` are part of its
-public interface, so a public Component forces them public too; the protocol
+An Assembly may also vendor drivers. Implementing `VendorsDrivers` names a
+concrete tuple satisfying `Requires` and constructs it; hosts call
+`and_its_vendored_drivers()` or ignore it. A library normally feature-gates
+that impl so consumers bringing their own Drivers do not pay for the vendored
+ones; the Assembly, its exports, and its `Requires` stay unconditional.
+
+Implement `Assembly` on a marker or on the protocol type, not on a Component.
+`Component`'s associated types are part of its public interface, so a public
+Component forces its `Config`, `Model`, and `Message` public too; the protocol
 type is already the public name callers hold.
 
 Controlled execution delivers messages and inspects state by `ComponentRef<C>`,
 not by Port, and exporting a `ComponentRef<C>` makes `C` public with the same
-leak. So a Subprogram's isolated controlled tests live inside its module, where
+leak. So an Assembly's isolated controlled tests live inside its module, where
 its private types are reachable, exactly as the url checker's tests do.
-Application-level controlled tests reach the Subprogram through the Components
-that use its Port. A Port-level controlled ingress would let callers test a
-Subprogram they do not own and is tracked in the follow-ups.
+Application-level controlled tests reach the Assembly through the Components
+that use its Port. A Port-level controlled ingress would let callers test an
+Assembly they do not own and is tracked in the follow-ups.
 
 The gap between `install` and `and_drivers` is deliberate. A Program is
 profile-neutral and one assembly serves both builders, so binding cannot live
 in `install` without merging the two. The `Installed` token and the
-`WithSubprogram` step are the typed bridge across that gap, and `build()`
-names any descriptor left unbound. See the
-[Subprogram design note](notes/subprogram-design.md).
+`WithAssembly` step are the typed bridge across that gap. See the
+[Assembly design note](notes/assembly-design.md).
 
 ## Live and controlled execution
 

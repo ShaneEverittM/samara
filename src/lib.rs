@@ -121,9 +121,9 @@ pub mod prelude {
         ReplaceFile,
     };
     pub use crate::{
-        BoxFuture, CancelReason, Command, Component, ComponentHandle, ComponentId, ComponentRef,
-        ControlledRuntime, ControlledRuntimeBuilder, Decoder, DriverStopped, Drivers, Effect,
-        EffectCapability, EffectDescriptor, EffectDriver, EffectInvocation, EffectOutcome,
+        Assembly, BoxFuture, CancelReason, Command, Component, ComponentHandle, ComponentId,
+        ComponentRef, ControlledRuntime, ControlledRuntimeBuilder, Decoder, DriverStopped, Drivers,
+        Effect, EffectCapability, EffectDescriptor, EffectDriver, EffectInvocation, EffectOutcome,
         EffectOutcomeKind, Framed, FramedError, FramedLayer, HttpError, HttpErrorKind,
         HttpJsonError, HttpRequest, HttpResponse, HttpResponseError, HttpStatusError, Init,
         Installed, LiveRuntime, LiveRuntimeBuilder, LogicalTime, Notification, PendingEffect,
@@ -132,10 +132,9 @@ pub mod prelude {
         RequestError, RequestInvocation, RequestOutcome, RequestOutcomeKind, Requirements,
         RunReport, RuntimeError, RuntimeTask, Shutdown, ShutdownReport, Source, SourceCapability,
         SourceDescriptor, SourceDriver, SourceEvent, SourceEventKind, SourceSink, StatusCode,
-        StdinError, StdinErrorKind, StdinLines, StreamDescriptor, Subprogram, Subscription,
-        SubscriptionAction, SubscriptionId, Subscriptions, SystemClockDriver, TcpBytes, TcpError,
-        TcpErrorKind, TraceCommandKind, TraceEvent, TraceId, TraceRecord, VendorsDrivers,
-        WithSubprogram, protocol,
+        StdinError, StdinErrorKind, StdinLines, StreamDescriptor, Subscription, SubscriptionAction,
+        SubscriptionId, Subscriptions, SystemClockDriver, TcpBytes, TcpError, TcpErrorKind,
+        TraceCommandKind, TraceEvent, TraceId, TraceRecord, VendorsDrivers, WithAssembly, protocol,
     };
 }
 
@@ -4515,13 +4514,13 @@ where
 {
     port: Port<P>,
     provider: ComponentRef<C>,
+    map: Box<dyn Fn(P::Message) -> C::Message + Send + Sync>,
 }
 
 impl<P, C> ErasedPortBinding for PortBinding<P, C>
 where
     P: Protocol,
     C: Component,
-    C::Message: From<P::Message>,
 {
     fn protocol_type(&self) -> TypeId {
         TypeId::of::<P>()
@@ -4564,7 +4563,7 @@ where
             Ok(message) => *message,
             Err(_) => unreachable!("a Port binding couples one Protocol Message type"),
         };
-        Box::new(C::Message::from(message))
+        Box::new((self.map)(message))
     }
 }
 
@@ -4788,9 +4787,11 @@ impl ProgramBuilder {
     /// Connects a Port to the component that will handle its messages.
     ///
     /// The provider's message type must implement `From<P::Message>`; using the
-    /// protocol message type directly also works. Both the port and provider must
-    /// belong to this builder. [`Self::build`] checks that every port has exactly one
-    /// provider. Cyclic connections are allowed.
+    /// protocol message type directly also works. When the provider's message
+    /// type wraps the protocol message in a variant without a `From` impl, use
+    /// [`Self::bind_port_with`] and pass the variant. Both the port and provider
+    /// must belong to this builder. [`Self::build`] checks that every port has
+    /// exactly one provider. Cyclic connections are allowed.
     ///
     /// ```
     /// use samara::prelude::*;
@@ -4840,9 +4841,61 @@ impl ProgramBuilder {
         C: Component,
         C::Message: From<P::Message>,
     {
+        self.bind_port_with(port, provider, C::Message::from);
+    }
+
+    /// Connects a Port to its provider through an explicit message conversion.
+    ///
+    /// `map` turns each protocol message into the provider's message, the same
+    /// way [`Command::effect_with`] and [`Subscription::source_with`] map
+    /// outcomes and events. It is usually the enum variant that wraps the
+    /// protocol message, which saves writing a `From` impl. The conversion must
+    /// be pure. [`Self::bind_port`] is the shortcut for when `From` already holds.
+    ///
+    /// ```
+    /// use samara::prelude::*;
+    /// protocol! { type Count => enum CountMessage { Read -> u64, } }
+    ///
+    /// enum CounterMessage {
+    ///     Count(CountMessage),
+    ///     Tick,
+    /// }
+    ///
+    /// struct Counter;
+    /// impl Component for Counter {
+    ///     type Config = ();
+    ///     type Model = u64;
+    ///     type Message = CounterMessage;
+    ///     fn init(_: &()) -> Init<u64, CounterMessage> { Init::new(42) }
+    ///     fn update(_: &(), count: &mut u64, message: CounterMessage) -> Command<CounterMessage> {
+    ///         match message {
+    ///             CounterMessage::Count(CountMessage::Read(call)) => Command::reply(call.reply_to, *count),
+    ///             CounterMessage::Tick => { *count += 1; Command::none() }
+    ///         }
+    ///     }
+    /// }
+    ///
+    /// let mut builder = Program::builder();
+    /// let port = builder.port::<Count>(PortId::new("counter"));
+    /// let counter = builder.component::<Counter>(ComponentId::new("counter"), ());
+    /// builder.bind_port_with(&port, &counter, CounterMessage::Count);
+    /// # let _ = builder.build()?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn bind_port_with<P, C, Map>(
+        &mut self,
+        port: &Port<P>,
+        provider: &ComponentRef<C>,
+        map: Map,
+    ) where
+        P: Protocol,
+        C: Component,
+        Map: Fn(P::Message) -> C::Message + Send + Sync + 'static,
+    {
         self.bindings.push(Box::new(PortBinding {
             port: port.clone(),
             provider: provider.clone(),
+            map: Box::new(map),
         }));
     }
 
@@ -6231,9 +6284,9 @@ impl ControlledRuntimeBuilder {
     }
 }
 
-/// A reusable assembly unit installed into an enclosing Program.
+/// A reusable slice of Program assembly, installed into an enclosing Program.
 ///
-/// A Subprogram declares its own Components, Ports, and capabilities into a
+/// An Assembly declares its own Components, Ports, and capabilities into a
 /// [`ProgramBuilder`], exports what callers may use (normally a [`Port`]), and
 /// lists the world boundaries it needs as [`Self::Requires`]. It is subordinate
 /// to the Program, not to another Component: the Components it installs are
@@ -6243,9 +6296,9 @@ impl ControlledRuntimeBuilder {
 /// Drivers never bind inside [`Self::install`]; assembly is shared by live and
 /// controlled execution. [`ProgramBuilder::install`] returns an [`Installed`]
 /// token holding the exports. A live host passes it to
-/// [`LiveRuntimeBuilder::with_subprogram`] and supplies drivers with
-/// [`WithSubprogram::and_drivers`]; a controlled test passes it to
-/// [`ControlledRuntimeBuilder::with_subprogram`] and is done, because controlled
+/// [`LiveRuntimeBuilder::with_assembly`] and supplies drivers with
+/// [`WithAssembly::and_drivers`]; a controlled test passes it to
+/// [`ControlledRuntimeBuilder::with_assembly`] and is done, because controlled
 /// bindings carry no information beyond the descriptor type.
 ///
 /// ```
@@ -6274,7 +6327,7 @@ impl ControlledRuntimeBuilder {
 ///     }
 /// }
 ///
-/// impl Subprogram for Pinger {
+/// impl Assembly for Pinger {
 ///     type Config = ();
 ///     type Exports = Port<Beacon>;
 ///     type Requires = Effect<Ping>;
@@ -6303,12 +6356,12 @@ impl ControlledRuntimeBuilder {
 ///
 /// let (program, pinger) = assemble()?;
 /// let live = LiveRuntime::builder(program)
-///     .with_subprogram(pinger)
+///     .with_assembly(pinger)
 ///     .and_drivers(NoopPing)
 ///     .build()?;
 /// let (program, pinger) = assemble()?;
 /// let controlled = ControlledRuntime::builder(program)
-///     .with_subprogram(pinger)
+///     .with_assembly(pinger)
 ///     .build()?;
 /// # drop((live, controlled));
 /// # Ok::<(), Box<dyn std::error::Error>>(())
@@ -6333,7 +6386,7 @@ impl ControlledRuntimeBuilder {
 ///     }
 /// }
 /// struct A;
-/// impl Subprogram for A {
+/// impl Assembly for A {
 ///     type Config = ();
 ///     type Exports = ();
 ///     type Requires = Effect<Ping>;
@@ -6342,7 +6395,7 @@ impl ControlledRuntimeBuilder {
 /// let mut program = Program::builder();
 /// let a = program.install::<A>(());
 /// let _ = LiveRuntime::builder(program.build().unwrap())
-///     .with_subprogram(a)
+///     .with_assembly(a)
 ///     .and_drivers(NoopPong);
 /// ```
 ///
@@ -6351,7 +6404,7 @@ impl ControlledRuntimeBuilder {
 /// ```compile_fail
 /// use samara::prelude::*;
 /// struct A;
-/// impl Subprogram for A {
+/// impl Assembly for A {
 ///     type Config = ();
 ///     type Exports = ();
 ///     type Requires = ();
@@ -6360,12 +6413,12 @@ impl ControlledRuntimeBuilder {
 /// let mut program = Program::builder();
 /// let a = program.install::<A>(());
 /// let _ = LiveRuntime::builder(program.build().unwrap())
-///     .with_subprogram(a)
+///     .with_assembly(a)
 ///     .build();
 /// ```
 ///
 /// </details>
-pub trait Subprogram {
+pub trait Assembly {
     /// What the caller supplies at assembly, such as paths or instance identity.
     type Config;
     /// What the caller may use after installation, normally a [`Port`].
@@ -6374,21 +6427,21 @@ pub trait Subprogram {
     /// marker, or a tuple of them (nesting allowed), or `()` for none.
     type Requires: Requirements;
 
-    /// Declares this Subprogram's Components, Ports, and capabilities.
+    /// Declares this Assembly's Components, Ports, and capabilities.
     ///
     /// Prefer [`ProgramBuilder::install`] at call sites. Bind no drivers here.
     fn install(program: &mut ProgramBuilder, config: Self::Config) -> Self::Exports;
 }
 
-/// Names a required effect in [`Subprogram::Requires`].
+/// Names a required effect in [`Assembly::Requires`].
 ///
-/// Live, the matching position in [`WithSubprogram::and_drivers`] takes any
+/// Live, the matching position in [`WithAssembly::and_drivers`] takes any
 /// [`EffectDriver<D>`]. Controlled, the effect is taken over by the harness.
 pub struct Effect<D: EffectDescriptor>(PhantomData<fn() -> D>);
 
-/// Names a required source in [`Subprogram::Requires`].
+/// Names a required source in [`Assembly::Requires`].
 ///
-/// Live, the matching position in [`WithSubprogram::and_drivers`] takes any
+/// Live, the matching position in [`WithAssembly::and_drivers`] takes any
 /// [`SourceDriver<S>`]. Controlled, events come from the harness.
 pub struct Source<S: SourceDescriptor>(PhantomData<fn() -> S>);
 
@@ -6396,7 +6449,7 @@ pub struct Source<S: SourceDescriptor>(PhantomData<fn() -> S>);
 ///
 /// Implemented by the crate for tuples up to eight elements. The only operation
 /// is registering every element with a controlled builder, which is what
-/// [`ControlledRuntimeBuilder::with_subprogram`] does.
+/// [`ControlledRuntimeBuilder::with_assembly`] does.
 pub trait Requirements {
     /// Takes control of every requirement in the list.
     fn control(runtime: ControlledRuntimeBuilder) -> ControlledRuntimeBuilder;
@@ -6494,19 +6547,19 @@ impl<D: SourceDescriptor> SourceDriver<D> for Box<dyn SourceDriver<D>> {
     }
 }
 
-/// A live builder waiting for an installed Subprogram's drivers.
+/// A live builder waiting for an installed Assembly's drivers.
 ///
-/// Returned by [`LiveRuntimeBuilder::with_subprogram`]. Nothing else can be
+/// Returned by [`LiveRuntimeBuilder::with_assembly`]. Nothing else can be
 /// called until [`Self::and_drivers`] supplies them, so a chain that forgets
 /// the drivers does not compile.
-#[must_use = "call `and_drivers` to supply the Subprogram's drivers and recover the builder"]
-pub struct WithSubprogram<S: Subprogram> {
+#[must_use = "call `and_drivers` to supply the Assembly's drivers and recover the builder"]
+pub struct WithAssembly<S: Assembly> {
     builder: LiveRuntimeBuilder,
     marker: PhantomData<fn() -> S>,
 }
 
-impl<S: Subprogram> WithSubprogram<S> {
-    /// Binds drivers for every entry in [`Subprogram::Requires`], in order, and
+impl<S: Assembly> WithAssembly<S> {
+    /// Binds drivers for every entry in [`Assembly::Requires`], in order, and
     /// returns the builder.
     ///
     /// Pass one driver for a single requirement or a tuple matching the
@@ -6516,7 +6569,7 @@ impl<S: Subprogram> WithSubprogram<S> {
         drivers.bind(self.builder)
     }
 
-    /// Binds the drivers the Subprogram vendors through [`VendorsDrivers`] and
+    /// Binds the drivers the Assembly vendors through [`VendorsDrivers`] and
     /// returns the builder.
     pub fn and_its_vendored_drivers(self) -> LiveRuntimeBuilder
     where
@@ -6526,12 +6579,12 @@ impl<S: Subprogram> WithSubprogram<S> {
     }
 }
 
-/// A [`Subprogram`] that vendors live drivers for its own requirements.
+/// A [`Assembly`] that vendors live drivers for its own requirements.
 ///
-/// Optional. Implement it when a Subprogram has a sensible default way to meet
-/// [`Subprogram::Requires`], such as a first-party filesystem driver rooted at
-/// the working directory. Hosts call [`WithSubprogram::and_its_vendored_drivers`] or
-/// pass `S::drivers()` to [`WithSubprogram::and_drivers`]; hosts with their own
+/// Optional. Implement it when an Assembly has a sensible default way to meet
+/// [`Assembly::Requires`], such as a first-party filesystem driver rooted at
+/// the working directory. Hosts call [`WithAssembly::and_its_vendored_drivers`] or
+/// pass `S::drivers()` to [`WithAssembly::and_drivers`]; hosts with their own
 /// drivers ignore it. A library will usually gate this impl behind a feature so
 /// consumers bringing their own drivers do not pay for the vendored ones.
 ///
@@ -6551,7 +6604,7 @@ impl<S: Subprogram> WithSubprogram<S> {
 /// }
 ///
 /// struct Pinger;
-/// impl Subprogram for Pinger {
+/// impl Assembly for Pinger {
 ///     type Config = ();
 ///     type Exports = ();
 ///     type Requires = Effect<Ping>;
@@ -6567,14 +6620,14 @@ impl<S: Subprogram> WithSubprogram<S> {
 /// let mut program = Program::builder();
 /// let pinger = program.install::<Pinger>(());
 /// let runtime = LiveRuntime::builder(program.build()?)
-///     .with_subprogram(pinger)
+///     .with_assembly(pinger)
 ///     .and_its_vendored_drivers()
 ///     .build()?;
 /// # drop(runtime);
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
-pub trait VendorsDrivers: Subprogram {
-    /// The concrete drivers, satisfying [`Subprogram::Requires`] position by position.
+pub trait VendorsDrivers: Assembly {
+    /// The concrete drivers, satisfying [`Assembly::Requires`] position by position.
     type Drivers: Drivers<Self::Requires>;
 
     /// Constructs the vendored drivers.
@@ -6582,14 +6635,14 @@ pub trait VendorsDrivers: Subprogram {
 }
 
 impl LiveRuntimeBuilder {
-    /// Starts binding an installed [`Subprogram`]'s drivers.
+    /// Starts binding an installed [`Assembly`]'s drivers.
     ///
     /// Takes the [`Installed`] token from [`ProgramBuilder::install`] and returns
-    /// a step that holds this builder until [`WithSubprogram::and_drivers`]
-    /// supplies them. See [`Subprogram`] for a complete example.
-    pub fn with_subprogram<S: Subprogram>(self, installed: Installed<S>) -> WithSubprogram<S> {
+    /// a step that holds this builder until [`WithAssembly::and_drivers`]
+    /// supplies them. See [`Assembly`] for a complete example.
+    pub fn with_assembly<S: Assembly>(self, installed: Installed<S>) -> WithAssembly<S> {
         drop(installed);
-        WithSubprogram {
+        WithAssembly {
             builder: self,
             marker: PhantomData,
         }
@@ -6597,56 +6650,56 @@ impl LiveRuntimeBuilder {
 }
 
 impl ControlledRuntimeBuilder {
-    /// Takes control of every effect and source in an installed [`Subprogram`]'s
-    /// [`Subprogram::Requires`].
+    /// Takes control of every effect and source in an installed [`Assembly`]'s
+    /// [`Assembly::Requires`].
     ///
     /// Controlled bindings carry no information beyond the descriptor type, so
-    /// no drivers are supplied. See [`Subprogram`] for a complete example.
-    pub fn with_subprogram<S: Subprogram>(self, installed: Installed<S>) -> Self {
+    /// no drivers are supplied. See [`Assembly`] for a complete example.
+    pub fn with_assembly<S: Assembly>(self, installed: Installed<S>) -> Self {
         drop(installed);
         S::Requires::control(self)
     }
 }
 
-/// Proof that a Program installed Subprogram `S`, carrying its exports.
+/// Proof that a Program installed Assembly `S`, carrying its exports.
 ///
 /// [`ProgramBuilder::install`] returns it. Read the exports through
 /// [`Self::exports`] while assembling, then pass the token to
-/// `with_subprogram` on the live or controlled builder. The token cannot be
-/// created any other way, so drivers are only ever bound for a Subprogram that
+/// `with_assembly` on the live or controlled builder. The token cannot be
+/// created any other way, so drivers are only ever bound for an Assembly that
 /// is actually in the Program.
 ///
 /// The `must_use` lint warns when the token is discarded outright. It cannot warn
 /// when the token is kept for its exports and never bound; the live and controlled
 /// builders still catch that at `build()` with the descriptor type named.
-#[must_use = "pass this token to `with_subprogram` on the live or controlled builder"]
-pub struct Installed<S: Subprogram> {
+#[must_use = "pass this token to `with_assembly` on the live or controlled builder"]
+pub struct Installed<S: Assembly> {
     exports: S::Exports,
     marker: PhantomData<fn() -> S>,
 }
 
-impl<S: Subprogram> Installed<S> {
-    /// What the Subprogram exported, normally a [`Port`] to clone and wire against.
+impl<S: Assembly> Installed<S> {
+    /// What the Assembly exported, normally a [`Port`] to clone and wire against.
     pub fn exports(&self) -> &S::Exports {
         &self.exports
     }
 }
 
-impl<S: Subprogram> fmt::Debug for Installed<S> {
+impl<S: Assembly> fmt::Debug for Installed<S> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("Installed")
-            .field("subprogram", &std::any::type_name::<S>())
+            .field("assembly", &std::any::type_name::<S>())
             .finish_non_exhaustive()
     }
 }
 
 impl ProgramBuilder {
-    /// Installs a [`Subprogram`] and returns the [`Installed`] token holding its exports.
+    /// Installs a [`Assembly`] and returns the [`Installed`] token holding its exports.
     ///
-    /// Bind its drivers later with `with_subprogram` on the live or controlled
-    /// builder. See [`Subprogram`] for a complete example.
-    pub fn install<S: Subprogram>(&mut self, config: S::Config) -> Installed<S> {
+    /// Bind its drivers later with `with_assembly` on the live or controlled
+    /// builder. See [`Assembly`] for a complete example.
+    pub fn install<S: Assembly>(&mut self, config: S::Config) -> Installed<S> {
         Installed {
             exports: S::install(self, config),
             marker: PhantomData,

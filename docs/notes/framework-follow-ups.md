@@ -80,13 +80,13 @@ not accepted API decisions or a review of the unfinished application.
   shutdown and supervision policy in ordinary Components, with only the required
   lifecycle mechanisms in the runtime. This is a design direction, not an
   accepted API; work through the questions below before implementation.
-- [ ] **Composable Programs / subprograms:** Explore `urlchecker::program()` as
+- [ ] **Composable Programs / assemblies:** Explore `urlchecker::program()` as
   an application library's public assembly boundary, shared by its executable
   and controlled tests. Let callers use deliberately exposed handles,
   capabilities, and protocols without knowing the internal wiring. Extend that
   idea to composing assemblies into a larger Program while keeping internal
   Components, timers, and capabilities private where appropriate.
-  Separate assembly from execution: a subprogram could contribute Components
+  Separate assembly from execution: an assembly could contribute Components
   and binding requirements to one enclosing runtime, preserving runtime
   ownership and controlled execution without requiring a nested runtime.
   Define identity scoping, capability ownership, binding configuration, and
@@ -142,12 +142,12 @@ a journal Component; exploratory proposals, not accepted API decisions.
   before implementation.
 
 - [x] **Library assembly via `install`.** Landed November 7, 2026 as the
-  `Subprogram` trait, profile-generic `Drivers`, and
-  `with_subprogram(..).and_drivers(..)` on both builders; design, rejected
+  `Assembly` trait, profile-generic `Drivers`, and
+  `with_assembly(..).and_drivers(..)` on both builders; design, rejected
   alternatives, and remaining open items are in the
-  [Subprogram design note](subprogram-design.md). Still open from it: identity
+  [Assembly design note](assembly-design.md). Still open from it: identity
   scoping through `Config`, and a Port-level controlled ingress so a
-  Subprogram can be tested from outside its module.
+  Assembly can be tested from outside its module.
 
 - [ ] **No small-scale composition: `Command::map` and `Subscriptions::map`
   are missing.** Nothing lifts a `Command<Child>` into a `Command<Parent>` or
@@ -155,12 +155,12 @@ a journal Component; exploratory proposals, not accepted API decisions.
   methods are test inspectors. Without Elm's `Cmd.map` and `Sub.map`, every
   reusable piece of stateful logic, however small, must become a Component
   with a Port, a `From` impl, and a protocol. The pulse journal raised it:
-  on the merits it is roughly 60/40 a Subprogram over an embedded
+  on the merits it is roughly 60/40 an Assembly over an embedded
   sub-reducer, but the question could not be decided because only one shape
   exists. Both maps are implementable from what Commands already carry.
   Specify trace attribution for a lifted Command and document the
   pure-sub-reducer pattern before implementing. Decision for pulse, November
-  7, 2026: the journal stays a Subprogram as the test bed for that design,
+  7, 2026: the journal stays an Assembly as the test bed for that design,
   not because the sub-component shape was weighed and rejected.
 
 - [ ] **First-party filesystem effects.** Governing principle: if a sequence

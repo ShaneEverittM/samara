@@ -146,7 +146,7 @@ own definition of what counts as a problem.
 Cost ledger. API choices made for developer experience that are known to cost
 at runtime, recorded so 0.2 and 0.3 start from a list rather than a profile:
 
-- Live Subprogram Drivers are boxed per binding (one allocation at startup).
+- Live Assembly Drivers are boxed per binding (one allocation at startup).
 - Every effect carries a boxed outcome mapper.
 - Internal delivery is unbounded (ADR-0004).
 

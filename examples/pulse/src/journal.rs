@@ -12,22 +12,16 @@ protocol! {
     }
 }
 
+/// Applies the hold policy and records confirmed transitions.
+struct Recorder;
+
 enum Message {
     Protocol(ProtocolMessage),
-}
-
-impl From<ProtocolMessage> for Message {
-    fn from(value: ProtocolMessage) -> Self {
-        Self::Protocol(value)
-    }
 }
 
 enum Model {
     Idle,
 }
-
-/// Applies the hold policy and records confirmed transitions.
-struct Recorder;
 
 /// The capabilities one Recorder is wired with.
 struct RecorderConfig {
@@ -57,10 +51,10 @@ impl Component for Recorder {
     }
 }
 
-// The protocol type is the Subprogram, so `Recorder`, its Model, and its
+// The protocol type is the Assembly, so `Recorder`, its Model, and its
 // Message stay private. Implementing it on the Component would make all three
 // public, because `Component`'s associated types are part of its interface.
-impl Subprogram for Journal {
+impl Assembly for Journal {
     type Config = ();
     type Exports = Port<Journal>;
     type Requires = (Effect<AppendToFile>, Effect<ReadSystemTime>);
@@ -73,7 +67,7 @@ impl Subprogram for Journal {
             ComponentId::new("journal"),
             RecorderConfig { append, clock },
         );
-        program.bind_port(&journal, &recorder);
+        program.bind_port_with(&journal, &recorder, Message::Protocol);
 
         journal
     }

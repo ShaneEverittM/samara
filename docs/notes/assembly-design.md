@@ -1,9 +1,9 @@
-# Exploratory Design: Subprograms
+# Exploratory Design: Assemblies
 
 Status: implemented November 7, 2026 as additive API (`RuntimeBuilder`,
-`Controlled`, `Bindings`, `Subprogram`, `Installed`, `WithSubprogram`,
+`Controlled`, `Bindings`, `Assembly`, `Installed`, `WithAssembly`,
 `ProgramBuilder::install`), with
-evidence in `tests/subprograms.rs`, the `Subprogram` rustdoc, and
+evidence in `tests/assemblies.rs`, the `Assembly` rustdoc, and
 `examples/pulse`. The follow-on that moves drivers into `install`'s
 signature was considered and rejected; see "What remains open". Two findings
 from landing it are under "What implementation taught".
@@ -31,14 +31,14 @@ and controlled tests never construct a Driver.
 
 ## Vocabulary
 
-- **Subprogram:** a reusable assembly unit that contributes Components, Ports,
+- **Assembly:** a reusable assembly unit that contributes Components, Ports,
   and binding requirements to an enclosing Program. It is subordinate to the
-  Program, not to another Component. A Subprogram is usually one Component but
+  Program, not to another Component. An Assembly is usually one Component but
   may install several cooperating ones. The term replaces the descriptive
-  "subprogram" already used in the follow-ups note.
-- **Drivers (type):** the struct naming what a Subprogram needs bound, one
+  "assembly" already used in the follow-ups note.
+- **Drivers (type):** the struct naming what an Assembly needs bound, one
   field per declared effect or source capability, generic over the execution
-  profile. A `Default` impl per profile lets hosts accept the Subprogram's
+  profile. A `Default` impl per profile lets hosts accept the Assembly's
   shipped Drivers; the controlled impl is always `Controlled` markers.
 - **RuntimeBuilder:** the profile-neutral binding surface shared by
   `LiveRuntimeBuilder` and `ControlledRuntimeBuilder`. It unifies only binding.
@@ -51,40 +51,40 @@ not use; Components are peers connected by Ports.
 
 ## Shape
 
-The authoritative description is the `Subprogram` rustdoc in `src/lib.rs`,
-with its full example and two compile-fail cases, and `tests/subprograms.rs`.
+The authoritative description is the `Assembly` rustdoc in `src/lib.rs`,
+with its full example and two compile-fail cases, and `tests/assemblies.rs`.
 In one paragraph: `RuntimeBuilder` is the profile-neutral binding surface
 shared by the live and controlled builders; its generic associated types make
 a live binding a boxed Driver and a controlled binding the `Controlled`
 marker. `Bindings<R>` is implemented once per drivers struct, generic over the
-profile. `Subprogram` has `Config`, `Exports`, and `Drivers<R>`, and an
+profile. `Assembly` has `Config`, `Exports`, and `Drivers<R>`, and an
 `install` associated function that declares into a `ProgramBuilder`;
 `ProgramBuilder::install` returns a `must_use` `Installed<S>` token carrying
-the exports. On either builder, `with_subprogram(token)` returns a
-`WithSubprogram` step whose only method, `and_drivers`, binds them and returns
-the builder. Implement `Subprogram` on the protocol type, not the Component.
+the exports. On either builder, `with_assembly(token)` returns a
+`WithAssembly` step whose only method, `and_drivers`, binds them and returns
+the builder. Implement `Assembly` on the protocol type, not the Component.
 The pulse journal (`examples/pulse/src/journal.rs`) is the worked example.
 
 ## What it settles
 
 - Drivers are named once, as a struct whose field names document them.
   No variadic generics are needed because the trait names one type per
-  Subprogram, never a list of descriptors; the builders keep validating
+  Assembly, never a list of descriptors; the builders keep validating
   bindings by `TypeId` at build time.
 - The link between installing and binding is both a type association and a
   value. Only `JournalDrivers` can be passed for `Journal`, adding a
   capability to the journal breaks every call site at compile time, and
-  `with_subprogram` takes the `Installed<S>` token that only
+  `with_assembly` takes the `Installed<S>` token that only
   `ProgramBuilder::install` can create, so drivers cannot be bound for a
-  Subprogram the Program never installed. The profile is the builder's own
+  Assembly the Program never installed. The profile is the builder's own
   type, so the drivers literal needs no annotation in either profile.
 - **A forgotten `and_drivers` does not compile inside a chain.**
-  `with_subprogram` returns `WithSubprogram<B, S>`, which holds the builder and
+  `with_assembly` returns `WithAssembly<B, S>`, which holds the builder and
   offers nothing but `and_drivers`. A chain that goes straight to
   `build()` or another binding method has no receiver for it. This is the only
   misuse the type system catches; the token lint below covers discards, and
   `build()` validation covers everything else. Earlier shapes, a free
-  `Bound<S, R>` value and `with_subprogram(installed, drivers)`, caught
+  `Bound<S, R>` value and `with_assembly(installed, drivers)`, caught
   this case only through `must_use`.
 - The `must_use` token is a reminder, not a guarantee. Rust has no linear
   types, so the lint only fires when the token is discarded as a statement.
@@ -95,7 +95,7 @@ The pulse journal (`examples/pulse/src/journal.rs`) is the worked example.
   | `program.install::<Journal>(());` as a statement | `unused_must_use` |
   | `let (port, token) = ...` with `token` never touched | `unused_variables` only |
   | `let (port, _) = ...` | none |
-  | `let installed = ...; installed.exports();` and no `with_subprogram` | none |
+  | `let installed = ...; installed.exports();` and no `with_assembly` | none |
   | `let _ = ...` | none |
 
   The fourth row is the realistic mistake, and only the builders' existing
@@ -116,7 +116,7 @@ The pulse journal (`examples/pulse/src/journal.rs`) is the worked example.
   the same Program. That divide is what lets `main` and the controlled tests
   share one assembly, and it is what ADR-0008's two validation stages
   formalize. The gap between installing and binding is the price of that
-  divide, and `Installed` plus `WithSubprogram` are the typed bridge across
+  divide, and `Installed` plus `WithAssembly` are the typed bridge across
   it: the token proves the Program side happened, and the waiting step forces
   the Runtime side to finish. Forgetting the bridge entirely is caught by
   `build()` with the descriptor named, which is the same contract `Result`
@@ -124,7 +124,7 @@ The pulse journal (`examples/pulse/src/journal.rs`) is the worked example.
   work toward.
 - **Identity scoping.** `Config` is where a scope or instance id would go.
   Whether the runtime should help, for example by prefixing `PortId` and
-  `ComponentId` under a Subprogram scope, is open.
+  `ComponentId` under an Assembly scope, is open.
 - **Exports beyond a Port.** The url checker's tests wanted a private
   `ComponentRef` retained. Whether `Exports` should carry test-only handles,
   or whether that is what the isolated Component runtime follow-up is for, is
@@ -136,8 +136,8 @@ The pulse journal (`examples/pulse/src/journal.rs`) is the worked example.
 
 ## What implementation taught
 
-- **Implement `Subprogram` on the protocol type, not the Component.** The
-  first pulse wiring implemented `Subprogram` on the Component (then named
+- **Implement `Assembly` on the protocol type, not the Component.** The
+  first pulse wiring implemented `Assembly` on the Component (then named
   `FsJournal`, since renamed `Recorder` because the filesystem lives in the
   Driver), which made it a public name and failed to compile: `Component`'s associated
   `Model` and `Message` are part of its interface, so they would have to be
@@ -146,13 +146,13 @@ The pulse journal (`examples/pulse/src/journal.rs`) is the worked example.
   shows the Component form because its types are all local to the example.
 - **Controlled execution has no Port-level ingress.** `ControlledRuntime`
   delivers messages by `ComponentRef<C>` only, and inspects state the same way,
-  so a Subprogram that exports just a Port cannot be driven or observed in a
-  controlled test from outside its module. `tests/subprograms.rs` exports the
+  so an Assembly that exports just a Port cannot be driven or observed in a
+  controlled test from outside its module. `tests/assemblies.rs` exports the
   `ComponentRef` alongside the Port, which works there only because the whole
-  test is one module. For a real Subprogram the stopgap fails: `ComponentRef<C>`
+  test is one module. For a real Assembly the stopgap fails: `ComponentRef<C>`
   in `Exports` makes `C` public, which is the same `Model`/`Message` leak as
-  implementing `Subprogram` on the Component. Until there is a Port-keyed
-  controlled ingress, a Subprogram's isolated controlled tests live inside its
+  implementing `Assembly` on the Component. Until there is a Port-keyed
+  controlled ingress, an Assembly's isolated controlled tests live inside its
   module, where private types are reachable, as the url checker's do. ADR-0006
   made `PortHandle` live-only and named the preconditions for a controlled
   equivalent: deterministic scheduling, which controlled execution already has,
@@ -164,7 +164,7 @@ The pulse journal (`examples/pulse/src/journal.rs`) is the worked example.
 ## Relation to existing contracts
 
 - Additive public API: one trait with two impls, one marker type, one trait
-  for drivers, one trait for Subprograms, one method on `ProgramBuilder`,
+  for drivers, one trait for Assemblies, one method on `ProgramBuilder`,
   and one default method on `RuntimeBuilder`. No runtime semantics change, so
   ADR-0002, ADR-0003, and ADR-0004 are unaffected.
 - ADR-0008 is unaffected by this sketch; its two-stage validation is what makes
@@ -173,12 +173,12 @@ The pulse journal (`examples/pulse/src/journal.rs`) is the worked example.
 - Phase 6 froze its API slice under change control. This is additive and does
   not reshape frozen items, but the acceptance matrix and API guidance must
   cite it when it lands.
-- The glossary needs entries for Subprogram and Drivers, and the
-  "Composable Programs / subprograms" follow-up should reference this note.
+- The glossary needs entries for Assembly and Drivers, and the
+  "Composable Programs / assemblies" follow-up should reference this note.
 
 ## Evidence
 
-`tests/subprograms.rs`, the `Subprogram` rustdoc examples, and the
+`tests/assemblies.rs`, the `Assembly` rustdoc examples, and the
 `examples/pulse` journal; cited in the acceptance matrix. Rollback is
 deleting the traits and types, after which callers assemble by hand and bind
 Drivers directly.

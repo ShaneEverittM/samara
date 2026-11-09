@@ -11,7 +11,7 @@ async fn main() -> anyhow::Result<()> {
     let program = builder.build()?;
 
     let runtime = LiveRuntime::builder(program)
-        .with_subprogram(journal)
+        .with_assembly(journal)
         .and_its_vendored_drivers()
         .build()?;
 

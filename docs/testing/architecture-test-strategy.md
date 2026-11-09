@@ -123,7 +123,7 @@ Evidence: `src/component_kernel.rs`
 
 Evidence: `src/lib.rs` (`Component`, `Command`, `ReplyTo`,
 `EffectCapability`, `SourceCapability`, `ComponentHandle`, `PortHandle`,
-`Subprogram`).
+`Assembly`).
 
 ### Integration tests assert across public boundaries
 - Suites in `tests/` import `samara::prelude` and nothing private. They

@@ -1,5 +1,5 @@
-//! Acceptance evidence for `Subprogram`, `Requirements`, and `Drivers`: a
-//! Subprogram lists its boundaries once as a type; the live builder takes a
+//! Acceptance evidence for `Assembly`, `Requirements`, and `Drivers`: a
+//! Assembly lists its boundaries once as a type; the live builder takes a
 //! matching tuple of drivers and the controlled builder takes nothing.
 
 use std::convert::Infallible;
@@ -107,7 +107,7 @@ struct RecorderExports {
     recorder: ComponentRef<Recorder>,
 }
 
-impl Subprogram for Recorder {
+impl Assembly for Recorder {
     type Config = RecorderConfig;
     type Exports = RecorderExports;
     type Requires = (Effect<Stamp>, Source<Pulses>);
@@ -163,19 +163,19 @@ fn assemble() -> (Program, Installed<Recorder>) {
 }
 
 #[test]
-fn install_returns_a_token_carrying_the_subprogram_exports() {
+fn install_returns_a_token_carrying_the_assembly_exports() {
     let (_program, recorder) = assemble();
     assert_eq!(recorder.exports().ledger.id(), &PortId::new("ledger"));
     assert!(format!("{recorder:?}").contains("Recorder"));
 }
 
 #[tokio::test]
-async fn live_builder_binds_every_requirement_through_with_subprogram() {
+async fn live_builder_binds_every_requirement_through_with_assembly() {
     let (program, recorder) = assemble();
     let ledger = recorder.exports().ledger.clone();
     let stamp = CountingStamp::default();
     let runtime = LiveRuntime::builder(program)
-        .with_subprogram(recorder)
+        .with_assembly(recorder)
         .and_drivers((stamp.clone(), SilentPulses))
         .build()
         .expect("every requirement is bound");
@@ -195,17 +195,17 @@ async fn live_builder_binds_every_requirement_through_with_subprogram() {
 }
 
 #[test]
-fn live_builder_accepts_the_drivers_a_subprogram_vendors() {
+fn live_builder_accepts_the_drivers_a_assembly_vendors() {
     let (program, recorder) = assemble();
     LiveRuntime::builder(program)
-        .with_subprogram(recorder)
+        .with_assembly(recorder)
         .and_its_vendored_drivers()
         .build()
         .expect("vendored drivers satisfy the requirements");
 }
 
 #[test]
-fn live_build_fails_when_subprogram_drivers_are_not_bound() {
+fn live_build_fails_when_assembly_drivers_are_not_bound() {
     let (program, _) = assemble();
     let error = LiveRuntime::builder(program)
         .build()
@@ -215,11 +215,11 @@ fn live_build_fails_when_subprogram_drivers_are_not_bound() {
 }
 
 #[test]
-fn controlled_builder_registers_every_requirement_through_with_subprogram() {
+fn controlled_builder_registers_every_requirement_through_with_assembly() {
     let (program, installed) = assemble();
     let recorder = installed.exports().recorder.clone();
     let mut runtime = ControlledRuntime::builder(program)
-        .with_subprogram(installed)
+        .with_assembly(installed)
         .build()
         .expect("every requirement is controlled");
 
@@ -240,7 +240,7 @@ fn controlled_builder_registers_every_requirement_through_with_subprogram() {
 }
 
 #[test]
-fn controlled_build_fails_when_subprogram_drivers_are_not_controlled() {
+fn controlled_build_fails_when_assembly_drivers_are_not_controlled() {
     let (program, _) = assemble();
     let error = ControlledRuntime::builder(program)
         .build()

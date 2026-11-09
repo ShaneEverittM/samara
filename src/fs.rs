@@ -302,7 +302,7 @@ impl Error for FsError {}
 /// containing `..` fail with [`FsErrorKind::OutsideRoot`] before any I/O. The
 /// root itself is not created until the first write needs it. Bind all four
 /// effects at once with [`LiveRuntimeBuilder::bind_fs`](crate::LiveRuntimeBuilder::bind_fs),
-/// or bind one driver per effect when a Subprogram's `Drivers` asks for them.
+/// or pass it in `and_drivers` where an Assembly's `Requires` lists these effects.
 #[derive(Clone, Debug)]
 pub struct FsDriver {
     root: Arc<Path>,
