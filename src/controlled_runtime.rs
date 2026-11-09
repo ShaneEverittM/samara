@@ -15,8 +15,8 @@ use crate::declarative_work::SubscriptionChange;
 use crate::{
     CapabilityToken, Command, CommandKind, Component, ComponentId, ComponentRef, EffectDescriptor,
     EffectOutcome, EffectOutcomeKind, ErasedRequestMapper, ErasedSourceEvent, LogicalTime,
-    PendingEffect, PendingWork, PortId, Program, RequestOutcome, RequestOutcomeKind, RequestRoute,
-    RequestTarget, RequestToken, RunReport, RuntimeError, ShutdownReport, SourceCapability,
+    MessageRoute, MessageTarget, PendingEffect, PendingWork, PortId, Program, RequestOutcome,
+    RequestOutcomeKind, RequestToken, RunReport, RuntimeError, ShutdownReport, SourceCapability,
     SourceDescriptor, SourceEvent, SourcePlan, StreamDescriptor, StreamSourceDescriptor,
     Subscription, SubscriptionAction, SubscriptionId, TraceCommandKind, TraceEvent, TraceId,
     TraceRecord,
@@ -753,33 +753,100 @@ impl ControlledCore {
                     });
                 }
                 CommandKind::Send(command) => {
-                    let target = command.target().clone();
-                    let message_type = command.message_type_id();
-                    let message_type_name = command.message_type_name();
-                    let work = self.command_trace(
-                        cause,
-                        component,
-                        TraceCommandKind::Send,
-                        message_type_name,
-                        Some(target.clone()),
-                        None,
-                    );
-                    if !Arc::ptr_eq(command.target_program(), &self.program.program)
-                        || self.component_index(&target, message_type).is_none()
-                    {
-                        return Err(self.set_fault(
-                            component.clone(),
-                            None,
-                            work,
-                            format!("direct send target {target:?} is absent from the Program"),
-                        ));
-                    }
+                    let detail_type = command.message_type_name();
+                    let (work, route) = match command.target() {
+                        MessageTarget::Port {
+                            id,
+                            program,
+                            protocol,
+                        } => {
+                            let port = id.clone();
+                            let work = self.command_trace(
+                                cause,
+                                component,
+                                TraceCommandKind::Send,
+                                detail_type,
+                                None,
+                                Some(port.clone()),
+                            );
+                            if !Arc::ptr_eq(program, &self.program.program) {
+                                return Err(self.set_fault(
+                                    component.clone(),
+                                    None,
+                                    work,
+                                    "send Port belongs to another Program",
+                                ));
+                            }
+                            let Some(binding_index) = self.binding_index(protocol, &port) else {
+                                return Err(self.set_fault(
+                                    component.clone(),
+                                    None,
+                                    work,
+                                    "send Port has no runtime binding",
+                                ));
+                            };
+                            (work, MessageRoute::Binding(binding_index))
+                        }
+                        MessageTarget::Connector {
+                            id,
+                            program,
+                            message_type,
+                            message_type_name,
+                        } => {
+                            let target = id.clone();
+                            let work = self.command_trace(
+                                cause,
+                                component,
+                                TraceCommandKind::Send,
+                                detail_type,
+                                Some(target.clone()),
+                                None,
+                            );
+                            if !Arc::ptr_eq(program, &self.program.program)
+                                || self.component_index(&target, message_type).is_none()
+                            {
+                                return Err(self.set_fault(
+                                    component.clone(),
+                                    None,
+                                    work,
+                                    format!(
+                                        "direct send target {target:?} is absent from the Program"
+                                    ),
+                                ));
+                            }
+                            (
+                                work,
+                                MessageRoute::Direct {
+                                    target,
+                                    message_type,
+                                    message_type_name,
+                                },
+                            )
+                        }
+                    };
+                    let message = command.into_message();
+                    let (target, message_type, message_type_name, message) = match route {
+                        MessageRoute::Binding(binding_index) => {
+                            let binding = &self.program.bindings[binding_index];
+                            (
+                                binding.provider_id().clone(),
+                                binding.provider_message_type(),
+                                binding.provider_message_type_name(),
+                                binding.convert(message),
+                            )
+                        }
+                        MessageRoute::Direct {
+                            target,
+                            message_type,
+                            message_type_name,
+                        } => (target, message_type, message_type_name, message),
+                    };
                     self.schedule_message(
                         QueuedMessage {
                             target,
                             target_message_type: message_type,
                             message_type_name,
-                            message: command.into_message(),
+                            message,
                             cause: work,
                             source: None,
                             delivery: DeliveryKind::Message,
@@ -843,7 +910,7 @@ impl ControlledCore {
                     let reply_type = command.reply_type_id();
                     let reply_type_name = command.reply_type_name();
                     let (work, route) = match command.target() {
-                        RequestTarget::Port {
+                        MessageTarget::Port {
                             id,
                             program,
                             protocol,
@@ -873,9 +940,9 @@ impl ControlledCore {
                                     "request Port has no runtime binding",
                                 ));
                             };
-                            (work, RequestRoute::Binding(binding_index))
+                            (work, MessageRoute::Binding(binding_index))
                         }
-                        RequestTarget::Connector {
+                        MessageTarget::Connector {
                             id,
                             program,
                             message_type,
@@ -904,7 +971,7 @@ impl ControlledCore {
                             }
                             (
                                 work,
-                                RequestRoute::Direct {
+                                MessageRoute::Direct {
                                     target,
                                     message_type,
                                     message_type_name,
@@ -931,7 +998,7 @@ impl ControlledCore {
                     let mapper: ErasedRequestMapper<ErasedValue> =
                         Box::new(move |reply| Box::new(mapper(reply)));
                     let (target, message_type, message_type_name, message) = match route {
-                        RequestRoute::Binding(binding_index) => {
+                        MessageRoute::Binding(binding_index) => {
                             let binding = &self.program.bindings[binding_index];
                             (
                                 binding.provider_id().clone(),
@@ -940,7 +1007,7 @@ impl ControlledCore {
                                 binding.convert(protocol_message),
                             )
                         }
-                        RequestRoute::Direct {
+                        MessageRoute::Direct {
                             target,
                             message_type,
                             message_type_name,

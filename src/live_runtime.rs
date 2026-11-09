@@ -47,8 +47,8 @@ use crate::controlled_runtime::{
 use crate::{
     BoxFuture, CapabilityToken, Command, CommandKind, ComponentId, DriverStopped, EffectDescriptor,
     EffectDriver, EffectOutcome, ErasedRequestMapper, ErasedSourceEvent, HttpError, HttpRequest,
-    HttpResponse, Notification, Port, PortId, PrintStderr, PrintStdout, Program, ReplyTo, Request,
-    RequestOutcome, RequestRoute, RequestTarget, RequestToken, RuntimeError, Shutdown,
+    HttpResponse, MessageRoute, MessageTarget, Notification, Port, PortId, PrintStderr,
+    PrintStdout, Program, ReplyTo, Request, RequestOutcome, RequestToken, RuntimeError, Shutdown,
     ShutdownReport, SourceCapability, SourceDescriptor, SourceDriver, SourceEvent, SourcePlan,
     SourceRequirement, SourceSink, StreamDescriptor, StreamSourceDescriptor, SubscriptionId,
     TcpBytes, TcpError, TraceId,
@@ -1458,6 +1458,77 @@ where
     }
 }
 
+/// A plain message of the Port's type sent by a live host through `PortHandle::send`.
+struct LivePortSend<P: Send + 'static> {
+    port: Port<P>,
+    message: P,
+}
+
+impl<P: Send + 'static> ErasedLivePortNotification for LivePortSend<P> {
+    fn port(&self) -> &PortId {
+        self.port.id()
+    }
+
+    fn port_program(&self) -> &Arc<()> {
+        &self.port.program
+    }
+
+    fn protocol_type(&self) -> TypeId {
+        TypeId::of::<P>()
+    }
+
+    fn into_message(self: Box<Self>) -> ErasedValue {
+        Box::new(self.message)
+    }
+}
+
+/// A request built from its reply token by a live host through `PortHandle::request_to`.
+struct LivePortRequestTo<P: Send + 'static, R, Build> {
+    port: Port<P>,
+    build: Build,
+    deadline: Option<tokio::time::Instant>,
+    completion: oneshot::Sender<RequestOutcome<R>>,
+}
+
+impl<P, R, Build> ErasedLivePortRequest for LivePortRequestTo<P, R, Build>
+where
+    P: Send + 'static,
+    R: Send + 'static,
+    Build: FnOnce(ReplyTo<R>) -> P + Send + 'static,
+{
+    fn port(&self) -> &PortId {
+        self.port.id()
+    }
+
+    fn port_program(&self) -> &Arc<()> {
+        &self.port.program
+    }
+
+    fn protocol_type(&self) -> TypeId {
+        TypeId::of::<P>()
+    }
+
+    fn reply_type(&self) -> TypeId {
+        TypeId::of::<R>()
+    }
+
+    fn deadline(&self) -> Option<tokio::time::Instant> {
+        self.deadline
+    }
+
+    fn into_conversion(self: Box<Self>) -> (ProtocolRequestConversion, HostReplyCompletion) {
+        let Self {
+            build, completion, ..
+        } = *self;
+        let conversion: ProtocolRequestConversion =
+            Box::new(move |token| Box::new(build(ReplyTo::runtime(token))));
+        let completion: HostReplyCompletion = Box::new(move |outcome| {
+            let _ = completion.send(crate::typed_request_outcome::<R>(outcome));
+        });
+        (conversion, completion)
+    }
+}
+
 pub(crate) enum LiveEvent {
     Message(QueuedMessage),
     PortIngress(LivePortIngress),
@@ -1489,6 +1560,32 @@ impl LiveEvent {
             message: ingress.message,
             source: None,
         })
+    }
+
+    pub(crate) fn port_send<P: Send + 'static>(port: Port<P>, message: P) -> Self {
+        Self::PortIngress(LivePortIngress::Notification(Box::new(LivePortSend {
+            port,
+            message,
+        })))
+    }
+
+    pub(crate) fn port_request_to<P, R, Build>(
+        port: Port<P>,
+        build: Build,
+        deadline: Option<tokio::time::Instant>,
+        completion: oneshot::Sender<RequestOutcome<R>>,
+    ) -> Self
+    where
+        P: Send + 'static,
+        R: Send + 'static,
+        Build: FnOnce(ReplyTo<R>) -> P + Send + 'static,
+    {
+        Self::PortIngress(LivePortIngress::Request(Box::new(LivePortRequestTo {
+            port,
+            build,
+            deadline,
+            completion,
+        })))
     }
 
     pub(crate) fn port_notification<P, N>(port: Port<P>, notification: N) -> Self
@@ -1974,25 +2071,78 @@ impl LiveCore {
                     });
                 }
                 CommandKind::Send(command) => {
-                    let target = command.target().clone();
-                    let message_type = command.message_type_id();
-                    if !Arc::ptr_eq(command.target_program(), &self.program.program)
-                        || self.component_index(&target, message_type).is_none()
-                    {
-                        return Err(self.runtime_fault(
-                            component.clone(),
-                            None,
-                            work,
-                            format!("direct send target {target:?} is absent from the Program"),
-                        ));
-                    }
-                    let _ = self.scope.accept_finite(LiveEvent::Message(QueuedMessage {
-                        target,
-                        target_message_type: message_type,
-                        message_type_name: command.message_type_name(),
-                        message: command.into_message(),
-                        source: None,
-                    }));
+                    let route = match command.target() {
+                        MessageTarget::Port {
+                            id,
+                            program,
+                            protocol,
+                        } => {
+                            if !Arc::ptr_eq(program, &self.program.program) {
+                                return Err(self.runtime_fault(
+                                    component.clone(),
+                                    None,
+                                    work,
+                                    "send Port belongs to another Program",
+                                ));
+                            }
+                            let Some(binding_index) = self.binding_index(protocol, id) else {
+                                return Err(self.runtime_fault(
+                                    component.clone(),
+                                    None,
+                                    work,
+                                    "send Port has no runtime binding",
+                                ));
+                            };
+                            MessageRoute::Binding(binding_index)
+                        }
+                        MessageTarget::Connector {
+                            id,
+                            program,
+                            message_type,
+                            message_type_name,
+                        } => {
+                            if !Arc::ptr_eq(program, &self.program.program)
+                                || self.component_index(id, message_type).is_none()
+                            {
+                                return Err(self.runtime_fault(
+                                    component.clone(),
+                                    None,
+                                    work,
+                                    format!("direct send target {id:?} is absent from the Program"),
+                                ));
+                            }
+                            MessageRoute::Direct {
+                                target: id.clone(),
+                                message_type,
+                                message_type_name,
+                            }
+                        }
+                    };
+                    let message = command.into_message();
+                    let message = match route {
+                        MessageRoute::Binding(binding_index) => {
+                            let binding = &self.program.bindings[binding_index];
+                            QueuedMessage {
+                                target: binding.provider_id().clone(),
+                                target_message_type: binding.provider_message_type(),
+                                message_type_name: binding.provider_message_type_name(),
+                                message: binding.convert(message),
+                                source: None,
+                            }
+                        }
+                        MessageRoute::Direct {
+                            target,
+                            message_type,
+                            message_type_name,
+                        } => QueuedMessage {
+                            target,
+                            target_message_type: message_type,
+                            message_type_name,
+                            message,
+                            source: None,
+                        },
+                    };
+                    let _ = self.scope.accept_finite(LiveEvent::Message(message));
                 }
                 CommandKind::Notify(command) => {
                     let port = command.port().clone();
@@ -2026,7 +2176,7 @@ impl LiveCore {
                 }
                 CommandKind::Request(command) => {
                     let route = match command.target() {
-                        RequestTarget::Port {
+                        MessageTarget::Port {
                             id,
                             program,
                             protocol,
@@ -2047,9 +2197,9 @@ impl LiveCore {
                                     "request Port has no runtime binding",
                                 ));
                             };
-                            RequestRoute::Binding(binding_index)
+                            MessageRoute::Binding(binding_index)
                         }
-                        RequestTarget::Connector {
+                        MessageTarget::Connector {
                             id,
                             program,
                             message_type,
@@ -2067,7 +2217,7 @@ impl LiveCore {
                                     ),
                                 ));
                             }
-                            RequestRoute::Direct {
+                            MessageRoute::Direct {
                                 target: id.clone(),
                                 message_type,
                                 message_type_name,
@@ -2098,7 +2248,7 @@ impl LiveCore {
                     let mapper: ErasedRequestMapper<ErasedValue> =
                         Box::new(move |reply| Box::new(mapper(reply)));
                     let message = match route {
-                        RequestRoute::Binding(binding_index) => {
+                        MessageRoute::Binding(binding_index) => {
                             let binding = &self.program.bindings[binding_index];
                             QueuedMessage {
                                 target: binding.provider_id().clone(),
@@ -2108,7 +2258,7 @@ impl LiveCore {
                                 source: None,
                             }
                         }
-                        RequestRoute::Direct {
+                        MessageRoute::Direct {
                             target,
                             message_type,
                             message_type_name,

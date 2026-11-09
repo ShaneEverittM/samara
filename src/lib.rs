@@ -115,26 +115,27 @@ pub use http::StatusCode;
 /// Formatting macros are used as `samara::println!`, `samara::eprintln!`, etc.,
 /// to distinguish them from Rust's immediate I/O macros.
 pub mod prelude {
+    pub use crate::{
+        Addressable, Assembly, BoxFuture, CancelReason, Command, Component, ComponentHandle,
+        ComponentId, ComponentRef, Connectable, Connector, ControlledRuntime,
+        ControlledRuntimeBuilder, Decoder, DriverStopped, Drivers, Effect, EffectCapability,
+        EffectDescriptor, EffectDriver, EffectInvocation, EffectOutcome, EffectOutcomeKind, Framed,
+        FramedError, FramedLayer, HttpError, HttpErrorKind, HttpJsonError, HttpRequest,
+        HttpResponse, HttpResponseError, HttpStatusError, Init, Installed, LiveRuntime,
+        LiveRuntimeBuilder, LogicalTime, Notification, PendingEffect, PendingWork, Port,
+        PortHandle, PortId, PrintStderr, PrintStdout, Program, ProgramBuildError, ProgramBuilder,
+        ReadSystemTime, ReplyTo, Request, RequestError, RequestIntent, RequestInvocation,
+        RequestOutcome, RequestOutcomeKind, Requirements, RunReport, RuntimeError, RuntimeTask,
+        Shutdown, ShutdownReport, Source, SourceCapability, SourceDescriptor, SourceDriver,
+        SourceEvent, SourceEventKind, SourceSink, StatusCode, StdinError, StdinErrorKind,
+        StdinLines, StreamDescriptor, Subscription, SubscriptionAction, SubscriptionId,
+        Subscriptions, SystemClockDriver, TcpBytes, TcpError, TcpErrorKind, TraceCommandKind,
+        TraceEvent, TraceId, TraceRecord, VendorsDrivers, WithAssembly, messages,
+    };
     #[cfg(feature = "fs")]
     pub use crate::{
         AppendToFile, FsDriver, FsError, FsErrorKind, FsOperation, ReadFile, RemoveFile,
         ReplaceFile,
-    };
-    pub use crate::{
-        Assembly, BoxFuture, CancelReason, Command, Component, ComponentHandle, ComponentId,
-        ComponentRef, Connectable, Connector, ControlledRuntime, ControlledRuntimeBuilder, Decoder,
-        DriverStopped, Drivers, Effect, EffectCapability, EffectDescriptor, EffectDriver,
-        EffectInvocation, EffectOutcome, EffectOutcomeKind, Framed, FramedError, FramedLayer,
-        HttpError, HttpErrorKind, HttpJsonError, HttpRequest, HttpResponse, HttpResponseError,
-        HttpStatusError, Init, Installed, LiveRuntime, LiveRuntimeBuilder, LogicalTime,
-        Notification, PendingEffect, PendingWork, Port, PortHandle, PortId, PrintStderr,
-        PrintStdout, Program, ProgramBuildError, ProgramBuilder, ReadSystemTime, ReplyTo, Request,
-        RequestError, RequestInvocation, RequestOutcome, RequestOutcomeKind, Requirements,
-        RunReport, RuntimeError, RuntimeTask, Shutdown, ShutdownReport, Source, SourceCapability,
-        SourceDescriptor, SourceDriver, SourceEvent, SourceEventKind, SourceSink, StatusCode,
-        StdinError, StdinErrorKind, StdinLines, StreamDescriptor, Subscription, SubscriptionAction,
-        SubscriptionId, Subscriptions, SystemClockDriver, TcpBytes, TcpError, TcpErrorKind,
-        TraceCommandKind, TraceEvent, TraceId, TraceRecord, VendorsDrivers, WithAssembly, messages,
     };
 }
 
@@ -926,6 +927,14 @@ impl RequestToken {
         })
     }
 
+    /// A token no runtime issued and none will honor: already expired and
+    /// belonging to no Program. Used to build messages for inspection.
+    fn inert() -> Arc<Self> {
+        let token = Self::new(0, Arc::new(()));
+        token.expire();
+        token
+    }
+
     fn expire(&self) {
         self.expired.store(true, Ordering::Relaxed);
     }
@@ -1470,38 +1479,28 @@ where
 }
 
 trait ErasedSendCommand: Send {
-    fn target(&self) -> &ComponentId;
-    fn target_program(&self) -> &Arc<()>;
-    fn message_type_id(&self) -> TypeId;
+    fn target(&self) -> MessageTarget<'_>;
     fn message_type_name(&self) -> &'static str;
     fn into_message(self: Box<Self>) -> Box<dyn Any + Send>;
 }
 
-struct SendTo<M> {
-    connector: Connector<M>,
+struct SendTo<M: Send + 'static> {
+    address: Address<M>,
     message: M,
 }
 
 impl<M: Send + 'static> ErasedSendCommand for SendTo<M> {
-    fn target(&self) -> &ComponentId {
-        &self.connector.id
-    }
-
-    fn target_program(&self) -> &Arc<()> {
-        &self.connector.program
+    fn target(&self) -> MessageTarget<'_> {
+        self.address.target()
     }
 
     fn message_type_name(&self) -> &'static str {
-        self.connector.message_type_name
-    }
-
-    fn message_type_id(&self) -> TypeId {
-        self.connector.message_type
+        self.address.message_type_name()
     }
 
     fn into_message(self: Box<Self>) -> Box<dyn Any + Send> {
-        let Self { connector, message } = *self;
-        (connector.convert)(message)
+        let Self { address, message } = *self;
+        address.into_message(message)
     }
 }
 
@@ -1558,9 +1557,9 @@ where
     }
 }
 
-/// Where a request Command is addressed: a Port resolved through its binding
-/// at interpretation, or a Connector that already names the provider.
-pub(crate) enum RequestTarget<'a> {
+/// Where a send or request Command is addressed: a Port resolved through its
+/// binding at interpretation, or a Connector that already names the provider.
+pub(crate) enum MessageTarget<'a> {
     Port {
         id: &'a PortId,
         program: &'a Arc<()>,
@@ -1574,8 +1573,8 @@ pub(crate) enum RequestTarget<'a> {
     },
 }
 
-/// A request target the runtime has validated, ready to address a message.
-pub(crate) enum RequestRoute {
+/// A target the runtime has validated, ready to address a message.
+pub(crate) enum MessageRoute {
     Binding(usize),
     Direct {
         target: ComponentId,
@@ -1585,7 +1584,7 @@ pub(crate) enum RequestRoute {
 }
 
 trait ErasedRequestCommand<Message>: Send {
-    fn target(&self) -> RequestTarget<'_>;
+    fn target(&self) -> MessageTarget<'_>;
     /// The request value for a Port-addressed request; a Connector-addressed request
     /// builds its message from the reply token and has none to inspect.
     fn request(&self) -> Option<&dyn Any>;
@@ -1598,6 +1597,13 @@ trait ErasedRequestCommand<Message>: Send {
         self: Box<Self>,
         token: Arc<RequestToken>,
     ) -> (Box<dyn Any + Send>, ErasedRequestMapper<Message>);
+    /// For an addressed request, the message type the sender spelled, before
+    /// any Connector conversion; `None` for a Port request built from a
+    /// [`Request`] value.
+    fn addressed_message_type(&self) -> Option<TypeId>;
+    /// Builds the message with an inert reply token for inspection in tests.
+    /// Only meaningful when `addressed_message_type` is `Some`.
+    fn into_inspection(self: Box<Self>) -> (Box<dyn Any + Send>, ErasedRequestMapper<Message>);
 }
 
 type ErasedRequestMapper<Message> =
@@ -1636,8 +1642,8 @@ where
     R: Request<P>,
     Map: FnOnce(RequestOutcome<R::Reply>) -> Message + Send + 'static,
 {
-    fn target(&self) -> RequestTarget<'_> {
-        RequestTarget::Port {
+    fn target(&self) -> MessageTarget<'_> {
+        MessageTarget::Port {
             id: self.port.id(),
             program: &self.port.program,
             protocol: TypeId::of::<P>(),
@@ -1677,19 +1683,28 @@ where
         let mapper = Box::new(move |outcome| map(typed_request_outcome::<R::Reply>(outcome)));
         (Box::new(message), mapper)
     }
+
+    fn addressed_message_type(&self) -> Option<TypeId> {
+        None
+    }
+
+    fn into_inspection(self: Box<Self>) -> (Box<dyn Any + Send>, ErasedRequestMapper<Message>) {
+        self.into_parts(RequestToken::inert())
+    }
 }
 
-/// A request addressed to a Connector. The message is built from the reply token by
-/// a constructor the provider published, which is what fixes the reply type.
-struct ConnectorRequest<M, R, Build, Map> {
-    connector: Connector<M>,
+/// A request addressed to a Port, Connector, or ComponentRef. The message is
+/// built from the reply token by a constructor the provider published, which
+/// is what fixes the reply type.
+struct AddressedRequest<M: Send + 'static, R, Build, Map> {
+    address: Address<M>,
     build: Build,
     timeout: Option<Duration>,
     map: Map,
     reply: PhantomData<fn(R)>,
 }
 
-impl<Message, M, R, Build, Map> ErasedRequestCommand<Message> for ConnectorRequest<M, R, Build, Map>
+impl<Message, M, R, Build, Map> ErasedRequestCommand<Message> for AddressedRequest<M, R, Build, Map>
 where
     Message: Send + 'static,
     M: Send + 'static,
@@ -1697,13 +1712,8 @@ where
     Build: FnOnce(ReplyTo<R>) -> M + Send + 'static,
     Map: FnOnce(RequestOutcome<R>) -> Message + Send + 'static,
 {
-    fn target(&self) -> RequestTarget<'_> {
-        RequestTarget::Connector {
-            id: &self.connector.id,
-            program: &self.connector.program,
-            message_type: self.connector.message_type,
-            message_type_name: self.connector.message_type_name,
-        }
+    fn target(&self) -> MessageTarget<'_> {
+        self.address.target()
     }
 
     fn request(&self) -> Option<&dyn Any> {
@@ -1735,12 +1745,23 @@ where
         token: Arc<RequestToken>,
     ) -> (Box<dyn Any + Send>, ErasedRequestMapper<Message>) {
         let Self {
-            connector,
+            address,
             build,
             map,
             ..
         } = *self;
-        let message = (connector.convert)(build(ReplyTo::runtime(token)));
+        let message = address.into_message(build(ReplyTo::runtime(token)));
+        let mapper = Box::new(move |outcome| map(typed_request_outcome::<R>(outcome)));
+        (message, mapper)
+    }
+
+    fn addressed_message_type(&self) -> Option<TypeId> {
+        Some(TypeId::of::<M>())
+    }
+
+    fn into_inspection(self: Box<Self>) -> (Box<dyn Any + Send>, ErasedRequestMapper<Message>) {
+        let Self { build, map, .. } = *self;
+        let message: Box<dyn Any + Send> = Box::new(build(ReplyTo::runtime(RequestToken::inert())));
         let mapper = Box::new(move |outcome| map(typed_request_outcome::<R>(outcome)));
         (message, mapper)
     }
@@ -1825,6 +1846,41 @@ where
 
     pub(crate) fn into_parts(self) -> (E, EffectMapper<E, Message>) {
         (self.descriptor, self.mapper)
+    }
+}
+
+/// A [`Command::request_to`] extracted for a unit test by [`Command::into_request_to`].
+///
+/// `message` is what the constructor built; its reply token is inert and cannot
+/// deliver a reply. [`Self::reply`] runs the command's continuation on an
+/// outcome you choose, without a runtime.
+pub struct RequestIntent<M, Message> {
+    /// The message the request constructor produced.
+    pub message: M,
+    mapper: ErasedRequestMapper<Message>,
+}
+
+impl<M, Message> RequestIntent<M, Message> {
+    /// Maps a reply outcome through the request's continuation.
+    ///
+    /// `R` must be the reply type the constructor's `ReplyTo<R>` named; a
+    /// mismatch panics, since a unit test has nothing else to do with it.
+    pub fn reply<R: Send + 'static>(self, outcome: RequestOutcome<R>) -> Message {
+        (self.mapper)(match outcome {
+            RequestOutcome::Replied(reply) => RequestOutcome::Replied(Box::new(reply)),
+            RequestOutcome::TimedOut => RequestOutcome::TimedOut,
+            RequestOutcome::Failed(error) => RequestOutcome::Failed(error),
+            RequestOutcome::Cancelled => RequestOutcome::Cancelled,
+        })
+    }
+}
+
+impl<M: fmt::Debug, Message> fmt::Debug for RequestIntent<M, Message> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RequestIntent")
+            .field("message", &self.message)
+            .finish_non_exhaustive()
     }
 }
 
@@ -2020,29 +2076,31 @@ impl<Message> Command<Message> {
         })))
     }
 
-    /// Queues a message for another component, addressed by a [`ComponentRef`] or a [`Connector`].
+    /// Queues a message for a [`Port`], a [`Connector`], or a [`ComponentRef`].
     ///
     /// The target handles it after the current update returns. No delivery result
-    /// is sent back; a routing error faults the runtime. Use [`Self::notify`] or
-    /// [`Self::request`] to depend on a [`Port`] in your own vocabulary instead;
-    /// use a `Connector` when the target is a library Component that exposes itself in
-    /// its own vocabulary (see [`Connector`]).
+    /// is sent back; a routing error faults the runtime. A Port in your own
+    /// vocabulary reaches whichever provider assembly connected; a Connector or
+    /// ComponentRef names its provider directly. See [`Addressable`].
     ///
     /// ```
-    /// use samara::{Command, Component, ComponentRef, Connector};
+    /// use samara::{Command, Component, ComponentRef, Connector, Port};
     /// fn forward<C: Component>(target: ComponentRef<C>, message: C::Message) -> Command<()> {
     ///     Command::send(target, message)
     /// }
-    /// fn forward_to_connector<M: Send + 'static>(target: Connector<M>, message: M) -> Command<()> {
+    /// fn through_port<M: Send + 'static>(port: Port<M>, message: M) -> Command<()> {
+    ///     Command::send(port, message)
+    /// }
+    /// fn to_connector<M: Send + 'static>(target: Connector<M>, message: M) -> Command<()> {
     ///     Command::send(target, message)
     /// }
     /// ```
     pub fn send<T>(target: T, message: T::Message) -> Self
     where
-        T: Connectable,
+        T: Addressable,
     {
         Self(CommandKind::Send(Box::new(SendTo {
-            connector: target.to_connector(),
+            address: target.to_address(),
             message,
         })))
     }
@@ -2159,15 +2217,15 @@ impl<Message> Command<Message> {
         })))
     }
 
-    /// Sends a request to a [`Connector`] or [`ComponentRef`] and maps its reply to a message.
+    /// Sends a request to a [`Port`], [`Connector`], or [`ComponentRef`] and maps its reply to a message.
     ///
-    /// `request` is a constructor the provider published that takes the reply
-    /// token, such as `TallyMessage::total`; its `ReplyTo<R>` parameter fixes the
-    /// reply type, and `map` must accept `RequestOutcome<R>`. This is how a
-    /// Component addressed by a Connector offers request and reply without a
-    /// message enum built with [`messages!`]: the pairing lives in the constructor's
-    /// signature. Both
-    /// functions must be pure. There is no timeout; see [`Self::request_to_timeout`].
+    /// `request` is a constructor that takes the reply token, such as
+    /// `TallyMessage::total` or `|reply_to| LedgerMessage::Total(reply_to)`; its
+    /// `ReplyTo<R>` parameter fixes the reply type, and `map` must accept
+    /// `RequestOutcome<R>`. The pairing of request and reply lives in the
+    /// constructor's signature, so no request trait is needed. Both functions
+    /// must be pure. There is no timeout; see [`Self::request_to_timeout`]. Inspect
+    /// the result in a unit test with [`Self::into_request_to`].
     ///
     /// ```
     /// use samara::prelude::*;
@@ -2192,13 +2250,13 @@ impl<Message> Command<Message> {
     pub fn request_to<T, R, Build, Map>(target: T, request: Build, map: Map) -> Self
     where
         Message: Send + 'static,
-        T: Connectable,
+        T: Addressable,
         R: Send + 'static,
         Build: FnOnce(ReplyTo<R>) -> T::Message + Send + 'static,
         Map: FnOnce(RequestOutcome<R>) -> Message + Send + 'static,
     {
-        Self(CommandKind::Request(Box::new(ConnectorRequest {
-            connector: target.to_connector(),
+        Self(CommandKind::Request(Box::new(AddressedRequest {
+            address: target.to_address(),
             build: request,
             timeout: None,
             map,
@@ -2206,7 +2264,7 @@ impl<Message> Command<Message> {
         })))
     }
 
-    /// Sends a request to a [`Connector`] or [`ComponentRef`] with a timeout.
+    /// Sends a request to a [`Port`], [`Connector`], or [`ComponentRef`] with a timeout.
     ///
     /// Uses the deadline rules of [`Self::request_timeout`] and the constructor
     /// form of [`Self::request_to`].
@@ -2218,13 +2276,13 @@ impl<Message> Command<Message> {
     ) -> Self
     where
         Message: Send + 'static,
-        T: Connectable,
+        T: Addressable,
         R: Send + 'static,
         Build: FnOnce(ReplyTo<R>) -> T::Message + Send + 'static,
         Map: FnOnce(RequestOutcome<R>) -> Message + Send + 'static,
     {
-        Self(CommandKind::Request(Box::new(ConnectorRequest {
-            connector: target.to_connector(),
+        Self(CommandKind::Request(Box::new(AddressedRequest {
+            address: target.to_address(),
             build: request,
             timeout: Some(timeout),
             map,
@@ -2366,6 +2424,45 @@ impl<Message> Command<Message> {
         }
     }
 
+    /// Extracts a [`Self::request_to`] command for a unit test.
+    ///
+    /// Returns the message the constructor built, with an inert reply token that
+    /// no runtime will honor, and a [`RequestIntent`] that maps a chosen
+    /// [`RequestOutcome`] through the command's continuation. Only a top-level
+    /// request addressed with message type `M` is extracted; anything else is
+    /// returned unchanged.
+    ///
+    /// ```
+    /// use samara::prelude::*;
+    /// enum LedgerMessage { Total(ReplyTo<u64>) }
+    /// enum ClerkMessage { Total(RequestOutcome<u64>) }
+    /// let mut program = Program::builder();
+    /// let ledger = program.port::<LedgerMessage>(PortId::new("ledger"));
+    /// let command = Command::request_to(ledger, LedgerMessage::Total, ClerkMessage::Total);
+    /// let intent = command.into_request_to::<LedgerMessage>().ok().expect("a request to the ledger");
+    /// assert!(matches!(intent.message, LedgerMessage::Total(_)));
+    /// assert!(matches!(intent.reply(RequestOutcome::Replied(5u64)), ClerkMessage::Total(RequestOutcome::Replied(5))));
+    /// ```
+    pub fn into_request_to<M>(self) -> Result<RequestIntent<M, Message>, Self>
+    where
+        Message: Send + 'static,
+        M: Send + 'static,
+    {
+        match self.0 {
+            CommandKind::Request(command)
+                if command.addressed_message_type() == Some(TypeId::of::<M>()) =>
+            {
+                let (message, mapper) = command.into_inspection();
+                let message = match message.downcast::<M>() {
+                    Ok(message) => *message,
+                    Err(_) => unreachable!("the message type was checked before extraction"),
+                };
+                Ok(RequestIntent { message, mapper })
+            }
+            command => Err(Self(command)),
+        }
+    }
+
     /// Returns notifications of type `N` with their destination Port IDs.
     ///
     /// Searches batches in declaration order without delivering anything. See
@@ -2412,7 +2509,7 @@ impl<Message> Command<Message> {
     fn collect_request_intents<'a, R: 'static>(&'a self, intents: &mut Vec<(&'a PortId, &'a R)>) {
         match &self.0 {
             CommandKind::Request(command) => {
-                if let (RequestTarget::Port { id, .. }, Some(request)) =
+                if let (MessageTarget::Port { id, .. }, Some(request)) =
                     (command.target(), command.request())
                     && let Some(request) = request.downcast_ref()
                 {
@@ -4574,6 +4671,101 @@ impl<M: Send + 'static> Connectable for Connector<M> {
     }
 }
 
+/// Something a Command can be addressed to: a [`Port`], a [`Connector`], or a
+/// [`ComponentRef`].
+///
+/// [`Command::send`], [`Command::request_to`], and
+/// [`Command::request_to_timeout`] accept any of the three and deliver a value
+/// of `Message`. A Port resolves to its provider through the binding at
+/// interpretation; a Connector and a ComponentRef already name the provider.
+/// Applications do not implement it.
+pub trait Addressable {
+    /// The message type this destination accepts.
+    type Message: Send + 'static;
+
+    /// Erases this destination for a Command to carry.
+    fn to_address(&self) -> Address<Self::Message>;
+}
+
+impl<M: Send + 'static> Addressable for Port<M> {
+    type Message = M;
+
+    fn to_address(&self) -> Address<M> {
+        Address(AddressKind::Port(self.clone()))
+    }
+}
+
+impl<M: Send + 'static> Addressable for Connector<M> {
+    type Message = M;
+
+    fn to_address(&self) -> Address<M> {
+        Address(AddressKind::Connector(self.clone()))
+    }
+}
+
+impl<C: Component> Addressable for ComponentRef<C> {
+    type Message = C::Message;
+
+    fn to_address(&self) -> Address<C::Message> {
+        Address(AddressKind::Connector(self.to_connector()))
+    }
+}
+
+/// The erased destination of a Command, produced by [`Addressable::to_address`].
+///
+/// It has no public operations; Commands carry it and the runtime resolves it.
+pub struct Address<M: Send + 'static>(AddressKind<M>);
+
+enum AddressKind<M: Send + 'static> {
+    Port(Port<M>),
+    Connector(Connector<M>),
+}
+
+impl<M: Send + 'static> Address<M> {
+    fn target(&self) -> MessageTarget<'_> {
+        match &self.0 {
+            AddressKind::Port(port) => MessageTarget::Port {
+                id: port.id(),
+                program: &port.program,
+                protocol: TypeId::of::<M>(),
+            },
+            AddressKind::Connector(connector) => MessageTarget::Connector {
+                id: &connector.id,
+                program: &connector.program,
+                message_type: connector.message_type,
+                message_type_name: connector.message_type_name,
+            },
+        }
+    }
+
+    fn message_type_name(&self) -> &'static str {
+        match &self.0 {
+            AddressKind::Port(_) => std::any::type_name::<M>(),
+            AddressKind::Connector(connector) => connector.message_type_name,
+        }
+    }
+
+    /// Converts a message for delivery: a Port's message is converted later by
+    /// its binding, a Connector's by the Connector itself.
+    fn into_message(self, message: M) -> Box<dyn Any + Send> {
+        match self.0 {
+            AddressKind::Port(_) => Box::new(message),
+            AddressKind::Connector(connector) => (connector.convert)(message),
+        }
+    }
+}
+
+impl<M: Send + 'static> fmt::Debug for Address<M> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.0 {
+            AddressKind::Port(port) => formatter.debug_tuple("Address").field(port).finish(),
+            AddressKind::Connector(connector) => {
+                formatter.debug_tuple("Address").field(connector).finish()
+            }
+        }
+    }
+}
+
 /// Components and their connections, ready to run live or under test control.
 ///
 /// Build one with [`Program::builder`]. Pass it to [`LiveRuntime::builder`] or
@@ -4730,20 +4922,35 @@ where
                     )))
                 }
             }
-            CommandKind::Send(send) => {
-                if program.declares_component_target(
-                    send.target_program(),
-                    send.target(),
-                    send.message_type_id(),
-                ) {
-                    Ok(())
-                } else {
-                    Err(RuntimeError::harness(format!(
-                        "Component {component:?} has an initial direct-send target {:?} from another Program or absent from this Program",
-                        send.target()
-                    )))
+            CommandKind::Send(send) => match send.target() {
+                MessageTarget::Port {
+                    id,
+                    program: port_program,
+                    protocol,
+                } => {
+                    if program.declares_port_target(port_program, id, protocol) {
+                        Ok(())
+                    } else {
+                        Err(RuntimeError::harness(format!(
+                            "Component {component:?} has an initial send Port {id:?} from another Program or absent from this Program"
+                        )))
+                    }
                 }
-            }
+                MessageTarget::Connector {
+                    id,
+                    program: target_program,
+                    message_type,
+                    ..
+                } => {
+                    if program.declares_component_target(target_program, id, message_type) {
+                        Ok(())
+                    } else {
+                        Err(RuntimeError::harness(format!(
+                            "Component {component:?} has an initial direct-send target {id:?} from another Program or absent from this Program"
+                        )))
+                    }
+                }
+            },
             CommandKind::Notify(notification) => {
                 if program.declares_port_target(
                     notification.port_program(),
@@ -4759,7 +4966,7 @@ where
                 }
             }
             CommandKind::Request(request) => match request.target() {
-                RequestTarget::Port {
+                MessageTarget::Port {
                     id,
                     program: port_program,
                     protocol,
@@ -4772,7 +4979,7 @@ where
                         )))
                     }
                 }
-                RequestTarget::Connector {
+                MessageTarget::Connector {
                     id,
                     program: target_program,
                     message_type,
@@ -6033,6 +6240,95 @@ impl<P: Send + 'static> fmt::Debug for PortHandle<P> {
 }
 
 impl<P: Send + 'static> PortHandle<P> {
+    /// Queues a message of the Port's type for the provider.
+    ///
+    /// Success means accepted for delivery, not handled by the provider. Returns an
+    /// error if shutdown has begun or the runtime has failed.
+    ///
+    /// ```no_run
+    /// use samara::prelude::*;
+    /// enum EventMessage { Changed(String) }
+    /// async fn announce(client: &PortHandle<EventMessage>) -> Result<(), RuntimeError> {
+    ///     client.send(EventMessage::Changed("ready".into())).await
+    /// }
+    /// ```
+    pub async fn send(&self, message: P) -> Result<(), RuntimeError> {
+        self.scope
+            .accept_ingress(live_runtime::LiveEvent::port_send(
+                self.port.clone(),
+                message,
+            ))
+    }
+
+    /// Sends a request built from its reply token and waits for the reply.
+    ///
+    /// `request` is a constructor taking `ReplyTo<R>`, as for
+    /// [`Command::request_to`]; the awaited value is `R`. Dropping this future
+    /// after sending stops waiting but does not cancel the provider's work. An
+    /// unanswered request can keep Drain waiting; see
+    /// [`Self::request_to_timeout`].
+    ///
+    /// ```no_run
+    /// use samara::prelude::*;
+    /// enum LedgerMessage { Total(ReplyTo<u64>) }
+    /// async fn total(client: &PortHandle<LedgerMessage>) -> Result<u64, RuntimeError> {
+    ///     client.request_to(LedgerMessage::Total).await
+    /// }
+    /// ```
+    pub async fn request_to<R, Build>(&self, request: Build) -> Result<R, RuntimeError>
+    where
+        R: Send + 'static,
+        Build: FnOnce(ReplyTo<R>) -> P + Send + 'static,
+    {
+        match self.request_to_inner(request, None).await? {
+            RequestOutcome::Replied(reply) => Ok(reply),
+            _ => unreachable!("unbounded host requests only complete with a reply"),
+        }
+    }
+
+    /// Sends a request built from its reply token with a timeout.
+    ///
+    /// Uses the deadline rules of [`Self::request_timeout`] and the constructor
+    /// form of [`Self::request_to`].
+    pub async fn request_to_timeout<R, Build>(
+        &self,
+        request: Build,
+        timeout: Duration,
+    ) -> Result<RequestOutcome<R>, RuntimeError>
+    where
+        R: Send + 'static,
+        Build: FnOnce(ReplyTo<R>) -> P + Send + 'static,
+    {
+        self.request_to_inner(request, Some(timeout)).await
+    }
+
+    async fn request_to_inner<R, Build>(
+        &self,
+        request: Build,
+        timeout: Option<Duration>,
+    ) -> Result<RequestOutcome<R>, RuntimeError>
+    where
+        R: Send + 'static,
+        Build: FnOnce(ReplyTo<R>) -> P + Send + 'static,
+    {
+        let deadline = timeout
+            .map(|timeout| {
+                tokio::time::Instant::now()
+                    .checked_add(timeout)
+                    .ok_or_else(|| RuntimeError::harness("request deadline is unrepresentable"))
+            })
+            .transpose()?;
+        let (completion, reply) = tokio::sync::oneshot::channel();
+        self.scope
+            .accept_ingress(live_runtime::LiveEvent::port_request_to(
+                self.port.clone(),
+                request,
+                deadline,
+                completion,
+            ))?;
+        reply.await.map_err(|_| self.scope.request_ended_error())
+    }
+
     /// Queues a notification for the provider.
     ///
     /// Success means accepted for delivery, not handled by the provider. Returns an
