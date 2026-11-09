@@ -133,7 +133,7 @@ async fn phase6_live_ingress_success_means_accepted() {
     let values = Arc::new(Mutex::new(Vec::new()));
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
     let (program, counter, input) = counter_program(input);
-    let runtime = LiveRuntime::builder(program)
+    let runtime = Runtime::builder(program)
         .bind_mpsc(&input, receiver)
         .bind_effect::<Record, _>(RecordingDriver {
             values: values.clone(),
@@ -247,7 +247,7 @@ async fn phase6_scope_cancel_drops_effect_without_invoking_mapper() {
             effect,
         },
     );
-    let runtime = LiveRuntime::builder(program.build().expect("valid program"))
+    let runtime = Runtime::builder(program.build().expect("valid program"))
         .bind_effect::<Hang, _>(HangingDriver {
             entered: Mutex::new(Some(entered)),
             dropped: dropped.clone(),
@@ -281,7 +281,7 @@ async fn phase6_cancelled_shutdown_future_detaches_no_runtime_work() {
             effect,
         },
     );
-    let runtime = LiveRuntime::builder(program.build().expect("valid program"))
+    let runtime = Runtime::builder(program.build().expect("valid program"))
         .bind_effect::<Hang, _>(HangingDriver {
             entered: Mutex::new(Some(entered)),
             dropped: dropped.clone(),
@@ -346,7 +346,7 @@ async fn shutdown_escalation_joins_pending_effect_without_mapping() {
             effect,
         },
     );
-    let runtime = LiveRuntime::builder(program.build().expect("valid program"))
+    let runtime = Runtime::builder(program.build().expect("valid program"))
         .bind_effect::<Hang, _>(HangingDriver {
             entered: Mutex::new(Some(entered)),
             dropped: dropped.clone(),
@@ -425,7 +425,7 @@ async fn phase6_cancel_stops_driving_without_mapping_scope_abort() {
             effect,
         },
     );
-    let runtime = LiveRuntime::builder(program.build().expect("valid program"))
+    let runtime = Runtime::builder(program.build().expect("valid program"))
         .bind_effect::<Hang, _>(CountedHangingDriver {
             calls: driver_calls.clone(),
         })
@@ -458,7 +458,7 @@ async fn shutdown_escalation_before_owner_poll_cannot_restart_work() {
             effect,
         },
     );
-    let mut task = LiveRuntime::builder(program.build().expect("valid program"))
+    let mut task = Runtime::builder(program.build().expect("valid program"))
         .bind_effect::<Hang, _>(CountedHangingDriver {
             calls: driver_calls.clone(),
         })
@@ -520,7 +520,7 @@ async fn phase6_driver_panic_faults_and_cleans_scope() {
     let effect = program.effect::<PanicEffect>();
     let probe = program
         .component::<PanicProbe>(ComponentId::new("panic-probe"), PanicProbeConfig { effect });
-    let runtime = LiveRuntime::builder(program.build().expect("valid program"))
+    let runtime = Runtime::builder(program.build().expect("valid program"))
         .bind_effect::<PanicEffect, _>(PanickingDriver)
         .build()
         .expect("valid live bindings");
@@ -544,7 +544,7 @@ async fn shutdown_requests_preserve_completed_fault() {
         ComponentId::new("preserved-fault"),
         PanicProbeConfig { effect },
     );
-    let runtime = LiveRuntime::builder(program.build().expect("valid program"))
+    let runtime = Runtime::builder(program.build().expect("valid program"))
         .bind_effect::<PanicEffect, _>(PanickingDriver)
         .build()
         .expect("valid bindings");
@@ -724,7 +724,7 @@ impl Component for SourceProbe {
 }
 
 struct SourceFixture {
-    runtime: LiveRuntime,
+    runtime: Runtime,
     component: ComponentRef<SourceProbe>,
     observations: tokio::sync::mpsc::UnboundedReceiver<Observation>,
     sinks: tokio::sync::mpsc::UnboundedReceiver<Arc<SourceSink<ScriptedSource>>>,
@@ -748,7 +748,7 @@ fn source_fixture(causal_timer: bool) -> SourceFixture {
     let (sink_tx, sinks) = tokio::sync::mpsc::unbounded_channel();
     let starts = Arc::new(AtomicUsize::new(0));
     let dropped = Arc::new(AtomicUsize::new(0));
-    let runtime = LiveRuntime::builder(program.build().expect("valid source program"))
+    let runtime = Runtime::builder(program.build().expect("valid source program"))
         .bind_source::<ScriptedSource, _>(HarnessSourceDriver {
             starts: starts.clone(),
             dropped: dropped.clone(),
@@ -852,7 +852,7 @@ async fn phase6_silent_source_return_ends_once() {
     );
     let starts = Arc::new(AtomicUsize::new(0));
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
-    let runtime = LiveRuntime::builder(program.build().expect("valid program"))
+    let runtime = Runtime::builder(program.build().expect("valid program"))
         .bind_source::<ScriptedSource, _>(SilentSourceDriver {
             starts: starts.clone(),
         })
@@ -917,7 +917,7 @@ async fn phase6_source_driver_panics_fault_and_clean_the_scope() {
         );
         let (entered, entered_rx) = tokio::sync::oneshot::channel();
         let (observed, _observations) = tokio::sync::mpsc::unbounded_channel();
-        let runtime = LiveRuntime::builder(program.build().expect("valid program"))
+        let runtime = Runtime::builder(program.build().expect("valid program"))
             .bind_source::<ScriptedSource, _>(PanickingSourceDriver {
                 mode,
                 entered: Mutex::new(Some(entered)),
@@ -1086,7 +1086,7 @@ async fn admitted_burst(count: usize) -> Vec<u64> {
         AdmissionProbeConfig { record },
     );
     let values = Arc::new(Mutex::new(Vec::new()));
-    let runtime = LiveRuntime::builder(program.build().expect("valid program"))
+    let runtime = Runtime::builder(program.build().expect("valid program"))
         .bind_effect::<Record, _>(RecordingDriver {
             values: values.clone(),
             observed: None,
@@ -1138,7 +1138,7 @@ async fn phase6_shutdown_closes_external_ingress() -> Result<(), RuntimeError> {
         AdmissionProbeConfig { record },
     );
     let values = Arc::new(Mutex::new(Vec::new()));
-    let runtime = LiveRuntime::builder(program.build().expect("valid program"))
+    let runtime = Runtime::builder(program.build().expect("valid program"))
         .bind_effect::<Record, _>(RecordingDriver {
             values,
             observed: None,
@@ -1197,7 +1197,7 @@ async fn phase6_knowable_live_binding_errors_fail_build() {
         InitialEffectComponentConfig { effect },
     );
     assert!(
-        LiveRuntime::builder(program.build().expect("valid program"))
+        Runtime::builder(program.build().expect("valid program"))
             .build()
             .is_err()
     );
@@ -1209,7 +1209,7 @@ async fn phase6_knowable_live_binding_errors_fail_build() {
         InitialEffectComponentConfig { effect },
     );
     assert!(
-        LiveRuntime::builder(program.build().expect("valid program"))
+        Runtime::builder(program.build().expect("valid program"))
             .bind_effect::<InitialEffect, _>(NoopInitialDriver)
             .bind_effect::<InitialEffect, _>(NoopInitialDriver)
             .build()
@@ -1229,7 +1229,7 @@ async fn phase6_knowable_live_binding_errors_fail_build() {
     );
     let (observed, _observations) = tokio::sync::mpsc::unbounded_channel();
     assert!(
-        LiveRuntime::builder(program.build().expect("valid program"))
+        Runtime::builder(program.build().expect("valid program"))
             .bind_effect::<Observe, _>(ObservationDriver {
                 observations: observed,
             })
@@ -1258,7 +1258,7 @@ async fn phase6_knowable_live_binding_errors_fail_build() {
     };
     let (observed, _observations) = tokio::sync::mpsc::unbounded_channel();
     assert!(
-        LiveRuntime::builder(program.build().expect("valid program"))
+        Runtime::builder(program.build().expect("valid program"))
             .bind_source::<ScriptedSource, _>(binding())
             .bind_source::<ScriptedSource, _>(binding())
             .bind_effect::<Observe, _>(ObservationDriver {
@@ -1318,7 +1318,7 @@ fn phase6_declared_missing_binding_rejects_live_build() {
     let _probe = program
         .component::<DynamicProbe>(ComponentId::new("dynamic"), DynamicProbeConfig { effect });
     let _trigger = DynamicMessage::Trigger;
-    let error = LiveRuntime::builder(program.build().expect("valid program"))
+    let error = Runtime::builder(program.build().expect("valid program"))
         .build()
         .err()
         .expect("declared missing binding rejects live assembly");
@@ -1461,7 +1461,7 @@ async fn phase6_effect_success_and_failure_map_exactly_once() -> Result<(), Runt
             observe,
         },
     );
-    let runtime = LiveRuntime::builder(program.build().expect("valid program"))
+    let runtime = Runtime::builder(program.build().expect("valid program"))
         .bind_effect::<Query, _>(QueryDriver {
             calls: driver_calls.clone(),
         })
@@ -1596,7 +1596,7 @@ async fn phase6_drain_realizes_no_new_sources() {
             source,
         },
     );
-    let runtime = LiveRuntime::builder(program.build().expect("valid program"))
+    let runtime = Runtime::builder(program.build().expect("valid program"))
         .bind_effect::<GateEffect, _>(GateDriver {
             started: Mutex::new(Some(started)),
             release: Mutex::new(Some(release_rx)),
@@ -1646,7 +1646,7 @@ async fn phase6_successful_shutdown_owns_zero_work() -> Result<(), RuntimeError>
             ComponentId::new(format!("empty-{mode:?}")),
             AdmissionProbeConfig { record },
         );
-        let runtime = LiveRuntime::builder(program.build().expect("valid program"))
+        let runtime = Runtime::builder(program.build().expect("valid program"))
             .bind_effect::<Record, _>(RecordingDriver {
                 values: Arc::new(Mutex::new(Vec::new())),
                 observed: None,
@@ -1834,7 +1834,7 @@ async fn phase6_live_request_reply_drains_causally() -> Result<(), RuntimeError>
     let (program, requester) = echo_program(true, continuation_calls.clone());
     let (replies, mut observed) = tokio::sync::mpsc::unbounded_channel();
     let (seen, _seen_rx) = tokio::sync::oneshot::channel();
-    let runtime = LiveRuntime::builder(program)
+    let runtime = Runtime::builder(program)
         .bind_effect::<ObserveReply, _>(ReplyObserver { replies })
         .bind_effect::<ProviderSeen, _>(ProviderSeenDriver {
             seen: Mutex::new(Some(seen)),
@@ -1856,7 +1856,7 @@ async fn phase6_cancel_drops_unanswered_request_without_mapping() -> Result<(), 
     let (program, requester) = echo_program(false, continuation_calls.clone());
     let (seen, seen_rx) = tokio::sync::oneshot::channel();
     let (replies, _observed) = tokio::sync::mpsc::unbounded_channel();
-    let runtime = LiveRuntime::builder(program)
+    let runtime = Runtime::builder(program)
         .bind_effect::<ProviderSeen, _>(ProviderSeenDriver {
             seen: Mutex::new(Some(seen)),
         })
@@ -1879,7 +1879,7 @@ async fn shutdown_escalation_closes_unanswered_request_without_mapping() -> Resu
     let (program, requester) = echo_program(false, continuation_calls.clone());
     let (seen, seen_rx) = tokio::sync::oneshot::channel();
     let (replies, _observed) = tokio::sync::mpsc::unbounded_channel();
-    let runtime = LiveRuntime::builder(program)
+    let runtime = Runtime::builder(program)
         .bind_effect::<ProviderSeen, _>(ProviderSeenDriver {
             seen: Mutex::new(Some(seen)),
         })
@@ -2031,7 +2031,7 @@ async fn forced_independent_order(first: char, second: char) -> Vec<char> {
             record,
         },
     );
-    let runtime = LiveRuntime::builder(program.build().expect("valid program"))
+    let runtime = Runtime::builder(program.build().expect("valid program"))
         .bind_effect::<Independent, _>(IndependentDriver {
             started,
             releases: Mutex::new(releases),
@@ -2152,7 +2152,7 @@ async fn v5_live_and_controlled_boundaries_map_equivalent_observations() -> Resu
 
     let (program, probe) = query_program(Arc::new(AtomicUsize::new(0)));
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
-    let runtime = LiveRuntime::builder(program)
+    let runtime = Runtime::builder(program)
         .bind_effect::<Query, _>(QueryDriver {
             calls: Arc::new(AtomicUsize::new(0)),
         })

@@ -173,7 +173,7 @@ fn standard_output_effects_are_ordinary_controlled_boundaries() {
 async fn bound_standard_output_drivers_write_and_flush_successfully() {
     let (program, probe) = output_program(true);
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
-    let runtime = LiveRuntime::builder(program)
+    let runtime = Runtime::builder(program)
         .bind_stdio()
         .bind_effect::<ObserveOutput, _>(OutputObserver {
             observations: observed,
@@ -204,7 +204,7 @@ impl EffectDriver<PrintStdout> for DuplicateStdoutDriver {
 fn bind_stdio_participates_in_normal_duplicate_binding_validation() {
     let (program, _) = output_program(false);
     assert!(
-        LiveRuntime::builder(program)
+        Runtime::builder(program)
             .bind_stdio()
             .bind_effect::<PrintStdout, _>(DuplicateStdoutDriver)
             .build()

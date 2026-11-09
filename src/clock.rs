@@ -13,7 +13,7 @@ use crate::{BoxFuture, EffectDescriptor, EffectDriver};
 /// Asks the host what time it is.
 ///
 /// Succeeds with a [`SystemTime`] and cannot fail. Bind it live with
-/// [`LiveRuntimeBuilder::bind_system_time`](crate::LiveRuntimeBuilder::bind_system_time)
+/// [`RuntimeBuilder::bind_system_time`](crate::RuntimeBuilder::bind_system_time)
 /// or pass [`SystemClockDriver`] in `and_drivers` where an Assembly's `Requires` lists it.
 ///
 /// ```

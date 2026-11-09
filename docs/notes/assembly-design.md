@@ -21,7 +21,7 @@ its identities, and its capabilities private, and it is the working answer to
 the composable-Programs follow-up. It leaves one gap: the module declared
 effect capabilities, so somebody must bind a Driver for each one, and the
 caller only learns which ones from the synchronous failure in
-`LiveRuntime::builder(program).build()`.
+`Runtime::builder(program).build()`.
 
 Driver binding cannot move into `install`. Assembly is shared by live and
 controlled execution, binding is an execution-profile decision, and controlled

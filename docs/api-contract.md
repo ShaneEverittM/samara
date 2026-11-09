@@ -217,7 +217,7 @@ overload, shutdown deadlines, Driver recovery, or bridge restartability.
 [ADR-0006](adr/0006-live-port-ingress.md) extends the existing live ingress
 boundary to provider-neutral Ports:
 
-- `LiveRuntime::port_handle(&Port<P>)` returns a cloneable `PortHandle<P>` only
+- `Runtime::port_handle(&Port<P>)` returns a cloneable `PortHandle<P>` only
   when the Port belongs to that runtime's exact Program and has its exact built
   message-type-and-name binding. Foreign or absent exact bindings fail synchronously
   with `RuntimeError`.
@@ -335,7 +335,7 @@ Both descriptors own text, provide `text` for exact UTF-8 and `line` for UTF-8
 followed by `\n`, produce `()`, and use `Infallible` as their Error type. The
 values contain no handles and perform no work when constructed.
 
-`LiveRuntimeBuilder::bind_stdio()` installs both Tokio-backed terminal Drivers.
+`RuntimeBuilder::bind_stdio()` installs both Tokio-backed terminal Drivers.
 Each Driver serializes its own Samara-issued print attempts within one live
 binding, writes the complete text, and flushes the selected stream. An
 operating-system I/O error is intentionally discarded rather than becoming an
@@ -384,7 +384,7 @@ failure is not followed by `Ended`. The initial descriptor has no line-length
 limit. Bounded or byte-oriented acquisition therefore requires another
 terminal descriptor; a Layer above `StdinLines` sees only complete lines.
 
-On Unix, `LiveRuntimeBuilder::bind_stdin()` discovers the sole declared
+On Unix, `RuntimeBuilder::bind_stdin()` discovers the sole declared
 capability whose terminal descriptor is `StdinLines` and binds process stdin
 to that exact capability. Zero or multiple matching declarations fail build.
 The capability may be direct or a built-in composition such as
@@ -424,7 +424,7 @@ terminal EffectDescriptor:
 - `HttpError` carries an `HttpErrorKind` distinguishing `Configuration` from
   `Transport`, plus explanatory text that controlled fixtures can construct.
 
-`LiveRuntimeBuilder::bind_http()` installs one Driver retaining one reusable
+`RuntimeBuilder::bind_http()` installs one Driver retaining one reusable
 reqwest client and connection pool. The Driver explicitly follows no redirects,
 performs no protocol retries, discovers no system proxy, and performs no
 automatic content decompression. It supplies no Samara request timeout. All
@@ -505,7 +505,7 @@ around values issued by one `ProgramBuilder`:
   descriptor or Layer stack.
 
 After `ProgramBuilder::build()` consumes the builder, the logical capability
-set is closed. `LiveRuntimeBuilder::build()` and
+set is closed. `RuntimeBuilder::build()` and
 `ControlledRuntimeBuilder::build()` synchronously require exactly one
 applicable terminal behavior for every declaration. Normal Drivers and
 controlled registrations are type-wide; the one-shot `mpsc` bridge uses an
@@ -535,7 +535,7 @@ exposed and renames the consumer-owned one:
 - `Port<P>` (formerly `Port<P>`) is a consumer-owned, named, inert dependency
   on a message type, created with `ProgramBuilder::port` and filled at assembly
   with `connect`. `PortId`, `PortHandle`, and
-  `LiveRuntime::port_handle` follow the rename; their semantics are those of
+  `Runtime::port_handle` follow the rename; their semantics are those of
   ADR-0006.
 - `Connector<M>` is a provider-owned, inert address: a `ComponentRef<C>` erased to
   the Message type it accepts, obtained with `ComponentRef::connector` (a `From`

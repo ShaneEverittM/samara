@@ -637,7 +637,7 @@ fn config(endpoint: &str, generation: u64) -> FeedConfig {
 /// structured shutdown through the runtime owner.
 async fn live_shape() -> Result<(), RuntimeError> {
     let (program, refs) = program();
-    let runtime = LiveRuntime::builder(program)
+    let runtime = Runtime::builder(program)
         .bind_source::<TcpBytes, _>(TokioTcpBytes)
         .bind_effect::<StoreFrame, _>(LiveFrameStore)
         .build()?;

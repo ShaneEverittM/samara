@@ -1,10 +1,10 @@
-use samara::{LiveRuntime, Shutdown};
+use samara::{Runtime, Shutdown};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let program = urlchecker::program()?;
 
-    let runtime = LiveRuntime::builder(program)
+    let runtime = Runtime::builder(program)
         .bind_http()
         .bind_stdio()
         .bind_stdin()

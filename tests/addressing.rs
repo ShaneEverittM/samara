@@ -235,7 +235,7 @@ fn an_initial_send_to_a_foreign_port_fails_both_profile_builds() {
         program.component::<Eager>(ComponentId::new("eager"), foreign);
         program.build().expect("the hidden Port is ordinary Rust")
     }
-    let live = LiveRuntime::builder(program())
+    let live = Runtime::builder(program())
         .build()
         .err()
         .expect("live build fails");
@@ -253,7 +253,7 @@ fn an_initial_send_to_a_foreign_port_fails_both_profile_builds() {
 #[tokio::test]
 async fn a_port_handle_sends_and_requests_with_the_same_two_forms() -> Result<(), RuntimeError> {
     let (program, ledger, _) = assemble(None);
-    let runtime = LiveRuntime::builder(program).build()?;
+    let runtime = Runtime::builder(program).build()?;
     let host = runtime.port_handle(&ledger)?;
     let task = runtime.spawn();
 

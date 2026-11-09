@@ -326,7 +326,7 @@ async fn live_http_preserves_raw_status_and_reuses_one_client_pool() {
     let second = HttpRequest::get(format!("http://{endpoint}/redirect"));
     let (program, probe) = http_program(vec![first, second]);
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
-    let runtime = LiveRuntime::builder(program)
+    let runtime = Runtime::builder(program)
         .bind_http()
         .bind_effect::<ObserveHttp, _>(HttpObserver {
             observations: observed,
@@ -410,7 +410,7 @@ async fn live_http_preserves_raw_status_and_reuses_one_client_pool() {
 async fn invalid_live_http_configuration_is_a_typed_effect_failure() {
     let (program, probe) = http_program(vec![HttpRequest::get("not a URL")]);
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
-    let runtime = LiveRuntime::builder(program)
+    let runtime = Runtime::builder(program)
         .bind_http()
         .bind_effect::<ObserveHttp, _>(HttpObserver {
             observations: observed,
@@ -446,7 +446,7 @@ async fn live_http_eof_is_a_typed_transport_failure() {
     let request = HttpRequest::get(format!("http://{endpoint}/closed"));
     let (program, probe) = http_program(vec![request]);
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
-    let runtime = LiveRuntime::builder(program)
+    let runtime = Runtime::builder(program)
         .bind_http()
         .bind_effect::<ObserveHttp, _>(HttpObserver {
             observations: observed,
@@ -492,7 +492,7 @@ impl EffectDriver<HttpRequest> for DuplicateHttpDriver {
 fn bind_http_participates_in_normal_duplicate_binding_validation() {
     let (program, _) = http_program(vec![HttpRequest::get("https://example.test")]);
     assert!(
-        LiveRuntime::builder(program)
+        Runtime::builder(program)
             .bind_http()
             .bind_effect::<HttpRequest, _>(DuplicateHttpDriver)
             .build()

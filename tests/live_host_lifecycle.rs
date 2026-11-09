@@ -51,7 +51,7 @@ fn live_build_rejects_later_reached_effect_without_driver() {
         FaultProbeConfig { effect },
     );
     let _trigger = FaultMessage::Trigger;
-    let error = LiveRuntime::builder(program.build().expect("valid program"))
+    let error = Runtime::builder(program.build().expect("valid program"))
         .build()
         .err()
         .expect("declared effect dependencies must be bound before spawn");
@@ -99,7 +99,7 @@ async fn cancelled_run_forever_observation_preserves_owner_for_explicit_shutdown
     for mode in [Shutdown::Drain, Shutdown::Cancel] {
         let mut program = Program::builder();
         let idle = program.component::<Idle>(ComponentId::new("host-lifecycle-idle"), ());
-        let runtime = LiveRuntime::builder(program.build().expect("valid program"))
+        let runtime = Runtime::builder(program.build().expect("valid program"))
             .build()
             .expect("valid live runtime");
         let handle = runtime.handle(&idle).expect("live handle");
@@ -132,7 +132,7 @@ async fn shutdown_requests_close_ingress_and_preserve_completed_result() {
     for mode in [Shutdown::Drain, Shutdown::Cancel] {
         let mut program = Program::builder();
         let idle = program.component::<Idle>(ComponentId::new("shutdown-requests"), ());
-        let runtime = LiveRuntime::builder(program.build().expect("valid program"))
+        let runtime = Runtime::builder(program.build().expect("valid program"))
             .build()
             .expect("valid live runtime");
         let handle = runtime.handle(&idle).expect("live handle");
@@ -177,7 +177,7 @@ impl Component for RecurringTimer {
 async fn shutdown_grace_period_escalates_recurring_timer_and_joins() {
     let mut program = Program::builder();
     program.component::<RecurringTimer>(ComponentId::new("recurring-timer"), ());
-    let mut task = LiveRuntime::builder(program.build().expect("valid program"))
+    let mut task = Runtime::builder(program.build().expect("valid program"))
         .build()
         .expect("valid runtime")
         .spawn();

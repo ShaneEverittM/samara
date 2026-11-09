@@ -174,7 +174,7 @@ async fn live_builder_binds_every_requirement_through_with_assembly() {
     let (program, recorder) = assemble();
     let ledger = recorder.exports().ledger.clone();
     let stamp = CountingStamp::default();
-    let runtime = LiveRuntime::builder(program)
+    let runtime = Runtime::builder(program)
         .with_assembly(recorder)
         .and_drivers((stamp.clone(), SilentPulses))
         .build()
@@ -203,7 +203,7 @@ async fn live_builder_binds_every_requirement_through_with_assembly() {
 #[test]
 fn live_builder_accepts_the_drivers_a_assembly_vendors() {
     let (program, recorder) = assemble();
-    LiveRuntime::builder(program)
+    Runtime::builder(program)
         .with_assembly(recorder)
         .and_its_vendored_drivers()
         .build()
@@ -213,7 +213,7 @@ fn live_builder_accepts_the_drivers_a_assembly_vendors() {
 #[test]
 fn live_build_fails_when_assembly_drivers_are_not_bound() {
     let (program, _) = assemble();
-    let error = LiveRuntime::builder(program)
+    let error = Runtime::builder(program)
         .build()
         .err()
         .expect("unbound drivers are rejected");

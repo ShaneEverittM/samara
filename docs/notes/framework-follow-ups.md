@@ -106,7 +106,7 @@ not accepted API decisions or a review of the unfinished application.
   the runtime's transition and command machinery so isolated tests preserve
   execution semantics. Define how capabilities are supplied and how external
   effects, sources, and ports are explicitly controlled or stubbed.
-  LiveRuntime and ControlledRuntime both accept a Program without sharing a
+  Runtime and ControlledRuntime both accept a Program without sharing a
   runtime interface; preserve that flexibility and let ComponentRuntime expose
   APIs suited to isolated tests. Prioritize this over per-Component transition
   counts in integration tests, which should generally assert behavior across
@@ -166,6 +166,13 @@ a journal Component; exploratory proposals, not accepted API decisions.
   now needs no shared enum and no Port; `tests/connectors.rs` has one.
   `Command::into_request_to` inspects such a request with an inert token
   (ADR-0016).
+
+- [ ] **Declared Clock capability.** Titled as
+  [ADR-0017](../adr/0017-declared-clock-capability.md), not yet written:
+  `program.clock()` so timers and deadlines are declared like effects, a
+  live runtime binds a wall, scaled, or paused clock or has no time, and
+  controlled execution keeps logical time. Decided to pursue November 9,
+  2026, after the `Runtime` rename.
 
 - [ ] **Constructor-function derive.** ADR-0016 left one sending API, with
   `M::Variant { .. }` spelled at every call site. If that proves noisy once

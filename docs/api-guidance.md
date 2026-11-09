@@ -729,14 +729,14 @@ late-Reply policy.
 
 `Port<P>` is immutable logical wiring shared by live and controlled Programs. It
 contains no live capability and is safe to retain in Component configuration.
-`PortHandle<P>` belongs to one assembled LiveRuntime and lets surrounding Tokio
+`PortHandle<P>` belongs to one assembled Runtime and lets surrounding Tokio
 code cross that runtime's external admission boundary. Keeping the types
 separate makes that live capability visible in APIs and review. Rust cannot
 forbid a Component author from placing an arbitrary `Send` field in its
 configuration, so keeping PortHandle out of Components remains a conformance
 rule as well as a type-level design signal.
 
-`LiveRuntime::port_handle` validates the supplied Port against the exact built
+`Runtime::port_handle` validates the supplied Port against the exact built
 Program and binding before spawn. The handle still does not reveal the selected
 provider; Notifications and Requests follow the ordinary Port-message conversion,
 binding, Message delivery, and provider transition path. ControlledRuntime does

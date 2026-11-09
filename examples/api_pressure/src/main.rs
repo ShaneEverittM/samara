@@ -371,7 +371,7 @@ async fn live_shape() -> Result<(), RuntimeError> {
     // Runtime assembly owns the operational channel receiver and effect
     // executor. The logical capabilities and descriptors inside Components
     // stay inert.
-    let runtime = LiveRuntime::builder(program)
+    let runtime = Runtime::builder(program)
         .bind_mpsc(&refs.increments, receiver)
         .bind_effect::<PersistCount, _>(LivePersistence)
         .build()?;

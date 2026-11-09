@@ -294,12 +294,10 @@ fn panicking_binding_program() -> (Program, Port<BindingMessage>) {
     (builder.build().expect("valid binding Program"), port)
 }
 
-fn runtime_with_observer(
-    program: Program,
-) -> (LiveRuntime, tokio::sync::mpsc::UnboundedReceiver<()>) {
+fn runtime_with_observer(program: Program) -> (Runtime, tokio::sync::mpsc::UnboundedReceiver<()>) {
     let (observed, observations) = tokio::sync::mpsc::unbounded_channel();
     let (ingress_observed, _ingress_observations) = tokio::sync::mpsc::unbounded_channel();
-    let runtime = LiveRuntime::builder(program)
+    let runtime = Runtime::builder(program)
         .bind_effect::<RequestObserved, _>(ObservationDriver { observed })
         .bind_effect::<AwaitRelease, _>(ImmediateReleaseDriver)
         .bind_effect::<IngressObserved, _>(IngressObserver {
@@ -310,10 +308,10 @@ fn runtime_with_observer(
     (runtime, observations)
 }
 
-fn runtime_with_default_effects(program: Program) -> LiveRuntime {
+fn runtime_with_default_effects(program: Program) -> Runtime {
     let (request_observed, _request_observations) = tokio::sync::mpsc::unbounded_channel();
     let (ingress_observed, _ingress_observations) = tokio::sync::mpsc::unbounded_channel();
-    LiveRuntime::builder(program)
+    Runtime::builder(program)
         .bind_effect::<RequestObserved, _>(ObservationDriver {
             observed: request_observed,
         })
@@ -384,7 +382,7 @@ async fn cloned_port_handles_deliver_each_send_exactly_once() -> Result<(), Runt
     builder.connect(&port, &provider.accepting(ProviderMessage::Host));
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
     let (request_observed, _request_observations) = tokio::sync::mpsc::unbounded_channel();
-    let runtime = LiveRuntime::builder(builder.build().expect("valid cloned-handle Program"))
+    let runtime = Runtime::builder(builder.build().expect("valid cloned-handle Program"))
         .bind_effect::<IngressObserved, _>(IngressObserver { observed })
         .bind_effect::<RequestObserved, _>(ObservationDriver {
             observed: request_observed,
@@ -504,7 +502,7 @@ async fn dropping_the_waiter_does_not_cancel_runtime_owned_request_work() -> Res
     let (release, request_release) = tokio::sync::oneshot::channel();
     let (request_observed, _request_observations) = tokio::sync::mpsc::unbounded_channel();
     let (ingress_observed, _ingress_observations) = tokio::sync::mpsc::unbounded_channel();
-    let runtime = LiveRuntime::builder(program)
+    let runtime = Runtime::builder(program)
         .bind_effect::<AwaitRelease, _>(ReleaseDriver {
             started: Mutex::new(Some(started)),
             release: Mutex::new(Some(request_release)),
@@ -585,7 +583,7 @@ async fn component_and_port_ingress_share_one_shutdown_cutoff() -> Result<(), Ru
     builder.connect(&port, &provider.accepting(ProviderMessage::Host));
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
     let (request_observed, _request_observations) = tokio::sync::mpsc::unbounded_channel();
-    let runtime = LiveRuntime::builder(builder.build().expect("valid race Program"))
+    let runtime = Runtime::builder(builder.build().expect("valid race Program"))
         .bind_effect::<IngressObserved, _>(IngressObserver { observed })
         .bind_effect::<RequestObserved, _>(ObservationDriver {
             observed: request_observed,
@@ -727,7 +725,7 @@ async fn send_binding_conversion_panics_are_contained_after_earlier_sends_land()
 #[tokio::test]
 async fn send_binding_panics_are_contained_as_runtime_faults() -> Result<(), RuntimeError> {
     let (program, port) = panicking_binding_program();
-    let runtime = LiveRuntime::builder(program).build()?;
+    let runtime = Runtime::builder(program).build()?;
     let host = runtime.port_handle(&port)?;
     let task = runtime.spawn();
 
@@ -746,7 +744,7 @@ async fn send_binding_panics_are_contained_as_runtime_faults() -> Result<(), Run
 #[tokio::test]
 async fn request_binding_panics_are_contained_as_runtime_faults() -> Result<(), RuntimeError> {
     let (program, port) = panicking_binding_program();
-    let runtime = LiveRuntime::builder(program).build()?;
+    let runtime = Runtime::builder(program).build()?;
     let host = runtime.port_handle(&port)?;
     let task = runtime.spawn();
 

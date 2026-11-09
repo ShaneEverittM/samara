@@ -575,7 +575,7 @@ fn an_initial_request_to_a_foreign_connector_fails_both_profile_builds() {
             .expect("the hidden connector is ordinary Rust until a profile reads initial work")
     }
 
-    let live = LiveRuntime::builder(program())
+    let live = Runtime::builder(program())
         .build()
         .err()
         .expect("initial foreign connector must fail live build");

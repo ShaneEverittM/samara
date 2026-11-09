@@ -140,7 +140,7 @@ async fn phase6_mpsc_closure_ends_once() {
     drop(sender);
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
     let (program, _, stream) = stream_program(descriptor, 1);
-    let runtime = LiveRuntime::builder(program)
+    let runtime = Runtime::builder(program)
         .bind_mpsc(&stream, receiver)
         .bind_effect::<ObserveStream, _>(StreamObserver {
             observations: observed,
@@ -163,7 +163,7 @@ async fn phase6_mpsc_duplicate_or_reactivation_faults() {
     let (_sender, receiver) = tokio::sync::mpsc::channel::<u64>(1);
     let (observed, _observations) = tokio::sync::mpsc::unbounded_channel();
     let (program, components, stream) = stream_program(descriptor, 2);
-    let runtime = LiveRuntime::builder(program)
+    let runtime = Runtime::builder(program)
         .bind_mpsc(&stream, receiver)
         .bind_effect::<ObserveStream, _>(StreamObserver {
             observations: observed,
@@ -195,7 +195,7 @@ async fn phase6_mpsc_duplicate_or_reactivation_faults() {
     drop(sender);
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
     let (program, components, stream) = stream_program(descriptor, 1);
-    let runtime = LiveRuntime::builder(program)
+    let runtime = Runtime::builder(program)
         .bind_mpsc(&stream, receiver)
         .bind_effect::<ObserveStream, _>(StreamObserver {
             observations: observed,
@@ -334,12 +334,12 @@ fn tcp_program(endpoint: SocketAddr) -> (Program, ComponentRef<TcpProbe>) {
 fn tcp_runtime(
     endpoint: SocketAddr,
 ) -> (
-    LiveRuntime,
+    Runtime,
     tokio::sync::mpsc::UnboundedReceiver<TcpObservation>,
 ) {
     let (program, _probe) = tcp_program(endpoint);
     let (observed, observations) = tokio::sync::mpsc::unbounded_channel();
-    let runtime = LiveRuntime::builder(program)
+    let runtime = Runtime::builder(program)
         .bind_tcp()
         .bind_effect::<ObserveTcp, _>(TcpObserver {
             observations: observed,

@@ -71,7 +71,7 @@ fn effect_program() -> (Program, ComponentRef<EffectComponent>) {
 #[test]
 fn later_effect_dependency_fails_live_and_controlled_build_when_unbound() {
     let (program, _) = effect_program();
-    let live_error = LiveRuntime::builder(program)
+    let live_error = Runtime::builder(program)
         .build()
         .err()
         .expect("the declared Effect dependency is unbound");
@@ -157,7 +157,7 @@ fn source_program() -> (Program, ComponentRef<SourceComponent>) {
 #[test]
 fn later_source_dependency_fails_live_and_controlled_build_when_unbound() {
     let (program, _) = source_program();
-    let live_error = LiveRuntime::builder(program)
+    let live_error = Runtime::builder(program)
         .build()
         .err()
         .expect("the declared Source dependency is unbound");
@@ -221,7 +221,7 @@ impl SourceDriver<LateSource> for CountingSourceDriver {
 fn initially_visible_foreign_source_capability_is_rejected_during_profile_build() {
     let starts = Arc::new(AtomicUsize::new(0));
     let (program, _) = foreign_source_program(true);
-    let error = LiveRuntime::builder(program)
+    let error = Runtime::builder(program)
         .bind_source::<LateSource, _>(CountingSourceDriver {
             starts: starts.clone(),
         })
@@ -257,7 +257,7 @@ async fn dynamically_reached_foreign_source_faults_before_terminal_behavior() {
 
     let starts = Arc::new(AtomicUsize::new(0));
     let (program, component) = foreign_source_program(false);
-    let runtime = LiveRuntime::builder(program)
+    let runtime = Runtime::builder(program)
         .bind_source::<LateSource, _>(CountingSourceDriver {
             starts: starts.clone(),
         })
@@ -312,7 +312,7 @@ fn declared_effect_runs_in_controlled_execution() -> Result<(), RuntimeError> {
 async fn declared_effect_runs_in_live_execution() -> Result<(), RuntimeError> {
     let (program, component) = effect_program();
     let calls = Arc::new(AtomicUsize::new(0));
-    let runtime = LiveRuntime::builder(program)
+    let runtime = Runtime::builder(program)
         .bind_effect::<LateEffect, _>(CountingEffectDriver {
             calls: calls.clone(),
         })
@@ -372,7 +372,7 @@ fn initial_foreign_effect_program() -> Program {
 #[test]
 fn initially_visible_foreign_effect_capability_is_rejected_during_profile_build() {
     let calls = Arc::new(AtomicUsize::new(0));
-    let live_error = LiveRuntime::builder(initial_foreign_effect_program())
+    let live_error = Runtime::builder(initial_foreign_effect_program())
         .bind_effect::<LateEffect, _>(CountingEffectDriver {
             calls: calls.clone(),
         })
@@ -532,7 +532,7 @@ fn initially_visible_foreign_component_and_port_capabilities_fail_profile_build(
         initial_foreign_port_program(false),
         initial_foreign_port_program(true),
     ] {
-        let error = LiveRuntime::builder(program)
+        let error = Runtime::builder(program)
             .build()
             .err()
             .expect("initial foreign connection must fail live build");
@@ -595,7 +595,7 @@ async fn run_forever_surfaces_dynamic_foreign_capability_before_live_driver() {
         },
     );
     let calls = Arc::new(AtomicUsize::new(0));
-    let runtime = LiveRuntime::builder(owner.build().expect("valid owner Program"))
+    let runtime = Runtime::builder(owner.build().expect("valid owner Program"))
         .bind_effect::<LateEffect, _>(CountingEffectDriver {
             calls: calls.clone(),
         })
@@ -626,7 +626,7 @@ fn exact_stream_binding_rejects_a_foreign_capability_during_build() {
     let program = owner.build().expect("valid owner Program");
     let (_sender, receiver) = tokio::sync::mpsc::channel(1);
 
-    let error = LiveRuntime::builder(program)
+    let error = Runtime::builder(program)
         .bind_mpsc(&foreign_stream, receiver)
         .build()
         .err()
@@ -655,7 +655,7 @@ fn two_exact_stream_capabilities_of_one_type_bind_independently() -> Result<(), 
     let (_first_sender, first_receiver) = tokio::sync::mpsc::channel(1);
     let (_second_sender, second_receiver) = tokio::sync::mpsc::channel(1);
 
-    LiveRuntime::builder(program)
+    Runtime::builder(program)
         .bind_mpsc(&first, first_receiver)
         .bind_mpsc(&second, second_receiver)
         .build()?;
@@ -852,7 +852,7 @@ async fn live_exact_streams_with_equal_descriptors_route_by_capability() -> Resu
     let (first_sender, first_receiver) = tokio::sync::mpsc::channel(1);
     let (second_sender, second_receiver) = tokio::sync::mpsc::channel(1);
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
-    let runtime = LiveRuntime::builder(program.build().expect("valid Program"))
+    let runtime = Runtime::builder(program.build().expect("valid Program"))
         .bind_mpsc(&first, first_receiver)
         .bind_mpsc(&second, second_receiver)
         .bind_effect::<RecordDualStream, _>(RecordDualStreamDriver { observed })
@@ -1018,7 +1018,7 @@ fn framed_stream_program() -> (
 fn exact_stream_bridge_accepts_a_composed_source_capability() -> Result<(), RuntimeError> {
     let (program, _component, source) = framed_stream_program();
     let (_sender, receiver) = tokio::sync::mpsc::channel(1);
-    LiveRuntime::builder(program)
+    Runtime::builder(program)
         .bind_mpsc(&source, receiver)
         .build()?;
 
@@ -1048,7 +1048,7 @@ async fn live_exact_stream_bridge_runs_composed_layers_before_component_mapping(
     );
     let (sender, receiver) = tokio::sync::mpsc::channel(1);
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
-    let runtime = LiveRuntime::builder(program.build().expect("valid composed stream Program"))
+    let runtime = Runtime::builder(program.build().expect("valid composed stream Program"))
         .bind_mpsc(&source, receiver)
         .bind_effect::<RecordDualStream, _>(RecordDualStreamDriver { observed })
         .build()?;
@@ -1084,7 +1084,7 @@ fn composed_source_program() -> Program {
 
 #[test]
 fn composed_source_capability_declares_only_its_terminal_requirement() -> Result<(), RuntimeError> {
-    LiveRuntime::builder(composed_source_program())
+    Runtime::builder(composed_source_program())
         .bind_source::<LateSource, _>(LateSourceDriver)
         .build()?;
 

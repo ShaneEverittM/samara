@@ -7,7 +7,7 @@
 //! changes the model, and returns a [`Command`] describing what to do next.
 //! [`Subscription`]s describe inputs the component wants to keep receiving.
 //!
-//! Use [`LiveRuntime`] to run the application with I/O. Use [`ControlledRuntime`]
+//! Use [`Runtime`] to run the application with I/O. Use [`ControlledRuntime`]
 //! to supply inputs and results yourself, and advance time without waiting.
 //! Both run the same component code.
 //!
@@ -121,15 +121,15 @@ pub mod prelude {
         DriverStopped, Drivers, Effect, EffectCapability, EffectDescriptor, EffectDriver,
         EffectInvocation, EffectOutcome, EffectOutcomeKind, Framed, FramedError, FramedLayer,
         HttpError, HttpErrorKind, HttpJsonError, HttpRequest, HttpResponse, HttpResponseError,
-        HttpStatusError, Init, InstalledAssembly, LiveRuntime, LiveRuntimeBuilder, LogicalTime,
-        PendingEffect, PendingWork, Port, PortHandle, PortId, PrintStderr, PrintStdout, Program,
-        ProgramBuildError, ProgramBuilder, ReadSystemTime, ReplyWith, RequestError, RequestIntent,
-        RequestOutcome, RequestOutcomeKind, Requirements, RunReport, RuntimeError, RuntimeTask,
-        Shutdown, ShutdownReport, Source, SourceCapability, SourceDescriptor, SourceDriver,
-        SourceEvent, SourceEventKind, SourceSink, StatusCode, StdinError, StdinErrorKind,
-        StdinLines, StreamDescriptor, Subscription, SubscriptionAction, SubscriptionId,
-        Subscriptions, SystemClockDriver, TcpBytes, TcpError, TcpErrorKind, TraceCommandKind,
-        TraceEvent, TraceId, TraceRecord, VendorsDrivers, WithAssembly,
+        HttpStatusError, Init, InstalledAssembly, LogicalTime, PendingEffect, PendingWork, Port,
+        PortHandle, PortId, PrintStderr, PrintStdout, Program, ProgramBuildError, ProgramBuilder,
+        ReadSystemTime, ReplyWith, RequestError, RequestIntent, RequestOutcome, RequestOutcomeKind,
+        Requirements, RunReport, Runtime, RuntimeBuilder, RuntimeError, RuntimeTask, Shutdown,
+        ShutdownReport, Source, SourceCapability, SourceDescriptor, SourceDriver, SourceEvent,
+        SourceEventKind, SourceSink, StatusCode, StdinError, StdinErrorKind, StdinLines,
+        StreamDescriptor, Subscription, SubscriptionAction, SubscriptionId, Subscriptions,
+        SystemClockDriver, TcpBytes, TcpError, TcpErrorKind, TraceCommandKind, TraceEvent, TraceId,
+        TraceRecord, VendorsDrivers, WithAssembly,
     };
     #[cfg(feature = "fs")]
     pub use crate::{
@@ -142,7 +142,7 @@ pub mod prelude {
 ///
 /// Return it from `update`, or include it in a [`Command::batch`], to request the
 /// write. Construction does no I/O. Writing schedules no response message and
-/// ignores I/O errors. Bind output with [`LiveRuntimeBuilder::bind_stdio`].
+/// ignores I/O errors. Bind output with [`RuntimeBuilder::bind_stdio`].
 ///
 /// ```
 /// use samara::{Command, PrintStdout, Program};
@@ -171,7 +171,7 @@ macro_rules! print {
 ///
 /// Return it from `update`, or include it in a [`Command::batch`], to request the
 /// write. Construction does no I/O. Writing schedules no response message and
-/// ignores I/O errors. Bind output with [`LiveRuntimeBuilder::bind_stdio`].
+/// ignores I/O errors. Bind output with [`RuntimeBuilder::bind_stdio`].
 ///
 /// ```
 /// use samara::{Command, PrintStdout, Program};
@@ -200,7 +200,7 @@ macro_rules! println {
 ///
 /// Return it from `update`, or include it in a [`Command::batch`], to request the
 /// write. Construction does no I/O. Writing schedules no response message and
-/// ignores I/O errors. Bind output with [`LiveRuntimeBuilder::bind_stdio`].
+/// ignores I/O errors. Bind output with [`RuntimeBuilder::bind_stdio`].
 ///
 /// ```
 /// use samara::{Command, PrintStderr, Program};
@@ -229,7 +229,7 @@ macro_rules! eprint {
 ///
 /// Return it from `update`, or include it in a [`Command::batch`], to request the
 /// write. Construction does no I/O. Writing schedules no response message and
-/// ignores I/O errors. Bind output with [`LiveRuntimeBuilder::bind_stdio`].
+/// ignores I/O errors. Bind output with [`RuntimeBuilder::bind_stdio`].
 ///
 /// ```
 /// use samara::{Command, PrintStderr, Program};
@@ -2225,7 +2225,7 @@ impl<Message> From<Vec<Subscription<Message>>> for Subscriptions<Message> {
 /// // In the host, bind a real receiver instead.
 /// let (program, _, input) = program()?;
 /// let (sender, receiver) = tokio::sync::mpsc::channel(16);
-/// let live = LiveRuntime::builder(program).bind_mpsc(&input, receiver).build()?;
+/// let live = Runtime::builder(program).bind_mpsc(&input, receiver).build()?;
 /// // Inside Tokio, call live.spawn() and sender.send(value).await.
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
@@ -2296,7 +2296,7 @@ impl<T: Send + 'static> StreamSourceDescriptor for StreamDescriptor<T> {
 /// EOF emits any remaining nonempty line, then [`SourceEvent::Ended`]. A read or
 /// UTF-8 error produces [`SourceEvent::Failed`] and stops reading. Lines have no
 /// size limit. Live input is available on Unix through
-/// `LiveRuntimeBuilder::bind_stdin`; tests can supply events on any platform.
+/// `RuntimeBuilder::bind_stdin`; tests can supply events on any platform.
 ///
 /// The following example declares the input, stores its capability on a component,
 /// returns a subscription, and runs that component under test control. It also
@@ -2363,7 +2363,7 @@ impl<T: Send + 'static> StreamSourceDescriptor for StreamDescriptor<T> {
 /// #[cfg(unix)]
 /// {
 ///     let (program, _) = program()?;
-///     let live = LiveRuntime::builder(program).bind_stdin().build()?;
+///     let live = Runtime::builder(program).bind_stdin().build()?;
 ///     // Call live.spawn() inside Tokio to start reading; see RuntimeTask for shutdown.
 /// }
 /// # Ok::<(), Box<dyn std::error::Error>>(())
@@ -2456,7 +2456,7 @@ impl Error for StdinError {}
 /// Creating the request does not parse the URL or perform I/O. Use
 /// [`Self::on_response`] to choose how to handle the response, then return the
 /// resulting Command from your component. Live programs need
-/// [`LiveRuntimeBuilder::bind_http`]; controlled tests use
+/// [`RuntimeBuilder::bind_http`]; controlled tests use
 /// `control_effect::<HttpRequest>()`.
 ///
 /// ```
@@ -3121,7 +3121,7 @@ impl HttpJsonError {
 /// Text to write to standard output.
 ///
 /// Creating this value does not write anything. Submit it with a Command and
-/// bind output with [`LiveRuntimeBuilder::bind_stdio`]. The driver writes and
+/// bind output with [`RuntimeBuilder::bind_stdio`]. The driver writes and
 /// flushes the text but ignores I/O errors. Use [`println!`] for formatting.
 ///
 /// ```
@@ -3165,7 +3165,7 @@ impl EffectDescriptor for PrintStdout {
 /// Text to write to standard error.
 ///
 /// Creating this value does not write anything. Submit it with a Command and
-/// bind output with [`LiveRuntimeBuilder::bind_stdio`]. The driver writes and
+/// bind output with [`RuntimeBuilder::bind_stdio`]. The driver writes and
 /// flushes the text but ignores I/O errors. Use [`eprintln!`] for formatting.
 ///
 /// ```
@@ -3229,7 +3229,7 @@ impl EffectDescriptor for PrintStderr {
 /// ```
 ///
 /// Declare the capability with `program.source::<TcpBytes>()` and pass it into
-/// the component. Enable connections with [`LiveRuntimeBuilder::bind_tcp`].
+/// the component. Enable connections with [`RuntimeBuilder::bind_tcp`].
 /// Controlled tests use `control_source::<TcpBytes>()` and
 /// [`ControlledRuntime::emit_source`] to supply chunks, errors, or EOF.
 /// See [`StdinLines`] for the full source wiring pattern.
@@ -3743,7 +3743,7 @@ impl<P: Send + 'static> fmt::Debug for Port<P> {
 /// Identifies a registered component without giving access to its state.
 ///
 /// Returned by [`ProgramBuilder::component`]. Use it with [`Command::send`] for
-/// component-to-component delivery, [`LiveRuntime::handle`] for an external sender,
+/// component-to-component delivery, [`Runtime::handle`] for an external sender,
 /// or [`ControlledRuntime::state`] to inspect state in tests.
 ///
 /// See the [crate example](crate) for registration and controlled state inspection.
@@ -4037,7 +4037,7 @@ impl<M: Send + 'static> fmt::Debug for Address<M> {
 
 /// Components and their connections, ready to run live or under test control.
 ///
-/// Build one with [`Program::builder`]. Pass it to [`LiveRuntime::builder`] or
+/// Build one with [`Program::builder`]. Pass it to [`Runtime::builder`] or
 /// [`ControlledRuntime::builder`] to supply I/O implementations or test controls.
 /// A Program is consumed by its runtime; use a function to build a fresh copy for
 /// each run. See the [crate example](crate) for component registration.
@@ -4501,7 +4501,7 @@ impl ProgramBuilder {
     /// use samara::prelude::*;
     /// let mut program = Program::builder();
     /// let http = program.effect::<HttpRequest>();
-    /// let runtime = LiveRuntime::builder(program.build()?).bind_http().build()?;
+    /// let runtime = Runtime::builder(program.build()?).bind_http().build()?;
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn effect<D>(&mut self) -> EffectCapability<D>
@@ -4769,7 +4769,7 @@ impl ProgramBuilder {
 /// }
 /// let mut program = Program::builder();
 /// let network = program.effect::<CheckConnection>();
-/// let runtime = LiveRuntime::builder(program.build()?)
+/// let runtime = Runtime::builder(program.build()?)
 ///     .bind_effect::<CheckConnection, _>(Network).build()?;
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
@@ -4813,7 +4813,7 @@ pub trait EffectDriver<D: EffectDescriptor>: Send + Sync + 'static {
 /// }
 /// let mut program = Program::builder();
 /// let values = program.source::<Values>();
-/// let runtime = LiveRuntime::builder(program.build()?)
+/// let runtime = Runtime::builder(program.build()?)
 ///     .bind_source::<Values, _>(ValueSource).build()?;
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
@@ -4991,9 +4991,9 @@ impl Error for RuntimeError {}
 /// Connects a Program's effects and sources to their I/O implementations.
 ///
 /// Call `bind_*` methods, then [`Self::build`]. Building validates the bindings;
-/// [`LiveRuntime::spawn`] starts work. See [`LiveRuntime`] for running a program,
+/// [`Runtime::spawn`] starts work. See [`Runtime`] for running a program,
 /// [`StdinLines`] for input, and [`EffectDriver`] for a custom driver.
-pub struct LiveRuntimeBuilder {
+pub struct RuntimeBuilder {
     program: Program,
     bindings: live_runtime::LiveBindings,
 }
@@ -5020,7 +5020,7 @@ pub struct LiveRuntimeBuilder {
 /// tokio.block_on(async {
 ///     let mut builder = Program::builder();
 ///     let counter = builder.component::<Counter>(ComponentId::new("counter"), ());
-///     let runtime = LiveRuntime::builder(builder.build()?).build()?;
+///     let runtime = Runtime::builder(builder.build()?).build()?;
 ///     let sender = runtime.handle(&counter)?;
 ///     let task = runtime.spawn();
 ///     sender.send(3).await?;
@@ -5034,17 +5034,17 @@ pub struct LiveRuntimeBuilder {
 /// Updates to one component never overlap. Independent events can arrive in
 /// either order. Internal message queues have no size limit, so sustained overload
 /// can grow memory use. Cancellation and runtime errors may discard queued work.
-pub struct LiveRuntime {
+pub struct Runtime {
     program: Program,
     bindings: live_runtime::LiveBindings,
     scope: Arc<live_runtime::LiveScope>,
     receiver: tokio::sync::mpsc::UnboundedReceiver<live_runtime::LiveEvent>,
 }
 
-impl LiveRuntime {
-    /// Starts configuring I/O for a Program. See [`LiveRuntime`].
-    pub fn builder(program: Program) -> LiveRuntimeBuilder {
-        LiveRuntimeBuilder {
+impl Runtime {
+    /// Starts configuring I/O for a Program. See [`Runtime`].
+    pub fn builder(program: Program) -> RuntimeBuilder {
+        RuntimeBuilder {
             program,
             bindings: live_runtime::LiveBindings::new(),
         }
@@ -5053,7 +5053,7 @@ impl LiveRuntime {
     /// Creates a sender for code outside the Samara program.
     ///
     /// Returns an error if the component does not belong to this Program. Keep the
-    /// handle in host code; components send via Commands instead. See [`LiveRuntime`].
+    /// handle in host code; components send via Commands instead. See [`Runtime`].
     pub fn handle<C: Component>(
         &self,
         component: &ComponentRef<C>,
@@ -5102,7 +5102,7 @@ impl LiveRuntime {
     /// Starts the program on the current Tokio runtime.
     ///
     /// Returns a [`RuntimeTask`] that owns the running work. Await its shutdown to
-    /// wait for resource cleanup. See [`LiveRuntime`] for a complete example.
+    /// wait for resource cleanup. See [`Runtime`] for a complete example.
     ///
     /// # Panics
     ///
@@ -5119,7 +5119,7 @@ impl LiveRuntime {
     }
 }
 
-impl LiveRuntimeBuilder {
+impl RuntimeBuilder {
     /// Connects a source capability to a Tokio receiver.
     ///
     /// Use a capability for [`StreamDescriptor`] or a [`Framed`] source wrapping one.
@@ -5197,7 +5197,7 @@ impl LiveRuntimeBuilder {
     /// use samara::prelude::*;
     /// let mut program = Program::builder();
     /// let http = program.effect::<HttpRequest>();
-    /// let runtime = LiveRuntime::builder(program.build()?).bind_http().build()?;
+    /// let runtime = Runtime::builder(program.build()?).bind_http().build()?;
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     ///
@@ -5222,7 +5222,7 @@ impl LiveRuntimeBuilder {
     /// use samara::prelude::*;
     /// let mut program = Program::builder();
     /// let output = program.effect::<PrintStdout>();
-    /// let runtime = LiveRuntime::builder(program.build()?).bind_stdio().build()?;
+    /// let runtime = Runtime::builder(program.build()?).bind_stdio().build()?;
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn bind_stdio(mut self) -> Self {
@@ -5236,7 +5236,7 @@ impl LiveRuntimeBuilder {
     /// use samara::prelude::*;
     /// let mut program = Program::builder();
     /// let clock = program.effect::<ReadSystemTime>();
-    /// let runtime = LiveRuntime::builder(program.build()?).bind_system_time().build()?;
+    /// let runtime = Runtime::builder(program.build()?).bind_system_time().build()?;
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn bind_system_time(mut self) -> Self {
@@ -5257,7 +5257,7 @@ impl LiveRuntimeBuilder {
     /// use samara::prelude::*;
     /// let mut program = Program::builder();
     /// let journal = program.effect::<AppendToFile>();
-    /// let runtime = LiveRuntime::builder(program.build()?).bind_fs("./data").build()?;
+    /// let runtime = Runtime::builder(program.build()?).bind_fs("./data").build()?;
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     #[cfg(feature = "fs")]
@@ -5283,15 +5283,15 @@ impl LiveRuntimeBuilder {
     /// Every declared effect and source needs one matching implementation, even if
     /// unused at startup. Missing, duplicate, conflicting, or foreign bindings return
     /// an error, as do foreign capabilities in startup commands and subscriptions.
-    /// Call [`LiveRuntime::spawn`] to begin work.
-    pub fn build(mut self) -> Result<LiveRuntime, RuntimeError> {
+    /// Call [`Runtime::spawn`] to begin work.
+    pub fn build(mut self) -> Result<Runtime, RuntimeError> {
         self.bindings.validate(&self.program)?;
         for component in &self.program.components {
             component.validate_initial_capabilities(&self.program)?;
         }
         let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
         let scope = Arc::new(live_runtime::LiveScope::new(sender));
-        Ok(LiveRuntime {
+        Ok(Runtime {
             program: self.program,
             bindings: self.bindings,
             scope,
@@ -5302,9 +5302,9 @@ impl LiveRuntimeBuilder {
 
 /// Sends messages to a component from surrounding async code.
 ///
-/// Create it with [`LiveRuntime::handle`] before spawning the runtime. Clones
+/// Create it with [`Runtime::handle`] before spawning the runtime. Clones
 /// send to the same component. The handle does not expose its model and should
-/// not be stored in a component. See [`LiveRuntime`] for a working example.
+/// not be stored in a component. See [`Runtime`] for a working example.
 ///
 /// <details>
 /// <summary>Compile-time checks</summary>
@@ -5336,7 +5336,7 @@ impl<C: Component> ComponentHandle<C> {
     /// Queues a message for this component.
     ///
     /// Success means the message was accepted, not that `update` has run. Returns an
-    /// error after shutdown begins or the runtime fails. See [`LiveRuntime`].
+    /// error after shutdown begins or the runtime fails. See [`Runtime`].
     pub async fn send(&self, message: C::Message) -> Result<(), RuntimeError> {
         self.scope.accept_ingress(live_runtime::LiveEvent::ingress(
             live_runtime::LiveIngress {
@@ -5351,7 +5351,7 @@ impl<C: Component> ComponentHandle<C> {
 
 /// Reaches a Port from async code outside a Samara program.
 ///
-/// Create it with [`LiveRuntime::port_handle`] before spawning the runtime.
+/// Create it with [`Runtime::port_handle`] before spawning the runtime.
 /// Clones use the same port. Sends and requests still go through the
 /// provider's `update` method; the handle does not expose its model.
 ///
@@ -5376,7 +5376,7 @@ impl<C: Component> ComponentHandle<C> {
 ///     let count = builder.port::<CountMessage>(PortId::new("count"));
 ///     let counter = builder.component::<Counter>(ComponentId::new("counter"), ());
 ///     builder.connect(&count, &counter.connector());
-///     let runtime = LiveRuntime::builder(builder.build()?).build()?;
+///     let runtime = Runtime::builder(builder.build()?).build()?;
 ///     let client = runtime.port_handle(&count)?;
 ///     let task = runtime.spawn();
 ///     assert_eq!(client.request_to(CountMessage::Read).await?, 42);
@@ -5536,7 +5536,7 @@ impl<P: Send + 'static> PortHandle<P> {
 
 /// Owns a running Samara program and provides shutdown and error reporting.
 ///
-/// Returned by [`LiveRuntime::spawn`]. Await [`Self::shutdown`] to stop the program
+/// Returned by [`Runtime::spawn`]. Await [`Self::shutdown`] to stop the program
 /// and wait for cleanup. Use [`Self::run_forever`] to monitor it while waiting for
 /// an external shutdown signal.
 ///
@@ -5545,7 +5545,7 @@ impl<P: Send + 'static> PortHandle<P> {
 /// let tokio = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
 /// tokio.block_on(async {
 ///     let program = Program::builder().build()?;
-///     let task = LiveRuntime::builder(program).build()?.spawn();
+///     let task = Runtime::builder(program).build()?.spawn();
 ///     assert!(task.shutdown(Shutdown::Drain).await?.is_clean());
 ///     Ok::<(), Box<dyn std::error::Error>>(())
 /// })?;
@@ -6049,7 +6049,7 @@ impl ControlledRuntimeBuilder {
 /// Drivers never bind inside [`Self::install`]; assembly is shared by live and
 /// controlled execution. [`ProgramBuilder::install`] returns an [`InstalledAssembly`]
 /// token holding the exports. A live host passes it to
-/// [`LiveRuntimeBuilder::with_assembly`] and supplies drivers with
+/// [`RuntimeBuilder::with_assembly`] and supplies drivers with
 /// [`WithAssembly::and_drivers`]; a controlled test passes it to
 /// [`ControlledRuntimeBuilder::with_assembly`] and is done, because controlled
 /// bindings carry no information beyond the descriptor type.
@@ -6108,7 +6108,7 @@ impl ControlledRuntimeBuilder {
 /// }
 ///
 /// let (program, pinger) = assemble()?;
-/// let live = LiveRuntime::builder(program)
+/// let live = Runtime::builder(program)
 ///     .with_assembly(pinger)
 ///     .and_drivers(NoopPing)
 ///     .build()?;
@@ -6147,7 +6147,7 @@ impl ControlledRuntimeBuilder {
 /// }
 /// let mut program = Program::builder();
 /// let a = program.install::<A>(());
-/// let _ = LiveRuntime::builder(program.build().unwrap())
+/// let _ = Runtime::builder(program.build().unwrap())
 ///     .with_assembly(a)
 ///     .and_drivers(NoopPong);
 /// ```
@@ -6165,7 +6165,7 @@ impl ControlledRuntimeBuilder {
 /// }
 /// let mut program = Program::builder();
 /// let a = program.install::<A>(());
-/// let _ = LiveRuntime::builder(program.build().unwrap())
+/// let _ = Runtime::builder(program.build().unwrap())
 ///     .with_assembly(a)
 ///     .build();
 /// ```
@@ -6234,23 +6234,23 @@ impl Requirements for () {
 /// Implemented by the crate; applications do not implement it.
 pub trait Drivers<Requires: Requirements> {
     /// Binds every driver into the live builder in list order.
-    fn bind(self, runtime: LiveRuntimeBuilder) -> LiveRuntimeBuilder;
+    fn bind(self, runtime: RuntimeBuilder) -> RuntimeBuilder;
 }
 
 impl<D: EffectDescriptor, T: EffectDriver<D>> Drivers<Effect<D>> for T {
-    fn bind(self, runtime: LiveRuntimeBuilder) -> LiveRuntimeBuilder {
+    fn bind(self, runtime: RuntimeBuilder) -> RuntimeBuilder {
         runtime.bind_effect::<D, T>(self)
     }
 }
 
 impl<S: SourceDescriptor, T: SourceDriver<S>> Drivers<Source<S>> for T {
-    fn bind(self, runtime: LiveRuntimeBuilder) -> LiveRuntimeBuilder {
+    fn bind(self, runtime: RuntimeBuilder) -> RuntimeBuilder {
         runtime.bind_source::<S, T>(self)
     }
 }
 
 impl Drivers<()> for () {
-    fn bind(self, runtime: LiveRuntimeBuilder) -> LiveRuntimeBuilder {
+    fn bind(self, runtime: RuntimeBuilder) -> RuntimeBuilder {
         runtime
     }
 }
@@ -6268,7 +6268,7 @@ macro_rules! requirement_tuples {
             for ($($driver,)+)
         {
             #[allow(non_snake_case)]
-            fn bind(self, runtime: LiveRuntimeBuilder) -> LiveRuntimeBuilder {
+            fn bind(self, runtime: RuntimeBuilder) -> RuntimeBuilder {
                 let ($($driver,)+) = self;
                 $(let runtime = $driver.bind(runtime);)+
                 runtime
@@ -6302,12 +6302,12 @@ impl<D: SourceDescriptor> SourceDriver<D> for Box<dyn SourceDriver<D>> {
 
 /// A live builder waiting for an installed Assembly's drivers.
 ///
-/// Returned by [`LiveRuntimeBuilder::with_assembly`]. Nothing else can be
+/// Returned by [`RuntimeBuilder::with_assembly`]. Nothing else can be
 /// called until [`Self::and_drivers`] supplies them, so a chain that forgets
 /// the drivers does not compile.
 #[must_use = "call `and_drivers` to supply the Assembly's drivers and recover the builder"]
 pub struct WithAssembly<S: Assembly> {
-    builder: LiveRuntimeBuilder,
+    builder: RuntimeBuilder,
     marker: PhantomData<fn() -> S>,
 }
 
@@ -6318,13 +6318,13 @@ impl<S: Assembly> WithAssembly<S> {
     /// Pass one driver for a single requirement or a tuple matching the
     /// requirement tuple. A driver that implements several effects is passed
     /// once per position; cloning is fine.
-    pub fn and_drivers(self, drivers: impl Drivers<S::Requires>) -> LiveRuntimeBuilder {
+    pub fn and_drivers(self, drivers: impl Drivers<S::Requires>) -> RuntimeBuilder {
         drivers.bind(self.builder)
     }
 
     /// Binds the drivers the Assembly vendors through [`VendorsDrivers`] and
     /// returns the builder.
-    pub fn and_its_vendored_drivers(self) -> LiveRuntimeBuilder
+    pub fn and_its_vendored_drivers(self) -> RuntimeBuilder
     where
         S: VendorsDrivers,
     {
@@ -6372,7 +6372,7 @@ impl<S: Assembly> WithAssembly<S> {
 ///
 /// let mut program = Program::builder();
 /// let pinger = program.install::<Pinger>(());
-/// let runtime = LiveRuntime::builder(program.build()?)
+/// let runtime = Runtime::builder(program.build()?)
 ///     .with_assembly(pinger)
 ///     .and_its_vendored_drivers()
 ///     .build()?;
@@ -6387,7 +6387,7 @@ pub trait VendorsDrivers: Assembly {
     fn drivers() -> Self::Drivers;
 }
 
-impl LiveRuntimeBuilder {
+impl RuntimeBuilder {
     /// Starts binding an installed [`Assembly`]'s drivers.
     ///
     /// Takes the [`InstalledAssembly`] token from [`ProgramBuilder::install`] and returns
@@ -6864,7 +6864,7 @@ mod request_authority_tests {
     #[tokio::test]
     async fn live_foreign_expired_reply_still_faults() {
         let (program, replier, foreign) = fixture();
-        let runtime = LiveRuntime::builder(program).build().unwrap();
+        let runtime = Runtime::builder(program).build().unwrap();
         let handle = runtime.handle(&replier).unwrap();
         let task = runtime.spawn();
         handle.send(foreign).await.unwrap();

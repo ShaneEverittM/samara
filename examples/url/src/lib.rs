@@ -274,7 +274,7 @@ impl Component for Checker {
 /// ```
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let program = urlchecker::program()?;
-/// let runtime = samara::LiveRuntime::builder(program)
+/// let runtime = samara::Runtime::builder(program)
 ///     .bind_http()
 ///     .bind_stdio()
 ///     .bind_stdin()

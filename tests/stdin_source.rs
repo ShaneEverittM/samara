@@ -199,13 +199,13 @@ fn controlled_stdin_delivers_typed_failure_without_live_fallback() {
 #[test]
 fn live_stdin_binding_is_exact_and_required() {
     let (program, _probe, _stdin) = stdin_program();
-    assert!(LiveRuntime::builder(program).build().is_err());
+    assert!(Runtime::builder(program).build().is_err());
 
     let (program, _probe, _stdin) = stdin_program();
-    assert!(LiveRuntime::builder(program).bind_stdin().build().is_ok());
+    assert!(Runtime::builder(program).bind_stdin().build().is_ok());
 
     let program = Program::builder().build().expect("empty program");
-    let error = LiveRuntime::builder(program)
+    let error = Runtime::builder(program)
         .bind_stdin()
         .build()
         .err()
@@ -222,7 +222,7 @@ fn live_stdin_binding_accepts_a_composed_capability() {
     let program = builder.build().expect("valid composed stdin program");
 
     assert!(
-        LiveRuntime::builder(program)
+        Runtime::builder(program)
             .bind_stdin()
             .bind_tcp()
             .build()
@@ -235,7 +235,7 @@ fn live_stdin_binding_accepts_a_composed_capability() {
 fn live_stdin_rejects_duplicate_or_competing_process_bindings() {
     let (program, _probe, _stdin) = stdin_program();
     assert!(
-        LiveRuntime::builder(program)
+        Runtime::builder(program)
             .bind_stdin()
             .bind_stdin()
             .build()
@@ -246,7 +246,7 @@ fn live_stdin_rejects_duplicate_or_competing_process_bindings() {
     let _first = builder.source::<StdinLines>();
     let _second = builder.source::<StdinLines>();
     let program = builder.build().expect("two declarations are valid");
-    let error = LiveRuntime::builder(program)
+    let error = Runtime::builder(program)
         .bind_stdin()
         .build()
         .err()
@@ -261,7 +261,7 @@ fn live_stdin_rejects_duplicate_or_competing_process_bindings() {
     let _first = builder.source::<StdinLines>();
     let _second = builder.source::<Framed<StdinLines, LineLength>>();
     let program = builder.build().expect("two declarations are valid");
-    assert!(LiveRuntime::builder(program).bind_stdin().build().is_err());
+    assert!(Runtime::builder(program).bind_stdin().build().is_err());
 }
 
 #[cfg(unix)]
@@ -276,7 +276,7 @@ fn live_stdin_rejects_a_conflicting_type_wide_driver_in_either_order() {
 
     for stdin_first in [false, true] {
         let (program, _, _) = stdin_program();
-        let builder = LiveRuntime::builder(program);
+        let builder = Runtime::builder(program);
         let builder = if stdin_first {
             builder
                 .bind_stdin()

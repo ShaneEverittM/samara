@@ -410,7 +410,7 @@ Reply directly; closure or fault wakes it with `RuntimeError`. Live-only; it
 has no ControlledRuntime counterpart (ADR-0006).
 
 **`RuntimeTask`** — The live structured-ownership handle from
-`LiveRuntime::spawn`. `run_forever` observes termination without initiating
+`Runtime::spawn`. `run_forever` observes termination without initiating
 shutdown; `shutdown` selects Drain or Cancel explicitly (ADR-0007, ADR-0010).
 
 ## Execution and Ordering
@@ -570,6 +570,7 @@ to hold.
 | `Connectable`, `connect_with`, `connector_with`, `to_connector` | `connect(&port, &connector)`, `ComponentRef::connector`, `accepting` | A Port takes a Connector and nothing else (ADR-0015 amendment, November 8, 2026); the conversion lives on the Connector side, under one verb. |
 | Recipient, Address | Connector | Working names while the provider-owned address was designed; *Connector* pairs with *Port* and names the thing held rather than a role. |
 | `Installed<A>` | `InstalledAssembly<A>` | Renamed November 8, 2026 so `with_assembly(installed_assembly)` reads as a sentence; the token keeps the `must_use` nudge and `.exports()`. |
+| `LiveRuntime`, `LiveRuntimeBuilder` | `Runtime`, `RuntimeBuilder` | Renamed November 9, 2026: the live profile is the one every application names, so it carries no qualifier; *live execution* remains the glossary term for the profile, and `ControlledRuntime` keeps its adjective. |
 | `messages!`, `Notification<M>`, `Request<M>`, `RequestInvocation`, `Command::notify`, `request`, `request_with`, `request_timeout`, `request_timeout_with`, `TraceCommandKind::Notify` | `Command::send`, `Command::request_to`, `request_to_timeout`; a request variant carrying `ReplyWith<R>`; `TraceCommandKind::Send` with `target_port` | Removed November 8, 2026 (ADR-0016). The trait form and the constructor form gave the same guarantee twice; the message type is the protocol. |
 | `ask` | `request` | Use `Command::request` for command-now, Message-later Component request/reply and `PortHandle::request` for the deliberately awaitable live host boundary. |
 | `tell`, `notify` | `send` | One-way delivery to a Port, Connector, or ComponentRef is `send`; *notify* survives only as prose for a variant without a reply token. |

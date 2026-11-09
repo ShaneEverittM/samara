@@ -313,7 +313,7 @@ async fn live_drain_follows_relative_redirect_through_the_same_driver() {
         });
         let (program, _) = program(HttpRequest::get(url), 3);
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let task = LiveRuntime::builder(program).bind_http().bind_effect::<Observed, _>(ObserveDriver(tx)).build().unwrap().spawn();
+        let task = Runtime::builder(program).bind_http().bind_effect::<Observed, _>(ObserveDriver(tx)).build().unwrap().spawn();
         assert!(task.shutdown(Shutdown::Drain).await.unwrap().is_clean());
         assert!(matches!(rx.recv().await.unwrap(), EffectOutcome::Succeeded(r) if r.status() == StatusCode::OK));
         assert!(rx.try_recv().is_err());
@@ -436,7 +436,7 @@ async fn live_cancel_aborts_active_redirect_hop_without_application_completion()
         });
         let (program, _) = program(HttpRequest::get(url), 3);
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let task = LiveRuntime::builder(program).bind_http().bind_effect::<Observed, _>(ObserveDriver(tx)).build().unwrap().spawn();
+        let task = Runtime::builder(program).bind_http().bind_effect::<Observed, _>(ObserveDriver(tx)).build().unwrap().spawn();
         let mut socket = server.await.unwrap();
         assert!(task.shutdown(Shutdown::Cancel).await.unwrap().is_clean());
         assert!(rx.try_recv().is_err());

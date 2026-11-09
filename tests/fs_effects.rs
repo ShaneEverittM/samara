@@ -241,7 +241,7 @@ async fn bound_driver_appends_reads_replaces_and_removes_under_the_root() {
     let root = unique_root("walk");
     let (program, walker) = walker_program();
     let (sender, mut reports) = tokio::sync::mpsc::unbounded_channel();
-    let runtime = LiveRuntime::builder(program)
+    let runtime = Runtime::builder(program)
         .bind_fs(&root)
         .bind_effect::<Report, _>(Reporter(sender))
         .build()
@@ -275,7 +275,7 @@ async fn bound_driver_rejects_paths_outside_the_root_without_touching_disk() {
     let root = unique_root("escape");
     let (program, walker) = walker_program();
     let (sender, mut reports) = tokio::sync::mpsc::unbounded_channel();
-    let runtime = LiveRuntime::builder(program)
+    let runtime = Runtime::builder(program)
         .bind_fs(&root)
         .bind_effect::<Report, _>(Reporter(sender))
         .build()
@@ -297,16 +297,13 @@ fn bind_fs_binds_only_declared_effects_and_participates_in_duplicate_validation(
     let _append = builder.effect::<AppendToFile>();
     let program = builder.build().expect("append-only program");
     assert!(
-        LiveRuntime::builder(program)
-            .bind_fs("ignored")
-            .build()
-            .is_ok(),
+        Runtime::builder(program).bind_fs("ignored").build().is_ok(),
         "a program that only appends needs no Read, Replace, or Remove binding"
     );
 
     let (program, _) = walker_program();
     assert!(
-        LiveRuntime::builder(program)
+        Runtime::builder(program)
             .bind_fs("ignored")
             .bind_effect::<ReadFile, _>(FsDriver::new("elsewhere"))
             .build()

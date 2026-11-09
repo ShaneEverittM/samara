@@ -155,7 +155,7 @@ async fn run_live() -> Result<(), Box<dyn Error>> {
 
     // Binding transfers the unique receiver into Samara's structured runtime
     // scope. The Component still contains only inert logical configuration.
-    let runtime = LiveRuntime::builder(program)
+    let runtime = Runtime::builder(program)
         .bind_mpsc(&input_capability, receiver)
         .build()?;
     let runtime = runtime.spawn();

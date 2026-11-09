@@ -453,15 +453,10 @@ impl EffectDriver<Observation> for Observer {
     }
 }
 
-fn live(
-    program: Program,
-) -> (
-    LiveRuntime,
-    tokio::sync::mpsc::UnboundedReceiver<Observation>,
-) {
+fn live(program: Program) -> (Runtime, tokio::sync::mpsc::UnboundedReceiver<Observation>) {
     let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
     (
-        LiveRuntime::builder(program)
+        Runtime::builder(program)
             .bind_effect::<Observation, _>(Observer(sender))
             .build()
             .unwrap(),
