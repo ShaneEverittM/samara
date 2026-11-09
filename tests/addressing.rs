@@ -30,16 +30,21 @@ struct LedgerModel {
 }
 
 impl Component for Ledger {
+    type Requires = ();
     type Config = ();
     type Model = LedgerModel;
     type Message = LedgerProviderMessage;
 
-    fn init(_: &()) -> Init<LedgerModel, LedgerProviderMessage> {
+    fn init(
+        _: &(),
+        _: &samara::Capabilities<Self::Requires>,
+    ) -> Init<LedgerModel, LedgerProviderMessage> {
         Init::new(LedgerModel::default())
     }
 
     fn update(
         _: &(),
+        _: &samara::Capabilities<Self::Requires>,
         model: &mut LedgerModel,
         LedgerProviderMessage::Ledger(message): LedgerProviderMessage,
     ) -> Command<LedgerProviderMessage> {
@@ -76,16 +81,21 @@ enum ClerkMessage {
 }
 
 impl Component for Clerk {
+    type Requires = ();
     type Config = ClerkConfig;
     type Model = ClerkModel;
     type Message = ClerkMessage;
 
-    fn init(_: &ClerkConfig) -> Init<ClerkModel, ClerkMessage> {
+    fn init(
+        _: &ClerkConfig,
+        _: &samara::Capabilities<Self::Requires>,
+    ) -> Init<ClerkModel, ClerkMessage> {
         Init::new(ClerkModel::default())
     }
 
     fn update(
         config: &ClerkConfig,
+        _: &samara::Capabilities<Self::Requires>,
         model: &mut ClerkModel,
         message: ClerkMessage,
     ) -> Command<ClerkMessage> {
@@ -116,17 +126,23 @@ impl Component for Clerk {
 }
 
 fn assemble(patience: Option<Duration>) -> (Program, Port<LedgerMessage>, ComponentRef<Clerk>) {
-    let mut program = Program::builder();
+    let (mut program, ()) = samara::Program::builder::<()>();
     let ledger = program.port::<LedgerMessage>(PortId::new("ledger"));
-    let provider = program.component::<Ledger>(ComponentId::new("ledger"), ());
+    let provider = program
+        .component::<Ledger>(ComponentId::new("ledger"), ())
+        .finish()
+        .expect("component registration");
     program.connect(&ledger, &provider.accepting(LedgerProviderMessage::Ledger));
-    let clerk = program.component::<Clerk>(
-        ComponentId::new("clerk"),
-        ClerkConfig {
-            ledger: ledger.clone(),
-            patience,
-        },
-    );
+    let clerk = program
+        .component::<Clerk>(
+            ComponentId::new("clerk"),
+            ClerkConfig {
+                ledger: ledger.clone(),
+                patience,
+            },
+        )
+        .finish()
+        .expect("component registration");
     (program.build().expect("program assembles"), ledger, clerk)
 }
 
@@ -134,6 +150,7 @@ fn assemble(patience: Option<Duration>) -> (Program, Port<LedgerMessage>, Compon
 fn send_and_request_to_reach_a_port_through_its_binding() {
     let (program, _, clerk) = assemble(None);
     let mut runtime = ControlledRuntime::builder(program)
+        .control_all()
         .build()
         .expect("nothing to control");
 
@@ -175,6 +192,7 @@ fn a_port_request_to_times_out_under_the_usual_deadline_rules() {
     let patience = Duration::from_secs(1);
     let (program, _, clerk) = assemble(Some(patience));
     let mut runtime = ControlledRuntime::builder(program)
+        .control_all()
         .build()
         .expect("nothing to control");
 
@@ -193,7 +211,7 @@ fn a_port_request_to_times_out_under_the_usual_deadline_rules() {
 
 #[test]
 fn into_request_to_inspects_a_request_without_a_runtime() {
-    let mut program = Program::builder();
+    let (mut program, ()) = samara::Program::builder::<()>();
     let ledger = program.port::<LedgerMessage>(PortId::new("ledger"));
 
     let intent = Command::request_to(&ledger, LedgerMessage::Total, ClerkMessage::Total)
@@ -218,21 +236,33 @@ fn into_request_to_inspects_a_request_without_a_runtime() {
 fn an_initial_send_to_a_foreign_port_fails_both_profile_builds() {
     struct Eager;
     impl Component for Eager {
+        type Requires = ();
         type Config = Port<LedgerMessage>;
         type Model = ();
         type Message = ClerkMessage;
-        fn init(ledger: &Port<LedgerMessage>) -> Init<(), ClerkMessage> {
+        fn init(
+            ledger: &Port<LedgerMessage>,
+            _: &samara::Capabilities<Self::Requires>,
+        ) -> Init<(), ClerkMessage> {
             Init::new(()).with_command(Command::send(ledger, LedgerMessage::Add(1)))
         }
-        fn update(_: &Port<LedgerMessage>, _: &mut (), _: ClerkMessage) -> Command<ClerkMessage> {
+        fn update(
+            _: &Port<LedgerMessage>,
+            _: &samara::Capabilities<Self::Requires>,
+            _: &mut (),
+            _: ClerkMessage,
+        ) -> Command<ClerkMessage> {
             Command::none()
         }
     }
     fn program() -> Program {
-        let mut other = Program::builder();
+        let (mut other, ()) = samara::Program::builder::<()>();
         let foreign = other.port::<LedgerMessage>(PortId::new("ledger"));
-        let mut program = Program::builder();
-        program.component::<Eager>(ComponentId::new("eager"), foreign);
+        let (mut program, ()) = samara::Program::builder::<()>();
+        program
+            .component::<Eager>(ComponentId::new("eager"), foreign)
+            .finish()
+            .expect("component registration");
         program.build().expect("the hidden Port is ordinary Rust")
     }
     let live = Runtime::builder(program())
@@ -241,6 +271,7 @@ fn an_initial_send_to_a_foreign_port_fails_both_profile_builds() {
         .expect("live build fails");
     assert!(live.to_string().contains("another Program"), "{live}");
     let controlled = ControlledRuntime::builder(program())
+        .control_all()
         .build()
         .err()
         .expect("controlled build fails");

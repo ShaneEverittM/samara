@@ -31,8 +31,8 @@ enum EffectMessage {
 
 #[test]
 fn v3_effect_command_exposes_descriptor_and_maps_one_outcome() {
-    let mut program = Program::builder();
-    let persist = program.effect::<PersistValue>();
+    let (_program, (declared_0,)) = samara::Program::builder::<(samara::Effect<PersistValue>,)>();
+    let persist = declared_0;
     let command = Command::effect_with(&persist, PersistValue { value: 41 }, |outcome| {
         EffectMessage::Persisted {
             request: 41,
@@ -58,8 +58,8 @@ fn v3_effect_command_exposes_descriptor_and_maps_one_outcome() {
 
 #[test]
 fn v3_all_effect_outcomes_remain_typed_message_input() {
-    let mut program = Program::builder();
-    let persist = program.effect::<PersistValue>();
+    let (_program, (declared_0,)) = samara::Program::builder::<(samara::Effect<PersistValue>,)>();
+    let persist = declared_0;
     let failed = Command::effect_with(&persist, PersistValue { value: 5 }, |outcome| {
         EffectMessage::Persisted {
             request: 5,
@@ -95,8 +95,8 @@ fn v3_all_effect_outcomes_remain_typed_message_input() {
 
 #[test]
 fn v3_equal_effect_descriptors_remain_distinct_command_occurrences() {
-    let mut program = Program::builder();
-    let persist = program.effect::<PersistValue>();
+    let (_program, (declared_0,)) = samara::Program::builder::<(samara::Effect<PersistValue>,)>();
+    let persist = declared_0;
     let command: Command<EffectMessage> = Command::batch([
         Command::effect_with(&persist, PersistValue { value: 7 }, |outcome| {
             EffectMessage::Persisted {
@@ -151,8 +151,9 @@ enum StreamMessage {
 
 #[test]
 fn v4_source_event_mapper_is_reusable_before_delivery() {
-    let mut program = Program::builder();
-    let input = program.source::<StreamDescriptor<u64>>();
+    let (_program, (declared_0,)) =
+        samara::Program::builder::<(samara::Source<StreamDescriptor<u64>>,)>();
+    let input = declared_0;
     let subscription = Subscription::source_with(
         &input,
         SubscriptionId::new("input"),
@@ -186,6 +187,7 @@ struct RawChunks {
 }
 
 impl SourceDescriptor for RawChunks {
+    type Terminal = Self;
     type Item = Vec<u8>;
     type Error = TransportError;
 }
@@ -335,8 +337,8 @@ fn framed_layers_compose_without_profile_binding() {
 
 #[test]
 fn v4_framed_source_events_map_into_component_messages() {
-    let mut program = Program::builder();
-    let socket = program.source::<FramedChunks>();
+    let (_program, (declared_0,)) = samara::Program::builder::<(samara::Source<FramedChunks>,)>();
+    let socket = declared_0;
     let descriptor = FramedChunks::new(
         RawChunks {
             endpoint: "telemetry:7000",

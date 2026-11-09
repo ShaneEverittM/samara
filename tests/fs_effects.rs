@@ -1,5 +1,13 @@
 #![cfg(feature = "fs")]
 
+type TestProgram = Program<(
+    Effect<AppendToFile>,
+    Effect<ReplaceFile>,
+    Effect<ReadFile>,
+    Effect<RemoveFile>,
+    Effect<Report>,
+)>;
+
 use std::convert::Infallible;
 use std::path::{Path, PathBuf};
 
@@ -58,16 +66,21 @@ enum WalkerMessage {
 }
 
 impl Component for Walker {
+    type Requires = ();
     type Config = WalkerConfig;
     type Model = WalkerModel;
     type Message = WalkerMessage;
 
-    fn init(_: &WalkerConfig) -> Init<WalkerModel, WalkerMessage> {
+    fn init(
+        _: &WalkerConfig,
+        _: &samara::Capabilities<Self::Requires>,
+    ) -> Init<WalkerModel, WalkerMessage> {
         Init::new(WalkerModel::default())
     }
 
     fn update(
         config: &WalkerConfig,
+        _: &samara::Capabilities<Self::Requires>,
         model: &mut WalkerModel,
         message: WalkerMessage,
     ) -> Command<WalkerMessage> {
@@ -140,16 +153,26 @@ impl Component for Walker {
     }
 }
 
-fn walker_program() -> (Program, ComponentRef<Walker>) {
-    let mut builder = Program::builder();
+fn walker_program() -> (TestProgram, ComponentRef<Walker>) {
+    let (mut builder, (declared_0, declared_1, declared_2, declared_3, declared_4)) =
+        samara::Program::builder::<(
+            samara::Effect<AppendToFile>,
+            samara::Effect<ReplaceFile>,
+            samara::Effect<ReadFile>,
+            samara::Effect<RemoveFile>,
+            samara::Effect<Report>,
+        )>();
     let config = WalkerConfig {
-        append: builder.effect::<AppendToFile>(),
-        replace: builder.effect::<ReplaceFile>(),
-        read: builder.effect::<ReadFile>(),
-        remove: builder.effect::<RemoveFile>(),
-        report: builder.effect::<Report>(),
+        append: declared_0,
+        replace: declared_1,
+        read: declared_2,
+        remove: declared_3,
+        report: declared_4,
     };
-    let walker = builder.component::<Walker>(ComponentId::new("walker"), config);
+    let walker = builder
+        .component::<Walker>(ComponentId::new("walker"), config)
+        .finish()
+        .expect("component registration");
     (builder.build().expect("valid walker program"), walker)
 }
 
@@ -182,11 +205,7 @@ fn descriptors_carry_relative_paths_and_bytes_without_io() {
 fn filesystem_effects_are_ordinary_controlled_boundaries() {
     let (program, walker) = walker_program();
     let mut runtime = ControlledRuntime::builder(program)
-        .control_effect::<AppendToFile>()
-        .control_effect::<ReplaceFile>()
-        .control_effect::<ReadFile>()
-        .control_effect::<RemoveFile>()
-        .control_effect::<Report>()
+        .control_all()
         .build()
         .expect("valid controlled bindings");
 
@@ -242,8 +261,13 @@ async fn bound_driver_appends_reads_replaces_and_removes_under_the_root() {
     let (program, walker) = walker_program();
     let (sender, mut reports) = tokio::sync::mpsc::unbounded_channel();
     let runtime = Runtime::builder(program)
-        .bind_fs(&root)
-        .bind_effect::<Report, _>(Reporter(sender))
+        .with_drivers((
+            FsDriver::new(&root),
+            FsDriver::new(&root),
+            FsDriver::new(&root),
+            FsDriver::new(&root),
+            Reporter(sender),
+        ))
         .build()
         .expect("valid live bindings");
     let handle = runtime.handle(&walker).expect("walker handle");
@@ -276,8 +300,13 @@ async fn bound_driver_rejects_paths_outside_the_root_without_touching_disk() {
     let (program, walker) = walker_program();
     let (sender, mut reports) = tokio::sync::mpsc::unbounded_channel();
     let runtime = Runtime::builder(program)
-        .bind_fs(&root)
-        .bind_effect::<Report, _>(Reporter(sender))
+        .with_drivers((
+            FsDriver::new(&root),
+            FsDriver::new(&root),
+            FsDriver::new(&root),
+            FsDriver::new(&root),
+            Reporter(sender),
+        ))
         .build()
         .expect("valid live bindings");
     let handle = runtime.handle(&walker).expect("walker handle");
@@ -293,18 +322,27 @@ async fn bound_driver_rejects_paths_outside_the_root_without_touching_disk() {
 
 #[test]
 fn bind_fs_binds_only_declared_effects_and_participates_in_duplicate_validation() {
-    let mut builder = Program::builder();
-    let _append = builder.effect::<AppendToFile>();
+    let (builder, (declared_0,)) = samara::Program::builder::<(samara::Effect<AppendToFile>,)>();
+    let _append = declared_0;
     let program = builder.build().expect("append-only program");
     assert!(
-        Runtime::builder(program).bind_fs("ignored").build().is_ok(),
+        Runtime::builder(program)
+            .with_drivers((samara::FsDriver::new("ignored"),))
+            .build()
+            .is_ok(),
         "a program that only appends needs no Read, Replace, or Remove binding"
     );
 
     let (program, _) = walker_program();
     assert!(
         Runtime::builder(program)
-            .bind_fs("ignored")
+            .with_drivers((
+                FsDriver::new("ignored"),
+                FsDriver::new("ignored"),
+                FsDriver::new("ignored"),
+                FsDriver::new("ignored"),
+                Reporter(tokio::sync::mpsc::unbounded_channel().0)
+            ))
             .bind_effect::<ReadFile, _>(FsDriver::new("elsewhere"))
             .build()
             .is_err(),

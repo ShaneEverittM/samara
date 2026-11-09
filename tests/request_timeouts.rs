@@ -1,5 +1,7 @@
 //! ADR-0011: one request outcome, runtime-owned deadlines, and harmless late replies.
 
+type TestProgram = Program<(Effect<Observation>,)>;
+
 use std::{convert::Infallible, time::Duration};
 
 use samara::prelude::*;
@@ -42,16 +44,21 @@ impl From<ProbeProtocolMessage> for ProviderMessage {
 struct Provider;
 
 impl Component for Provider {
+    type Requires = ();
     type Config = ();
     type Model = Vec<u64>;
     type Message = ProviderMessage;
 
-    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
+    fn init(
+        _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+    ) -> Init<Self::Model, Self::Message> {
         Init::default()
     }
 
     fn update(
         _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
         seen: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -109,16 +116,21 @@ struct RequesterConfig {
 }
 
 impl Component for Requester {
+    type Requires = ();
     type Config = RequesterConfig;
     type Model = Vec<Observation>;
     type Message = RequesterMessage;
 
-    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
+    fn init(
+        _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+    ) -> Init<Self::Model, Self::Message> {
         Init::default()
     }
 
     fn update(
         config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -159,25 +171,31 @@ impl Component for Requester {
 }
 
 struct Fixture {
-    program: Program,
+    program: TestProgram,
     requester: ComponentRef<Requester>,
     provider: ComponentRef<Provider>,
     port: Port<ProbeProtocolMessage>,
 }
 
 fn fixture() -> Fixture {
-    let mut builder = Program::builder();
+    let (mut builder, (declared_0,)) = samara::Program::builder::<(samara::Effect<Observation>,)>();
     let port = builder.port::<ProbeProtocolMessage>(PortId::new("probe"));
-    let observe = builder.effect::<Observation>();
-    let provider = builder.component::<Provider>(ComponentId::new("provider"), ());
+    let observe = declared_0;
+    let provider = builder
+        .component::<Provider>(ComponentId::new("provider"), ())
+        .finish()
+        .expect("component registration");
     builder.connect(&port, &provider.connector());
-    let requester = builder.component::<Requester>(
-        ComponentId::new("requester"),
-        RequesterConfig {
-            port: port.clone(),
-            observe,
-        },
-    );
+    let requester = builder
+        .component::<Requester>(
+            ComponentId::new("requester"),
+            RequesterConfig {
+                port: port.clone(),
+                observe,
+            },
+        )
+        .finish()
+        .expect("component registration");
     Fixture {
         program: builder.build().unwrap(),
         requester,
@@ -212,7 +230,7 @@ fn controlled_reply_removes_unused_deadline() {
         program, requester, ..
     } = fixture();
     let mut runtime = ControlledRuntime::builder(program)
-        .control_effect::<Observation>()
+        .control_all()
         .build()
         .unwrap();
     runtime
@@ -238,7 +256,7 @@ fn controlled_timeout_is_one_obligation_with_repeatable_causal_trace() {
             program, requester, ..
         } = fixture();
         let mut runtime = ControlledRuntime::builder(program)
-            .control_effect::<Observation>()
+            .control_all()
             .build()
             .unwrap();
         runtime
@@ -300,7 +318,7 @@ fn controlled_late_reply_does_not_repeat_outcome_or_cancel_provider_work() {
         ..
     } = fixture();
     let mut runtime = ControlledRuntime::builder(program)
-        .control_effect::<Observation>()
+        .control_all()
         .build()
         .unwrap();
     runtime
@@ -341,7 +359,7 @@ fn controlled_zero_and_equal_deadlines_timeout() {
             ..
         } = fixture();
         let mut runtime = ControlledRuntime::builder(program)
-            .control_effect::<Observation>()
+            .control_all()
             .build()
             .unwrap();
         runtime
@@ -368,7 +386,7 @@ fn controlled_concurrent_requests_preserve_explicit_mapper_context() {
         program, requester, ..
     } = fixture();
     let mut runtime = ControlledRuntime::builder(program)
-        .control_effect::<Observation>()
+        .control_all()
         .build()
         .unwrap();
     for (key, delay) in [(1, None), (2, Some(Duration::ZERO))] {
@@ -407,7 +425,7 @@ fn controlled_unbounded_requests_and_scope_cancel_keep_existing_semantics() {
         program, requester, ..
     } = fixture();
     let mut runtime = ControlledRuntime::builder(program)
-        .control_effect::<Observation>()
+        .control_all()
         .build()
         .unwrap();
     runtime.send(&requester, start(1, None, None)).unwrap();
@@ -426,7 +444,7 @@ fn controlled_deadline_overflow_faults_explicitly() {
         program, requester, ..
     } = fixture();
     let mut runtime = ControlledRuntime::builder(program)
-        .control_effect::<Observation>()
+        .control_all()
         .build()
         .unwrap();
     runtime.advance(SECOND).unwrap();
@@ -451,11 +469,11 @@ impl EffectDriver<Observation> for Observer {
     }
 }
 
-fn live(program: Program) -> (Runtime, tokio::sync::mpsc::UnboundedReceiver<Observation>) {
+fn live(program: TestProgram) -> (Runtime, tokio::sync::mpsc::UnboundedReceiver<Observation>) {
     let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
     (
         Runtime::builder(program)
-            .bind_effect::<Observation, _>(Observer(sender))
+            .with_drivers((Observer(sender),))
             .build()
             .unwrap(),
         receiver,

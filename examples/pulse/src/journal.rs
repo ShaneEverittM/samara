@@ -32,25 +32,28 @@ enum Model {
 }
 
 /// The capabilities one Recorder is wired with.
-struct RecorderConfig {
-    append: EffectCapability<AppendToFile>,
-    clock: EffectCapability<ReadSystemTime>,
-}
+struct RecorderConfig;
 
 impl Component for Recorder {
+    type Requires = (Effect<AppendToFile>, Effect<ReadSystemTime>);
     type Config = RecorderConfig;
     type Model = Model;
     type Message = Message;
 
-    fn init(_: &RecorderConfig) -> Init<Model, Message> {
+    fn init(_: &RecorderConfig, _: &Capabilities<Self::Requires>) -> Init<Model, Message> {
         Init::new(Model::Idle)
     }
 
-    fn update(config: &RecorderConfig, model: &mut Model, message: Message) -> Command<Message> {
+    fn update(
+        _: &RecorderConfig,
+        (append, clock): &Capabilities<Self::Requires>,
+        model: &mut Model,
+        message: Message,
+    ) -> Command<Message> {
         match message {
             Message::Journal(journal) => match (model, journal) {
                 (Model::Idle, JournalMessage::Transition { name, from, to }) => {
-                    let _ = (&config.append, &config.clock, name, from, to);
+                    let _ = (&append, &clock, name, from, to);
                     todo!()
                 }
                 (Model::Idle, JournalMessage::Recent { .. }) => todo!(),
@@ -71,14 +74,16 @@ impl Assembly for Journal {
     type Exports = ();
     type Requires = (Effect<AppendToFile>, Effect<ReadSystemTime>);
 
-    fn install(program: &mut ProgramBuilder, _: Self::Config) -> (Connector<JournalMessage>, ()) {
-        let append = program.effect::<AppendToFile>();
-        let clock = program.effect::<ReadSystemTime>();
-        let recorder = program.component::<Recorder>(
-            ComponentId::new("journal"),
-            RecorderConfig { append, clock },
-        );
-        (recorder.accepting(Message::Journal), ())
+    fn install<R: Requirements>(
+        program: &mut ProgramBuilder<R>,
+        _: (),
+        capabilities: Capabilities<Self::Requires>,
+    ) -> Result<(Connector<JournalMessage>, ()), ProgramBuildError> {
+        let recorder = program
+            .component::<Recorder>(ComponentId::new("journal"), RecorderConfig)
+            .with_capabilities(capabilities)
+            .finish()?;
+        Ok((recorder.accepting(Message::Journal), ()))
     }
 }
 

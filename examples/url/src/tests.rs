@@ -3,12 +3,7 @@ use anyhow::Result;
 
 fn fixture() -> Result<(ControlledRuntime, ComponentRef<Checker>)> {
     let (program, checker) = assemble()?;
-    let runtime = ControlledRuntime::builder(program)
-        .control_effect::<PrintStdout>()
-        .control_effect::<PrintStderr>()
-        .control_effect::<HttpRequest>()
-        .control_source::<StdinLines>()
-        .build()?;
+    let runtime = ControlledRuntime::builder(program).control_all().build()?;
 
     Ok((runtime, checker))
 }

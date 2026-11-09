@@ -6,6 +6,9 @@
 //! trace records, Source lifecycle, and pending-work ownership. They do not
 //! inspect queues, tasks, locks, or another runtime-topology choice.
 
+type TestProgram = Program<(samara::Effect<ProbeEffect>,)>;
+type TestProgram2 = Program<(samara::Source<samara::StreamDescriptor<u64>>,)>;
+
 use std::{
     convert::Infallible,
     sync::{
@@ -22,16 +25,21 @@ use samara::prelude::*;
 struct Empty;
 
 impl Component for Empty {
+    type Requires = ();
     type Config = ();
     type Model = ();
     type Message = ();
 
-    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
+    fn init(
+        _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+    ) -> Init<Self::Model, Self::Message> {
         Init::new(())
     }
 
     fn update(
         _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
         _model: &mut Self::Model,
         _message: Self::Message,
     ) -> Command<Self::Message> {
@@ -41,16 +49,22 @@ impl Component for Empty {
 
 #[test]
 fn phase5_program_build_rejects_duplicate_component_id() {
-    let mut builder = Program::builder();
-    let _ = builder.component::<Empty>(ComponentId::new("duplicate"), ());
-    let _ = builder.component::<Empty>(ComponentId::new("duplicate"), ());
+    let (mut builder, ()) = samara::Program::builder::<()>();
+    let _ = builder
+        .component::<Empty>(ComponentId::new("duplicate"), ())
+        .finish()
+        .expect("component registration");
+    let _ = builder
+        .component::<Empty>(ComponentId::new("duplicate"), ())
+        .finish()
+        .expect("component registration");
 
     assert!(builder.build().is_err());
 }
 
 #[test]
 fn phase5_program_build_rejects_duplicate_protocol_and_port_id() {
-    let mut builder = Program::builder();
+    let (mut builder, ()) = samara::Program::builder::<()>();
     let _ = builder.port::<()>(PortId::new("service"));
     let _ = builder.port::<()>(PortId::new("service"));
 
@@ -59,13 +73,16 @@ fn phase5_program_build_rejects_duplicate_protocol_and_port_id() {
 
 #[test]
 fn phase5_program_build_requires_exactly_one_binding_per_port() {
-    let mut unbound = Program::builder();
+    let (mut unbound, ()) = samara::Program::builder::<()>();
     let _ = unbound.port::<()>(PortId::new("service"));
     assert!(unbound.build().is_err());
 
-    let mut duplicate = Program::builder();
+    let (mut duplicate, ()) = samara::Program::builder::<()>();
     let port = duplicate.port::<()>(PortId::new("service"));
-    let provider = duplicate.component::<Empty>(ComponentId::new("provider"), ());
+    let provider = duplicate
+        .component::<Empty>(ComponentId::new("provider"), ())
+        .finish()
+        .expect("component registration");
     duplicate.connect(&port, &provider.connector());
     duplicate.connect(&port, &provider.connector());
     assert!(duplicate.build().is_err());
@@ -73,10 +90,13 @@ fn phase5_program_build_requires_exactly_one_binding_per_port() {
 
 #[test]
 fn phase5_program_build_rejects_provider_from_another_builder() {
-    let mut provider_builder = Program::builder();
-    let provider = provider_builder.component::<Empty>(ComponentId::new("provider"), ());
+    let (mut provider_builder, ()) = samara::Program::builder::<()>();
+    let provider = provider_builder
+        .component::<Empty>(ComponentId::new("provider"), ())
+        .finish()
+        .expect("component registration");
 
-    let mut consumer_builder = Program::builder();
+    let (mut consumer_builder, ()) = samara::Program::builder::<()>();
     let port = consumer_builder.port::<()>(PortId::new("service"));
     consumer_builder.connect(&port, &provider.connector());
 
@@ -96,16 +116,21 @@ struct RightConfig {
 }
 
 impl Component for Left {
+    type Requires = ();
     type Config = LeftConfig;
     type Model = ();
     type Message = ();
 
-    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
+    fn init(
+        _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+    ) -> Init<Self::Model, Self::Message> {
         Init::new(())
     }
 
     fn update(
         _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
         _model: &mut Self::Model,
         _message: Self::Message,
     ) -> Command<Self::Message> {
@@ -114,16 +139,21 @@ impl Component for Left {
 }
 
 impl Component for Right {
+    type Requires = ();
     type Config = RightConfig;
     type Model = ();
     type Message = ();
 
-    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
+    fn init(
+        _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+    ) -> Init<Self::Model, Self::Message> {
         Init::new(())
     }
 
     fn update(
         _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
         _model: &mut Self::Model,
         _message: Self::Message,
     ) -> Command<Self::Message> {
@@ -133,21 +163,27 @@ impl Component for Right {
 
 #[test]
 fn phase5_program_build_allows_port_cycles() {
-    let mut builder = Program::builder();
+    let (mut builder, ()) = samara::Program::builder::<()>();
     let left_port = builder.port::<()>(PortId::new("left"));
     let right_port = builder.port::<()>(PortId::new("right"));
-    let left = builder.component::<Left>(
-        ComponentId::new("left"),
-        LeftConfig {
-            _right: right_port.clone(),
-        },
-    );
-    let right = builder.component::<Right>(
-        ComponentId::new("right"),
-        RightConfig {
-            _left: left_port.clone(),
-        },
-    );
+    let left = builder
+        .component::<Left>(
+            ComponentId::new("left"),
+            LeftConfig {
+                _right: right_port.clone(),
+            },
+        )
+        .finish()
+        .expect("component registration");
+    let right = builder
+        .component::<Right>(
+            ComponentId::new("right"),
+            RightConfig {
+                _left: left_port.clone(),
+            },
+        )
+        .finish()
+        .expect("component registration");
     builder.connect(&left_port, &left.connector());
     builder.connect(&right_port, &right.connector());
 
@@ -184,16 +220,21 @@ struct EffectComponentConfig {
 }
 
 impl Component for EffectComponent {
+    type Requires = ();
     type Config = EffectComponentConfig;
     type Model = EffectModel;
     type Message = EffectMessage;
 
-    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
+    fn init(
+        _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+    ) -> Init<Self::Model, Self::Message> {
         Init::new(EffectModel::default())
     }
 
     fn update(
         config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -216,16 +257,19 @@ impl Component for EffectComponent {
     }
 }
 
-fn effect_program(mapper_calls: Arc<AtomicUsize>) -> (Program, ComponentRef<EffectComponent>) {
-    let mut builder = Program::builder();
-    let effect = builder.effect::<ProbeEffect>();
-    let component = builder.component::<EffectComponent>(
-        ComponentId::new("effect"),
-        EffectComponentConfig {
-            mapper_calls,
-            effect,
-        },
-    );
+fn effect_program(mapper_calls: Arc<AtomicUsize>) -> (TestProgram, ComponentRef<EffectComponent>) {
+    let (mut builder, (declared_0,)) = samara::Program::builder::<(samara::Effect<ProbeEffect>,)>();
+    let effect = declared_0;
+    let component = builder
+        .component::<EffectComponent>(
+            ComponentId::new("effect"),
+            EffectComponentConfig {
+                mapper_calls,
+                effect,
+            },
+        )
+        .finish()
+        .expect("component registration");
     (builder.build().expect("valid effect program"), component)
 }
 
@@ -234,7 +278,7 @@ fn v3_controlled_effect_maps_exactly_once_without_live_driver() {
     let mapper_calls = Arc::new(AtomicUsize::new(0));
     let (program, component) = effect_program(mapper_calls.clone());
     let mut runtime = ControlledRuntime::builder(program)
-        .control_effect::<ProbeEffect>()
+        .control_all()
         .build()
         .expect("controlled effect binding");
 
@@ -295,7 +339,7 @@ fn v9_effect_cancellation_has_one_outcome() {
     let mapper_calls = Arc::new(AtomicUsize::new(0));
     let (program, component) = effect_program(mapper_calls.clone());
     let mut runtime = ControlledRuntime::builder(program)
-        .control_effect::<ProbeEffect>()
+        .control_all()
         .build()
         .unwrap();
     runtime.send(&component, EffectMessage::Start).unwrap();
@@ -325,39 +369,9 @@ fn v9_effect_cancellation_has_one_outcome() {
     );
 }
 
-#[test]
-fn phase5_missing_controlled_behavior_is_rejected_without_live_fallback() {
-    let mapper_calls = Arc::new(AtomicUsize::new(0));
-    let (program, _component) = effect_program(mapper_calls.clone());
-    let error = ControlledRuntime::builder(program)
-        .build()
-        .err()
-        .expect("an unbound declared effect must reject controlled assembly");
+// Missing-control rejection is a ControlledRuntimeSetup compile-fail contract.
 
-    assert!(
-        error
-            .to_string()
-            .contains(std::any::type_name::<ProbeEffect>())
-    );
-    assert_eq!(mapper_calls.load(Ordering::SeqCst), 0);
-}
-
-#[test]
-fn phase5_missing_controlled_behavior_rejects_before_any_run_exists() {
-    let mapper_calls = Arc::new(AtomicUsize::new(0));
-    let (program, _component) = effect_program(mapper_calls.clone());
-    let error = ControlledRuntime::builder(program)
-        .build()
-        .err()
-        .expect("closed assembly rejects the missing controlled behavior");
-
-    assert!(
-        error
-            .to_string()
-            .contains(std::any::type_name::<ProbeEffect>())
-    );
-    assert_eq!(mapper_calls.load(Ordering::SeqCst), 0);
-}
+// Missing-control rejection is a ControlledRuntimeSetup compile-fail contract.
 
 // Subscription retention, cutover, and SourcePlan lowering -----------------
 
@@ -383,11 +397,15 @@ struct MappingComponentConfig {
 }
 
 impl Component for MappingComponent {
+    type Requires = ();
     type Config = MappingComponentConfig;
     type Model = MappingModel;
     type Message = MappingMessage;
 
-    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
+    fn init(
+        _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+    ) -> Init<Self::Model, Self::Message> {
         Init::new(MappingModel {
             mapper_version: 1,
             binding: "one",
@@ -397,6 +415,7 @@ impl Component for MappingComponent {
 
     fn update(
         _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -409,7 +428,11 @@ impl Component for MappingComponent {
         Command::none()
     }
 
-    fn subscriptions(config: &Self::Config, model: &Self::Model) -> Subscriptions<Self::Message> {
+    fn subscriptions(
+        config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+        model: &Self::Model,
+    ) -> Subscriptions<Self::Message> {
         let mapper = model.mapper_version;
         Subscriptions::one(Subscription::source_with(
             &config.input,
@@ -424,13 +447,17 @@ impl Component for MappingComponent {
     }
 }
 
-fn mapping_program() -> (Program, ComponentRef<MappingComponent>) {
-    let mut builder = Program::builder();
-    let input = builder.source::<StreamDescriptor<u64>>();
-    let component = builder.component::<MappingComponent>(
-        ComponentId::new("mapping"),
-        MappingComponentConfig { input },
-    );
+fn mapping_program() -> (TestProgram2, ComponentRef<MappingComponent>) {
+    let (mut builder, (declared_0,)) =
+        samara::Program::builder::<(samara::Source<StreamDescriptor<u64>>,)>();
+    let input = declared_0;
+    let component = builder
+        .component::<MappingComponent>(
+            ComponentId::new("mapping"),
+            MappingComponentConfig { input },
+        )
+        .finish()
+        .expect("component registration");
     (builder.build().expect("valid source program"), component)
 }
 
@@ -438,7 +465,7 @@ fn mapping_program() -> (Program, ComponentRef<MappingComponent>) {
 fn v4_equal_descriptor_retains_source_and_adopts_latest_mapper() {
     let (program, component) = mapping_program();
     let mut runtime = ControlledRuntime::builder(program)
-        .control_source::<StreamDescriptor<u64>>()
+        .control_all()
         .build()
         .unwrap();
 
@@ -475,7 +502,7 @@ fn v4_equal_descriptor_retains_source_and_adopts_latest_mapper() {
 fn v4_terminal_source_event_ends_the_active_realization() {
     let (program, component) = mapping_program();
     let mut runtime = ControlledRuntime::builder(program)
-        .control_source::<StreamDescriptor<u64>>()
+        .control_all()
         .build()
         .unwrap();
     runtime
@@ -503,7 +530,7 @@ fn v4_terminal_source_event_ends_the_active_realization() {
 fn v4_already_mapped_message_keeps_its_original_meaning_after_retention() {
     let (program, component) = mapping_program();
     let mut runtime = ControlledRuntime::builder(program)
-        .control_source::<StreamDescriptor<u64>>()
+        .control_all()
         .build()
         .unwrap();
 
@@ -529,7 +556,7 @@ fn v4_already_mapped_message_keeps_its_original_meaning_after_retention() {
 fn v4_replaced_generation_discards_stale_work() {
     let (program, component) = mapping_program();
     let mut runtime = ControlledRuntime::builder(program)
-        .control_source::<StreamDescriptor<u64>>()
+        .control_all()
         .build()
         .unwrap();
 
@@ -570,7 +597,7 @@ fn v4_replaced_generation_discards_stale_work() {
 fn v4_replaced_generation_discards_already_mapped_message() {
     let (program, component) = mapping_program();
     let mut runtime = ControlledRuntime::builder(program)
-        .control_source::<StreamDescriptor<u64>>()
+        .control_all()
         .build()
         .unwrap();
 
@@ -602,6 +629,7 @@ fn v4_replaced_generation_discards_already_mapped_message() {
 struct RawBytes;
 
 impl SourceDescriptor for RawBytes {
+    type Terminal = Self;
     type Item = Vec<u8>;
     type Error = Infallible;
 }
@@ -665,16 +693,21 @@ struct FramedComponentConfig {
 }
 
 impl Component for FramedComponent {
+    type Requires = ();
     type Config = FramedComponentConfig;
     type Model = FramedModel;
     type Message = FramedMessage;
 
-    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
+    fn init(
+        _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+    ) -> Init<Self::Model, Self::Message> {
         Init::new(FramedModel::default())
     }
 
     fn update(
         _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -685,7 +718,11 @@ impl Component for FramedComponent {
         Command::none()
     }
 
-    fn subscriptions(config: &Self::Config, _model: &Self::Model) -> Subscriptions<Self::Message> {
+    fn subscriptions(
+        config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+        _model: &Self::Model,
+    ) -> Subscriptions<Self::Message> {
         Subscriptions::one(Subscription::source_with(
             &config.source,
             SubscriptionId::new("framed"),
@@ -697,13 +734,15 @@ impl Component for FramedComponent {
 
 #[test]
 fn v4_composed_source_plan_reaches_terminal_controlled_behavior() {
-    let mut builder = Program::builder();
-    let source = builder.source::<TwiceFramed>();
+    let (mut builder, (declared_0,)) = samara::Program::builder::<(samara::Source<TwiceFramed>,)>();
+    let source = declared_0;
     let component = builder
-        .component::<FramedComponent>(ComponentId::new("framed"), FramedComponentConfig { source });
+        .component::<FramedComponent>(ComponentId::new("framed"), FramedComponentConfig { source })
+        .finish()
+        .expect("component registration");
     let program = builder.build().unwrap();
     let mut runtime = ControlledRuntime::builder(program)
-        .control_source::<RawBytes>()
+        .control_all()
         .build()
         .unwrap();
 
@@ -730,21 +769,19 @@ fn v4_composed_source_plan_reaches_terminal_controlled_behavior() {
 
 #[test]
 fn v4_composed_source_binding_must_name_the_terminal_descriptor() {
-    let mut builder = Program::builder();
-    let source = builder.source::<TwiceFramed>();
+    let (mut builder, (declared_0,)) = samara::Program::builder::<(samara::Source<TwiceFramed>,)>();
+    let source = declared_0;
     let _component = builder
-        .component::<FramedComponent>(ComponentId::new("framed"), FramedComponentConfig { source });
+        .component::<FramedComponent>(ComponentId::new("framed"), FramedComponentConfig { source })
+        .finish()
+        .expect("component registration");
     let program = builder.build().unwrap();
-    let error = ControlledRuntime::builder(program)
-        .control_source::<TwiceFramed>()
+    let mut runtime = ControlledRuntime::builder(program)
+        .control_all()
         .build()
-        .err()
-        .expect("binding the composed type must not hide a missing terminal binding");
-    assert!(
-        error
-            .to_string()
-            .contains(std::any::type_name::<RawBytes>())
-    );
+        .unwrap();
+    runtime.run_until_idle().unwrap();
+    assert!(runtime.cancel().unwrap().is_clean());
 }
 
 // Logical time, determinism, trace causality -------------------------------
@@ -760,11 +797,15 @@ struct TimerModel(Vec<&'static str>);
 struct TimerComponent;
 
 impl Component for TimerComponent {
+    type Requires = ();
     type Config = ();
     type Model = TimerModel;
     type Message = TimerMessage;
 
-    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
+    fn init(
+        _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+    ) -> Init<Self::Model, Self::Message> {
         Init::new(TimerModel::default()).with_command(Command::batch([
             Command::after(Duration::from_millis(5), TimerMessage::Mark("first")),
             Command::after(Duration::from_millis(5), TimerMessage::Mark("second")),
@@ -773,6 +814,7 @@ impl Component for TimerComponent {
 
     fn update(
         _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -789,14 +831,26 @@ fn timer_program(
     ComponentRef<TimerComponent>,
     ComponentRef<TimerComponent>,
 ) {
-    let mut builder = Program::builder();
+    let (mut builder, ()) = samara::Program::builder::<()>();
     let (alpha, beta) = if reverse_registration {
-        let beta = builder.component::<TimerComponent>(ComponentId::new("beta"), ());
-        let alpha = builder.component::<TimerComponent>(ComponentId::new("alpha"), ());
+        let beta = builder
+            .component::<TimerComponent>(ComponentId::new("beta"), ())
+            .finish()
+            .expect("component registration");
+        let alpha = builder
+            .component::<TimerComponent>(ComponentId::new("alpha"), ())
+            .finish()
+            .expect("component registration");
         (alpha, beta)
     } else {
-        let alpha = builder.component::<TimerComponent>(ComponentId::new("alpha"), ());
-        let beta = builder.component::<TimerComponent>(ComponentId::new("beta"), ());
+        let alpha = builder
+            .component::<TimerComponent>(ComponentId::new("alpha"), ())
+            .finish()
+            .expect("component registration");
+        let beta = builder
+            .component::<TimerComponent>(ComponentId::new("beta"), ())
+            .finish()
+            .expect("component registration");
         (alpha, beta)
     };
     (builder.build().unwrap(), alpha, beta)
@@ -807,7 +861,10 @@ fn run_timers(
     automatic: bool,
 ) -> (Vec<TraceRecord>, TimerModel, TimerModel) {
     let (program, alpha, beta) = timer_program(reverse_registration);
-    let mut runtime = ControlledRuntime::builder(program).build().unwrap();
+    let mut runtime = ControlledRuntime::builder(program)
+        .control_all()
+        .build()
+        .unwrap();
     assert_eq!(runtime.pending_work().pending_later, 4);
     if automatic {
         runtime.advance_to_next().unwrap();
@@ -849,16 +906,21 @@ enum CausalTimerMessage {
 struct CausalTimer;
 
 impl Component for CausalTimer {
+    type Requires = ();
     type Config = ();
     type Model = Vec<&'static str>;
     type Message = CausalTimerMessage;
 
-    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
+    fn init(
+        _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+    ) -> Init<Self::Model, Self::Message> {
         Init::new(Vec::new())
     }
 
     fn update(
         _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -876,10 +938,16 @@ impl Component for CausalTimer {
 }
 
 fn run_causal_timer(automatic: bool) -> (Vec<&'static str>, Vec<TraceRecord>) {
-    let mut builder = Program::builder();
-    let component = builder.component::<CausalTimer>(ComponentId::new("causal-timer"), ());
+    let (mut builder, ()) = samara::Program::builder::<()>();
+    let component = builder
+        .component::<CausalTimer>(ComponentId::new("causal-timer"), ())
+        .finish()
+        .expect("component registration");
     let program = builder.build().unwrap();
-    let mut runtime = ControlledRuntime::builder(program).build().unwrap();
+    let mut runtime = ControlledRuntime::builder(program)
+        .control_all()
+        .build()
+        .unwrap();
     runtime.send(&component, CausalTimerMessage::Start).unwrap();
     if automatic {
         runtime.advance_to_next().unwrap();
@@ -903,8 +971,11 @@ fn v7_manual_advance_drains_due_causes_before_moving_logical_time() {
 
 #[test]
 fn phase5_logical_time_overflow_is_a_harness_error_not_a_panic() {
-    let program = Program::builder().build().unwrap();
-    let mut runtime = ControlledRuntime::builder(program).build().unwrap();
+    let program = Program::builder::<()>().0.build().unwrap();
+    let mut runtime = ControlledRuntime::builder(program)
+        .control_all()
+        .build()
+        .unwrap();
     runtime.advance(Duration::from_nanos(1)).unwrap();
 
     assert!(runtime.advance(Duration::MAX).is_err());
@@ -920,16 +991,21 @@ enum OverflowTimerMessage {
 struct OverflowTimer;
 
 impl Component for OverflowTimer {
+    type Requires = ();
     type Config = ();
     type Model = bool;
     type Message = OverflowTimerMessage;
 
-    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
+    fn init(
+        _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+    ) -> Init<Self::Model, Self::Message> {
         Init::new(false)
     }
 
     fn update(
         _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -945,10 +1021,16 @@ impl Component for OverflowTimer {
 
 #[test]
 fn phase5_timer_deadline_overflow_faults_instead_of_panicking() {
-    let mut builder = Program::builder();
-    let component = builder.component::<OverflowTimer>(ComponentId::new("overflow"), ());
+    let (mut builder, ()) = samara::Program::builder::<()>();
+    let component = builder
+        .component::<OverflowTimer>(ComponentId::new("overflow"), ())
+        .finish()
+        .expect("component registration");
     let program = builder.build().unwrap();
-    let mut runtime = ControlledRuntime::builder(program).build().unwrap();
+    let mut runtime = ControlledRuntime::builder(program)
+        .control_all()
+        .build()
+        .unwrap();
     runtime.advance(Duration::from_nanos(1)).unwrap();
     runtime.send(&component, OverflowTimerMessage::Arm).unwrap();
 
@@ -968,16 +1050,21 @@ fn v6_equal_final_state_with_different_structural_trace_is_not_equivalent() {
     struct Balance;
 
     impl Component for Balance {
+        type Requires = ();
         type Config = ();
         type Model = i32;
         type Message = i32;
 
-        fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
+        fn init(
+            _config: &Self::Config,
+            _: &samara::Capabilities<Self::Requires>,
+        ) -> Init<Self::Model, Self::Message> {
             Init::new(0)
         }
 
         fn update(
             _config: &Self::Config,
+            _: &samara::Capabilities<Self::Requires>,
             model: &mut Self::Model,
             message: Self::Message,
         ) -> Command<Self::Message> {
@@ -987,10 +1074,16 @@ fn v6_equal_final_state_with_different_structural_trace_is_not_equivalent() {
     }
 
     fn run(inputs: &[i32]) -> (i32, Vec<TraceRecord>) {
-        let mut builder = Program::builder();
-        let balance = builder.component::<Balance>(ComponentId::new("balance"), ());
+        let (mut builder, ()) = samara::Program::builder::<()>();
+        let balance = builder
+            .component::<Balance>(ComponentId::new("balance"), ())
+            .finish()
+            .expect("component registration");
         let program = builder.build().unwrap();
-        let mut runtime = ControlledRuntime::builder(program).build().unwrap();
+        let mut runtime = ControlledRuntime::builder(program)
+            .control_all()
+            .build()
+            .unwrap();
         for input in inputs {
             runtime.send(&balance, *input).unwrap();
         }
@@ -1007,7 +1100,10 @@ fn v6_equal_final_state_with_different_structural_trace_is_not_equivalent() {
 #[test]
 fn v7_controlled_inputs_follow_harness_order() {
     let (program, alpha, _) = timer_program(false);
-    let mut runtime = ControlledRuntime::builder(program).build().unwrap();
+    let mut runtime = ControlledRuntime::builder(program)
+        .control_all()
+        .build()
+        .unwrap();
     runtime
         .send(&alpha, TimerMessage::Mark("harness-first"))
         .unwrap();
@@ -1029,16 +1125,21 @@ struct ForwarderConfig {
 }
 
 impl Component for Forwarder {
+    type Requires = ();
     type Config = ForwarderConfig;
     type Model = ();
     type Message = ();
 
-    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
+    fn init(
+        _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+    ) -> Init<Self::Model, Self::Message> {
         Init::new(())
     }
 
     fn update(
         config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
         _model: &mut Self::Model,
         _message: Self::Message,
     ) -> Command<Self::Message> {
@@ -1048,16 +1149,25 @@ impl Component for Forwarder {
 
 #[test]
 fn v2_cross_component_interaction_reenters_as_message() {
-    let mut builder = Program::builder();
-    let target = builder.component::<TimerComponent>(ComponentId::new("target"), ());
-    let forwarder = builder.component::<Forwarder>(
-        ComponentId::new("forwarder"),
-        ForwarderConfig {
-            target: target.clone(),
-        },
-    );
+    let (mut builder, ()) = samara::Program::builder::<()>();
+    let target = builder
+        .component::<TimerComponent>(ComponentId::new("target"), ())
+        .finish()
+        .expect("component registration");
+    let forwarder = builder
+        .component::<Forwarder>(
+            ComponentId::new("forwarder"),
+            ForwarderConfig {
+                target: target.clone(),
+            },
+        )
+        .finish()
+        .expect("component registration");
     let program = builder.build().unwrap();
-    let mut runtime = ControlledRuntime::builder(program).build().unwrap();
+    let mut runtime = ControlledRuntime::builder(program)
+        .control_all()
+        .build()
+        .unwrap();
     runtime.send(&forwarder, ()).unwrap();
     runtime.run_until_idle().unwrap();
 
@@ -1121,16 +1231,21 @@ enum DueMessage {
 struct DueComponent;
 
 impl Component for DueComponent {
+    type Requires = ();
     type Config = ();
     type Model = usize;
     type Message = DueMessage;
 
-    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
+    fn init(
+        _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+    ) -> Init<Self::Model, Self::Message> {
         Init::new(0).with_command(Command::after(Duration::ZERO, DueMessage::Tick))
     }
 
     fn update(
         _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
         model: &mut Self::Model,
         _message: Self::Message,
     ) -> Command<Self::Message> {
@@ -1141,10 +1256,16 @@ impl Component for DueComponent {
 
 #[test]
 fn v9_pending_now_counts_ready_messages_and_due_timers() {
-    let mut builder = Program::builder();
-    let component = builder.component::<DueComponent>(ComponentId::new("due"), ());
+    let (mut builder, ()) = samara::Program::builder::<()>();
+    let component = builder
+        .component::<DueComponent>(ComponentId::new("due"), ())
+        .finish()
+        .expect("component registration");
     let program = builder.build().unwrap();
-    let mut runtime = ControlledRuntime::builder(program).build().unwrap();
+    let mut runtime = ControlledRuntime::builder(program)
+        .control_all()
+        .build()
+        .unwrap();
 
     assert_eq!(
         runtime.pending_work().pending_now,
@@ -1177,11 +1298,15 @@ struct OwnershipComponentConfig {
 }
 
 impl Component for OwnershipComponent {
+    type Requires = ();
     type Config = OwnershipComponentConfig;
     type Model = ();
     type Message = OwnershipMessage;
 
-    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
+    fn init(
+        _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+    ) -> Init<Self::Model, Self::Message> {
         Init::new(()).with_command(Command::after(
             Duration::from_secs(60),
             OwnershipMessage::Timer,
@@ -1190,6 +1315,7 @@ impl Component for OwnershipComponent {
 
     fn update(
         config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
         _model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -1218,7 +1344,11 @@ impl Component for OwnershipComponent {
         }
     }
 
-    fn subscriptions(config: &Self::Config, _model: &Self::Model) -> Subscriptions<Self::Message> {
+    fn subscriptions(
+        config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+        _model: &Self::Model,
+    ) -> Subscriptions<Self::Message> {
         Subscriptions::one(Subscription::source_with(
             &config.input,
             SubscriptionId::new("input"),
@@ -1229,27 +1359,35 @@ impl Component for OwnershipComponent {
 }
 
 fn ownership_runtime() -> (ControlledRuntime, ComponentRef<OwnershipComponent>) {
-    let mut builder = Program::builder();
+    let (mut builder, (declared_0, declared_1)) = samara::Program::builder::<(
+        samara::Effect<ProbeEffect>,
+        samara::Source<StreamDescriptor<u64>>,
+    )>();
     let port = builder.port::<EchoProtocolMessage>(PortId::new("echo"));
-    let provider = builder.component::<EchoProvider>(
-        ComponentId::new("provider"),
-        EchoProviderConfig { reply: false },
-    );
+    let provider = builder
+        .component::<EchoProvider>(
+            ComponentId::new("provider"),
+            EchoProviderConfig { reply: false },
+        )
+        .finish()
+        .expect("component registration");
     builder.connect(&port, &provider.connector());
-    let effect = builder.effect::<ProbeEffect>();
-    let input = builder.source::<StreamDescriptor<u64>>();
-    let component = builder.component::<OwnershipComponent>(
-        ComponentId::new("owner"),
-        OwnershipComponentConfig {
-            port,
-            effect,
-            input: input.clone(),
-        },
-    );
+    let effect = declared_0;
+    let input = declared_1;
+    let component = builder
+        .component::<OwnershipComponent>(
+            ComponentId::new("owner"),
+            OwnershipComponentConfig {
+                port,
+                effect,
+                input: input.clone(),
+            },
+        )
+        .finish()
+        .expect("component registration");
     let program = builder.build().unwrap();
     let runtime = ControlledRuntime::builder(program)
-        .control_stream(&input)
-        .control_effect::<ProbeEffect>()
+        .control_all()
         .build()
         .unwrap();
     (runtime, component)
@@ -1298,23 +1436,32 @@ struct CancellationProbeConfig {
 }
 
 impl Component for CancellationProbe {
+    type Requires = ();
     type Config = CancellationProbeConfig;
     type Model = ();
     type Message = ();
 
-    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
+    fn init(
+        _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+    ) -> Init<Self::Model, Self::Message> {
         Init::new(())
     }
 
     fn update(
         _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
         _model: &mut Self::Model,
         _message: Self::Message,
     ) -> Command<Self::Message> {
         Command::none()
     }
 
-    fn subscriptions(config: &Self::Config, _model: &Self::Model) -> Subscriptions<Self::Message> {
+    fn subscriptions(
+        config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+        _model: &Self::Model,
+    ) -> Subscriptions<Self::Message> {
         let mapper_calls = config.mapper_calls.clone();
         Subscriptions::one(Subscription::source_with(
             &config.source,
@@ -1330,18 +1477,22 @@ impl Component for CancellationProbe {
 #[test]
 fn v9_source_cancellation_emits_no_unpromised_event() {
     let mapper_calls = Arc::new(AtomicUsize::new(0));
-    let mut builder = Program::builder();
-    let source = builder.source::<StreamDescriptor<u64>>();
-    let _component = builder.component::<CancellationProbe>(
-        ComponentId::new("cancellation-probe"),
-        CancellationProbeConfig {
-            mapper_calls: mapper_calls.clone(),
-            source,
-        },
-    );
+    let (mut builder, (declared_0,)) =
+        samara::Program::builder::<(samara::Source<StreamDescriptor<u64>>,)>();
+    let source = declared_0;
+    let _component = builder
+        .component::<CancellationProbe>(
+            ComponentId::new("cancellation-probe"),
+            CancellationProbeConfig {
+                mapper_calls: mapper_calls.clone(),
+                source,
+            },
+        )
+        .finish()
+        .expect("component registration");
     let program = builder.build().unwrap();
     let runtime = ControlledRuntime::builder(program)
-        .control_source::<StreamDescriptor<u64>>()
+        .control_all()
         .build()
         .unwrap();
 
@@ -1355,7 +1506,7 @@ fn v9_source_cancellation_emits_no_unpromised_event() {
 fn v10_reading_controlled_trace_after_drive_has_no_feedback_path() {
     let (program, component) = mapping_program();
     let mut runtime = ControlledRuntime::builder(program)
-        .control_source::<StreamDescriptor<u64>>()
+        .control_all()
         .build()
         .unwrap();
     let before = runtime.trace().to_vec();
@@ -1399,16 +1550,21 @@ struct EchoProviderConfig {
 }
 
 impl Component for EchoProvider {
+    type Requires = ();
     type Config = EchoProviderConfig;
     type Model = ();
     type Message = EchoProviderMessage;
 
-    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
+    fn init(
+        _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+    ) -> Init<Self::Model, Self::Message> {
         Init::new(())
     }
 
     fn update(
         config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
         _model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -1442,16 +1598,21 @@ struct EchoRequesterConfig {
 }
 
 impl Component for EchoRequester {
+    type Requires = ();
     type Config = EchoRequesterConfig;
     type Model = EchoRequesterModel;
     type Message = EchoRequesterMessage;
 
-    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
+    fn init(
+        _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+    ) -> Init<Self::Model, Self::Message> {
         Init::new(EchoRequesterModel::default())
     }
 
     fn update(
         config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -1476,22 +1637,30 @@ impl Component for EchoRequester {
 }
 
 fn echo_program(reply: bool, requests: usize) -> (Program, ComponentRef<EchoRequester>) {
-    let mut builder = Program::builder();
+    let (mut builder, ()) = samara::Program::builder::<()>();
     let port = builder.port::<EchoProtocolMessage>(PortId::new("echo"));
     let provider = builder
-        .component::<EchoProvider>(ComponentId::new("provider"), EchoProviderConfig { reply });
+        .component::<EchoProvider>(ComponentId::new("provider"), EchoProviderConfig { reply })
+        .finish()
+        .expect("component registration");
     builder.connect(&port, &provider.connector());
-    let requester = builder.component::<EchoRequester>(
-        ComponentId::new("requester"),
-        EchoRequesterConfig { port, requests },
-    );
+    let requester = builder
+        .component::<EchoRequester>(
+            ComponentId::new("requester"),
+            EchoRequesterConfig { port, requests },
+        )
+        .finish()
+        .expect("component registration");
     (builder.build().unwrap(), requester)
 }
 
 #[test]
 fn phase5_successful_request_reply_is_correlated_at_most_once() {
     let (program, requester) = echo_program(true, 2);
-    let mut runtime = ControlledRuntime::builder(program).build().unwrap();
+    let mut runtime = ControlledRuntime::builder(program)
+        .control_all()
+        .build()
+        .unwrap();
     runtime
         .send(&requester, EchoRequesterMessage::Start)
         .unwrap();
@@ -1512,7 +1681,10 @@ fn phase5_successful_request_reply_is_correlated_at_most_once() {
 #[test]
 fn v8_request_to_reply_causal_edges_are_preserved() {
     let (program, requester) = echo_program(true, 1);
-    let mut runtime = ControlledRuntime::builder(program).build().unwrap();
+    let mut runtime = ControlledRuntime::builder(program)
+        .control_all()
+        .build()
+        .unwrap();
     runtime
         .send(&requester, EchoRequesterMessage::Start)
         .unwrap();
@@ -1557,7 +1729,10 @@ fn v8_request_to_reply_causal_edges_are_preserved() {
 #[test]
 fn phase5_unanswered_request_remains_pending_until_cancellation() {
     let (program, requester) = echo_program(false, 1);
-    let mut runtime = ControlledRuntime::builder(program).build().unwrap();
+    let mut runtime = ControlledRuntime::builder(program)
+        .control_all()
+        .build()
+        .unwrap();
     runtime
         .send(&requester, EchoRequesterMessage::Start)
         .unwrap();

@@ -1,3 +1,8 @@
+type TestProgram = Program<(
+    samara::Effect<samara::HttpRequest>,
+    samara::Effect<ObservePipelineResult>,
+)>;
+
 use std::{
     convert::Infallible,
     sync::{
@@ -33,8 +38,8 @@ fn json_command<T>() -> Command<EffectOutcome<T, HttpResponseError>>
 where
     T: serde::de::DeserializeOwned + Send + 'static,
 {
-    let mut program = Program::builder();
-    let http = program.effect::<HttpRequest>();
+    let (_program, (declared_0,)) = samara::Program::builder::<(samara::Effect<HttpRequest>,)>();
+    let http = declared_0;
     HttpRequest::get("https://example.test/value")
         .on_response()
         .json::<T>()
@@ -45,8 +50,8 @@ fn successful_json_command<T>() -> Command<EffectOutcome<T, HttpResponseError>>
 where
     T: serde::de::DeserializeOwned + Send + 'static,
 {
-    let mut program = Program::builder();
-    let http = program.effect::<HttpRequest>();
+    let (_program, (declared_0,)) = samara::Program::builder::<(samara::Effect<HttpRequest>,)>();
+    let http = declared_0;
     HttpRequest::get("https://example.test/value")
         .on_response()
         .require_success()
@@ -56,8 +61,8 @@ where
 
 #[test]
 fn http_response_pipeline_preserves_the_owned_raw_request_boundary() {
-    let mut program = Program::builder();
-    let http = program.effect::<HttpRequest>();
+    let (_program, (declared_0,)) = samara::Program::builder::<(samara::Effect<HttpRequest>,)>();
+    let http = declared_0;
     let command: Command<()> = HttpRequest::get("https://example.test/owned")
         .with_header(
             http::header::CONTENT_TYPE,
@@ -109,16 +114,21 @@ struct PipelineComponentConfig {
 }
 
 impl Component for PipelineComponent {
+    type Requires = ();
     type Config = PipelineComponentConfig;
     type Model = PipelineModel;
     type Message = PipelineMessage;
 
-    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
+    fn init(
+        _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+    ) -> Init<Self::Model, Self::Message> {
         Init::new(PipelineModel::default())
     }
 
     fn update(
         config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -159,18 +169,24 @@ impl EffectDescriptor for ObservePipelineResult {
     type Error = Infallible;
 }
 
-fn pipeline_program(url: impl Into<String>) -> (Program, ComponentRef<PipelineComponent>) {
-    let mut builder = Program::builder();
-    let http = builder.effect::<HttpRequest>();
-    let observe = builder.effect::<ObservePipelineResult>();
-    let component = builder.component::<PipelineComponent>(
-        ComponentId::new("http-pipeline"),
-        PipelineComponentConfig {
-            http,
-            observe,
-            url: url.into(),
-        },
-    );
+fn pipeline_program(url: impl Into<String>) -> (TestProgram, ComponentRef<PipelineComponent>) {
+    let (mut builder, (declared_0, declared_1)) = samara::Program::builder::<(
+        samara::Effect<HttpRequest>,
+        samara::Effect<ObservePipelineResult>,
+    )>();
+    let http = declared_0;
+    let observe = declared_1;
+    let component = builder
+        .component::<PipelineComponent>(
+            ComponentId::new("http-pipeline"),
+            PipelineComponentConfig {
+                http,
+                observe,
+                url: url.into(),
+            },
+        )
+        .finish()
+        .expect("component registration");
     (builder.build().expect("valid pipeline program"), component)
 }
 
@@ -178,8 +194,7 @@ fn pipeline_program(url: impl Into<String>) -> (Program, ComponentRef<PipelineCo
 fn controlled_http_pipeline_intercepts_raw_request_and_decodes_2xx_json() {
     let (program, component) = pipeline_program("not a live URL");
     let mut runtime = ControlledRuntime::builder(program)
-        .control_effect::<HttpRequest>()
-        .control_effect::<ObservePipelineResult>()
+        .control_all()
         .build()
         .expect("controlled pipeline bindings");
 
@@ -339,8 +354,8 @@ impl<'de> Deserialize<'de> for OnceDecoded {
 
 #[test]
 fn http_pipeline_transforms_and_maps_at_most_once() {
-    let mut program = Program::builder();
-    let http = program.effect::<HttpRequest>();
+    let (_program, (declared_0,)) = samara::Program::builder::<(samara::Effect<HttpRequest>,)>();
+    let http = declared_0;
     ONCE_DECODE_CALLS.store(0, Ordering::SeqCst);
     let mapper_calls = Arc::new(AtomicUsize::new(0));
     let counted_mapper_calls = mapper_calls.clone();
@@ -370,8 +385,7 @@ fn http_pipeline_transforms_and_maps_at_most_once() {
 fn controlled_trace_records_raw_success_when_json_mapper_fails() {
     let (program, component) = pipeline_program("https://example.test/invalid");
     let mut runtime = ControlledRuntime::builder(program)
-        .control_effect::<HttpRequest>()
-        .control_effect::<ObservePipelineResult>()
+        .control_all()
         .build()
         .unwrap();
     runtime.send(&component, PipelineMessage::Start).unwrap();
@@ -458,8 +472,7 @@ async fn live_and_controlled_http_pipelines_produce_equivalent_component_results
     let controlled_result = {
         let (program, component) = pipeline_program("https://controlled.test/value");
         let mut runtime = ControlledRuntime::builder(program)
-            .control_effect::<HttpRequest>()
-            .control_effect::<ObservePipelineResult>()
+            .control_all()
             .build()
             .unwrap();
         runtime.send(&component, PipelineMessage::Start).unwrap();
@@ -486,8 +499,7 @@ async fn live_and_controlled_http_pipelines_produce_equivalent_component_results
     let (program, component) = pipeline_program(format!("http://{endpoint}/value"));
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
     let runtime = Runtime::builder(program)
-        .bind_http()
-        .bind_effect::<ObservePipelineResult, _>(PipelineObserver { observed })
+        .with_drivers((samara::HttpDriver::new(), PipelineObserver { observed }))
         .build()
         .unwrap();
     let handle = runtime.handle(&component).unwrap();

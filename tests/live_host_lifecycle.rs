@@ -21,16 +21,21 @@ struct FaultProbeConfig {
 }
 
 impl Component for FaultProbe {
+    type Requires = ();
     type Config = FaultProbeConfig;
     type Model = ();
     type Message = FaultMessage;
 
-    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
+    fn init(
+        _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+    ) -> Init<Self::Model, Self::Message> {
         Init::new(())
     }
 
     fn update(
         config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
         (): &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -42,40 +47,41 @@ impl Component for FaultProbe {
     }
 }
 
-#[test]
-fn live_build_rejects_later_reached_effect_without_driver() {
-    let mut program = Program::builder();
-    let effect = program.effect::<DynamicallyReachedEffect>();
-    let _probe = program.component::<FaultProbe>(
-        ComponentId::new("host-lifecycle-fault"),
-        FaultProbeConfig { effect },
-    );
-    let _trigger = FaultMessage::Trigger;
-    let error = Runtime::builder(program.build().expect("valid program"))
-        .build()
-        .err()
-        .expect("declared effect dependencies must be bound before spawn");
-
-    assert!(
-        error
-            .to_string()
-            .contains(std::any::type_name::<DynamicallyReachedEffect>())
-    );
+#[tokio::test]
+async fn live_host_observes_a_later_foreign_effect_fault() {
+    let (_, (effect,)) = Program::builder::<(Effect<DynamicallyReachedEffect>,)>();
+    let (mut program, ()) = Program::builder::<()>();
+    // Deliberately nonconforming Config exercises the runtime provenance defense.
+    let probe = program
+        .component::<FaultProbe>(ComponentId::new("fault"), FaultProbeConfig { effect })
+        .finish()
+        .unwrap();
+    let runtime = Runtime::builder(program.build().unwrap()).build().unwrap();
+    let handle = runtime.handle(&probe).unwrap();
+    let mut task = runtime.spawn();
+    handle.send(FaultMessage::Trigger).await.unwrap();
+    let error = task.run_forever().await.unwrap_err();
+    assert!(error.to_string().contains("another Program"));
 }
 
 struct Idle;
 
 impl Component for Idle {
+    type Requires = ();
     type Config = ();
     type Model = usize;
     type Message = ();
 
-    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
+    fn init(
+        _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+    ) -> Init<Self::Model, Self::Message> {
         Init::new(0)
     }
 
     fn update(
         _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
         count: &mut Self::Model,
         (): Self::Message,
     ) -> Command<Self::Message> {
@@ -97,8 +103,11 @@ async fn host_shutdown() -> Result<(), HostShutdownError> {
 #[tokio::test]
 async fn cancelled_run_forever_observation_preserves_owner_for_explicit_shutdown() {
     for mode in [Shutdown::Drain, Shutdown::Cancel] {
-        let mut program = Program::builder();
-        let idle = program.component::<Idle>(ComponentId::new("host-lifecycle-idle"), ());
+        let (mut program, ()) = samara::Program::builder::<()>();
+        let idle = program
+            .component::<Idle>(ComponentId::new("host-lifecycle-idle"), ())
+            .finish()
+            .expect("component registration");
         let runtime = Runtime::builder(program.build().expect("valid program"))
             .build()
             .expect("valid live runtime");
@@ -130,8 +139,11 @@ async fn cancelled_run_forever_observation_preserves_owner_for_explicit_shutdown
 #[tokio::test]
 async fn shutdown_requests_close_ingress_and_preserve_completed_result() {
     for mode in [Shutdown::Drain, Shutdown::Cancel] {
-        let mut program = Program::builder();
-        let idle = program.component::<Idle>(ComponentId::new("shutdown-requests"), ());
+        let (mut program, ()) = samara::Program::builder::<()>();
+        let idle = program
+            .component::<Idle>(ComponentId::new("shutdown-requests"), ())
+            .finish()
+            .expect("component registration");
         let runtime = Runtime::builder(program.build().expect("valid program"))
             .build()
             .expect("valid live runtime");
@@ -160,23 +172,32 @@ async fn shutdown_requests_close_ingress_and_preserve_completed_result() {
 struct RecurringTimer;
 
 impl Component for RecurringTimer {
+    type Requires = ();
     type Config = ();
     type Model = ();
     type Message = ();
 
-    fn init(_config: &Self::Config) -> Init<(), ()> {
+    fn init(_config: &Self::Config, _: &samara::Capabilities<Self::Requires>) -> Init<(), ()> {
         Init::new(()).with_command(Command::after(std::time::Duration::ZERO, ()))
     }
 
-    fn update(_config: &Self::Config, (): &mut (), (): ()) -> Command<()> {
+    fn update(
+        _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+        (): &mut (),
+        (): (),
+    ) -> Command<()> {
         Command::after(std::time::Duration::from_millis(1), ())
     }
 }
 
 #[tokio::test]
 async fn shutdown_grace_period_escalates_recurring_timer_and_joins() {
-    let mut program = Program::builder();
-    program.component::<RecurringTimer>(ComponentId::new("recurring-timer"), ());
+    let (mut program, ()) = samara::Program::builder::<()>();
+    program
+        .component::<RecurringTimer>(ComponentId::new("recurring-timer"), ())
+        .finish()
+        .expect("component registration");
     let mut task = Runtime::builder(program.build().expect("valid program"))
         .build()
         .expect("valid runtime")

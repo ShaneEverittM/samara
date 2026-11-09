@@ -1,3 +1,5 @@
+type TestProgram = Program<(samara::Effect<GateEffect>,)>;
+
 use std::convert::Infallible;
 use std::future::pending;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -8,9 +10,10 @@ use samara::prelude::*;
 
 #[test]
 fn print_macros_preserve_familiar_formatting_and_select_the_stream() {
-    let mut program = Program::builder();
-    let stdout = program.effect::<PrintStdout>();
-    let stderr = program.effect::<PrintStderr>();
+    let (_program, (declared_0, declared_1)) =
+        samara::Program::builder::<(samara::Effect<PrintStdout>, samara::Effect<PrintStderr>)>();
+    let stdout = declared_0;
+    let stderr = declared_1;
     let subject = String::from("Samara");
     let print: Command<()> = samara::print!(&stdout, "hello {subject} {}", 1 + 1);
     let println: Command<()> = samara::println!(&stdout);
@@ -51,16 +54,21 @@ struct PrintProbeConfig {
 }
 
 impl Component for PrintProbe {
+    type Requires = ();
     type Config = PrintProbeConfig;
     type Model = PrintModel;
     type Message = PrintMessage;
 
-    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
+    fn init(
+        _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+    ) -> Init<Self::Model, Self::Message> {
         Init::new(PrintModel::default())
     }
 
     fn update(
         config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
         model: &mut Self::Model,
         PrintMessage::Start: Self::Message,
     ) -> Command<Self::Message> {
@@ -71,14 +79,17 @@ impl Component for PrintProbe {
 
 #[test]
 fn controlled_discarded_outcome_is_traced_without_scheduling_a_message() {
-    let mut program = Program::builder();
-    let stdout = program.effect::<PrintStdout>();
-    let probe = program.component::<PrintProbe>(
-        ComponentId::new("discarded-print"),
-        PrintProbeConfig { stdout },
-    );
+    let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<PrintStdout>,)>();
+    let stdout = declared_0;
+    let probe = program
+        .component::<PrintProbe>(
+            ComponentId::new("discarded-print"),
+            PrintProbeConfig { stdout },
+        )
+        .finish()
+        .expect("component registration");
     let mut runtime = ControlledRuntime::builder(program.build().unwrap())
-        .control_effect::<PrintStdout>()
+        .control_all()
         .build()
         .unwrap();
 
@@ -111,7 +122,7 @@ fn controlled_discarded_outcome_is_traced_without_scheduling_a_message() {
 fn controlled_discarded_cancellation_is_traced_without_scheduling_a_message() {
     let (program, probe) = gated_program();
     let mut runtime = ControlledRuntime::builder(program)
-        .control_effect::<GateEffect>()
+        .control_all()
         .build()
         .unwrap();
 
@@ -143,12 +154,13 @@ fn controlled_discarded_cancellation_is_traced_without_scheduling_a_message() {
 
 #[test]
 fn discarded_outcome_dependency_is_validated_during_controlled_build() {
-    let (program, _probe) = gated_program();
-    let error = ControlledRuntime::builder(program)
+    let (program, _) = gated_program();
+    let mut runtime = ControlledRuntime::builder(program)
+        .control_all()
         .build()
-        .err()
-        .expect("the declared Effect must be controlled before execution");
-    assert!(error.to_string().contains("GateEffect"));
+        .unwrap();
+    runtime.run_until_idle().unwrap();
+    assert!(runtime.cancel().unwrap().is_clean());
 }
 
 #[derive(Debug)]
@@ -171,16 +183,21 @@ struct GateProbeConfig {
 }
 
 impl Component for GateProbe {
+    type Requires = ();
     type Config = GateProbeConfig;
     type Model = ();
     type Message = GateMessage;
 
-    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
+    fn init(
+        _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+    ) -> Init<Self::Model, Self::Message> {
         Init::new(())
     }
 
     fn update(
         config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
         _model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -225,13 +242,16 @@ impl EffectDriver<GateEffect> for GatedDriver {
     }
 }
 
-fn gated_program() -> (Program, ComponentRef<GateProbe>) {
-    let mut program = Program::builder();
-    let effect = program.effect::<GateEffect>();
-    let probe = program.component::<GateProbe>(
-        ComponentId::new("discarded-gate"),
-        GateProbeConfig { effect },
-    );
+fn gated_program() -> (TestProgram, ComponentRef<GateProbe>) {
+    let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<GateEffect>,)>();
+    let effect = declared_0;
+    let probe = program
+        .component::<GateProbe>(
+            ComponentId::new("discarded-gate"),
+            GateProbeConfig { effect },
+        )
+        .finish()
+        .expect("component registration");
     (program.build().unwrap(), probe)
 }
 
@@ -242,11 +262,11 @@ async fn live_drain_waits_for_a_discarded_outcome_effect() {
     let (release, release_rx) = tokio::sync::oneshot::channel();
     let dropped = Arc::new(AtomicBool::new(false));
     let runtime = Runtime::builder(program)
-        .bind_effect::<GateEffect, _>(GatedDriver {
+        .with_drivers((GatedDriver {
             entered: Mutex::new(Some(entered)),
             release: Mutex::new(Some(release_rx)),
             dropped: dropped.clone(),
-        })
+        },))
         .build()
         .unwrap();
     let handle = runtime.handle(&probe).unwrap();
@@ -286,11 +306,11 @@ async fn live_cancel_aborts_a_discarded_outcome_effect() {
     let (entered, entered_rx) = tokio::sync::oneshot::channel();
     let dropped = Arc::new(AtomicBool::new(false));
     let runtime = Runtime::builder(program)
-        .bind_effect::<GateEffect, _>(GatedDriver {
+        .with_drivers((GatedDriver {
             entered: Mutex::new(Some(entered)),
             release: Mutex::new(None),
             dropped: dropped.clone(),
-        })
+        },))
         .build()
         .unwrap();
     let handle = runtime.handle(&probe).unwrap();

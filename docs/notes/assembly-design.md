@@ -1,5 +1,10 @@
 # Exploratory Design: Assemblies
 
+The construction and binding API below is historical. [ADR-0019](../adr/0019-typed-program-requirements.md)
+now moves requirements onto `Program<R>`: Assemblies receive capabilities, and
+`InstalledAssembly` retains only the address and exports. Runtime setup takes
+the Program's complete driver tuple or derives controls with `control_all()`.
+
 Status: implemented November 7, 2026 as `Subprogram` with a profile-generic
 drivers struct; redesigned and renamed November 8, 2026 as `Assembly` with a
 type-level `Requires` list, accepted in

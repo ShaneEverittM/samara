@@ -33,12 +33,13 @@ fn failed_http_outcomes() -> Vec<EffectOutcome<HttpResponse, HttpError>> {
     ]
 }
 
-fn http_fixture() -> HttpTimeServerConfig {
-    let mut builder = Program::builder();
-    HttpTimeServerConfig {
-        http: builder.effect::<HttpRequest>(),
-        stderr: builder.effect::<PrintStderr>(),
-    }
+fn http_fixture() -> (
+    HttpTimeServerConfig,
+    Capabilities<<HttpTimeServer as Component>::Requires>,
+) {
+    let (_builder, (declared_0, declared_1)) =
+        Program::builder::<(Effect<HttpRequest>, Effect<PrintStderr>)>();
+    (HttpTimeServerConfig {}, (declared_0, declared_1))
 }
 
 struct TimeReader;
@@ -51,16 +52,21 @@ enum ReadMessage {
 }
 
 impl Component for TimeReader {
+    type Requires = ();
     type Config = TimeReaderConfig;
     type Model = Vec<Option<DateTime<Utc>>>;
     type Message = ReadMessage;
 
-    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
+    fn init(
+        _config: &Self::Config,
+        _: &Capabilities<Self::Requires>,
+    ) -> Init<Self::Model, Self::Message> {
         Init::default()
     }
 
     fn update(
         config: &Self::Config,
+        _: &Capabilities<Self::Requires>,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -84,20 +90,21 @@ fn controlled_http_fixture() -> (
     ComponentRef<HttpTimeServer>,
     ComponentRef<TimeReader>,
 ) {
-    let mut builder = Program::builder();
-    let http = builder.effect::<HttpRequest>();
-    let stderr = builder.effect::<PrintStderr>();
+    let (mut builder, (http, stderr)) =
+        Program::builder::<(Effect<HttpRequest>, Effect<PrintStderr>)>();
     let port = builder.port(PortId::new(TIME_SERVER_PORT));
-    let server = builder.component::<HttpTimeServer>(
-        ComponentId::new("time-server"),
-        HttpTimeServerConfig { http, stderr },
-    );
+    let server = builder
+        .component::<HttpTimeServer>(ComponentId::new("time-server"), HttpTimeServerConfig {})
+        .with_capabilities((http, stderr))
+        .finish()
+        .expect("component registration");
     builder.connect(&port, &server.connector());
-    let reader =
-        builder.component::<TimeReader>(ComponentId::new("reader"), TimeReaderConfig(port));
+    let reader = builder
+        .component::<TimeReader>(ComponentId::new("reader"), TimeReaderConfig(port))
+        .finish()
+        .expect("component registration");
     let runtime = ControlledRuntime::builder(builder.build().unwrap())
-        .control_effect::<HttpRequest>()
-        .control_effect::<PrintStderr>()
+        .control_all()
         .build()
         .unwrap();
     (runtime, server, reader)
@@ -109,7 +116,7 @@ fn http_idle_ignores_unsolicited_poll_completion() {
         let mut outcomes = failed_http_outcomes();
         outcomes.push(EffectOutcome::Succeeded(time_response(timestamp(200))));
         for outcome in outcomes {
-            let server = http_fixture();
+            let (server, server_capabilities) = http_fixture();
             let mut model = HttpTimeModel::Idle {
                 current_time: cached,
             };
@@ -118,11 +125,12 @@ fn http_idle_ignores_unsolicited_poll_completion() {
                 .on_response()
                 .require_success()
                 .json::<TimeResponse>()
-                .into_command(&server.http)
+                .into_command(&server_capabilities.0)
                 .map_effect_outcome::<HttpRequest>(outcome)
                 .ok()
                 .unwrap();
-            let command = HttpTimeServer::update(&server, &mut model, message);
+            let command =
+                HttpTimeServer::update(&server, &server_capabilities, &mut model, message);
             assert!(command.is_none(), "Idle has no poll to complete");
             assert_eq!(
                 model,
@@ -136,13 +144,23 @@ fn http_idle_ignores_unsolicited_poll_completion() {
 
 #[test]
 fn http_poll_skips_busy_ticks() {
-    let server = http_fixture();
-    let mut model = HttpTimeServer::init(&server).model;
+    let (server, server_capabilities) = http_fixture();
+    let mut model = HttpTimeServer::init(&server, &server_capabilities).model;
     assert_eq!(model, HttpTimeModel::Idle { current_time: None });
-    let first = HttpTimeServer::update(&server, &mut model, HttpTimeMessage::Tick);
+    let first = HttpTimeServer::update(
+        &server,
+        &server_capabilities,
+        &mut model,
+        HttpTimeMessage::Tick,
+    );
     assert_eq!(first.effect_intents::<HttpRequest>().len(), 1);
     for _ in 0..3 {
-        let busy = HttpTimeServer::update(&server, &mut model, HttpTimeMessage::Tick);
+        let busy = HttpTimeServer::update(
+            &server,
+            &server_capabilities,
+            &mut model,
+            HttpTimeMessage::Tick,
+        );
         assert!(
             busy.effect_intents::<HttpRequest>().is_empty(),
             "busy ticks must skip HTTP work"
@@ -157,11 +175,16 @@ fn http_poll_terminal_outcomes_update_state_and_allow_next_poll() {
     outcomes.push(EffectOutcome::Succeeded(time_response(timestamp(200))));
     let success_index = outcomes.len() - 1;
     for (index, outcome) in outcomes.into_iter().enumerate() {
-        let server = http_fixture();
+        let (server, server_capabilities) = http_fixture();
         let mut model = HttpTimeModel::Idle {
             current_time: Some(timestamp(100)),
         };
-        let first = HttpTimeServer::update(&server, &mut model, HttpTimeMessage::Tick);
+        let first = HttpTimeServer::update(
+            &server,
+            &server_capabilities,
+            &mut model,
+            HttpTimeMessage::Tick,
+        );
         assert_eq!(
             model,
             HttpTimeModel::Polling {
@@ -174,7 +197,7 @@ fn http_poll_terminal_outcomes_update_state_and_allow_next_poll() {
             .find_map(|command| command.into_effect::<HttpRequest>().ok())
             .unwrap();
         let terminal = invocation.map_outcome(outcome);
-        let follow_up = HttpTimeServer::update(&server, &mut model, terminal);
+        let follow_up = HttpTimeServer::update(&server, &server_capabilities, &mut model, terminal);
         let succeeded = index == success_index;
         assert_eq!(
             model,
@@ -190,12 +213,22 @@ fn http_poll_terminal_outcomes_update_state_and_allow_next_poll() {
             follow_up.effect_intents::<HttpRequest>().is_empty(),
             "wait for the next tick"
         );
-        let next = HttpTimeServer::update(&server, &mut model, HttpTimeMessage::Tick);
+        let next = HttpTimeServer::update(
+            &server,
+            &server_capabilities,
+            &mut model,
+            HttpTimeMessage::Tick,
+        );
         assert_eq!(next.effect_intents::<HttpRequest>().len(), 1);
         assert!(
-            HttpTimeServer::update(&server, &mut model, HttpTimeMessage::Tick)
-                .effect_intents::<HttpRequest>()
-                .is_empty()
+            HttpTimeServer::update(
+                &server,
+                &server_capabilities,
+                &mut model,
+                HttpTimeMessage::Tick
+            )
+            .effect_intents::<HttpRequest>()
+            .is_empty()
         );
     }
 }

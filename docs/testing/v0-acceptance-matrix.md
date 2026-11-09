@@ -45,6 +45,13 @@ other names now cite those tests.
 
 ## Scenario Definitions
 
+ADR-0019's typed Program trial adds `tests/typed_program.rs` and compile-fail
+rustdoc contracts for V1, V3, V4, V5 and V12. Requirements issue capabilities
+at Program construction, Components receive them separately from Config, and
+runtime construction requires a complete driver tuple or `control_all()`.
+Value-level provenance and binding validation remain required. The `pulse`
+example is intentionally excluded from this trial's migration and checks.
+
 The vision states its requirements as these twelve topology-neutral scenarios.
 Each row of the traceability table below cites the evidence for one of them.
 
@@ -117,7 +124,7 @@ Each row of the traceability table below cites the evidence for one of them.
 | V9 Structured Work Ownership | `v9_pending_now_counts_ready_messages_and_due_timers`; `v9_pending_later_counts_effects_future_timers_sources_and_requests`; `phase5_unanswered_request_remains_pending_until_cancellation`; `v9_controlled_cancel_leaves_zero_work`; `phase6_successful_shutdown_owns_zero_work`; `phase6_drain_stops_sources_and_drains_accepted_causal_work`; `v9_effect_cancellation_has_one_outcome`; `phase6_scope_cancel_drops_effect_without_invoking_mapper`; `phase6_cancel_drops_unanswered_request_without_mapping`; `v9_source_cancellation_emits_no_unpromised_event`; `phase6_source_cancellation_emits_no_unpromised_event`; `dropping_the_waiter_does_not_cancel_runtime_owned_request_work`; `run_forever_surfaces_dynamic_foreign_capability_before_live_driver`; `cancelled_run_forever_observation_preserves_owner_for_explicit_shutdown`; `dropping_idle_stdin_reader_interrupts_and_joins_its_thread` | ADR-0003 defines controlled obligations and explicit controlled effect cancellation. Phase 6 distinguishes whole-scope abort from application outcomes, proves that dropping a host waiter cannot abandon admitted runtime work, and exposes owner termination without making observation cancellation an ownership cutoff. ADR-0009 proves that even an idle blocking stdin boundary remains interruptible and joined. | Phase 5 controlled; implemented Phase 6 live, Port ingress, host lifecycle, ADR-0008 provenance, and ADR-0009 stdin ownership; final audit Phase 7 |
 | V10 Non-Influential Semantic Trace | `v10_reading_controlled_trace_after_drive_has_no_feedback_path`; `v10_trace_records_logical_time_and_exactly_one_immediate_parent_for_non_roots`; `v4_replaced_generation_discards_stale_work`; `v4_replaced_generation_discards_already_mapped_message` | ADR-0003 requires always-collected, read-afterward controlled records with logical time, parentless roots, and exactly one immediate parent for every non-root. The V3, V4, and V8 tests also assert effect, Source-lifecycle, and Request records. ADR-0004 explicitly defers a public live observer beyond v0. | Phase 5 controlled; public live observer deferred beyond v0 |
 | V11 Shallow Tokio Onboarding | `component_logic_is_directly_testable`; `controlled_stream_updates_the_same_program`; `v11_minimal_component_runs_with_live_mpsc`; `stdin_descriptor_and_errors_are_typed_fixture_data`; `controlled_stdin_delivers_lines_and_normal_eof`; `stdin_reader_delivers_framed_lines_then_eof_from_injected_stream` | The minimal example compiles as its own workspace package, tests its Component directly, and runs unchanged through controlled stream input and the live one-shot `mpsc` bridge. The expanded application uses the first-party `StdinLines` boundary without a host-owned reader thread or channel adapter. | Phase 5 controlled; implemented Phase 6 live and extended by ADR-0009 |
-| V12 Closed Program Capability Assembly | `later_effect_dependency_fails_live_and_controlled_build_when_unbound`; `later_source_dependency_fails_live_and_controlled_build_when_unbound`; `EffectCapability` and `SourceCapability` compile-fail doctests; `initially_visible_foreign_effect_capability_is_rejected_during_profile_build`; `dynamically_used_foreign_effect_capability_is_rejected_before_controlled_behavior`; `run_forever_surfaces_dynamic_foreign_capability_before_live_driver`; `exact_stream_binding_rejects_a_foreign_capability_during_build`; `two_exact_stream_capabilities_of_one_type_bind_independently`; `exact_stream_input_is_disambiguated_by_capability_not_equal_descriptor`; `composed_source_capability_declares_only_its_terminal_requirement`; `live_stdin_binding_is_exact_and_required`; `live_stdin_binding_accepts_a_composed_capability`; `live_stdin_rejects_duplicate_or_competing_process_bindings`; `live_stdin_rejects_a_conflicting_type_wide_driver_in_either_order` | ADR-0008 compile contracts and `closed_program_capabilities` scenarios cover closed issuance, complete profile validation, provenance, exact identity, and composed terminal declaration. ADR-0009 extends exact binding evidence to the unique Unix process-input resource. | ADR-0008 and ADR-0009 |
+| V12 Closed Program Capability Assembly | `RuntimeSetup` / `ControlledRuntimeSetup` compile-fail contracts (ADR-0019); `EffectCapability` and `SourceCapability` compile-fail doctests; `initially_visible_foreign_effect_capability_is_rejected_during_profile_build`; `dynamically_used_foreign_effect_capability_is_rejected_before_controlled_behavior`; `run_forever_surfaces_dynamic_foreign_capability_before_live_driver`; `exact_stream_binding_rejects_a_foreign_capability_during_build`; `two_exact_stream_capabilities_of_one_type_bind_independently`; `exact_stream_input_is_disambiguated_by_capability_not_equal_descriptor`; `composed_source_capability_declares_only_its_terminal_requirement`; `live_stdin_binding_is_exact_and_required`; `live_stdin_binding_accepts_a_composed_capability`; `live_stdin_rejects_duplicate_or_competing_process_bindings`; `live_stdin_rejects_a_conflicting_type_wide_driver_in_either_order` | ADR-0008 compile contracts and `closed_program_capabilities` scenarios cover closed issuance, complete profile validation, provenance, exact identity, and composed terminal declaration. ADR-0009 extends exact binding evidence to the unique Unix process-input resource. | ADR-0008 and ADR-0009 |
 
 ## Active Phase 2 Evidence
 
@@ -243,8 +250,7 @@ The approved Phase 5 tranche additionally requires:
 - `phase5_program_build_requires_exactly_one_binding_per_port`
 - `phase5_program_build_rejects_provider_from_another_builder`
 - `phase5_program_build_allows_port_cycles`
-- `phase5_missing_controlled_behavior_is_rejected_without_live_fallback`
-- `phase5_missing_controlled_behavior_rejects_before_any_run_exists`
+- `RuntimeSetup` / `ControlledRuntimeSetup` compile-fail contracts (ADR-0019)
 - `phase5_successful_request_reply_is_correlated_at_most_once`
 - `phase5_unanswered_request_remains_pending_until_cancellation`
 
@@ -277,8 +283,7 @@ ADR-0003 resolves the former Phase 5 blockers:
 The `closed_program_capabilities` suite and capability-aware reconciliation
 tests require:
 
-- `later_effect_dependency_fails_live_and_controlled_build_when_unbound`
-- `later_source_dependency_fails_live_and_controlled_build_when_unbound`
+- `RuntimeSetup` / `ControlledRuntimeSetup` compile-fail contracts (ADR-0019)
 - `declared_source_runs_in_controlled_execution`
 - `declared_effect_runs_in_controlled_execution`
 - `declared_effect_runs_in_live_execution`
@@ -326,7 +331,7 @@ Admission and shutdown:
 Driver lifecycle and faults:
 
 - `phase6_knowable_live_binding_errors_fail_build`
-- `phase6_declared_missing_binding_rejects_live_build`
+- `RuntimeSetup` / `ControlledRuntimeSetup` compile-fail contracts (ADR-0019)
 - `phase6_effect_success_and_failure_map_exactly_once`
 - `phase6_scope_cancel_drops_effect_without_invoking_mapper`
 - `phase6_source_first_terminal_wins`

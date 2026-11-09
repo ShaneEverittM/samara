@@ -109,9 +109,9 @@ should become a Component.
 
 
 The `Model` contains mutable behavioral state. `Component::Config` holds
-immutable logical configuration and wiring, such as Ports, EffectCapabilities,
-SourceCapabilities, and SourceDescriptors. Component functions receive it as
-`&Config`; after registration, the configuration is observationally
+immutable settings and connections, such as Ports and SourceDescriptors.
+The kernel stores `Capabilities<Component::Requires>` separately and passes
+it by shared reference alongside `&Config`; after registration, the configuration is observationally
 immutable. The type implementing `Component` is only a name for the kind and
 holds nothing. Behaviorally relevant mutation belongs in the Model rather
 than behind interior mutability in the configuration.
@@ -205,28 +205,30 @@ A descriptor answers *what should happen this time*. A capability answers
 lets descriptor payloads remain Model-derived while making the Program's
 complete world boundary knowable before execution.
 
-`ProgramBuilder::effect::<D>()` returns `EffectCapability<D>`, and
-`ProgramBuilder::source::<S>()` returns `SourceCapability<S>`.
-
-Assembly therefore declares and obtains each capability once:
+Declare the complete shape once, obtaining both the typed builder and its
+capability values ([ADR-0019](adr/0019-typed-program-requirements.md)):
 
 ```rust,ignore
-let http = program.effect::<HttpRequest>();
-let input = program.source::<StreamDescriptor<Input>>();
-program.component(ComponentId::new("worker"), Worker { http, input });
+type World = (Effect<HttpRequest>, Source<StreamDescriptor<Input>>);
+let (mut program, (http, input)) = Program::builder::<World>();
+let worker = program.component::<Worker>(ComponentId::new("worker"), settings)
+    .with_capabilities((http, input))
+    .finish()?;
+let program: Program<World> = program.build()?;
 ```
 
-Every issuance site then names the stored capability. This adds one explicit
-field, assembly declaration, and borrowed argument per logical dependency, but
-it avoids a separate `uses_effect` manifest that can drift from actual code.
-The capability performs no I/O and exposes no runtime context, so transition
-purity is unchanged.
+`Worker::Requires` determines its expected capability tuple. Every callback
+receives that tuple separately from Config, and every issuance site names the
+corresponding capability. Cloning one capability shares a declared boundary
+without adding another driver obligation. The values perform no I/O.
 
-`ProgramBuilder::build()` closes the declared capability set. Both profile
-builders validate every declaration before execution, including dependencies
-used only in later branches. A raw descriptor deliberately cannot construct a
-Command or Subscription. This is the cost of turning missing legitimate
-bindings into synchronous assembly errors rather than late runtime surprises.
+Live execution uses `with_drivers((HttpDriver::new(), MpscReceiver::new(receiver)))`.
+Controlled execution uses `control_all()`, deriving all controls from the Program
+while retaining exact stream identities. Both then call `build()`. Missing or
+wrong tuples fail compilation; both profiles retain value-level validation.
+For a type-wide source Driver, use `DrivenSource::new(driver)`. The wrapper
+keeps source Driver selection distinct from exact receiver binding under Rust's
+trait coherence rules. Built-in source Layers execute in both profiles.
 
 The closed set does not mean Samara reflects over Component fields or predicts
 every message edge. Deliberately hiding a foreign capability remains a user
@@ -771,42 +773,30 @@ that defense-in-depth fault does not add a dynamic dependency to the Program.
 
 ### How Does a Library Declare What It Needs?
 
-The unit of reuse is an Assembly, not a Component. A library ships a type
-implementing `Assembly`; its `install` declares one or more Components and
-their Effect and Source capabilities into the caller's `ProgramBuilder` and
-returns the Assembly's address, a `Connector` accepting `Assembly::Accepts`,
-plus any other `Exports`, often none. It declares no Ports: the host names
-its own and connects the Connector to them, or holds the Connector directly
-(ADR-0018). The Component types, their `ComponentId`s, and their capabilities
-stay private as a consequence: nothing in the public surface needs them.
+A library ships a type implementing `Assembly`. Its `install` registers one
+or more Components in the caller's `ProgramBuilder<R>`, using the capabilities
+the caller supplies, and returns a `Connector<Accepts>` plus other `Exports`.
+The host owns Port naming and connection. Internal Component kinds, Models,
+Messages and identities can remain private (ADR-0018 and ADR-0019).
 
-"What it needs" is two questions at two scales, and the API keeps them apart:
+| Scope | Declaration | Supplied by |
+| --- | --- | --- |
+| Component settings and connections | `Component::Config` | Its assembler |
+| Component world dependencies | `Component::Requires` | Its assembler's capability tuple |
+| Assembly world dependencies | `Assembly::Requires` | The enclosing Program's capability tuple |
+| Complete runtime world | `Program<R>` | `with_drivers(drivers)` live, `control_all()` controlled |
 
-| Scale | Who asks | Declared as | Answered by |
-| --- | --- | --- | --- |
-| Wiring | A Component, of its assembler | `Component::Config`: the capability tokens, Ports, and settings one instance is built with | `install`, which issues the tokens and registers the Component |
-| World boundaries | An Assembly, of its host | `Assembly::Requires`: a type-level list of `Effect<D>` and `Source<S>` markers | The host, which drives each entry live or lets the harness take it controlled |
+`program.install::<A>(config).with_capabilities(caps).finish()?` returns
+`InstalledAssembly<A>` holding only the Connector and exports. The Program
+carries binding obligations into runtime setup, so no Assembly token must be
+passed separately. Driver tuples match the Program's requirement shape and
+incomplete runtime setup has no `build` method. Exact stream positions retain
+their capability identities; controlled execution constructs no live Driver.
 
-`install` binds no Drivers. Assembly is shared by live and controlled
-execution, binding is an execution-profile decision, and controlled execution
-must never run a live Driver. `ProgramBuilder::install` returns an
-`InstalledAssembly<A>` token holding the Connector and exports. A live host writes
-`with_assembly(installed).and_drivers(drivers)`, where `drivers` is any
-`EffectDriver` or `SourceDriver` for a single requirement or a tuple matching
-the requirement tuple position by position; no boxing and no bindings struct.
-A controlled test writes `with_assembly(installed)` and is done, because a
-controlled binding carries no information beyond the descriptor type, which
-`Requires` already names. The token is `must_use`, the `WithAssembly` step
-offers nothing but `and_drivers`, and `Requires` belongs to the Assembly, so
-a mismatched driver is a compile error naming the expected `Effect<D>`, a
-forgotten `and_drivers` leaves no builder to call `build()` on, and a
-`Requires` that disagrees with `install` fails `build()` on both profiles.
-
-An Assembly may also vendor drivers. Implementing `VendorsDrivers` names a
-concrete tuple satisfying `Requires` and constructs it; hosts call
-`and_its_vendored_drivers()` or ignore it. A library normally feature-gates
-that impl so consumers bringing their own Drivers do not pay for the vendored
-ones; the Assembly, its exports, and its `Requires` stay unconditional.
+Assemblies may implement `VendorsDrivers` to supply a concrete tuple through
+`A::drivers()`. The host can use that tuple at a matching position in the
+Program's driver tuple. Libraries normally feature-gate this implementation;
+the Assembly and its requirement shape remain available without live drivers.
 
 Implement `Assembly` on a public marker struct, not on a Component.
 `Component`'s associated types are part of its public interface, so a public

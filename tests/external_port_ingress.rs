@@ -1,3 +1,14 @@
+type TestProgram = Program<(
+    Effect<IngressObserved>,
+    Effect<RequestObserved>,
+    Effect<AwaitRelease>,
+)>;
+type TestProgram2 = Program<(
+    samara::Effect<IngressObserved>,
+    samara::Effect<RequestObserved>,
+    samara::Effect<AwaitRelease>,
+)>;
+
 use std::{
     convert::Infallible,
     sync::{
@@ -33,16 +44,21 @@ struct PanickingBindingProviderMessage;
 struct PanickingBindingProvider;
 
 impl Component for PanickingBindingProvider {
+    type Requires = ();
     type Config = ();
     type Model = ();
     type Message = PanickingBindingProviderMessage;
 
-    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
+    fn init(
+        _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+    ) -> Init<Self::Model, Self::Message> {
         Init::new(())
     }
 
     fn update(
         _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
         _model: &mut Self::Model,
         _message: Self::Message,
     ) -> Command<Self::Message> {
@@ -69,16 +85,21 @@ struct ProviderConfig {
 }
 
 impl Component for Provider {
+    type Requires = ();
     type Config = ProviderConfig;
     type Model = u64;
     type Message = ProviderMessage;
 
-    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
+    fn init(
+        _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+    ) -> Init<Self::Model, Self::Message> {
         Init::new(0)
     }
 
     fn update(
         config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -218,27 +239,34 @@ impl EffectDriver<RequestObserved> for ObservationDriver {
     }
 }
 
-fn program() -> (Program, Port<HostMessage>) {
+fn program() -> (TestProgram, Port<HostMessage>) {
     let (program, port, _conversions) = counted_binding_program();
     (program, port)
 }
 
 /// A Program whose Port binding counts every conversion it performs, so a
 /// test can tell whether a rejected ingress reached the binding at all.
-fn counted_binding_program() -> (Program, Port<HostMessage>, Arc<AtomicUsize>) {
-    let mut builder = Program::builder();
+fn counted_binding_program() -> (TestProgram2, Port<HostMessage>, Arc<AtomicUsize>) {
+    let (mut builder, (declared_0, declared_1, declared_2)) = samara::Program::builder::<(
+        samara::Effect<IngressObserved>,
+        samara::Effect<RequestObserved>,
+        samara::Effect<AwaitRelease>,
+    )>();
     let port = builder.port::<HostMessage>(PortId::new("host"));
-    let ingress_observed = builder.effect::<IngressObserved>();
-    let request_observed = builder.effect::<RequestObserved>();
-    let await_release = builder.effect::<AwaitRelease>();
-    let provider = builder.component::<Provider>(
-        ComponentId::new("provider"),
-        ProviderConfig {
-            ingress_observed,
-            request_observed,
-            await_release,
-        },
-    );
+    let ingress_observed = declared_0;
+    let request_observed = declared_1;
+    let await_release = declared_2;
+    let provider = builder
+        .component::<Provider>(
+            ComponentId::new("provider"),
+            ProviderConfig {
+                ingress_observed,
+                request_observed,
+                await_release,
+            },
+        )
+        .finish()
+        .expect("component registration");
     let conversions = Arc::new(AtomicUsize::new(0));
     let counter = conversions.clone();
     builder.connect(
@@ -253,20 +281,27 @@ fn counted_binding_program() -> (Program, Port<HostMessage>, Arc<AtomicUsize>) {
 
 /// A Program whose Port binding panics only when converting `Set(0)`, so
 /// earlier sends land before the poisoned one faults the runtime.
-fn selectively_panicking_binding_program() -> (Program, Port<HostMessage>) {
-    let mut builder = Program::builder();
+fn selectively_panicking_binding_program() -> (TestProgram2, Port<HostMessage>) {
+    let (mut builder, (declared_0, declared_1, declared_2)) = samara::Program::builder::<(
+        samara::Effect<IngressObserved>,
+        samara::Effect<RequestObserved>,
+        samara::Effect<AwaitRelease>,
+    )>();
     let port = builder.port::<HostMessage>(PortId::new("host"));
-    let ingress_observed = builder.effect::<IngressObserved>();
-    let request_observed = builder.effect::<RequestObserved>();
-    let await_release = builder.effect::<AwaitRelease>();
-    let provider = builder.component::<Provider>(
-        ComponentId::new("provider"),
-        ProviderConfig {
-            ingress_observed,
-            request_observed,
-            await_release,
-        },
-    );
+    let ingress_observed = declared_0;
+    let request_observed = declared_1;
+    let await_release = declared_2;
+    let provider = builder
+        .component::<Provider>(
+            ComponentId::new("provider"),
+            ProviderConfig {
+                ingress_observed,
+                request_observed,
+                await_release,
+            },
+        )
+        .finish()
+        .expect("component registration");
     builder.connect(
         &port,
         &provider.accepting(|message| match message {
@@ -278,10 +313,12 @@ fn selectively_panicking_binding_program() -> (Program, Port<HostMessage>) {
 }
 
 fn panicking_binding_program() -> (Program, Port<BindingMessage>) {
-    let mut builder = Program::builder();
+    let (mut builder, ()) = samara::Program::builder::<()>();
     let port = builder.port::<BindingMessage>(PortId::new("panicking-binding"));
     let provider = builder
-        .component::<PanickingBindingProvider>(ComponentId::new("panicking-binding-provider"), ());
+        .component::<PanickingBindingProvider>(ComponentId::new("panicking-binding-provider"), ())
+        .finish()
+        .expect("component registration");
     builder.connect(
         &port,
         &provider.accepting(|message| {
@@ -294,31 +331,37 @@ fn panicking_binding_program() -> (Program, Port<BindingMessage>) {
     (builder.build().expect("valid binding Program"), port)
 }
 
-fn runtime_with_observer(program: Program) -> (Runtime, tokio::sync::mpsc::UnboundedReceiver<()>) {
+fn runtime_with_observer(
+    program: TestProgram,
+) -> (Runtime, tokio::sync::mpsc::UnboundedReceiver<()>) {
     let (observed, observations) = tokio::sync::mpsc::unbounded_channel();
     let (ingress_observed, _ingress_observations) = tokio::sync::mpsc::unbounded_channel();
     let runtime = Runtime::builder(program)
-        .bind_effect::<RequestObserved, _>(ObservationDriver { observed })
-        .bind_effect::<AwaitRelease, _>(ImmediateReleaseDriver)
-        .bind_effect::<IngressObserved, _>(IngressObserver {
-            observed: ingress_observed,
-        })
+        .with_drivers((
+            IngressObserver {
+                observed: ingress_observed,
+            },
+            ObservationDriver { observed },
+            ImmediateReleaseDriver,
+        ))
         .build()
         .expect("valid live bindings");
     (runtime, observations)
 }
 
-fn runtime_with_default_effects(program: Program) -> Runtime {
+fn runtime_with_default_effects(program: TestProgram) -> Runtime {
     let (request_observed, _request_observations) = tokio::sync::mpsc::unbounded_channel();
     let (ingress_observed, _ingress_observations) = tokio::sync::mpsc::unbounded_channel();
     Runtime::builder(program)
-        .bind_effect::<RequestObserved, _>(ObservationDriver {
-            observed: request_observed,
-        })
-        .bind_effect::<AwaitRelease, _>(ImmediateReleaseDriver)
-        .bind_effect::<IngressObserved, _>(IngressObserver {
-            observed: ingress_observed,
-        })
+        .with_drivers((
+            IngressObserver {
+                observed: ingress_observed,
+            },
+            ObservationDriver {
+                observed: request_observed,
+            },
+            ImmediateReleaseDriver,
+        ))
         .build()
         .expect("valid default live bindings")
 }
@@ -328,7 +371,7 @@ fn live_port_handle_rejects_a_port_from_another_program() {
     let (program, _) = program();
     let runtime = runtime_with_default_effects(program);
 
-    let mut foreign_builder = Program::builder();
+    let (mut foreign_builder, ()) = samara::Program::builder::<()>();
     let foreign_port = foreign_builder.port::<HostMessage>(PortId::new("host"));
 
     let error = runtime
@@ -366,28 +409,37 @@ async fn live_port_handle_sends_and_returns_typed_request_replies() -> Result<()
 
 #[tokio::test]
 async fn cloned_port_handles_deliver_each_send_exactly_once() -> Result<(), RuntimeError> {
-    let mut builder = Program::builder();
+    let (mut builder, (declared_0, declared_1, declared_2)) = samara::Program::builder::<(
+        samara::Effect<IngressObserved>,
+        samara::Effect<RequestObserved>,
+        samara::Effect<AwaitRelease>,
+    )>();
     let port = builder.port::<HostMessage>(PortId::new("cloned-host"));
-    let ingress_observed = builder.effect::<IngressObserved>();
-    let request_observed = builder.effect::<RequestObserved>();
-    let await_release = builder.effect::<AwaitRelease>();
-    let provider = builder.component::<Provider>(
-        ComponentId::new("cloned-provider"),
-        ProviderConfig {
-            ingress_observed,
-            request_observed,
-            await_release,
-        },
-    );
+    let ingress_observed = declared_0;
+    let request_observed = declared_1;
+    let await_release = declared_2;
+    let provider = builder
+        .component::<Provider>(
+            ComponentId::new("cloned-provider"),
+            ProviderConfig {
+                ingress_observed,
+                request_observed,
+                await_release,
+            },
+        )
+        .finish()
+        .expect("component registration");
     builder.connect(&port, &provider.accepting(ProviderMessage::Host));
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
     let (request_observed, _request_observations) = tokio::sync::mpsc::unbounded_channel();
     let runtime = Runtime::builder(builder.build().expect("valid cloned-handle Program"))
-        .bind_effect::<IngressObserved, _>(IngressObserver { observed })
-        .bind_effect::<RequestObserved, _>(ObservationDriver {
-            observed: request_observed,
-        })
-        .bind_effect::<AwaitRelease, _>(ImmediateReleaseDriver)
+        .with_drivers((
+            IngressObserver { observed },
+            ObservationDriver {
+                observed: request_observed,
+            },
+            ImmediateReleaseDriver,
+        ))
         .build()?;
     let host = runtime.port_handle(&port)?;
     let task = runtime.spawn();
@@ -503,16 +555,18 @@ async fn dropping_the_waiter_does_not_cancel_runtime_owned_request_work() -> Res
     let (request_observed, _request_observations) = tokio::sync::mpsc::unbounded_channel();
     let (ingress_observed, _ingress_observations) = tokio::sync::mpsc::unbounded_channel();
     let runtime = Runtime::builder(program)
-        .bind_effect::<AwaitRelease, _>(ReleaseDriver {
-            started: Mutex::new(Some(started)),
-            release: Mutex::new(Some(request_release)),
-        })
-        .bind_effect::<RequestObserved, _>(ObservationDriver {
-            observed: request_observed,
-        })
-        .bind_effect::<IngressObserved, _>(IngressObserver {
-            observed: ingress_observed,
-        })
+        .with_drivers((
+            IngressObserver {
+                observed: ingress_observed,
+            },
+            ObservationDriver {
+                observed: request_observed,
+            },
+            ReleaseDriver {
+                started: Mutex::new(Some(started)),
+                release: Mutex::new(Some(request_release)),
+            },
+        ))
         .build()?;
     let host = runtime.port_handle(&port)?;
     let task = runtime.spawn();
@@ -567,28 +621,37 @@ async fn dropping_the_runtime_owner_wakes_an_external_request_waiter() -> Result
 
 #[tokio::test]
 async fn component_and_port_ingress_share_one_shutdown_cutoff() -> Result<(), RuntimeError> {
-    let mut builder = Program::builder();
+    let (mut builder, (declared_0, declared_1, declared_2)) = samara::Program::builder::<(
+        samara::Effect<IngressObserved>,
+        samara::Effect<RequestObserved>,
+        samara::Effect<AwaitRelease>,
+    )>();
     let port = builder.port::<HostMessage>(PortId::new("race-host"));
-    let ingress_observed = builder.effect::<IngressObserved>();
-    let request_observed = builder.effect::<RequestObserved>();
-    let await_release = builder.effect::<AwaitRelease>();
-    let provider = builder.component::<Provider>(
-        ComponentId::new("race-provider"),
-        ProviderConfig {
-            ingress_observed,
-            request_observed,
-            await_release,
-        },
-    );
+    let ingress_observed = declared_0;
+    let request_observed = declared_1;
+    let await_release = declared_2;
+    let provider = builder
+        .component::<Provider>(
+            ComponentId::new("race-provider"),
+            ProviderConfig {
+                ingress_observed,
+                request_observed,
+                await_release,
+            },
+        )
+        .finish()
+        .expect("component registration");
     builder.connect(&port, &provider.accepting(ProviderMessage::Host));
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
     let (request_observed, _request_observations) = tokio::sync::mpsc::unbounded_channel();
     let runtime = Runtime::builder(builder.build().expect("valid race Program"))
-        .bind_effect::<IngressObserved, _>(IngressObserver { observed })
-        .bind_effect::<RequestObserved, _>(ObservationDriver {
-            observed: request_observed,
-        })
-        .bind_effect::<AwaitRelease, _>(ImmediateReleaseDriver)
+        .with_drivers((
+            IngressObserver { observed },
+            ObservationDriver {
+                observed: request_observed,
+            },
+            ImmediateReleaseDriver,
+        ))
         .build()?;
     let component = runtime.handle(&provider)?;
     let protocol = runtime.port_handle(&port)?;

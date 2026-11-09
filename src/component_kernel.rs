@@ -19,19 +19,25 @@ use crate::{Command, Component, ComponentId, Init, SubscriptionId};
 pub(crate) struct ComponentKernel<C: Component> {
     id: ComponentId,
     config: C::Config,
+    capabilities: crate::Capabilities<C::Requires>,
     model: C::Model,
     initial_command: Option<Command<C::Message>>,
     subscriptions: SubscriptionReconciler<C::Message>,
 }
 
 impl<C: Component> ComponentKernel<C> {
-    pub(crate) fn new(id: ComponentId, config: C::Config) -> Self {
-        let Init { model, command } = C::init(&config);
+    pub(crate) fn new(
+        id: ComponentId,
+        config: C::Config,
+        capabilities: crate::Capabilities<C::Requires>,
+    ) -> Self {
+        let Init { model, command } = C::init(&config, &capabilities);
         let subscriptions = SubscriptionReconciler::new(id.clone());
 
         Self {
             id,
             config,
+            capabilities,
             model,
             initial_command: Some(command),
             subscriptions,
@@ -43,7 +49,7 @@ impl<C: Component> ComponentKernel<C> {
     }
 
     pub(crate) fn transition(&mut self, message: C::Message) -> Command<C::Message> {
-        C::update(&self.config, &mut self.model, message)
+        C::update(&self.config, &self.capabilities, &mut self.model, message)
     }
 
     pub(crate) fn model(&self) -> &C::Model {
@@ -62,7 +68,7 @@ impl<C: Component> ComponentKernel<C> {
     pub(crate) fn reconcile_subscriptions(
         &mut self,
     ) -> Result<Vec<SubscriptionChange<C::Message>>, DuplicateSubscriptionIdError> {
-        let desired = C::subscriptions(&self.config, &self.model);
+        let desired = C::subscriptions(&self.config, &self.capabilities, &self.model);
         self.subscriptions.reconcile(desired)
     }
 }
@@ -184,7 +190,7 @@ impl<C: Component> ErasedComponentKernel for ComponentKernel<C> {
         &self,
         program: &crate::Program,
     ) -> Result<(), crate::RuntimeError> {
-        let subscriptions = C::subscriptions(&self.config, &self.model);
+        let subscriptions = C::subscriptions(&self.config, &self.capabilities, &self.model);
         crate::validate_initial_capabilities(
             program,
             &self.id,
@@ -224,16 +230,21 @@ mod tests {
     }
 
     impl Component for ProbeComponent {
+        type Requires = ();
         type Config = ProbeComponentConfig;
         type Model = Vec<usize>;
         type Message = usize;
 
-        fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
+        fn init(
+            _config: &Self::Config,
+            _: &crate::Capabilities<Self::Requires>,
+        ) -> Init<Self::Model, Self::Message> {
             Init::new(Vec::new())
         }
 
         fn update(
             _config: &Self::Config,
+            _: &crate::Capabilities<Self::Requires>,
             model: &mut Self::Model,
             message: Self::Message,
         ) -> Command<Self::Message> {
@@ -261,6 +272,7 @@ mod tests {
             ProbeComponentConfig {
                 not_sync: PhantomData,
             },
+            (),
         ));
 
         let (left_entered, mut observe_left_entered) = oneshot::channel();
@@ -310,16 +322,21 @@ mod tests {
         struct Startup;
 
         impl Component for Startup {
+            type Requires = ();
             type Config = ();
             type Model = ();
             type Message = ();
 
-            fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
+            fn init(
+                _config: &Self::Config,
+                _: &crate::Capabilities<Self::Requires>,
+            ) -> Init<Self::Model, Self::Message> {
                 Init::new(()).with_command(Command::after(Duration::ZERO, ()))
             }
 
             fn update(
                 _config: &Self::Config,
+                _: &crate::Capabilities<Self::Requires>,
                 _model: &mut Self::Model,
                 _message: Self::Message,
             ) -> Command<Self::Message> {
@@ -327,7 +344,7 @@ mod tests {
             }
         }
 
-        let mut kernel = ComponentKernel::<Startup>::new(ComponentId::new("startup"), ());
+        let mut kernel = ComponentKernel::<Startup>::new(ComponentId::new("startup"), (), ());
 
         assert!(kernel.take_initial_command().is_some());
         assert!(kernel.take_initial_command().is_none());

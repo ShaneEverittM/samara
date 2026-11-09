@@ -53,10 +53,12 @@ struct ContractComponentConfig {
 }
 
 impl ContractComponentConfig {
-    fn new(program: &mut ProgramBuilder) -> Self {
+    fn new(
+        (source, save): Capabilities<(Source<StreamDescriptor<u64>>, Effect<SaveTotal>)>,
+    ) -> Self {
         Self {
-            source: program.source::<StreamDescriptor<u64>>(),
-            save: program.effect::<SaveTotal>(),
+            source,
+            save,
             input: StreamDescriptor::named(INPUT_BINDING),
             not_sync: PhantomData,
         }
@@ -64,16 +66,21 @@ impl ContractComponentConfig {
 }
 
 impl Component for ContractComponent {
+    type Requires = ();
     type Config = ContractComponentConfig;
     type Model = ContractModel;
     type Message = ContractMessage;
 
-    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
+    fn init(
+        _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+    ) -> Init<Self::Model, Self::Message> {
         Init::new(ContractModel::default())
     }
 
     fn update(
         config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -102,7 +109,11 @@ impl Component for ContractComponent {
         }
     }
 
-    fn subscriptions(config: &Self::Config, model: &Self::Model) -> Subscriptions<Self::Message> {
+    fn subscriptions(
+        config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+        model: &Self::Model,
+    ) -> Subscriptions<Self::Message> {
         if model.input_closed {
             return Subscriptions::none();
         }
@@ -118,13 +129,16 @@ impl Component for ContractComponent {
 
 #[test]
 fn v1_same_input_produces_equivalent_model_and_command_intent() {
-    let mut program = Program::builder();
-    let component = ContractComponentConfig::new(&mut program);
-    let mut left = ContractComponent::init(&component).model;
-    let mut right = ContractComponent::init(&component).model;
+    let (_program, capabilities) =
+        Program::builder::<(Source<StreamDescriptor<u64>>, Effect<SaveTotal>)>();
+    let component = ContractComponentConfig::new(capabilities);
+    let mut left = ContractComponent::init(&component, &()).model;
+    let mut right = ContractComponent::init(&component, &()).model;
 
-    let left_command = ContractComponent::update(&component, &mut left, ContractMessage::Add(7));
-    let right_command = ContractComponent::update(&component, &mut right, ContractMessage::Add(7));
+    let left_command =
+        ContractComponent::update(&component, &(), &mut left, ContractMessage::Add(7));
+    let right_command =
+        ContractComponent::update(&component, &(), &mut right, ContractMessage::Add(7));
 
     assert_eq!(left, right);
     assert_eq!(
@@ -135,11 +149,12 @@ fn v1_same_input_produces_equivalent_model_and_command_intent() {
 
 #[test]
 fn v3_effect_command_exposes_typed_descriptor() {
-    let mut program = Program::builder();
-    let component = ContractComponentConfig::new(&mut program);
-    let mut model = ContractComponent::init(&component).model;
+    let (_program, capabilities) =
+        Program::builder::<(Source<StreamDescriptor<u64>>, Effect<SaveTotal>)>();
+    let component = ContractComponentConfig::new(capabilities);
+    let mut model = ContractComponent::init(&component, &()).model;
 
-    let command = ContractComponent::update(&component, &mut model, ContractMessage::Add(11));
+    let command = ContractComponent::update(&component, &(), &mut model, ContractMessage::Add(11));
 
     assert_eq!(
         command.effect_intent::<SaveTotal>(),
@@ -153,11 +168,12 @@ fn v3_effect_command_exposes_typed_descriptor() {
 
 #[test]
 fn v4_subscription_separates_component_identity_from_source_descriptor() {
-    let mut program = Program::builder();
-    let component = ContractComponentConfig::new(&mut program);
-    let model = ContractComponent::init(&component).model;
+    let (_program, capabilities) =
+        Program::builder::<(Source<StreamDescriptor<u64>>, Effect<SaveTotal>)>();
+    let component = ContractComponentConfig::new(capabilities);
+    let model = ContractComponent::init(&component, &()).model;
 
-    let subscriptions = ContractComponent::subscriptions(&component, &model);
+    let subscriptions = ContractComponent::subscriptions(&component, &(), &model);
     let subscription = subscriptions.iter().next().expect("one input desire");
 
     assert_eq!(subscription.id(), &SubscriptionId::new(INPUT_SUBSCRIPTION));
@@ -172,9 +188,13 @@ fn component_kernel_accepts_non_sync_configuration() {
     fn assert_component<C: Component>() {}
     assert_component::<ContractComponent>();
 
-    let mut program = Program::builder();
-    let contract = ContractComponentConfig::new(&mut program);
-    let component = program.component::<ContractComponent>(ComponentId::new("contract"), contract);
+    let (mut program, capabilities) =
+        Program::builder::<(Source<StreamDescriptor<u64>>, Effect<SaveTotal>)>();
+    let contract = ContractComponentConfig::new(capabilities);
+    let component = program
+        .component::<ContractComponent>(ComponentId::new("contract"), contract)
+        .finish()
+        .expect("component registration");
 
     assert_eq!(component.id(), &ComponentId::new("contract"));
 }

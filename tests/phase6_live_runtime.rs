@@ -1,3 +1,10 @@
+type TestProgram = Program<(
+    samara::Source<samara::StreamDescriptor<u64>>,
+    samara::Effect<Record>,
+)>;
+type TestProgram2 = Program<(samara::Effect<ProviderSeen>, samara::Effect<ObserveReply>)>;
+type TestProgram3 = Program<(samara::Effect<Query>, samara::Effect<ObserveQuery>)>;
+
 use std::{
     convert::Infallible,
     future::pending,
@@ -60,16 +67,21 @@ struct CounterModel {
 }
 
 impl Component for Counter {
+    type Requires = ();
     type Config = CounterConfig;
     type Model = CounterModel;
     type Message = CounterMessage;
 
-    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
+    fn init(
+        _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+    ) -> Init<Self::Model, Self::Message> {
         Init::new(CounterModel::default())
     }
 
     fn update(
         config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -89,7 +101,11 @@ impl Component for Counter {
         }
     }
 
-    fn subscriptions(config: &Self::Config, model: &Self::Model) -> Subscriptions<Self::Message> {
+    fn subscriptions(
+        config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+        model: &Self::Model,
+    ) -> Subscriptions<Self::Message> {
         if model.closed {
             Subscriptions::none()
         } else {
@@ -106,21 +122,27 @@ impl Component for Counter {
 fn counter_program(
     input_descriptor: StreamDescriptor<u64>,
 ) -> (
-    Program,
+    TestProgram,
     ComponentRef<Counter>,
     SourceCapability<StreamDescriptor<u64>>,
 ) {
-    let mut program = Program::builder();
-    let input = program.source::<StreamDescriptor<u64>>();
-    let record = program.effect::<Record>();
-    let counter = program.component::<Counter>(
-        ComponentId::new("counter"),
-        CounterConfig {
-            input: input.clone(),
-            input_descriptor,
-            record,
-        },
-    );
+    let (mut program, (declared_0, declared_1)) = samara::Program::builder::<(
+        samara::Source<StreamDescriptor<u64>>,
+        samara::Effect<Record>,
+    )>();
+    let input = declared_0;
+    let record = declared_1;
+    let counter = program
+        .component::<Counter>(
+            ComponentId::new("counter"),
+            CounterConfig {
+                input: input.clone(),
+                input_descriptor,
+                record,
+            },
+        )
+        .finish()
+        .expect("component registration");
     (program.build().expect("valid program"), counter, input)
 }
 
@@ -132,13 +154,15 @@ async fn phase6_live_ingress_success_means_accepted() {
 
     let values = Arc::new(Mutex::new(Vec::new()));
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
-    let (program, counter, input) = counter_program(input);
+    let (program, counter, _input) = counter_program(input);
     let runtime = Runtime::builder(program)
-        .bind_mpsc(&input, receiver)
-        .bind_effect::<Record, _>(RecordingDriver {
-            values: values.clone(),
-            observed: Some(observed),
-        })
+        .with_drivers((
+            samara::MpscReceiver::new(receiver),
+            RecordingDriver {
+                values: values.clone(),
+                observed: Some(observed),
+            },
+        ))
         .build()
         .expect("valid live bindings");
     let handle = runtime.handle(&counter).expect("registered Component");
@@ -207,16 +231,21 @@ struct CancelProbeConfig {
 }
 
 impl Component for CancelProbe {
+    type Requires = ();
     type Config = CancelProbeConfig;
     type Model = ();
     type Message = CancelMessage;
 
-    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
+    fn init(
+        _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+    ) -> Init<Self::Model, Self::Message> {
         Init::new(())
     }
 
     fn update(
         config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
         _model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -235,23 +264,26 @@ impl Component for CancelProbe {
 
 #[tokio::test]
 async fn phase6_scope_cancel_drops_effect_without_invoking_mapper() {
-    let mut program = Program::builder();
+    let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<Hang>,)>();
     let mapper_calls = Arc::new(AtomicUsize::new(0));
     let dropped = Arc::new(AtomicBool::new(false));
     let (entered, entered_rx) = tokio::sync::oneshot::channel();
-    let effect = program.effect::<Hang>();
-    let probe = program.component::<CancelProbe>(
-        ComponentId::new("cancel-probe"),
-        CancelProbeConfig {
-            mapper_calls: mapper_calls.clone(),
-            effect,
-        },
-    );
+    let effect = declared_0;
+    let probe = program
+        .component::<CancelProbe>(
+            ComponentId::new("cancel-probe"),
+            CancelProbeConfig {
+                mapper_calls: mapper_calls.clone(),
+                effect,
+            },
+        )
+        .finish()
+        .expect("component registration");
     let runtime = Runtime::builder(program.build().expect("valid program"))
-        .bind_effect::<Hang, _>(HangingDriver {
+        .with_drivers((HangingDriver {
             entered: Mutex::new(Some(entered)),
             dropped: dropped.clone(),
-        })
+        },))
         .build()
         .expect("valid live bindings");
     let handle = runtime.handle(&probe).expect("registered Component");
@@ -269,23 +301,26 @@ async fn phase6_scope_cancel_drops_effect_without_invoking_mapper() {
 
 #[tokio::test]
 async fn phase6_cancelled_shutdown_future_detaches_no_runtime_work() {
-    let mut program = Program::builder();
+    let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<Hang>,)>();
     let mapper_calls = Arc::new(AtomicUsize::new(0));
     let dropped = Arc::new(AtomicBool::new(false));
     let (entered, entered_rx) = tokio::sync::oneshot::channel();
-    let effect = program.effect::<Hang>();
-    let probe = program.component::<CancelProbe>(
-        ComponentId::new("shutdown-future-cancel"),
-        CancelProbeConfig {
-            mapper_calls: mapper_calls.clone(),
-            effect,
-        },
-    );
+    let effect = declared_0;
+    let probe = program
+        .component::<CancelProbe>(
+            ComponentId::new("shutdown-future-cancel"),
+            CancelProbeConfig {
+                mapper_calls: mapper_calls.clone(),
+                effect,
+            },
+        )
+        .finish()
+        .expect("component registration");
     let runtime = Runtime::builder(program.build().expect("valid program"))
-        .bind_effect::<Hang, _>(HangingDriver {
+        .with_drivers((HangingDriver {
             entered: Mutex::new(Some(entered)),
             dropped: dropped.clone(),
-        })
+        },))
         .build()
         .expect("valid live bindings");
     let handle = runtime.handle(&probe).expect("registered Component");
@@ -334,23 +369,26 @@ struct InitialCancelProbeConfig {
 
 #[tokio::test]
 async fn shutdown_escalation_joins_pending_effect_without_mapping() {
-    let mut program = Program::builder();
+    let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<Hang>,)>();
     let mapper_calls = Arc::new(AtomicUsize::new(0));
     let dropped = Arc::new(AtomicBool::new(false));
     let (entered, entered_rx) = tokio::sync::oneshot::channel();
-    let effect = program.effect::<Hang>();
-    let probe = program.component::<CancelProbe>(
-        ComponentId::new("escalation-effect"),
-        CancelProbeConfig {
-            mapper_calls: mapper_calls.clone(),
-            effect,
-        },
-    );
+    let effect = declared_0;
+    let probe = program
+        .component::<CancelProbe>(
+            ComponentId::new("escalation-effect"),
+            CancelProbeConfig {
+                mapper_calls: mapper_calls.clone(),
+                effect,
+            },
+        )
+        .finish()
+        .expect("component registration");
     let runtime = Runtime::builder(program.build().expect("valid program"))
-        .bind_effect::<Hang, _>(HangingDriver {
+        .with_drivers((HangingDriver {
             entered: Mutex::new(Some(entered)),
             dropped: dropped.clone(),
-        })
+        },))
         .build()
         .expect("valid bindings");
     let handle = runtime.handle(&probe).expect("live handle");
@@ -385,18 +423,27 @@ async fn shutdown_escalation_joins_pending_effect_without_mapping() {
 }
 
 impl Component for InitialCancelProbe {
+    type Requires = ();
     type Config = InitialCancelProbeConfig;
     type Model = ();
     type Message = ();
 
-    fn init(config: &Self::Config) -> Init<Self::Model, Self::Message> {
+    fn init(
+        config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+    ) -> Init<Self::Model, Self::Message> {
         let mapper_calls = config.mapper_calls.clone();
         Init::new(()).with_command(Command::effect_with(&config.effect, Hang, move |_| {
             mapper_calls.fetch_add(1, Ordering::SeqCst);
         }))
     }
 
-    fn update(_config: &Self::Config, _model: &mut Self::Model, (): ()) -> Command<Self::Message> {
+    fn update(
+        _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+        _model: &mut Self::Model,
+        (): (),
+    ) -> Command<Self::Message> {
         Command::none()
     }
 }
@@ -416,19 +463,22 @@ impl EffectDriver<Hang> for CountedHangingDriver {
 async fn phase6_cancel_stops_driving_without_mapping_scope_abort() {
     let mapper_calls = Arc::new(AtomicUsize::new(0));
     let driver_calls = Arc::new(AtomicUsize::new(0));
-    let mut program = Program::builder();
-    let effect = program.effect::<Hang>();
-    let _ = program.component::<InitialCancelProbe>(
-        ComponentId::new("immediate-cancel"),
-        InitialCancelProbeConfig {
-            mapper_calls: mapper_calls.clone(),
-            effect,
-        },
-    );
+    let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<Hang>,)>();
+    let effect = declared_0;
+    let _ = program
+        .component::<InitialCancelProbe>(
+            ComponentId::new("immediate-cancel"),
+            InitialCancelProbeConfig {
+                mapper_calls: mapper_calls.clone(),
+                effect,
+            },
+        )
+        .finish()
+        .expect("component registration");
     let runtime = Runtime::builder(program.build().expect("valid program"))
-        .bind_effect::<Hang, _>(CountedHangingDriver {
+        .with_drivers((CountedHangingDriver {
             calls: driver_calls.clone(),
-        })
+        },))
         .build()
         .expect("valid live bindings");
 
@@ -449,19 +499,22 @@ async fn phase6_cancel_stops_driving_without_mapping_scope_abort() {
 async fn shutdown_escalation_before_owner_poll_cannot_restart_work() {
     let mapper_calls = Arc::new(AtomicUsize::new(0));
     let driver_calls = Arc::new(AtomicUsize::new(0));
-    let mut program = Program::builder();
-    let effect = program.effect::<Hang>();
-    program.component::<InitialCancelProbe>(
-        ComponentId::new("early-escalation"),
-        InitialCancelProbeConfig {
-            mapper_calls: mapper_calls.clone(),
-            effect,
-        },
-    );
+    let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<Hang>,)>();
+    let effect = declared_0;
+    program
+        .component::<InitialCancelProbe>(
+            ComponentId::new("early-escalation"),
+            InitialCancelProbeConfig {
+                mapper_calls: mapper_calls.clone(),
+                effect,
+            },
+        )
+        .finish()
+        .expect("component registration");
     let mut task = Runtime::builder(program.build().expect("valid program"))
-        .bind_effect::<Hang, _>(CountedHangingDriver {
+        .with_drivers((CountedHangingDriver {
             calls: driver_calls.clone(),
-        })
+        },))
         .build()
         .expect("valid bindings")
         .spawn();
@@ -501,27 +554,38 @@ struct PanicProbeConfig {
 }
 
 impl Component for PanicProbe {
+    type Requires = ();
     type Config = PanicProbeConfig;
     type Model = ();
     type Message = ();
 
-    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
+    fn init(
+        _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+    ) -> Init<Self::Model, Self::Message> {
         Init::new(())
     }
 
-    fn update(config: &Self::Config, _model: &mut Self::Model, (): ()) -> Command<Self::Message> {
+    fn update(
+        config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+        _model: &mut Self::Model,
+        (): (),
+    ) -> Command<Self::Message> {
         Command::effect_with(&config.effect, PanicEffect, |_| ())
     }
 }
 
 #[tokio::test]
 async fn phase6_driver_panic_faults_and_cleans_scope() {
-    let mut program = Program::builder();
-    let effect = program.effect::<PanicEffect>();
+    let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<PanicEffect>,)>();
+    let effect = declared_0;
     let probe = program
-        .component::<PanicProbe>(ComponentId::new("panic-probe"), PanicProbeConfig { effect });
+        .component::<PanicProbe>(ComponentId::new("panic-probe"), PanicProbeConfig { effect })
+        .finish()
+        .expect("component registration");
     let runtime = Runtime::builder(program.build().expect("valid program"))
-        .bind_effect::<PanicEffect, _>(PanickingDriver)
+        .with_drivers((PanickingDriver,))
         .build()
         .expect("valid live bindings");
     let handle = runtime.handle(&probe).expect("registered Component");
@@ -538,14 +602,17 @@ async fn phase6_driver_panic_faults_and_cleans_scope() {
 
 #[tokio::test]
 async fn shutdown_requests_preserve_completed_fault() {
-    let mut program = Program::builder();
-    let effect = program.effect::<PanicEffect>();
-    let probe = program.component::<PanicProbe>(
-        ComponentId::new("preserved-fault"),
-        PanicProbeConfig { effect },
-    );
+    let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<PanicEffect>,)>();
+    let effect = declared_0;
+    let probe = program
+        .component::<PanicProbe>(
+            ComponentId::new("preserved-fault"),
+            PanicProbeConfig { effect },
+        )
+        .finish()
+        .expect("component registration");
     let runtime = Runtime::builder(program.build().expect("valid program"))
-        .bind_effect::<PanicEffect, _>(PanickingDriver)
+        .with_drivers((PanickingDriver,))
         .build()
         .expect("valid bindings");
     let handle = runtime.handle(&probe).expect("live handle");
@@ -568,6 +635,7 @@ struct ScriptedSource {
 }
 
 impl SourceDescriptor for ScriptedSource {
+    type Terminal = Self;
     type Item = u64;
     type Error = &'static str;
 }
@@ -650,11 +718,15 @@ struct SourceModel {
 }
 
 impl Component for SourceProbe {
+    type Requires = ();
     type Config = SourceProbeConfig;
     type Model = SourceModel;
     type Message = SourceMessage;
 
-    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
+    fn init(
+        _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+    ) -> Init<Self::Model, Self::Message> {
         Init::new(SourceModel {
             generation: Some(1),
             items: Vec::new(),
@@ -663,6 +735,7 @@ impl Component for SourceProbe {
 
     fn update(
         config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -709,7 +782,11 @@ impl Component for SourceProbe {
         }
     }
 
-    fn subscriptions(config: &Self::Config, model: &Self::Model) -> Subscriptions<Self::Message> {
+    fn subscriptions(
+        config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+        model: &Self::Model,
+    ) -> Subscriptions<Self::Message> {
         model
             .generation
             .map_or_else(Subscriptions::none, |generation| {
@@ -733,30 +810,36 @@ struct SourceFixture {
 }
 
 fn source_fixture(causal_timer: bool) -> SourceFixture {
-    let mut program = Program::builder();
-    let source = program.source::<ScriptedSource>();
-    let observe = program.effect::<Observe>();
-    let component = program.component::<SourceProbe>(
-        ComponentId::new("source-probe"),
-        SourceProbeConfig {
-            causal_timer,
-            source,
-            observe,
-        },
-    );
+    let (mut program, (declared_0, declared_1)) =
+        samara::Program::builder::<(samara::Source<ScriptedSource>, samara::Effect<Observe>)>();
+    let source = declared_0;
+    let observe = declared_1;
+    let component = program
+        .component::<SourceProbe>(
+            ComponentId::new("source-probe"),
+            SourceProbeConfig {
+                causal_timer,
+                source,
+                observe,
+            },
+        )
+        .finish()
+        .expect("component registration");
     let (observation_tx, observations) = tokio::sync::mpsc::unbounded_channel();
     let (sink_tx, sinks) = tokio::sync::mpsc::unbounded_channel();
     let starts = Arc::new(AtomicUsize::new(0));
     let dropped = Arc::new(AtomicUsize::new(0));
     let runtime = Runtime::builder(program.build().expect("valid source program"))
-        .bind_source::<ScriptedSource, _>(HarnessSourceDriver {
-            starts: starts.clone(),
-            dropped: dropped.clone(),
-            sinks: sink_tx,
-        })
-        .bind_effect::<Observe, _>(ObservationDriver {
-            observations: observation_tx,
-        })
+        .with_drivers((
+            samara::DrivenSource::new(HarnessSourceDriver {
+                starts: starts.clone(),
+                dropped: dropped.clone(),
+                sinks: sink_tx,
+            }),
+            ObservationDriver {
+                observations: observation_tx,
+            },
+        ))
         .build()
         .expect("valid source bindings");
     SourceFixture {
@@ -839,26 +922,32 @@ impl SourceDriver<ScriptedSource> for SilentSourceDriver {
 
 #[tokio::test]
 async fn phase6_silent_source_return_ends_once() {
-    let mut program = Program::builder();
-    let source = program.source::<ScriptedSource>();
-    let observe = program.effect::<Observe>();
-    let _component = program.component::<SourceProbe>(
-        ComponentId::new("silent-source"),
-        SourceProbeConfig {
-            causal_timer: false,
-            source,
-            observe,
-        },
-    );
+    let (mut program, (declared_0, declared_1)) =
+        samara::Program::builder::<(samara::Source<ScriptedSource>, samara::Effect<Observe>)>();
+    let source = declared_0;
+    let observe = declared_1;
+    let _component = program
+        .component::<SourceProbe>(
+            ComponentId::new("silent-source"),
+            SourceProbeConfig {
+                causal_timer: false,
+                source,
+                observe,
+            },
+        )
+        .finish()
+        .expect("component registration");
     let starts = Arc::new(AtomicUsize::new(0));
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
     let runtime = Runtime::builder(program.build().expect("valid program"))
-        .bind_source::<ScriptedSource, _>(SilentSourceDriver {
-            starts: starts.clone(),
-        })
-        .bind_effect::<Observe, _>(ObservationDriver {
-            observations: observed,
-        })
+        .with_drivers((
+            samara::DrivenSource::new(SilentSourceDriver {
+                starts: starts.clone(),
+            }),
+            ObservationDriver {
+                observations: observed,
+            },
+        ))
         .build()
         .expect("valid bindings");
     let task = runtime.spawn();
@@ -904,27 +993,33 @@ impl SourceDriver<ScriptedSource> for PanickingSourceDriver {
 #[tokio::test]
 async fn phase6_source_driver_panics_fault_and_clean_the_scope() {
     for mode in [SourcePanicMode::Start, SourcePanicMode::Future] {
-        let mut program = Program::builder();
-        let source = program.source::<ScriptedSource>();
-        let observe = program.effect::<Observe>();
-        let _ = program.component::<SourceProbe>(
-            ComponentId::new(format!("source-panic-{mode:?}")),
-            SourceProbeConfig {
-                causal_timer: false,
-                source,
-                observe,
-            },
-        );
+        let (mut program, (declared_0, declared_1)) =
+            samara::Program::builder::<(samara::Source<ScriptedSource>, samara::Effect<Observe>)>();
+        let source = declared_0;
+        let observe = declared_1;
+        let _ = program
+            .component::<SourceProbe>(
+                ComponentId::new(format!("source-panic-{mode:?}")),
+                SourceProbeConfig {
+                    causal_timer: false,
+                    source,
+                    observe,
+                },
+            )
+            .finish()
+            .expect("component registration");
         let (entered, entered_rx) = tokio::sync::oneshot::channel();
         let (observed, _observations) = tokio::sync::mpsc::unbounded_channel();
         let runtime = Runtime::builder(program.build().expect("valid program"))
-            .bind_source::<ScriptedSource, _>(PanickingSourceDriver {
-                mode,
-                entered: Mutex::new(Some(entered)),
-            })
-            .bind_effect::<Observe, _>(ObservationDriver {
-                observations: observed,
-            })
+            .with_drivers((
+                samara::DrivenSource::new(PanickingSourceDriver {
+                    mode,
+                    entered: Mutex::new(Some(entered)),
+                }),
+                ObservationDriver {
+                    observations: observed,
+                },
+            ))
             .build()
             .expect("valid binding");
         let task = runtime.spawn();
@@ -1053,16 +1148,21 @@ enum AdmissionMessage {
 }
 
 impl Component for AdmissionProbe {
+    type Requires = ();
     type Config = AdmissionProbeConfig;
     type Model = u64;
     type Message = AdmissionMessage;
 
-    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
+    fn init(
+        _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+    ) -> Init<Self::Model, Self::Message> {
         Init::new(0)
     }
 
     fn update(
         config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -1079,18 +1179,21 @@ impl Component for AdmissionProbe {
 }
 
 async fn admitted_burst(count: usize) -> Vec<u64> {
-    let mut program = Program::builder();
-    let record = program.effect::<Record>();
-    let probe = program.component::<AdmissionProbe>(
-        ComponentId::new("admission-probe"),
-        AdmissionProbeConfig { record },
-    );
+    let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<Record>,)>();
+    let record = declared_0;
+    let probe = program
+        .component::<AdmissionProbe>(
+            ComponentId::new("admission-probe"),
+            AdmissionProbeConfig { record },
+        )
+        .finish()
+        .expect("component registration");
     let values = Arc::new(Mutex::new(Vec::new()));
     let runtime = Runtime::builder(program.build().expect("valid program"))
-        .bind_effect::<Record, _>(RecordingDriver {
+        .with_drivers((RecordingDriver {
             values: values.clone(),
             observed: None,
-        })
+        },))
         .build()
         .expect("valid binding");
     let handle = runtime.handle(&probe).expect("registered Component");
@@ -1131,18 +1234,21 @@ async fn phase6_accepted_internal_delivery_has_no_silent_drop() {
 
 #[tokio::test]
 async fn phase6_shutdown_closes_external_ingress() -> Result<(), RuntimeError> {
-    let mut program = Program::builder();
-    let record = program.effect::<Record>();
-    let probe = program.component::<AdmissionProbe>(
-        ComponentId::new("closed-ingress"),
-        AdmissionProbeConfig { record },
-    );
+    let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<Record>,)>();
+    let record = declared_0;
+    let probe = program
+        .component::<AdmissionProbe>(
+            ComponentId::new("closed-ingress"),
+            AdmissionProbeConfig { record },
+        )
+        .finish()
+        .expect("component registration");
     let values = Arc::new(Mutex::new(Vec::new()));
     let runtime = Runtime::builder(program.build().expect("valid program"))
-        .bind_effect::<Record, _>(RecordingDriver {
+        .with_drivers((RecordingDriver {
             values,
             observed: None,
-        })
+        },))
         .build()
         .expect("valid binding");
     let handle = runtime.handle(&probe).expect("registered Component");
@@ -1167,15 +1273,24 @@ struct InitialEffectComponentConfig {
 }
 
 impl Component for InitialEffectComponent {
+    type Requires = ();
     type Config = InitialEffectComponentConfig;
     type Model = ();
     type Message = ();
 
-    fn init(config: &Self::Config) -> Init<Self::Model, Self::Message> {
+    fn init(
+        config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+    ) -> Init<Self::Model, Self::Message> {
         Init::new(()).with_command(Command::effect_with(&config.effect, InitialEffect, |_| ()))
     }
 
-    fn update(_config: &Self::Config, _model: &mut Self::Model, (): ()) -> Command<Self::Message> {
+    fn update(
+        _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+        _model: &mut Self::Model,
+        (): (),
+    ) -> Command<Self::Message> {
         Command::none()
     }
 }
@@ -1190,64 +1305,39 @@ impl EffectDriver<InitialEffect> for NoopInitialDriver {
 
 #[tokio::test]
 async fn phase6_knowable_live_binding_errors_fail_build() {
-    let mut program = Program::builder();
-    let effect = program.effect::<InitialEffect>();
-    let _ = program.component::<InitialEffectComponent>(
-        ComponentId::new("initial-effect"),
-        InitialEffectComponentConfig { effect },
-    );
+    let (mut program, (declared_0,)) =
+        samara::Program::builder::<(samara::Effect<InitialEffect>,)>();
+    let effect = declared_0;
+    let _ = program
+        .component::<InitialEffectComponent>(
+            ComponentId::new("duplicate-effect"),
+            InitialEffectComponentConfig { effect },
+        )
+        .finish()
+        .expect("component registration");
     assert!(
         Runtime::builder(program.build().expect("valid program"))
-            .build()
-            .is_err()
-    );
-
-    let mut program = Program::builder();
-    let effect = program.effect::<InitialEffect>();
-    let _ = program.component::<InitialEffectComponent>(
-        ComponentId::new("duplicate-effect"),
-        InitialEffectComponentConfig { effect },
-    );
-    assert!(
-        Runtime::builder(program.build().expect("valid program"))
-            .bind_effect::<InitialEffect, _>(NoopInitialDriver)
+            .with_drivers((NoopInitialDriver,))
             .bind_effect::<InitialEffect, _>(NoopInitialDriver)
             .build()
             .is_err()
     );
 
-    let mut program = Program::builder();
-    let source = program.source::<ScriptedSource>();
-    let observe = program.effect::<Observe>();
-    let _ = program.component::<SourceProbe>(
-        ComponentId::new("missing-source"),
-        SourceProbeConfig {
-            causal_timer: false,
-            source,
-            observe,
-        },
-    );
-    let (observed, _observations) = tokio::sync::mpsc::unbounded_channel();
-    assert!(
-        Runtime::builder(program.build().expect("valid program"))
-            .bind_effect::<Observe, _>(ObservationDriver {
-                observations: observed,
-            })
-            .build()
-            .is_err()
-    );
-
-    let mut program = Program::builder();
-    let source = program.source::<ScriptedSource>();
-    let observe = program.effect::<Observe>();
-    let _ = program.component::<SourceProbe>(
-        ComponentId::new("duplicate-source"),
-        SourceProbeConfig {
-            causal_timer: false,
-            source,
-            observe,
-        },
-    );
+    let (mut program, (declared_0, declared_1)) =
+        samara::Program::builder::<(samara::Source<ScriptedSource>, samara::Effect<Observe>)>();
+    let source = declared_0;
+    let observe = declared_1;
+    let _ = program
+        .component::<SourceProbe>(
+            ComponentId::new("duplicate-source"),
+            SourceProbeConfig {
+                causal_timer: false,
+                source,
+                observe,
+            },
+        )
+        .finish()
+        .expect("component registration");
     let (sinks, _sink_rx) = tokio::sync::mpsc::unbounded_channel();
     let starts = Arc::new(AtomicUsize::new(0));
     let dropped = Arc::new(AtomicUsize::new(0));
@@ -1259,73 +1349,15 @@ async fn phase6_knowable_live_binding_errors_fail_build() {
     let (observed, _observations) = tokio::sync::mpsc::unbounded_channel();
     assert!(
         Runtime::builder(program.build().expect("valid program"))
+            .with_drivers((
+                samara::DrivenSource::new(binding()),
+                ObservationDriver {
+                    observations: observed,
+                },
+            ))
             .bind_source::<ScriptedSource, _>(binding())
-            .bind_source::<ScriptedSource, _>(binding())
-            .bind_effect::<Observe, _>(ObservationDriver {
-                observations: observed,
-            })
             .build()
             .is_err()
-    );
-}
-
-#[derive(Debug)]
-struct DynamicEffect;
-
-impl EffectDescriptor for DynamicEffect {
-    type Output = ();
-    type Error = Infallible;
-}
-
-enum DynamicMessage {
-    Trigger,
-    Mapped,
-}
-
-struct DynamicProbe;
-
-struct DynamicProbeConfig {
-    effect: EffectCapability<DynamicEffect>,
-}
-
-impl Component for DynamicProbe {
-    type Config = DynamicProbeConfig;
-    type Model = ();
-    type Message = DynamicMessage;
-
-    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
-        Init::new(())
-    }
-
-    fn update(
-        config: &Self::Config,
-        _model: &mut Self::Model,
-        message: Self::Message,
-    ) -> Command<Self::Message> {
-        match message {
-            DynamicMessage::Trigger => {
-                Command::effect_with(&config.effect, DynamicEffect, |_| DynamicMessage::Mapped)
-            }
-            DynamicMessage::Mapped => panic!("a missing binding must not invoke its mapper"),
-        }
-    }
-}
-
-#[test]
-fn phase6_declared_missing_binding_rejects_live_build() {
-    let mut program = Program::builder();
-    let effect = program.effect::<DynamicEffect>();
-    let _probe = program
-        .component::<DynamicProbe>(ComponentId::new("dynamic"), DynamicProbeConfig { effect });
-    let _trigger = DynamicMessage::Trigger;
-    let error = Runtime::builder(program.build().expect("valid program"))
-        .build()
-        .err()
-        .expect("declared missing binding rejects live assembly");
-    assert!(
-        error
-            .to_string()
-            .contains(std::any::type_name::<DynamicEffect>())
     );
 }
 
@@ -1399,16 +1431,21 @@ struct QueryProbeConfig {
 }
 
 impl Component for QueryProbe {
+    type Requires = ();
     type Config = QueryProbeConfig;
     type Model = ();
     type Message = QueryMessage;
 
-    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
+    fn init(
+        _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+    ) -> Init<Self::Model, Self::Message> {
         Init::new(())
     }
 
     fn update(
         config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
         _model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -1450,24 +1487,30 @@ async fn phase6_effect_success_and_failure_map_exactly_once() -> Result<(), Runt
     let driver_calls = Arc::new(AtomicUsize::new(0));
     let mapper_calls = Arc::new(AtomicUsize::new(0));
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
-    let mut program = Program::builder();
-    let query = program.effect::<Query>();
-    let observe = program.effect::<ObserveQuery>();
-    let probe = program.component::<QueryProbe>(
-        ComponentId::new("query"),
-        QueryProbeConfig {
-            mapper_calls: mapper_calls.clone(),
-            query,
-            observe,
-        },
-    );
+    let (mut program, (declared_0, declared_1)) =
+        samara::Program::builder::<(samara::Effect<Query>, samara::Effect<ObserveQuery>)>();
+    let query = declared_0;
+    let observe = declared_1;
+    let probe = program
+        .component::<QueryProbe>(
+            ComponentId::new("query"),
+            QueryProbeConfig {
+                mapper_calls: mapper_calls.clone(),
+                query,
+                observe,
+            },
+        )
+        .finish()
+        .expect("component registration");
     let runtime = Runtime::builder(program.build().expect("valid program"))
-        .bind_effect::<Query, _>(QueryDriver {
-            calls: driver_calls.clone(),
-        })
-        .bind_effect::<ObserveQuery, _>(QueryObserver {
-            observations: observed,
-        })
+        .with_drivers((
+            QueryDriver {
+                calls: driver_calls.clone(),
+            },
+            QueryObserver {
+                observations: observed,
+            },
+        ))
         .build()
         .expect("valid bindings");
     let handle = runtime.handle(&probe).expect("registered Component");
@@ -1535,16 +1578,21 @@ struct DrainGateProbeConfig {
 }
 
 impl Component for DrainGateProbe {
+    type Requires = ();
     type Config = DrainGateProbeConfig;
     type Model = bool;
     type Message = DrainGateMessage;
 
-    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
+    fn init(
+        _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+    ) -> Init<Self::Model, Self::Message> {
         Init::new(false)
     }
 
     fn update(
         config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
         desired: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -1562,7 +1610,11 @@ impl Component for DrainGateProbe {
         }
     }
 
-    fn subscriptions(config: &Self::Config, desired: &Self::Model) -> Subscriptions<Self::Message> {
+    fn subscriptions(
+        config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+        desired: &Self::Model,
+    ) -> Subscriptions<Self::Message> {
         if *desired {
             Subscriptions::one(Subscription::source_with(
                 &config.source,
@@ -1584,31 +1636,40 @@ async fn phase6_drain_realizes_no_new_sources() {
     let starts = Arc::new(AtomicUsize::new(0));
     let dropped = Arc::new(AtomicUsize::new(0));
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
-    let mut program = Program::builder();
-    let gate = program.effect::<GateEffect>();
-    let observe = program.effect::<Observe>();
-    let source = program.source::<ScriptedSource>();
-    let probe = program.component::<DrainGateProbe>(
-        ComponentId::new("drain-gate"),
-        DrainGateProbeConfig {
-            gate,
-            observe,
-            source,
-        },
-    );
+    let (mut program, (declared_0, declared_1, declared_2)) = samara::Program::builder::<(
+        samara::Effect<GateEffect>,
+        samara::Effect<Observe>,
+        samara::Source<ScriptedSource>,
+    )>();
+    let gate = declared_0;
+    let observe = declared_1;
+    let source = declared_2;
+    let probe = program
+        .component::<DrainGateProbe>(
+            ComponentId::new("drain-gate"),
+            DrainGateProbeConfig {
+                gate,
+                observe,
+                source,
+            },
+        )
+        .finish()
+        .expect("component registration");
     let runtime = Runtime::builder(program.build().expect("valid program"))
-        .bind_effect::<GateEffect, _>(GateDriver {
-            started: Mutex::new(Some(started)),
-            release: Mutex::new(Some(release_rx)),
-        })
-        .bind_effect::<Observe, _>(ObservationDriver {
-            observations: observed,
-        })
-        .bind_source::<ScriptedSource, _>(HarnessSourceDriver {
-            starts: starts.clone(),
-            dropped,
-            sinks: sink_tx,
-        })
+        .with_drivers((
+            GateDriver {
+                started: Mutex::new(Some(started)),
+                release: Mutex::new(Some(release_rx)),
+            },
+            ObservationDriver {
+                observations: observed,
+            },
+            samara::DrivenSource::new(HarnessSourceDriver {
+                starts: starts.clone(),
+                dropped,
+                sinks: sink_tx,
+            }),
+        ))
         .build()
         .expect("valid bindings");
     let handle = runtime.handle(&probe).expect("registered Component");
@@ -1640,17 +1701,20 @@ async fn phase6_drain_realizes_no_new_sources() {
 #[tokio::test]
 async fn phase6_successful_shutdown_owns_zero_work() -> Result<(), RuntimeError> {
     for mode in [Shutdown::Drain, Shutdown::Cancel] {
-        let mut program = Program::builder();
-        let record = program.effect::<Record>();
-        let _ = program.component::<AdmissionProbe>(
-            ComponentId::new(format!("empty-{mode:?}")),
-            AdmissionProbeConfig { record },
-        );
+        let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<Record>,)>();
+        let record = declared_0;
+        let _ = program
+            .component::<AdmissionProbe>(
+                ComponentId::new(format!("empty-{mode:?}")),
+                AdmissionProbeConfig { record },
+            )
+            .finish()
+            .expect("component registration");
         let runtime = Runtime::builder(program.build().expect("valid program"))
-            .bind_effect::<Record, _>(RecordingDriver {
+            .with_drivers((RecordingDriver {
                 values: Arc::new(Mutex::new(Vec::new())),
                 observed: None,
-            })
+            },))
             .build()
             .expect("valid binding");
         let report = runtime.spawn().shutdown(mode).await?;
@@ -1703,16 +1767,21 @@ struct EchoProviderConfig {
 }
 
 impl Component for EchoProvider {
+    type Requires = ();
     type Config = EchoProviderConfig;
     type Model = ();
     type Message = EchoProviderMessage;
 
-    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
+    fn init(
+        _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+    ) -> Init<Self::Model, Self::Message> {
         Init::new(())
     }
 
     fn update(
         config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
         _model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -1766,16 +1835,21 @@ struct EchoRequesterConfig {
 }
 
 impl Component for EchoRequester {
+    type Requires = ();
     type Config = EchoRequesterConfig;
     type Model = ();
     type Message = EchoRequesterMessage;
 
-    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
+    fn init(
+        _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+    ) -> Init<Self::Model, Self::Message> {
         Init::new(())
     }
 
     fn update(
         config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
         _model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -1807,24 +1881,31 @@ impl Component for EchoRequester {
 fn echo_program(
     reply: bool,
     continuation_calls: Arc<AtomicUsize>,
-) -> (Program, ComponentRef<EchoRequester>) {
-    let mut program = Program::builder();
+) -> (TestProgram2, ComponentRef<EchoRequester>) {
+    let (mut program, (declared_0, declared_1)) =
+        samara::Program::builder::<(samara::Effect<ProviderSeen>, samara::Effect<ObserveReply>)>();
     let echo = program.port::<EchoMessage>(PortId::new("echo"));
-    let seen = program.effect::<ProviderSeen>();
-    let observe = program.effect::<ObserveReply>();
-    let provider = program.component::<EchoProvider>(
-        ComponentId::new("echo-provider"),
-        EchoProviderConfig { reply, seen },
-    );
+    let seen = declared_0;
+    let observe = declared_1;
+    let provider = program
+        .component::<EchoProvider>(
+            ComponentId::new("echo-provider"),
+            EchoProviderConfig { reply, seen },
+        )
+        .finish()
+        .expect("component registration");
     program.connect(&echo, &provider.accepting(EchoProviderMessage::Echo));
-    let requester = program.component::<EchoRequester>(
-        ComponentId::new("echo-requester"),
-        EchoRequesterConfig {
-            echo,
-            continuation_calls,
-            observe,
-        },
-    );
+    let requester = program
+        .component::<EchoRequester>(
+            ComponentId::new("echo-requester"),
+            EchoRequesterConfig {
+                echo,
+                continuation_calls,
+                observe,
+            },
+        )
+        .finish()
+        .expect("component registration");
     (program.build().expect("valid Echo program"), requester)
 }
 
@@ -1835,10 +1916,12 @@ async fn phase6_live_request_reply_drains_causally() -> Result<(), RuntimeError>
     let (replies, mut observed) = tokio::sync::mpsc::unbounded_channel();
     let (seen, _seen_rx) = tokio::sync::oneshot::channel();
     let runtime = Runtime::builder(program)
-        .bind_effect::<ObserveReply, _>(ReplyObserver { replies })
-        .bind_effect::<ProviderSeen, _>(ProviderSeenDriver {
-            seen: Mutex::new(Some(seen)),
-        })
+        .with_drivers((
+            ProviderSeenDriver {
+                seen: Mutex::new(Some(seen)),
+            },
+            ReplyObserver { replies },
+        ))
         .build()?;
     let handle = runtime.handle(&requester)?;
     let task = runtime.spawn();
@@ -1857,10 +1940,12 @@ async fn phase6_cancel_drops_unanswered_request_without_mapping() -> Result<(), 
     let (seen, seen_rx) = tokio::sync::oneshot::channel();
     let (replies, _observed) = tokio::sync::mpsc::unbounded_channel();
     let runtime = Runtime::builder(program)
-        .bind_effect::<ProviderSeen, _>(ProviderSeenDriver {
-            seen: Mutex::new(Some(seen)),
-        })
-        .bind_effect::<ObserveReply, _>(ReplyObserver { replies })
+        .with_drivers((
+            ProviderSeenDriver {
+                seen: Mutex::new(Some(seen)),
+            },
+            ReplyObserver { replies },
+        ))
         .build()?;
     let handle = runtime.handle(&requester)?;
     let task = runtime.spawn();
@@ -1880,10 +1965,12 @@ async fn shutdown_escalation_closes_unanswered_request_without_mapping() -> Resu
     let (seen, seen_rx) = tokio::sync::oneshot::channel();
     let (replies, _observed) = tokio::sync::mpsc::unbounded_channel();
     let runtime = Runtime::builder(program)
-        .bind_effect::<ProviderSeen, _>(ProviderSeenDriver {
-            seen: Mutex::new(Some(seen)),
-        })
-        .bind_effect::<ObserveReply, _>(ReplyObserver { replies })
+        .with_drivers((
+            ProviderSeenDriver {
+                seen: Mutex::new(Some(seen)),
+            },
+            ReplyObserver { replies },
+        ))
         .build()?;
     let handle = runtime.handle(&requester)?;
     let mut task = runtime.spawn();
@@ -1974,16 +2061,21 @@ struct IndependentProbeConfig {
 }
 
 impl Component for IndependentProbe {
+    type Requires = ();
     type Config = IndependentProbeConfig;
     type Model = ();
     type Message = IndependentMessage;
 
-    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
+    fn init(
+        _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+    ) -> Init<Self::Model, Self::Message> {
         Init::new(())
     }
 
     fn update(
         config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
         _model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -2021,22 +2113,28 @@ async fn forced_independent_order(first: char, second: char) -> Vec<char> {
     let mut release = std::collections::HashMap::from([('A', release_a), ('B', release_b)]);
     let (started, mut starts) = tokio::sync::mpsc::unbounded_channel();
     let (order, mut observed) = tokio::sync::mpsc::unbounded_channel();
-    let mut program = Program::builder();
-    let independent = program.effect::<Independent>();
-    let record = program.effect::<RecordOrder>();
-    let probe = program.component::<IndependentProbe>(
-        ComponentId::new("independent"),
-        IndependentProbeConfig {
-            independent,
-            record,
-        },
-    );
+    let (mut program, (declared_0, declared_1)) =
+        samara::Program::builder::<(samara::Effect<Independent>, samara::Effect<RecordOrder>)>();
+    let independent = declared_0;
+    let record = declared_1;
+    let probe = program
+        .component::<IndependentProbe>(
+            ComponentId::new("independent"),
+            IndependentProbeConfig {
+                independent,
+                record,
+            },
+        )
+        .finish()
+        .expect("component registration");
     let runtime = Runtime::builder(program.build().expect("valid program"))
-        .bind_effect::<Independent, _>(IndependentDriver {
-            started,
-            releases: Mutex::new(releases),
-        })
-        .bind_effect::<RecordOrder, _>(OrderObserver { order })
+        .with_drivers((
+            IndependentDriver {
+                started,
+                releases: Mutex::new(releases),
+            },
+            OrderObserver { order },
+        ))
         .build()
         .expect("valid bindings");
     let handle = runtime.handle(&probe).expect("registered Component");
@@ -2094,18 +2192,22 @@ async fn v8_conformance_compares_partial_order_not_scheduler_sequence() {
     assert_same_causal_partial_order(&b_then_a);
 }
 
-fn query_program(mapper_calls: Arc<AtomicUsize>) -> (Program, ComponentRef<QueryProbe>) {
-    let mut program = Program::builder();
-    let query = program.effect::<Query>();
-    let observe = program.effect::<ObserveQuery>();
-    let probe = program.component::<QueryProbe>(
-        ComponentId::new("query-parity"),
-        QueryProbeConfig {
-            mapper_calls,
-            query,
-            observe,
-        },
-    );
+fn query_program(mapper_calls: Arc<AtomicUsize>) -> (TestProgram3, ComponentRef<QueryProbe>) {
+    let (mut program, (declared_0, declared_1)) =
+        samara::Program::builder::<(samara::Effect<Query>, samara::Effect<ObserveQuery>)>();
+    let query = declared_0;
+    let observe = declared_1;
+    let probe = program
+        .component::<QueryProbe>(
+            ComponentId::new("query-parity"),
+            QueryProbeConfig {
+                mapper_calls,
+                query,
+                observe,
+            },
+        )
+        .finish()
+        .expect("component registration");
     (program.build().expect("valid query program"), probe)
 }
 
@@ -2125,10 +2227,7 @@ fn normalize_query_observations(observations: Vec<QueryObservation>) -> Vec<Stri
 async fn v5_live_and_controlled_boundaries_map_equivalent_observations() -> Result<(), RuntimeError>
 {
     let (program, probe) = query_program(Arc::new(AtomicUsize::new(0)));
-    let mut controlled = ControlledRuntime::builder(program)
-        .control_effect::<Query>()
-        .control_effect::<ObserveQuery>()
-        .build()?;
+    let mut controlled = ControlledRuntime::builder(program).control_all().build()?;
     controlled.send(&probe, QueryMessage::Start)?;
     controlled.run_until_idle()?;
     for _ in 0..2 {
@@ -2153,12 +2252,14 @@ async fn v5_live_and_controlled_boundaries_map_equivalent_observations() -> Resu
     let (program, probe) = query_program(Arc::new(AtomicUsize::new(0)));
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
     let runtime = Runtime::builder(program)
-        .bind_effect::<Query, _>(QueryDriver {
-            calls: Arc::new(AtomicUsize::new(0)),
-        })
-        .bind_effect::<ObserveQuery, _>(QueryObserver {
-            observations: observed,
-        })
+        .with_drivers((
+            QueryDriver {
+                calls: Arc::new(AtomicUsize::new(0)),
+            },
+            QueryObserver {
+                observations: observed,
+            },
+        ))
         .build()?;
     let handle = runtime.handle(&probe)?;
     let task = runtime.spawn();

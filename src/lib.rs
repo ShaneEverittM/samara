@@ -20,15 +20,16 @@
 //! enum Message { Add(u64) }
 //!
 //! impl Component for Counter {
+//!     type Requires = ();
 //!     type Config = ();
 //!     type Model = u64;
 //!     type Message = Message;
 //!
-//!     fn init(_config: &Self::Config) -> Init<u64, Message> {
+//!     fn init(_config: &Self::Config, _: &samara::Capabilities<Self::Requires>) -> Init<u64, Message> {
 //!         Init::new(0)
 //!     }
 //!
-//!     fn update(_config: &Self::Config, count: &mut u64, message: Message) -> Command<Message> {
+//!     fn update(_config: &Self::Config, _: &samara::Capabilities<Self::Requires>, count: &mut u64, message: Message) -> Command<Message> {
 //!         match message {
 //!             Message::Add(amount) => *count += amount,
 //!         }
@@ -36,9 +37,9 @@
 //!     }
 //! }
 //!
-//! let mut builder = Program::builder();
-//! let counter = builder.component::<Counter>(ComponentId::new("counter"), ());
-//! let mut runtime = ControlledRuntime::builder(builder.build()?).build()?;
+//! let (mut builder, ()) = samara::Program::builder::<()>();
+//! let counter = builder.component::<Counter>(ComponentId::new("counter"), ()).finish().expect("component registration");
+//! let mut runtime = ControlledRuntime::builder(builder.build()?).control_all().build()?;
 //! runtime.send(&counter, Message::Add(3))?;
 //! runtime.run_until_idle()?;
 //! assert_eq!(*runtime.state(&counter)?, 3);
@@ -76,6 +77,9 @@ use std::{
     time::Duration,
 };
 
+mod typed_program;
+pub use typed_program::*;
+
 mod clock;
 mod component_kernel;
 mod controlled_runtime;
@@ -103,6 +107,10 @@ pub use fs::{
     AppendToFile, FsDriver, FsError, FsErrorKind, FsOperation, ReadFile, RemoveFile, ReplaceFile,
 };
 pub use http::StatusCode;
+pub use live_runtime::{
+    TokioHttpDriver as HttpDriver, TokioPrintStderrDriver as StderrDriver,
+    TokioPrintStdoutDriver as StdoutDriver, TokioTcpDriver as TcpDriver,
+};
 
 /// Common types and traits for writing components and building runtimes.
 ///
@@ -115,21 +123,24 @@ pub use http::StatusCode;
 /// Formatting macros are used as `samara::println!`, `samara::eprintln!`, etc.,
 /// to distinguish them from Rust's immediate I/O macros.
 pub mod prelude {
+    #[cfg(unix)]
+    pub use crate::StdinDriver;
     pub use crate::{
-        Addressable, Assembly, BoxFuture, CancelReason, Command, Component, ComponentHandle,
-        ComponentId, ComponentRef, Connector, ControlledRuntime, ControlledRuntimeBuilder, Decoder,
-        DriverStopped, Drivers, Effect, EffectCapability, EffectDescriptor, EffectDriver,
-        EffectInvocation, EffectOutcome, EffectOutcomeKind, Framed, FramedError, FramedLayer,
-        HttpError, HttpErrorKind, HttpJsonError, HttpRequest, HttpResponse, HttpResponseError,
-        HttpStatusError, Init, InstalledAssembly, LogicalTime, PendingEffect, PendingWork, Port,
-        PortHandle, PortId, PrintStderr, PrintStdout, Program, ProgramBuildError, ProgramBuilder,
+        Addressable, Assembly, BoxFuture, CancelReason, Capabilities, Command, Component,
+        ComponentHandle, ComponentId, ComponentRef, Connector, ControlledRuntime,
+        ControlledRuntimeBuilder, Decoder, DrivenSource, DriverStopped, Drivers, Effect,
+        EffectCapability, EffectDescriptor, EffectDriver, EffectInvocation, EffectOutcome,
+        EffectOutcomeKind, Framed, FramedError, FramedLayer, HttpError, HttpErrorKind,
+        HttpJsonError, HttpRequest, HttpResponse, HttpResponseError, HttpStatusError, Init,
+        InstalledAssembly, LogicalTime, MpscReceiver, PendingEffect, PendingWork, Port, PortHandle,
+        PortId, PrintStderr, PrintStdout, Program, ProgramBuildError, ProgramBuilder,
         ReadSystemTime, ReplyWith, RequestError, RequestIntent, RequestOutcome, RequestOutcomeKind,
         Requirements, RunReport, Runtime, RuntimeBuilder, RuntimeError, RuntimeTask, Shutdown,
         ShutdownReport, Source, SourceCapability, SourceDescriptor, SourceDriver, SourceEvent,
         SourceEventKind, SourceSink, StatusCode, StdinError, StdinErrorKind, StdinLines,
         StreamDescriptor, Subscription, SubscriptionAction, SubscriptionId, Subscriptions,
         SystemClockDriver, TcpBytes, TcpError, TcpErrorKind, TraceCommandKind, TraceEvent, TraceId,
-        TraceRecord, VendorsDrivers, WithAssembly,
+        TraceRecord, VendorsDrivers,
     };
     #[cfg(feature = "fs")]
     pub use crate::{
@@ -146,8 +157,8 @@ pub mod prelude {
 ///
 /// ```
 /// use samara::{Command, PrintStdout, Program};
-/// let mut program = Program::builder();
-/// let output = program.effect::<PrintStdout>();
+/// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<PrintStdout>,)>();
+/// let output = declared_0;
 /// let command: Command<()> = samara::print!(&output, "count: {}", 3);
 /// assert_eq!(command.effect_intent::<PrintStdout>().unwrap().as_str(), "count: 3");
 /// ```
@@ -175,8 +186,8 @@ macro_rules! print {
 ///
 /// ```
 /// use samara::{Command, PrintStdout, Program};
-/// let mut program = Program::builder();
-/// let output = program.effect::<PrintStdout>();
+/// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<PrintStdout>,)>();
+/// let output = declared_0;
 /// let command: Command<()> = samara::println!(&output, "count: {}", 3);
 /// assert_eq!(command.effect_intent::<PrintStdout>().unwrap().as_str(), "count: 3\n");
 /// ```
@@ -204,8 +215,8 @@ macro_rules! println {
 ///
 /// ```
 /// use samara::{Command, PrintStderr, Program};
-/// let mut program = Program::builder();
-/// let output = program.effect::<PrintStderr>();
+/// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<PrintStderr>,)>();
+/// let output = declared_0;
 /// let command: Command<()> = samara::eprint!(&output, "count: {}", 3);
 /// assert_eq!(command.effect_intent::<PrintStderr>().unwrap().as_str(), "count: 3");
 /// ```
@@ -233,8 +244,8 @@ macro_rules! eprint {
 ///
 /// ```
 /// use samara::{Command, PrintStderr, Program};
-/// let mut program = Program::builder();
-/// let output = program.effect::<PrintStderr>();
+/// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<PrintStderr>,)>();
+/// let output = declared_0;
 /// let command: Command<()> = samara::eprintln!(&output, "count: {}", 3);
 /// assert_eq!(command.effect_intent::<PrintStderr>().unwrap().as_str(), "count: 3\n");
 /// ```
@@ -338,8 +349,8 @@ impl SubscriptionId {
 ///     type Output = Vec<u8>;
 ///     type Error = std::io::Error;
 /// }
-/// let mut program = Program::builder();
-/// let files = program.effect::<ReadFile>();
+/// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<ReadFile>,)>();
+/// let files = declared_0;
 /// let command: Command<_> = Command::effect_with(
 ///     &files, ReadFile { path: "settings.txt".into() }, |outcome| outcome,
 /// );
@@ -361,6 +372,7 @@ pub trait EffectDescriptor: Send + 'static {
 /// struct Custom;
 ///
 /// impl SourceDescriptor for Custom {
+///     type Terminal = Self;
 ///     type Item = ();
 ///     type Error = ();
 ///
@@ -393,11 +405,12 @@ mod source_plan_private {
 /// #[derive(Clone, Debug, PartialEq)]
 /// struct WatchFile { path: String }
 /// impl SourceDescriptor for WatchFile {
+///     type Terminal = Self;
 ///     type Item = Vec<u8>;
 ///     type Error = std::io::Error;
 /// }
-/// let mut program = Program::builder();
-/// let files = program.source::<WatchFile>();
+/// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Source<WatchFile>,)>();
+/// let files = declared_0;
 /// let subscription = Subscription::source_with(
 ///     &files, SubscriptionId::new("settings"),
 ///     WatchFile { path: "settings.txt".into() }, |event| event,
@@ -409,6 +422,8 @@ mod source_plan_private {
 /// or [`TcpBytes`] for a TCP connection. Wrap a source in [`Framed`] to decode its
 /// items before they reach your component.
 pub trait SourceDescriptor: Clone + PartialEq + fmt::Debug + Send + Sync + 'static {
+    /// Descriptor driven at the terminal boundary. Use `Self` for a terminal source.
+    type Terminal: SourceDescriptor;
     /// Item emitted while the source remains active.
     type Item: Send + 'static;
     /// Error that stops the input.
@@ -731,17 +746,18 @@ where
 /// use samara::prelude::*;
 /// struct Counter;
 /// impl Component for Counter {
+///     type Requires = ();
 ///     type Config = ();
 ///     type Model = u64;
 ///     type Message = u64;
-///     fn init(_: &()) -> Init<u64, u64> { Init::new(0) }
-///     fn update(_: &(), count: &mut u64, amount: u64) -> Command<u64> {
+///     fn init(_: &(), _: &samara::Capabilities<Self::Requires>) -> Init<u64, u64> { Init::new(0) }
+///     fn update(_: &(), _: &samara::Capabilities<Self::Requires>, count: &mut u64, amount: u64) -> Command<u64> {
 ///         *count += amount;
 ///         Command::none()
 ///     }
 /// }
-/// let mut model = Counter::init(&()).model;
-/// assert!(Counter::update(&(), &mut model, 3).is_none());
+/// let mut model = Counter::init(&(), &()).model;
+/// assert!(Counter::update(&(), &(), &mut model, 3).is_none());
 /// assert_eq!(model, 3);
 /// ```
 ///
@@ -758,16 +774,19 @@ where
 ///
 /// fn deliver_wrong_type<C: Component>(
 ///     config: &C::Config,
+///     capabilities: &samara::Capabilities<C::Requires>,
 ///     model: &mut C::Model,
 ///     message: OtherMessage,
 /// ) -> Command<C::Message> {
-///     C::update(config, model, message)
+///     C::update(config, capabilities, model, message)
 /// }
 /// ```
 ///
 /// </details>
 pub trait Component: 'static {
-    /// This component's immutable configuration: capabilities, ports, and settings.
+    /// World capabilities supplied separately from settings and connections.
+    type Requires: Requirements;
+    /// This component's immutable settings and component connections.
     ///
     /// Use `()` when there is none. Samara stores one value per registered
     /// component and passes it to every function by shared reference.
@@ -778,13 +797,17 @@ pub trait Component: 'static {
     type Message: Send + 'static;
 
     /// Creates the starting model and optional startup work. Called when the component is registered.
-    fn init(config: &Self::Config) -> Init<Self::Model, Self::Message>;
+    fn init(
+        config: &Self::Config,
+        capabilities: &Capabilities<Self::Requires>,
+    ) -> Init<Self::Model, Self::Message>;
 
     /// Handles one message, updates the model, and returns the next actions.
     ///
     /// Use [`Command::none`] when no work is needed. Do not perform I/O here.
     fn update(
         config: &Self::Config,
+        capabilities: &Capabilities<Self::Requires>,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message>;
@@ -794,7 +817,11 @@ pub trait Component: 'static {
     /// Called for the initial model and after each update. Samara starts new inputs,
     /// keeps unchanged ones, and stops those omitted from the returned set.
     /// The default returns no subscriptions. See [`Subscription`] for comparison rules.
-    fn subscriptions(_config: &Self::Config, _model: &Self::Model) -> Subscriptions<Self::Message> {
+    fn subscriptions(
+        _config: &Self::Config,
+        _capabilities: &Capabilities<Self::Requires>,
+        _model: &Self::Model,
+    ) -> Subscriptions<Self::Message> {
         Subscriptions::none()
     }
 }
@@ -1219,8 +1246,8 @@ struct Reply<Reply> {
 ///
 /// ```
 /// use samara::prelude::*;
-/// let mut program = Program::builder();
-/// let output = program.effect::<PrintStdout>();
+/// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<PrintStdout>,)>();
+/// let output = declared_0;
 /// let command = Command::effect_with(&output, PrintStdout::line("ready"), |outcome| outcome);
 /// let invocation = command.into_effect::<PrintStdout>().ok().unwrap();
 /// assert_eq!(invocation.descriptor().as_str(), "ready\n");
@@ -1261,8 +1288,8 @@ where
     ///     type Error = ();
     /// }
     ///
-    /// let mut program = Program::builder();
-    /// let read = program.effect::<Read>();
+    /// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<Read>,)>();
+    /// let read = declared_0;
     /// let invocation = Command::effect_with(&read, Read, |_| ())
     ///     .into_effect::<Read>()
     ///     .ok()
@@ -1346,8 +1373,8 @@ where
 /// ```
 /// use samara::prelude::*;
 /// use std::time::Duration;
-/// let mut program = Program::builder();
-/// let output = program.effect::<PrintStdout>();
+/// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<PrintStdout>,)>();
+/// let output = declared_0;
 /// let command = Command::batch([
 ///     samara::println!(&output, "started"),
 ///     Command::after(Duration::from_secs(1), ()),
@@ -1407,8 +1434,8 @@ impl<Message> Command<Message> {
     ///         Self::Printed(outcome)
     ///     }
     /// }
-    /// let mut program = Program::builder();
-    /// let output = program.effect::<PrintStdout>();
+    /// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<PrintStdout>,)>();
+    /// let output = declared_0;
     /// let command: Command<Message> = Command::effect(&output, PrintStdout::line("ready"));
     /// ```
     pub fn effect<E>(capability: &EffectCapability<E>, effect: E) -> Self
@@ -1427,8 +1454,8 @@ impl<Message> Command<Message> {
     ///
     /// ```
     /// use samara::prelude::*;
-    /// let mut program = Program::builder();
-    /// let http = program.effect::<HttpRequest>();
+    /// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<HttpRequest>,)>();
+    /// let http = declared_0;
     /// let revision = 3;
     /// let command = Command::effect_with(
     ///     &http, HttpRequest::get("https://example.test/"),
@@ -1452,8 +1479,8 @@ impl<Message> Command<Message> {
     ///     type Error = ();
     /// }
     /// struct HiddenWork;
-    /// let mut program = Program::builder();
-    /// let read = program.effect::<Read>();
+    /// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<Read>,)>();
+    /// let read = declared_0;
     /// let _: Command<()> = Command::effect_with(&read, HiddenWork, |_| ());
     /// ```
     ///
@@ -1466,8 +1493,8 @@ impl<Message> Command<Message> {
     ///     type Error = ();
     /// }
     ///
-    /// let mut program = Program::builder();
-    /// let read = program.effect::<Read>();
+    /// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<Read>,)>();
+    /// let read = declared_0;
     /// let _: Command<()> = Command::effect_with(&read, Read, |_| async {});
     /// ```
     ///
@@ -1493,8 +1520,8 @@ impl<Message> Command<Message> {
     ///
     /// ```
     /// use samara::prelude::*;
-    /// let mut program = Program::builder();
-    /// let output = program.effect::<PrintStdout>();
+    /// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<PrintStdout>,)>();
+    /// let output = declared_0;
     /// let command: Command<()> = Command::effect_discarding_outcome(&output, PrintStdout::line("ready"));
     /// assert_eq!(command.effect_intent::<PrintStdout>().unwrap().as_str(), "ready\n");
     /// ```
@@ -1555,14 +1582,15 @@ impl<Message> Command<Message> {
     /// impl TallyMessage { pub fn total(reply_with: ReplyWith<u64>) -> Self { Self(Inner::Total(reply_with)) } }
     /// # struct Tally;
     /// # impl Component for Tally {
+    ///     type Requires = ();
     /// #     type Config = (); type Model = u64; type Message = TallyMessage;
-    /// #     fn init(_: &()) -> Init<u64, TallyMessage> { Init::new(0) }
-    /// #     fn update(_: &(), total: &mut u64, TallyMessage(Inner::Total(reply_with)): TallyMessage) -> Command<TallyMessage> {
+    /// #     fn init(_: &(), _: &samara::Capabilities<Self::Requires>) -> Init<u64, TallyMessage> { Init::new(0) }
+    /// #     fn update(_: &(), _: &samara::Capabilities<Self::Requires>, total: &mut u64, TallyMessage(Inner::Total(reply_with)): TallyMessage) -> Command<TallyMessage> {
     /// #         Command::reply(reply_with, *total)
     /// #     }
     /// # }
-    /// let mut program = Program::builder();
-    /// let tally: Connector<TallyMessage> = program.component::<Tally>(ComponentId::new("tally"), ()).connector();
+    /// let (mut program, ()) = samara::Program::builder::<()>();
+    /// let tally: Connector<TallyMessage> = program.component::<Tally>(ComponentId::new("tally"), ()).finish().expect("component registration").connector();
     /// let command: Command<RequestOutcome<u64>> =
     ///     Command::request_to(&tally, TallyMessage::total, |outcome| outcome);
     /// # let _ = command;
@@ -1755,7 +1783,7 @@ impl<Message> Command<Message> {
     /// use samara::prelude::*;
     /// #[derive(Debug, PartialEq)]
     /// enum LedgerMessage { Add(u64) }
-    /// let mut program = Program::builder();
+    /// let (mut program, ()) = samara::Program::builder::<()>();
     /// let ledger = program.port::<LedgerMessage>(PortId::new("ledger"));
     /// let command: Command<()> = Command::batch([
     ///     Command::send(&ledger, LedgerMessage::Add(2)),
@@ -1801,7 +1829,7 @@ impl<Message> Command<Message> {
     /// use samara::prelude::*;
     /// enum LedgerMessage { Total(ReplyWith<u64>) }
     /// enum ClerkMessage { Total(RequestOutcome<u64>) }
-    /// let mut program = Program::builder();
+    /// let (mut program, ()) = samara::Program::builder::<()>();
     /// let ledger = program.port::<LedgerMessage>(PortId::new("ledger"));
     /// let command = Command::request_to(&ledger, LedgerMessage::Total, ClerkMessage::Total);
     /// let intent = command.into_request_to::<LedgerMessage>().ok().expect("a request to the ledger");
@@ -2004,8 +2032,8 @@ impl<S: SourceDescriptor> ErasedSourceDescriptor for SourceDescriptorSnapshot<S>
 /// ```
 /// use samara::prelude::*;
 /// enum Message { Input(SourceEvent<String, StdinError>) }
-/// let mut program = Program::builder();
-/// let input = program.source::<StdinLines>();
+/// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Source<StdinLines>,)>();
+/// let input = declared_0;
 /// let subscription = Subscription::source_with(
 ///     &input, SubscriptionId::new("commands"), StdinLines::new(), Message::Input,
 /// );
@@ -2077,8 +2105,8 @@ impl<Message> Subscription<Message> {
     ///
     /// ```
     /// use samara::prelude::*;
-    /// let mut program = Program::builder();
-    /// let input = program.source::<StdinLines>();
+    /// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Source<StdinLines>,)>();
+    /// let input = declared_0;
     /// let subscription = Subscription::source_with(
     ///     &input, SubscriptionId::new("input"), StdinLines::new(), |event| event,
     /// );
@@ -2138,8 +2166,8 @@ impl<Message> Subscription<Message> {
 ///
 /// ```
 /// use samara::prelude::*;
-/// let mut program = Program::builder();
-/// let input = program.source::<StdinLines>();
+/// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Source<StdinLines>,)>();
+/// let input = declared_0;
 /// let subscriptions: Subscriptions<SourceEvent<String, StdinError>> = vec![
 ///     Subscription::source(&input, SubscriptionId::new("commands"), StdinLines::new()),
 /// ].into();
@@ -2191,30 +2219,30 @@ impl<Message> From<Vec<Subscription<Message>>> for Subscriptions<Message> {
 /// use std::convert::Infallible;
 /// struct Sum;
 ///
-/// struct SumConfig { input: SourceCapability<StreamDescriptor<u64>> }
 /// impl Component for Sum {
-///     type Config = SumConfig;
+///     type Requires = (Source<StreamDescriptor<u64>>,);
+///     type Config = ();
 ///     type Model = u64;
 ///     type Message = SourceEvent<u64, Infallible>;
-///     fn init(_config: &Self::Config) -> Init<u64, Self::Message> { Init::new(0) }
-///     fn update(_config: &Self::Config, sum: &mut u64, event: Self::Message) -> Command<Self::Message> {
+///     fn init(_config: &Self::Config, capabilities: &Capabilities<Self::Requires>) -> Init<u64, Self::Message> { Init::new(0) }
+///     fn update(_config: &Self::Config, capabilities: &Capabilities<Self::Requires>, sum: &mut u64, event: Self::Message) -> Command<Self::Message> {
 ///         if let SourceEvent::Item(value) = event { *sum += value; }
 ///         Command::none()
 ///     }
-///     fn subscriptions(config: &Self::Config, _: &u64) -> Subscriptions<Self::Message> {
+///     fn subscriptions(_config: &Self::Config, capabilities: &Capabilities<Self::Requires>, _: &u64) -> Subscriptions<Self::Message> {
 ///         Subscriptions::one(Subscription::source(
-///             &config.input, SubscriptionId::new("values"), StreamDescriptor::named("numbers"),
+///             &capabilities.0, SubscriptionId::new("values"), StreamDescriptor::named("numbers"),
 ///         ))
 ///     }
 /// }
-/// fn program() -> Result<(Program, ComponentRef<Sum>, SourceCapability<StreamDescriptor<u64>>), ProgramBuildError> {
-///     let mut builder = Program::builder();
-///     let input = builder.source::<StreamDescriptor<u64>>();
-///     let sum = builder.component::<Sum>(ComponentId::new("sum"), SumConfig { input: input.clone() });
+/// fn program() -> Result<(Program<(Source<StreamDescriptor<u64>>,)>, ComponentRef<Sum>, SourceCapability<StreamDescriptor<u64>>), ProgramBuildError> {
+///     let (mut builder, (declared_0,)) = samara::Program::builder::<(samara::Source<StreamDescriptor<u64>>,)>();
+///     let input = declared_0;
+///     let sum = builder.component::<Sum>(ComponentId::new("sum"), ()).with_capabilities((input.clone(),)).finish().expect("component registration");
 ///     Ok((builder.build()?, sum, input))
 /// }
 /// let (program_under_test, sum, input) = program()?;
-/// let mut test = ControlledRuntime::builder(program_under_test).control_stream(&input).build()?;
+/// let mut test = ControlledRuntime::builder(program_under_test).control_all().build()?;
 /// test.run_until_idle()?;
 /// test.emit_stream(&input, 3)?;
 /// test.close_stream(&input)?;
@@ -2225,7 +2253,7 @@ impl<Message> From<Vec<Subscription<Message>>> for Subscriptions<Message> {
 /// // In the host, bind a real receiver instead.
 /// let (program, _, input) = program()?;
 /// let (sender, receiver) = tokio::sync::mpsc::channel(16);
-/// let live = Runtime::builder(program).bind_mpsc(&input, receiver).build()?;
+/// let live = Runtime::builder(program).with_drivers((samara::MpscReceiver::new(receiver),)).build()?;
 /// // Inside Tokio, call live.spawn() and sender.send(value).await.
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
@@ -2275,6 +2303,7 @@ impl<T> fmt::Debug for StreamDescriptor<T> {
 }
 
 impl<T: Send + 'static> SourceDescriptor for StreamDescriptor<T> {
+    type Terminal = Self;
     type Item = T;
     type Error = std::convert::Infallible;
 
@@ -2307,18 +2336,18 @@ impl<T: Send + 'static> StreamSourceDescriptor for StreamDescriptor<T> {
 ///
 /// struct Reader;
 ///
-/// struct ReaderConfig { input: SourceCapability<StdinLines> }
 /// struct Model { lines: Vec<String>, error: Option<StdinError>, open: bool }
 ///
 /// impl Component for Reader {
-///     type Config = ReaderConfig;
+///     type Requires = (Source<StdinLines>,);
+///     type Config = ();
 ///     type Model = Model;
 ///     type Message = SourceEvent<String, StdinError>;
 ///
-///     fn init(_config: &Self::Config) -> Init<Model, Self::Message> {
+///     fn init(_config: &Self::Config, capabilities: &Capabilities<Self::Requires>) -> Init<Model, Self::Message> {
 ///         Init::new(Model { lines: Vec::new(), error: None, open: true })
 ///     }
-///     fn update(_config: &Self::Config, model: &mut Model, event: Self::Message) -> Command<Self::Message> {
+///     fn update(_config: &Self::Config, capabilities: &Capabilities<Self::Requires>, model: &mut Model, event: Self::Message) -> Command<Self::Message> {
 ///         match event {
 ///             SourceEvent::Item(line) => model.lines.push(line),
 ///             SourceEvent::Ended => model.open = false,
@@ -2329,25 +2358,24 @@ impl<T: Send + 'static> StreamSourceDescriptor for StreamDescriptor<T> {
 ///         }
 ///         Command::none()
 ///     }
-///     fn subscriptions(config: &Self::Config, model: &Model) -> Subscriptions<Self::Message> {
+///     fn subscriptions(_config: &Self::Config, capabilities: &Capabilities<Self::Requires>, model: &Model) -> Subscriptions<Self::Message> {
 ///         if !model.open { return Subscriptions::none(); }
 ///         Subscriptions::one(Subscription::source(
-///             &config.input, SubscriptionId::new("input"), StdinLines::new(),
+///             &capabilities.0, SubscriptionId::new("input"), StdinLines::new(),
 ///         ))
 ///     }
 /// }
 ///
-/// fn program() -> Result<(Program, ComponentRef<Reader>), ProgramBuildError> {
-///     let mut builder = Program::builder();
-///     let input = builder.source::<StdinLines>();
-///     let reader = builder.component::<Reader>(ComponentId::new("reader"), ReaderConfig { input });
+/// fn program() -> Result<(Program<(Source<StdinLines>,)>, ComponentRef<Reader>), ProgramBuildError> {
+///     let (mut builder, (declared_0,)) = samara::Program::builder::<(samara::Source<StdinLines>,)>();
+///     let input = declared_0;
+///     let reader = builder.component::<Reader>(ComponentId::new("reader"), ()).with_capabilities((input,)).finish().expect("component registration");
 ///     Ok((builder.build()?, reader))
 /// }
 ///
 /// // Test input without reading the terminal.
 /// let (program_under_test, reader) = program()?;
-/// let mut test = ControlledRuntime::builder(program_under_test)
-///     .control_source::<StdinLines>().build()?;
+/// let mut test = ControlledRuntime::builder(program_under_test).control_all().build()?;
 /// test.run_until_idle()?; // Starts the subscription.
 /// test.emit_source::<_, StdinLines>(
 ///     &reader, &SubscriptionId::new("input"), SourceEvent::Item("hello".into()),
@@ -2363,7 +2391,7 @@ impl<T: Send + 'static> StreamSourceDescriptor for StreamDescriptor<T> {
 /// #[cfg(unix)]
 /// {
 ///     let (program, _) = program()?;
-///     let live = Runtime::builder(program).bind_stdin().build()?;
+///     let live = Runtime::builder(program).with_drivers((samara::StdinDriver,)).build()?;
 ///     // Call live.spawn() inside Tokio to start reading; see RuntimeTask for shutdown.
 /// }
 /// # Ok::<(), Box<dyn std::error::Error>>(())
@@ -2382,6 +2410,7 @@ impl StdinLines {
 }
 
 impl SourceDescriptor for StdinLines {
+    type Terminal = Self;
     type Item = String;
     type Error = StdinError;
 }
@@ -2461,8 +2490,8 @@ impl Error for StdinError {}
 ///
 /// ```
 /// use samara::prelude::*;
-/// let mut program = Program::builder();
-/// let http = program.effect::<HttpRequest>();
+/// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<HttpRequest>,)>();
+/// let http = declared_0;
 /// let command = HttpRequest::get("https://example.test/health")
 ///     .on_response()
 ///     .require_success()
@@ -2570,8 +2599,8 @@ impl HttpRequest {
     ///
     /// ```
     /// use samara::prelude::*;
-    /// let mut program = Program::builder();
-    /// let http = program.effect::<HttpRequest>();
+    /// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<HttpRequest>,)>();
+    /// let http = declared_0;
     /// let command = HttpRequest::get("https://example.test/config")
     ///     .on_response().require_success().json::<serde_json::Value>()
     ///     .into_command_with(&http, |outcome| outcome);
@@ -2753,8 +2782,8 @@ type HttpResponseTransform<Output, ResponseError> = Box<
 ///
 /// ```
 /// use samara::prelude::*;
-/// let mut program = Program::builder();
-/// let http = program.effect::<HttpRequest>();
+/// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<HttpRequest>,)>();
+/// let http = declared_0;
 /// let command = HttpRequest::get("https://example.test/config")
 ///     .on_response()
 ///     .follow_redirects(5)
@@ -2821,8 +2850,8 @@ where
     ///
     /// ```
     /// use samara::prelude::*;
-    /// let mut program = Program::builder();
-    /// let http = program.effect::<HttpRequest>();
+    /// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<HttpRequest>,)>();
+    /// let http = declared_0;
     /// let command: Command<EffectOutcome<HttpResponse, HttpError>> =
     ///     HttpRequest::get("https://example.test/").on_response().into_command(&http);
     /// ```
@@ -2844,8 +2873,8 @@ where
     ///
     /// ```
     /// use samara::prelude::*;
-    /// let mut program = Program::builder();
-    /// let http = program.effect::<HttpRequest>();
+    /// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<HttpRequest>,)>();
+    /// let http = declared_0;
     /// let revision = 7;
     /// let command = HttpRequest::get("https://example.test/").on_response()
     ///     .into_command_with(&http, move |outcome| (revision, outcome));
@@ -2886,8 +2915,8 @@ impl HttpResponsePipeline<HttpResponse, HttpError> {
     ///
     /// ```
     /// use samara::prelude::*;
-    /// let mut program = Program::builder();
-    /// let http = program.effect::<HttpRequest>();
+    /// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<HttpRequest>,)>();
+    /// let http = declared_0;
     /// let command = HttpRequest::get("http://example.test/")
     ///     .on_response().follow_redirects(5).require_success()
     ///     .into_command_with(&http, |outcome| outcome);
@@ -2965,8 +2994,8 @@ where
     /// use samara::prelude::*;
     /// #[derive(serde::Deserialize)]
     /// struct Reply { count: u64 }
-    /// let mut program = Program::builder();
-    /// let http = program.effect::<HttpRequest>();
+    /// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<HttpRequest>,)>();
+    /// let http = declared_0;
     /// let command = HttpRequest::get("https://example.test/count")
     ///     .on_response().require_success().json::<Reply>()
     ///     .into_command_with(&http, |outcome| outcome);
@@ -3251,6 +3280,7 @@ impl TcpBytes {
 }
 
 impl SourceDescriptor for TcpBytes {
+    type Terminal = Self;
     type Item = bytes::Bytes;
     type Error = TcpError;
 }
@@ -3497,6 +3527,7 @@ where
     S: SourceDescriptor<Item = D::Chunk>,
     D: Decoder,
 {
+    type Terminal = S::Terminal;
     type Item = D::Frame;
     type Error = FramedError<S::Error, D::Error>;
 
@@ -3572,14 +3603,14 @@ where
 
 /// Permission to request an effect type within a Program.
 ///
-/// Create it with [`ProgramBuilder::effect`], store it on the component, and pass
+/// Obtain it from [`Program::builder`] using an [`Effect`] requirement, then pass
 /// it to [`Command::effect`] or [`Command::effect_with`]. Cloning shares permission
 /// within the same program; using it in a different program is an error.
 ///
 /// ```
 /// use samara::prelude::*;
-/// let mut program = Program::builder();
-/// let http = program.effect::<HttpRequest>();
+/// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<HttpRequest>,)>();
+/// let http = declared_0;
 /// let command = Command::effect_with(&http, HttpRequest::get("https://example.test/"), |outcome| outcome);
 /// ```
 ///
@@ -3628,7 +3659,7 @@ impl<D: EffectDescriptor> fmt::Debug for EffectCapability<D> {
 
 /// Permission to subscribe to a source type within a Program.
 ///
-/// Create it with [`ProgramBuilder::source`] and store it on the component. Pass
+/// Obtain it from [`Program::builder`] using a [`Source`] requirement. Pass
 /// it to [`Subscription::source`] or [`Subscription::source_with`] together with
 /// the source configuration. Cloning does not create a running input, and the
 /// capability cannot be used in another Program.
@@ -3644,6 +3675,7 @@ impl<D: EffectDescriptor> fmt::Debug for EffectCapability<D> {
 /// #[derive(Clone, Debug, PartialEq)]
 /// struct Input;
 /// impl SourceDescriptor for Input {
+///     type Terminal = Self;
 ///     type Item = ();
 ///     type Error = ();
 /// }
@@ -3696,7 +3728,7 @@ impl<S: SourceDescriptor> fmt::Debug for SourceCapability<S> {
 /// ```
 /// use samara::prelude::*;
 /// enum HealthMessage { Check(ReplyWith<bool>) }
-/// let mut program = Program::builder();
+/// let (mut program, ()) = samara::Program::builder::<()>();
 /// let health = program.port::<HealthMessage>(PortId::new("primary"));
 /// assert_eq!(health.id(), &PortId::new("primary"));
 /// ```
@@ -3854,11 +3886,12 @@ impl<C: Component> ComponentRef<C> {
 /// struct Recorder;
 /// struct RecorderMessage(JournalMessage);
 /// impl Component for Recorder {
+///     type Requires = ();
 ///     type Config = ();
 ///     type Model = Vec<String>;
 ///     type Message = RecorderMessage;
-///     fn init(_: &()) -> Init<Vec<String>, RecorderMessage> { Init::new(Vec::new()) }
-///     fn update(_: &(), notes: &mut Vec<String>, message: RecorderMessage) -> Command<RecorderMessage> {
+///     fn init(_: &(), _: &samara::Capabilities<Self::Requires>) -> Init<Vec<String>, RecorderMessage> { Init::new(Vec::new()) }
+///     fn update(_: &(), _: &samara::Capabilities<Self::Requires>, notes: &mut Vec<String>, message: RecorderMessage) -> Command<RecorderMessage> {
 ///         let RecorderMessage(JournalMessage::Note(note)) = message;
 ///         notes.push(note);
 ///         Command::none()
@@ -3868,9 +3901,9 @@ impl<C: Component> ComponentRef<C> {
 /// // The application's own Port, in its own vocabulary.
 /// pub enum AuditMessage { Changed(String) }
 ///
-/// let mut program = Program::builder();
+/// let (mut program, ()) = samara::Program::builder::<()>();
 /// let audit = program.port::<AuditMessage>(PortId::new("audit"));
-/// let recorder = program.component::<Recorder>(ComponentId::new("recorder"), ());
+/// let recorder = program.component::<Recorder>(ComponentId::new("recorder"), ()).finish().expect("component registration");
 /// let provider: Connector<JournalMessage> = recorder.accepting(RecorderMessage);
 /// program.connect(&audit, &provider.accepting(|message| match message {
 ///     AuditMessage::Changed(what) => JournalMessage::Note(what),
@@ -4044,13 +4077,14 @@ impl<M: Send + 'static> fmt::Debug for Address<M> {
 ///
 /// ```
 /// use samara::{Program, ControlledRuntime};
-/// let program = Program::builder().build()?;
-/// let mut runtime = ControlledRuntime::builder(program).build()?;
+/// let program = Program::builder::<()>().0.build()?;
+/// let mut runtime = ControlledRuntime::builder(program).control_all().build()?;
 /// assert_eq!(runtime.run_until_idle()?.transitions, 0);
 /// assert!(runtime.cancel()?.is_clean());
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
-pub struct Program {
+pub struct Program<R: Requirements = ()> {
+    requirements: Capabilities<R>,
     program: Arc<()>,
     components: Vec<Box<dyn ErasedComponentKernel>>,
     bindings: Vec<Box<dyn ErasedPortBinding>>,
@@ -4059,17 +4093,42 @@ pub struct Program {
 }
 
 impl Program {
-    /// Starts building a Program. See [`ProgramBuilder`].
-    pub fn builder() -> ProgramBuilder {
-        let program = Arc::new(());
-        ProgramBuilder {
-            program,
+    /// Declares all world boundaries and returns the builder and their capabilities.
+    pub fn builder<R: Requirements>() -> (ProgramBuilder<R>, Capabilities<R>) {
+        let mut builder = ProgramBuilder {
+            program: Arc::new(()),
             components: Vec::new(),
             ports: Vec::new(),
             bindings: Vec::new(),
             effect_requirements: Vec::new(),
             source_requirements: Vec::new(),
             next_capability: 0,
+            requirements: (),
+        };
+        let capabilities = typed_program::declare::<R>(&mut builder);
+        let typed = ProgramBuilder {
+            program: builder.program,
+            components: builder.components,
+            ports: builder.ports,
+            bindings: builder.bindings,
+            effect_requirements: builder.effect_requirements,
+            source_requirements: builder.source_requirements,
+            next_capability: builder.next_capability,
+            requirements: capabilities.clone(),
+        };
+        (typed, capabilities)
+    }
+}
+
+impl<R: Requirements> Program<R> {
+    fn erase(self) -> Program {
+        Program {
+            program: self.program,
+            components: self.components,
+            bindings: self.bindings,
+            effect_requirements: self.effect_requirements,
+            source_requirements: self.source_requirements,
+            requirements: (),
         }
     }
 }
@@ -4381,13 +4440,18 @@ where
 /// ```
 /// use samara::{Program, PortId, ProgramBuildError};
 /// enum ServiceMessage {}
-/// let mut builder = Program::builder();
+/// let (mut builder, ()) = samara::Program::builder::<()>();
 /// let _service = builder.port::<ServiceMessage>(PortId::new("service"));
 /// assert!(matches!(builder.build(), Err(ProgramBuildError::PortBindingCount { count: 0, .. })));
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ProgramBuildError {
+    /// A supplied capability belongs to another Program.
+    ForeignCapability {
+        /// The capability descriptor type.
+        descriptor_type: &'static str,
+    },
     /// Two components have the same name.
     DuplicateComponentId(ComponentId),
     /// A port name was declared twice for the same message type.
@@ -4428,6 +4492,10 @@ pub enum ProgramBuildError {
 impl fmt::Display for ProgramBuildError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ForeignCapability { descriptor_type } => write!(
+                formatter,
+                "capability for {descriptor_type} belongs to another Program"
+            ),
             Self::DuplicateComponentId(id) => {
                 write!(formatter, "duplicate Component identity {id:?}")
             }
@@ -4463,16 +4531,18 @@ impl fmt::Display for ProgramBuildError {
 
 impl Error for ProgramBuildError {}
 
-/// Registers components, declares their I/O, and connects ports to providers.
+/// Registers Components and connects Ports under a fixed world-boundary contract.
 ///
-/// Start with [`Program::builder`]. Create capabilities before passing them into
-/// components. Call [`Self::build`] once wiring is complete, then configure a
+/// Start with [`Program::builder`], declaring the requirement shape and receiving
+/// its capability tuple. Pass subsets to Component registrations. Call
+/// [`Self::build`] once wiring is complete, then configure a
 /// live or controlled runtime. Capabilities and component references must all
 /// come from this builder.
 ///
 /// See the [crate example](crate) for a component, [`StdinLines`] for input, and
 /// [`Self::connect`] for request/reply wiring.
-pub struct ProgramBuilder {
+pub struct ProgramBuilder<R: Requirements = ()> {
+    requirements: Capabilities<R>,
     program: Arc<()>,
     components: Vec<Box<dyn ErasedComponentKernel>>,
     ports: Vec<PortDeclaration>,
@@ -4482,7 +4552,7 @@ pub struct ProgramBuilder {
     next_capability: u64,
 }
 
-impl ProgramBuilder {
+impl<R: Requirements> ProgramBuilder<R> {
     fn next_capability(&mut self) -> CapabilityToken {
         let token = CapabilityToken {
             id: self.next_capability,
@@ -4499,12 +4569,12 @@ impl ProgramBuilder {
     ///
     /// ```
     /// use samara::prelude::*;
-    /// let mut program = Program::builder();
-    /// let http = program.effect::<HttpRequest>();
-    /// let runtime = Runtime::builder(program.build()?).bind_http().build()?;
+    /// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<HttpRequest>,)>();
+    /// let http = declared_0;
+    /// let runtime = Runtime::builder(program.build()?).with_drivers((samara::HttpDriver::new(),)).build()?;
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub fn effect<D>(&mut self) -> EffectCapability<D>
+    pub(crate) fn effect<D>(&mut self) -> EffectCapability<D>
     where
         D: EffectDescriptor,
     {
@@ -4524,7 +4594,7 @@ impl ProgramBuilder {
     ///
     /// For [`Framed`] sources, bind or control the wrapped input type; decoding still
     /// runs in both live execution and tests. See [`StdinLines`] for an example.
-    pub fn source<S>(&mut self) -> SourceCapability<S>
+    pub(crate) fn source<S>(&mut self) -> SourceCapability<S>
     where
         S: SourceDescriptor,
     {
@@ -4545,27 +4615,41 @@ impl ProgramBuilder {
         }
     }
 
-    /// Registers a component of kind `C` with its configuration and returns its address.
+    /// Starts registering a Component of kind `C` with its settings and connections.
     ///
-    /// Name the kind explicitly: `program.component::<Counter>(id, ())`. Calls
-    /// [`Component::init`] now and stores the configuration, starting model, and
-    /// command. The command runs when the runtime starts. Component names must be
-    /// unique; registration order does not determine live execution order.
+    /// Supply `C::Requires` through `with_capabilities`, then call `build()` to
+    /// validate provenance, invoke [`Component::init`], and obtain its address.
+    /// Components with `Requires = ()` can call `build()` directly. Startup work
+    /// runs when the runtime starts. Names must be unique; registration order
+    /// does not determine live execution order.
     ///
     /// See the [crate example](crate) or [`Self::connect`].
-    pub fn component<C>(&mut self, id: ComponentId, config: C::Config) -> ComponentRef<C>
-    where
-        C: Component,
-    {
+    pub fn component<C: Component>(
+        &mut self,
+        id: ComponentId,
+        config: C::Config,
+    ) -> ComponentRegistration<'_, R, C> {
+        ComponentRegistration::new(self, id, config)
+    }
+
+    fn register<C: Component>(
+        &mut self,
+        id: ComponentId,
+        config: C::Config,
+        capabilities: Capabilities<C::Requires>,
+    ) -> Result<ComponentRef<C>, ProgramBuildError> {
+        C::Requires::validate(&capabilities, &self.program)?;
         let component_ref = ComponentRef {
             id: id.clone(),
             program: self.program.clone(),
             marker: PhantomData,
         };
-        self.components
-            .push(Box::new(ComponentKernel::<C>::new(id, config)));
-
-        component_ref
+        self.components.push(Box::new(ComponentKernel::<C>::new(
+            id,
+            config,
+            capabilities,
+        )));
+        Ok(component_ref)
     }
 
     /// Declares a named Port carrying messages of type `P`.
@@ -4611,11 +4695,12 @@ impl ProgramBuilder {
     ///
     /// struct Counter;
     /// impl Component for Counter {
+    ///     type Requires = ();
     ///     type Config = ();
     ///     type Model = u64;
     ///     type Message = CounterMessage;
-    ///     fn init(_: &()) -> Init<u64, CounterMessage> { Init::new(42) }
-    ///     fn update(_: &(), count: &mut u64, message: CounterMessage) -> Command<CounterMessage> {
+    ///     fn init(_: &(), _: &samara::Capabilities<Self::Requires>) -> Init<u64, CounterMessage> { Init::new(42) }
+    ///     fn update(_: &(), _: &samara::Capabilities<Self::Requires>, count: &mut u64, message: CounterMessage) -> Command<CounterMessage> {
     ///         match message {
     ///             CounterMessage::Count(CountMessage::Read(reply_with)) => Command::reply(reply_with, *count),
     ///             CounterMessage::Tick => { *count += 1; Command::none() }
@@ -4627,24 +4712,25 @@ impl ProgramBuilder {
     ///
     /// struct ClientConfig { counter: Port<CountMessage> }
     /// impl Component for Client {
+    ///     type Requires = ();
     ///     type Config = ClientConfig;
     ///     type Model = Option<u64>;
     ///     type Message = RequestOutcome<u64>;
-    ///     fn init(config: &Self::Config) -> Init<Self::Model, Self::Message> {
+    ///     fn init(config: &Self::Config, _: &samara::Capabilities<Self::Requires>) -> Init<Self::Model, Self::Message> {
     ///         Init::default().with_command(Command::request_to(&config.counter, CountMessage::Read, |outcome| outcome))
     ///     }
-    ///     fn update(_config: &Self::Config, value: &mut Option<u64>, reply: Self::Message) -> Command<Self::Message> {
+    ///     fn update(_config: &Self::Config, _: &samara::Capabilities<Self::Requires>, value: &mut Option<u64>, reply: Self::Message) -> Command<Self::Message> {
     ///         if let RequestOutcome::Replied(count) = reply { *value = Some(count); }
     ///         Command::none()
     ///     }
     /// }
     ///
-    /// let mut builder = Program::builder();
+    /// let (mut builder, ()) = samara::Program::builder::<()>();
     /// let port = builder.port::<CountMessage>(PortId::new("counter"));
-    /// let counter = builder.component::<Counter>(ComponentId::new("counter"), ());
+    /// let counter = builder.component::<Counter>(ComponentId::new("counter"), ()).finish().expect("component registration");
     /// builder.connect(&port, &counter.accepting(CounterMessage::Count));
-    /// let client = builder.component::<Client>(ComponentId::new("client"), ClientConfig { counter: port });
-    /// let mut runtime = ControlledRuntime::builder(builder.build()?).build()?;
+    /// let client = builder.component::<Client>(ComponentId::new("client"), ClientConfig { counter: port }).finish().expect("component registration");
+    /// let mut runtime = ControlledRuntime::builder(builder.build()?).control_all().build()?;
     /// runtime.run_until_idle()?;
     /// assert_eq!(*runtime.state(&client)?, Some(42));
     /// assert!(runtime.cancel()?.is_clean());
@@ -4665,7 +4751,7 @@ impl ProgramBuilder {
     /// Returns [`ProgramBuildError`] for duplicate names, missing or duplicate port
     /// bindings, or references from another builder. Does not start work. I/O drivers
     /// and test controls are checked by the runtime builder.
-    pub fn build(self) -> Result<Program, ProgramBuildError> {
+    pub fn build(self) -> Result<Program<R>, ProgramBuildError> {
         let mut component_ids = std::collections::HashSet::new();
         for component in &self.components {
             if !component_ids.insert(component.id().clone()) {
@@ -4732,6 +4818,7 @@ impl ProgramBuilder {
         }
 
         Ok(Program {
+            requirements: self.requirements,
             program: self.program,
             components: self.components,
             bindings: self.bindings,
@@ -4767,10 +4854,9 @@ impl ProgramBuilder {
 ///         })
 ///     }
 /// }
-/// let mut program = Program::builder();
-/// let network = program.effect::<CheckConnection>();
-/// let runtime = Runtime::builder(program.build()?)
-///     .bind_effect::<CheckConnection, _>(Network).build()?;
+/// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<CheckConnection>,)>();
+/// let network = declared_0;
+/// let runtime = Runtime::builder(program.build()?).with_drivers((Network,)).build()?;
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 ///
@@ -4797,6 +4883,7 @@ pub trait EffectDriver<D: EffectDescriptor>: Send + Sync + 'static {
 /// #[derive(Clone, Debug, PartialEq)]
 /// struct Values(Vec<u64>);
 /// impl SourceDescriptor for Values {
+///     type Terminal = Self;
 ///     type Item = u64;
 ///     type Error = Infallible;
 /// }
@@ -4811,10 +4898,9 @@ pub trait EffectDriver<D: EffectDescriptor>: Send + Sync + 'static {
 ///         })
 ///     }
 /// }
-/// let mut program = Program::builder();
-/// let values = program.source::<Values>();
-/// let runtime = Runtime::builder(program.build()?)
-///     .bind_source::<Values, _>(ValueSource).build()?;
+/// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Source<Values>,)>();
+/// let values = declared_0;
+/// let runtime = Runtime::builder(program.build()?).with_drivers((samara::DrivenSource::new(ValueSource),)).build()?;
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub trait SourceDriver<D: SourceDescriptor>: Send + Sync + 'static {
@@ -4898,11 +4984,12 @@ impl Error for DriverStopped {}
 /// errors may lack that context; the accessors then return `None`.
 ///
 /// ```
-/// use samara::{ControlledRuntime, HttpRequest, Program};
-/// let mut program = Program::builder();
-/// let http = program.effect::<HttpRequest>();
-/// // The declared HTTP capability needs a test control.
-/// let result = ControlledRuntime::builder(program.build()?).build();
+/// use samara::prelude::*;
+/// let (program, _) = Program::builder::<(Effect<ReadSystemTime>,)>();
+/// let result = Runtime::builder(program.build()?)
+///     .with_drivers((SystemClockDriver,))
+///     .bind_system_time() // A second type-wide binding conflicts with the first.
+///     .build();
 /// assert!(result.is_err());
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
@@ -5007,19 +5094,20 @@ pub struct RuntimeBuilder {
 /// use samara::prelude::*;
 /// struct Counter;
 /// impl Component for Counter {
+///     type Requires = ();
 ///     type Config = ();
 ///     type Model = u64;
 ///     type Message = u64;
-///     fn init(_config: &Self::Config) -> Init<u64, u64> { Init::new(0) }
-///     fn update(_config: &Self::Config, count: &mut u64, amount: u64) -> Command<u64> {
+///     fn init(_config: &Self::Config, _: &samara::Capabilities<Self::Requires>) -> Init<u64, u64> { Init::new(0) }
+///     fn update(_config: &Self::Config, _: &samara::Capabilities<Self::Requires>, count: &mut u64, amount: u64) -> Command<u64> {
 ///         *count += amount;
 ///         Command::none()
 ///     }
 /// }
 /// let tokio = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
 /// tokio.block_on(async {
-///     let mut builder = Program::builder();
-///     let counter = builder.component::<Counter>(ComponentId::new("counter"), ());
+///     let (mut builder, ()) = samara::Program::builder::<()>();
+///     let counter = builder.component::<Counter>(ComponentId::new("counter"), ()).finish().expect("component registration");
 ///     let runtime = Runtime::builder(builder.build()?).build()?;
 ///     let sender = runtime.handle(&counter)?;
 ///     let task = runtime.spawn();
@@ -5043,10 +5131,14 @@ pub struct Runtime {
 
 impl Runtime {
     /// Starts configuring I/O for a Program. See [`Runtime`].
-    pub fn builder(program: Program) -> RuntimeBuilder {
-        RuntimeBuilder {
-            program,
-            bindings: live_runtime::LiveBindings::new(),
+    pub fn builder<R: Requirements>(program: Program<R>) -> RuntimeSetup<R> {
+        let capabilities = program.requirements.clone();
+        RuntimeSetup {
+            capabilities,
+            builder: RuntimeBuilder {
+                program: program.erase(),
+                bindings: live_runtime::LiveBindings::new(),
+            },
         }
     }
 
@@ -5195,9 +5287,9 @@ impl RuntimeBuilder {
     ///
     /// ```
     /// use samara::prelude::*;
-    /// let mut program = Program::builder();
-    /// let http = program.effect::<HttpRequest>();
-    /// let runtime = Runtime::builder(program.build()?).bind_http().build()?;
+    /// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<HttpRequest>,)>();
+    /// let http = declared_0;
+    /// let runtime = Runtime::builder(program.build()?).with_drivers((samara::HttpDriver::new(),)).build()?;
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     ///
@@ -5220,9 +5312,9 @@ impl RuntimeBuilder {
     ///
     /// ```
     /// use samara::prelude::*;
-    /// let mut program = Program::builder();
-    /// let output = program.effect::<PrintStdout>();
-    /// let runtime = Runtime::builder(program.build()?).bind_stdio().build()?;
+    /// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<PrintStdout>,)>();
+    /// let output = declared_0;
+    /// let runtime = Runtime::builder(program.build()?).with_drivers((samara::StdoutDriver::new(),)).build()?;
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn bind_stdio(mut self) -> Self {
@@ -5234,9 +5326,9 @@ impl RuntimeBuilder {
     ///
     /// ```
     /// use samara::prelude::*;
-    /// let mut program = Program::builder();
-    /// let clock = program.effect::<ReadSystemTime>();
-    /// let runtime = Runtime::builder(program.build()?).bind_system_time().build()?;
+    /// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<ReadSystemTime>,)>();
+    /// let clock = declared_0;
+    /// let runtime = Runtime::builder(program.build()?).with_drivers((samara::SystemClockDriver,)).build()?;
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn bind_system_time(mut self) -> Self {
@@ -5255,9 +5347,9 @@ impl RuntimeBuilder {
     ///
     /// ```
     /// use samara::prelude::*;
-    /// let mut program = Program::builder();
-    /// let journal = program.effect::<AppendToFile>();
-    /// let runtime = Runtime::builder(program.build()?).bind_fs("./data").build()?;
+    /// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<AppendToFile>,)>();
+    /// let journal = declared_0;
+    /// let runtime = Runtime::builder(program.build()?).with_drivers((samara::FsDriver::new("./data"),)).build()?;
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     #[cfg(feature = "fs")]
@@ -5360,11 +5452,12 @@ impl<C: Component> ComponentHandle<C> {
 /// enum CountMessage { Read(ReplyWith<u64>) }
 /// struct Counter;
 /// impl Component for Counter {
+///     type Requires = ();
 ///     type Config = ();
 ///     type Model = u64;
 ///     type Message = CountMessage;
-///     fn init(_config: &Self::Config) -> Init<u64, CountMessage> { Init::new(42) }
-///     fn update(_config: &Self::Config, count: &mut u64, message: CountMessage) -> Command<CountMessage> {
+///     fn init(_config: &Self::Config, _: &samara::Capabilities<Self::Requires>) -> Init<u64, CountMessage> { Init::new(42) }
+///     fn update(_config: &Self::Config, _: &samara::Capabilities<Self::Requires>, count: &mut u64, message: CountMessage) -> Command<CountMessage> {
 ///         match message {
 ///             CountMessage::Read(reply_with) => Command::reply(reply_with, *count),
 ///         }
@@ -5372,9 +5465,9 @@ impl<C: Component> ComponentHandle<C> {
 /// }
 /// let tokio = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
 /// tokio.block_on(async {
-///     let mut builder = Program::builder();
+///     let (mut builder, ()) = samara::Program::builder::<()>();
 ///     let count = builder.port::<CountMessage>(PortId::new("count"));
-///     let counter = builder.component::<Counter>(ComponentId::new("counter"), ());
+///     let counter = builder.component::<Counter>(ComponentId::new("counter"), ()).finish().expect("component registration");
 ///     builder.connect(&count, &counter.connector());
 ///     let runtime = Runtime::builder(builder.build()?).build()?;
 ///     let client = runtime.port_handle(&count)?;
@@ -5544,7 +5637,7 @@ impl<P: Send + 'static> PortHandle<P> {
 /// use samara::prelude::*;
 /// let tokio = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
 /// tokio.block_on(async {
-///     let program = Program::builder().build()?;
+///     let program = Program::builder::<()>().0.build()?;
 ///     let task = Runtime::builder(program).build()?.spawn();
 ///     assert!(task.shutdown(Shutdown::Drain).await?.is_clean());
 ///     Ok::<(), Box<dyn std::error::Error>>(())
@@ -5738,28 +5831,27 @@ pub struct ControlledRuntimeBuilder {
 /// use samara::prelude::*;
 /// struct Check;
 ///
-/// struct CheckConfig { http: EffectCapability<HttpRequest> }
 /// impl Component for Check {
-///     type Config = CheckConfig;
+///     type Requires = (Effect<HttpRequest>,);
+///     type Config = ();
 ///     type Model = Option<StatusCode>;
 ///     type Message = EffectOutcome<HttpResponse, HttpError>;
-///     fn init(config: &Self::Config) -> Init<Self::Model, Self::Message> {
+///     fn init(_config: &Self::Config, capabilities: &Capabilities<Self::Requires>) -> Init<Self::Model, Self::Message> {
 ///         Init::default().with_command(Command::effect(
-///             &config.http, HttpRequest::get("https://example.test/health"),
+///             &capabilities.0, HttpRequest::get("https://example.test/health"),
 ///         ))
 ///     }
-///     fn update(_config: &Self::Config, status: &mut Self::Model, outcome: Self::Message) -> Command<Self::Message> {
+///     fn update(_config: &Self::Config, capabilities: &Capabilities<Self::Requires>, status: &mut Self::Model, outcome: Self::Message) -> Command<Self::Message> {
 ///         if let EffectOutcome::Succeeded(response) = outcome {
 ///             *status = Some(response.status());
 ///         }
 ///         Command::none()
 ///     }
 /// }
-/// let mut builder = Program::builder();
-/// let http = builder.effect::<HttpRequest>();
-/// let check = builder.component::<Check>(ComponentId::new("check"), CheckConfig { http });
-/// let mut runtime = ControlledRuntime::builder(builder.build()?)
-///     .control_effect::<HttpRequest>().build()?;
+/// let (mut builder, (declared_0,)) = samara::Program::builder::<(samara::Effect<HttpRequest>,)>();
+/// let http = declared_0;
+/// let check = builder.component::<Check>(ComponentId::new("check"), ()).with_capabilities((http,)).finish().expect("component registration");
+/// let mut runtime = ControlledRuntime::builder(builder.build()?).control_all().build()?;
 /// runtime.run_until_idle()?;
 /// let request = runtime.next_effect::<HttpRequest>()?;
 /// assert_eq!(request.intent.url(), "https://example.test/health");
@@ -5778,10 +5870,14 @@ pub struct ControlledRuntime {
 
 impl ControlledRuntime {
     /// Starts configuring a test runtime for this Program. See [`ControlledRuntime`].
-    pub fn builder(program: Program) -> ControlledRuntimeBuilder {
-        ControlledRuntimeBuilder {
-            program,
-            bindings: controlled_runtime::ControlledBindings::new(),
+    pub fn builder<R: Requirements>(program: Program<R>) -> ControlledRuntimeSetup<R> {
+        let capabilities = program.requirements.clone();
+        ControlledRuntimeSetup {
+            capabilities,
+            builder: ControlledRuntimeBuilder {
+                program: program.erase(),
+                bindings: controlled_runtime::ControlledBindings::new(),
+            },
         }
     }
 
@@ -5915,20 +6011,21 @@ impl ControlledRuntime {
     /// use std::time::Duration;
     /// struct Timer;
     /// impl Component for Timer {
+    ///     type Requires = ();
     ///     type Config = ();
     ///     type Model = bool;
     ///     type Message = ();
-    ///     fn init(_config: &Self::Config) -> Init<bool, ()> {
+    ///     fn init(_config: &Self::Config, _: &samara::Capabilities<Self::Requires>) -> Init<bool, ()> {
     ///         Init::new(false).with_command(Command::after(Duration::from_secs(2), ()))
     ///     }
-    ///     fn update(_config: &Self::Config, fired: &mut bool, _: ()) -> Command<()> {
+    ///     fn update(_config: &Self::Config, _: &samara::Capabilities<Self::Requires>, fired: &mut bool, _: ()) -> Command<()> {
     ///         *fired = true;
     ///         Command::none()
     ///     }
     /// }
-    /// let mut builder = Program::builder();
-    /// let timer = builder.component::<Timer>(ComponentId::new("timer"), ());
-    /// let mut runtime = ControlledRuntime::builder(builder.build()?).build()?;
+    /// let (mut builder, ()) = samara::Program::builder::<()>();
+    /// let timer = builder.component::<Timer>(ComponentId::new("timer"), ()).finish().expect("component registration");
+    /// let mut runtime = ControlledRuntime::builder(builder.build()?).control_all().build()?;
     /// runtime.advance(Duration::from_secs(1))?;
     /// assert!(!*runtime.state(&timer)?);
     /// runtime.advance_to_next()?;
@@ -6037,291 +6134,6 @@ impl ControlledRuntimeBuilder {
     }
 }
 
-/// A reusable slice of Program assembly, installed into an enclosing Program.
-///
-/// An Assembly declares its own Components and capabilities into a
-/// [`ProgramBuilder`], hands back a [`Connector`] accepting [`Self::Accepts`]
-/// as its address, plus whatever else callers may use as [`Self::Exports`]
-/// (often nothing), and lists the world boundaries it needs as
-/// [`Self::Requires`]. It never declares a Port: the host cuts and names its
-/// own Ports and connects the Assembly's Connector to them, or holds the
-/// Connector directly. It is subordinate to the Program, not to another
-/// Component: the Components it installs are ordinary peers.
-/// Application-owned Components do not need to implement it.
-///
-/// Drivers never bind inside [`Self::install`]; assembly is shared by live and
-/// controlled execution. [`ProgramBuilder::install`] returns an [`InstalledAssembly`]
-/// token holding the exports. A live host passes it to
-/// [`RuntimeBuilder::with_assembly`] and supplies drivers with
-/// [`WithAssembly::and_drivers`]; a controlled test passes it to
-/// [`ControlledRuntimeBuilder::with_assembly`] and is done, because controlled
-/// bindings carry no information beyond the descriptor type.
-///
-/// ```
-/// use samara::prelude::*;
-///
-/// struct Ping;
-/// impl EffectDescriptor for Ping {
-///     type Output = ();
-///     type Error = std::convert::Infallible;
-/// }
-///
-/// pub enum BeaconMessage { Tick }
-///
-/// struct Pinger;
-/// struct PingerConfig {
-///     ping: EffectCapability<Ping>,
-/// }
-/// impl Component for Pinger {
-///     type Config = PingerConfig;
-///     type Model = u32;
-///     type Message = BeaconMessage;
-///     fn init(_: &PingerConfig) -> Init<u32, BeaconMessage> { Init::new(0) }
-///     fn update(config: &PingerConfig, ticks: &mut u32, _: BeaconMessage) -> Command<BeaconMessage> {
-///         *ticks += 1;
-///         Command::effect_discarding_outcome(&config.ping, Ping)
-///     }
-/// }
-///
-/// impl Assembly for Pinger {
-///     type Config = ();
-///     type Accepts = BeaconMessage;
-///     type Exports = ();
-///     type Requires = Effect<Ping>;
-///     fn install(program: &mut ProgramBuilder, _: ()) -> (Connector<BeaconMessage>, ()) {
-///         let ping = program.effect::<Ping>();
-///         let pinger = program.component::<Pinger>(ComponentId::new("pinger"), PingerConfig { ping });
-///         (pinger.connector(), ())
-///     }
-/// }
-///
-/// struct NoopPing;
-/// impl EffectDriver<Ping> for NoopPing {
-///     fn execute(&self, _: Ping) -> BoxFuture<Result<(), std::convert::Infallible>> {
-///         Box::pin(async { Ok(()) })
-///     }
-/// }
-///
-/// fn assemble() -> Result<(Program, InstalledAssembly<Pinger>), ProgramBuildError> {
-///     let mut program = Program::builder();
-///     let pinger = program.install::<Pinger>(());
-///     // The host names its own Port and connects the Assembly to it.
-///     let beacon = program.port::<BeaconMessage>(PortId::new("beacon"));
-///     program.connect(&beacon, pinger.connector());
-///     Ok((program.build()?, pinger))
-/// }
-///
-/// let (program, pinger) = assemble()?;
-/// let live = Runtime::builder(program)
-///     .with_assembly(pinger)
-///     .and_drivers(NoopPing)
-///     .build()?;
-/// let (program, pinger) = assemble()?;
-/// let controlled = ControlledRuntime::builder(program)
-///     .with_assembly(pinger)
-///     .build()?;
-/// # drop((live, controlled));
-/// # Ok::<(), Box<dyn std::error::Error>>(())
-/// ```
-///
-/// <details>
-/// <summary>Compile-time checks</summary>
-///
-/// A driver must implement the requirement at its position. Supplying a driver
-/// for a different effect does not compile:
-///
-/// ```compile_fail
-/// use samara::prelude::*;
-/// struct Ping;
-/// impl EffectDescriptor for Ping { type Output = (); type Error = std::convert::Infallible; }
-/// struct Pong;
-/// impl EffectDescriptor for Pong { type Output = (); type Error = std::convert::Infallible; }
-/// struct NoopPong;
-/// impl EffectDriver<Pong> for NoopPong {
-///     fn execute(&self, _: Pong) -> BoxFuture<Result<(), std::convert::Infallible>> {
-///         Box::pin(async { Ok(()) })
-///     }
-/// }
-/// struct Nop;
-/// impl Component for Nop {
-///     type Config = (); type Model = (); type Message = ();
-///     fn init(_: &()) -> Init<(), ()> { Init::new(()) }
-///     fn update(_: &(), _: &mut (), _: ()) -> Command<()> { Command::none() }
-/// }
-/// struct A;
-/// impl Assembly for A {
-///     type Config = ();
-///     type Accepts = ();
-///     type Exports = ();
-///     type Requires = Effect<Ping>;
-///     fn install(program: &mut ProgramBuilder, _: ()) -> (Connector<()>, ()) {
-///         program.effect::<Ping>();
-///         (program.component::<Nop>(ComponentId::new("nop"), ()).connector(), ())
-///     }
-/// }
-/// let mut program = Program::builder();
-/// let a = program.install::<A>(());
-/// let _ = Runtime::builder(program.build().unwrap())
-///     .with_assembly(a)
-///     .and_drivers(NoopPong);
-/// ```
-///
-/// A live chain that forgets the drivers has no builder to finish:
-///
-/// ```compile_fail
-/// use samara::prelude::*;
-/// struct Nop;
-/// impl Component for Nop {
-///     type Config = (); type Model = (); type Message = ();
-///     fn init(_: &()) -> Init<(), ()> { Init::new(()) }
-///     fn update(_: &(), _: &mut (), _: ()) -> Command<()> { Command::none() }
-/// }
-/// struct A;
-/// impl Assembly for A {
-///     type Config = ();
-///     type Accepts = ();
-///     type Exports = ();
-///     type Requires = ();
-///     fn install(program: &mut ProgramBuilder, _: ()) -> (Connector<()>, ()) {
-///         (program.component::<Nop>(ComponentId::new("nop"), ()).connector(), ())
-///     }
-/// }
-/// let mut program = Program::builder();
-/// let a = program.install::<A>(());
-/// let _ = Runtime::builder(program.build().unwrap())
-///     .with_assembly(a)
-///     .build();
-/// ```
-///
-/// </details>
-pub trait Assembly {
-    /// What the caller supplies at assembly, such as paths or instance identity.
-    type Config;
-    /// The message type the Assembly's [`Connector`] accepts: its public
-    /// vocabulary. For a library this is usually an opaque type whose
-    /// constructor functions are the API; an Assembly nobody sends to still
-    /// names its facade Component's Message here.
-    type Accepts: Send + 'static;
-    /// Anything else the caller may use after installation, such as a
-    /// `ComponentRef` for controlled tests. Often `()`.
-    type Exports;
-    /// The world boundaries the host must drive: one [`Effect`] or [`Source`]
-    /// marker, or a tuple of them (nesting allowed), or `()` for none.
-    type Requires: Requirements;
-
-    /// Declares this Assembly's Components and capabilities and returns its
-    /// Connector and other exports.
-    ///
-    /// Prefer [`ProgramBuilder::install`] at call sites. Bind no drivers and
-    /// declare no Ports here; Ports belong to the host.
-    fn install(
-        program: &mut ProgramBuilder,
-        config: Self::Config,
-    ) -> (Connector<Self::Accepts>, Self::Exports);
-}
-
-/// Names a required effect in [`Assembly::Requires`].
-///
-/// Live, the matching position in [`WithAssembly::and_drivers`] takes any
-/// [`EffectDriver<D>`]. Controlled, the effect is taken over by the harness.
-pub struct Effect<D: EffectDescriptor>(PhantomData<fn() -> D>);
-
-/// Names a required source in [`Assembly::Requires`].
-///
-/// Live, the matching position in [`WithAssembly::and_drivers`] takes any
-/// [`SourceDriver<S>`]. Controlled, events come from the harness.
-pub struct Source<S: SourceDescriptor>(PhantomData<fn() -> S>);
-
-/// A requirement list: an [`Effect`], a [`Source`], `()`, or a tuple of lists.
-///
-/// Implemented by the crate for tuples up to eight elements. The only operation
-/// is registering every element with a controlled builder, which is what
-/// [`ControlledRuntimeBuilder::with_assembly`] does.
-pub trait Requirements {
-    /// Takes control of every requirement in the list.
-    fn control(runtime: ControlledRuntimeBuilder) -> ControlledRuntimeBuilder;
-}
-
-impl<D: EffectDescriptor> Requirements for Effect<D> {
-    fn control(runtime: ControlledRuntimeBuilder) -> ControlledRuntimeBuilder {
-        runtime.control_effect::<D>()
-    }
-}
-
-impl<S: SourceDescriptor> Requirements for Source<S> {
-    fn control(runtime: ControlledRuntimeBuilder) -> ControlledRuntimeBuilder {
-        runtime.control_source::<S>()
-    }
-}
-
-impl Requirements for () {
-    fn control(runtime: ControlledRuntimeBuilder) -> ControlledRuntimeBuilder {
-        runtime
-    }
-}
-
-/// Live drivers satisfying a [`Requirements`] list, position by position.
-///
-/// Any [`EffectDriver<D>`] satisfies `Effect<D>`, any [`SourceDriver<S>`]
-/// satisfies `Source<S>`, `()` satisfies `()`, and a tuple satisfies a tuple of
-/// the same length when each element satisfies the element at its position.
-/// Implemented by the crate; applications do not implement it.
-pub trait Drivers<Requires: Requirements> {
-    /// Binds every driver into the live builder in list order.
-    fn bind(self, runtime: RuntimeBuilder) -> RuntimeBuilder;
-}
-
-impl<D: EffectDescriptor, T: EffectDriver<D>> Drivers<Effect<D>> for T {
-    fn bind(self, runtime: RuntimeBuilder) -> RuntimeBuilder {
-        runtime.bind_effect::<D, T>(self)
-    }
-}
-
-impl<S: SourceDescriptor, T: SourceDriver<S>> Drivers<Source<S>> for T {
-    fn bind(self, runtime: RuntimeBuilder) -> RuntimeBuilder {
-        runtime.bind_source::<S, T>(self)
-    }
-}
-
-impl Drivers<()> for () {
-    fn bind(self, runtime: RuntimeBuilder) -> RuntimeBuilder {
-        runtime
-    }
-}
-
-macro_rules! requirement_tuples {
-    ($(($($requirement:ident $driver:ident),+))+) => {$(
-        impl<$($requirement: Requirements),+> Requirements for ($($requirement,)+) {
-            fn control(runtime: ControlledRuntimeBuilder) -> ControlledRuntimeBuilder {
-                $(let runtime = $requirement::control(runtime);)+
-                runtime
-            }
-        }
-
-        impl<$($requirement: Requirements, $driver: Drivers<$requirement>),+> Drivers<($($requirement,)+)>
-            for ($($driver,)+)
-        {
-            #[allow(non_snake_case)]
-            fn bind(self, runtime: RuntimeBuilder) -> RuntimeBuilder {
-                let ($($driver,)+) = self;
-                $(let runtime = $driver.bind(runtime);)+
-                runtime
-            }
-        }
-    )+};
-}
-
-requirement_tuples! {
-    (R1 T1)
-    (R1 T1, R2 T2)
-    (R1 T1, R2 T2, R3 T3)
-    (R1 T1, R2 T2, R3 T3, R4 T4)
-    (R1 T1, R2 T2, R3 T3, R4 T4, R5 T5)
-    (R1 T1, R2 T2, R3 T3, R4 T4, R5 T5, R6 T6)
-    (R1 T1, R2 T2, R3 T3, R4 T4, R5 T5, R6 T6, R7 T7)
-    (R1 T1, R2 T2, R3 T3, R4 T4, R5 T5, R6 T6, R7 T7, R8 T8)
-}
-
 impl<D: EffectDescriptor> EffectDriver<D> for Box<dyn EffectDriver<D>> {
     fn execute(&self, descriptor: D) -> BoxFuture<Result<D::Output, D::Error>> {
         (**self).execute(descriptor)
@@ -6331,194 +6143,6 @@ impl<D: EffectDescriptor> EffectDriver<D> for Box<dyn EffectDriver<D>> {
 impl<D: SourceDescriptor> SourceDriver<D> for Box<dyn SourceDriver<D>> {
     fn run(&self, descriptor: D, sink: SourceSink<D>) -> BoxFuture<()> {
         (**self).run(descriptor, sink)
-    }
-}
-
-/// A live builder waiting for an installed Assembly's drivers.
-///
-/// Returned by [`RuntimeBuilder::with_assembly`]. Nothing else can be
-/// called until [`Self::and_drivers`] supplies them, so a chain that forgets
-/// the drivers does not compile.
-#[must_use = "call `and_drivers` to supply the Assembly's drivers and recover the builder"]
-pub struct WithAssembly<S: Assembly> {
-    builder: RuntimeBuilder,
-    marker: PhantomData<fn() -> S>,
-}
-
-impl<S: Assembly> WithAssembly<S> {
-    /// Binds drivers for every entry in [`Assembly::Requires`], in order, and
-    /// returns the builder.
-    ///
-    /// Pass one driver for a single requirement or a tuple matching the
-    /// requirement tuple. A driver that implements several effects is passed
-    /// once per position; cloning is fine.
-    pub fn and_drivers(self, drivers: impl Drivers<S::Requires>) -> RuntimeBuilder {
-        drivers.bind(self.builder)
-    }
-
-    /// Binds the drivers the Assembly vendors through [`VendorsDrivers`] and
-    /// returns the builder.
-    pub fn and_its_vendored_drivers(self) -> RuntimeBuilder
-    where
-        S: VendorsDrivers,
-    {
-        self.and_drivers(S::drivers())
-    }
-}
-
-/// A [`Assembly`] that vendors live drivers for its own requirements.
-///
-/// Optional. Implement it when an Assembly has a sensible default way to meet
-/// [`Assembly::Requires`], such as a first-party filesystem driver rooted at
-/// the working directory. Hosts call [`WithAssembly::and_its_vendored_drivers`] or
-/// pass `S::drivers()` to [`WithAssembly::and_drivers`]; hosts with their own
-/// drivers ignore it. A library will usually gate this impl behind a feature so
-/// consumers bringing their own drivers do not pay for the vendored ones.
-///
-/// ```
-/// use samara::prelude::*;
-///
-/// struct Ping;
-/// impl EffectDescriptor for Ping {
-///     type Output = ();
-///     type Error = std::convert::Infallible;
-/// }
-/// struct NoopPing;
-/// impl EffectDriver<Ping> for NoopPing {
-///     fn execute(&self, _: Ping) -> BoxFuture<Result<(), std::convert::Infallible>> {
-///         Box::pin(async { Ok(()) })
-///     }
-/// }
-///
-/// struct Nop;
-/// impl Component for Nop {
-///     type Config = (); type Model = (); type Message = ();
-///     fn init(_: &()) -> Init<(), ()> { Init::new(()) }
-///     fn update(_: &(), _: &mut (), _: ()) -> Command<()> { Command::none() }
-/// }
-/// struct Pinger;
-/// impl Assembly for Pinger {
-///     type Config = ();
-///     type Accepts = ();
-///     type Exports = ();
-///     type Requires = Effect<Ping>;
-///     fn install(program: &mut ProgramBuilder, _: ()) -> (Connector<()>, ()) {
-///         let _ping = program.effect::<Ping>();
-///         (program.component::<Nop>(ComponentId::new("pinger"), ()).connector(), ())
-///     }
-/// }
-/// impl VendorsDrivers for Pinger {
-///     type Drivers = NoopPing;
-///     fn drivers() -> NoopPing { NoopPing }
-/// }
-///
-/// let mut program = Program::builder();
-/// let pinger = program.install::<Pinger>(());
-/// let runtime = Runtime::builder(program.build()?)
-///     .with_assembly(pinger)
-///     .and_its_vendored_drivers()
-///     .build()?;
-/// # drop(runtime);
-/// # Ok::<(), Box<dyn std::error::Error>>(())
-/// ```
-pub trait VendorsDrivers: Assembly {
-    /// The concrete drivers, satisfying [`Assembly::Requires`] position by position.
-    type Drivers: Drivers<Self::Requires>;
-
-    /// Constructs the vendored drivers.
-    fn drivers() -> Self::Drivers;
-}
-
-impl RuntimeBuilder {
-    /// Starts binding an installed [`Assembly`]'s drivers.
-    ///
-    /// Takes the [`InstalledAssembly`] token from [`ProgramBuilder::install`] and returns
-    /// a step that holds this builder until [`WithAssembly::and_drivers`]
-    /// supplies them. See [`Assembly`] for a complete example.
-    pub fn with_assembly<S: Assembly>(self, installed: InstalledAssembly<S>) -> WithAssembly<S> {
-        drop(installed);
-        WithAssembly {
-            builder: self,
-            marker: PhantomData,
-        }
-    }
-}
-
-impl ControlledRuntimeBuilder {
-    /// Takes control of every effect and source in an installed [`Assembly`]'s
-    /// [`Assembly::Requires`].
-    ///
-    /// Controlled bindings carry no information beyond the descriptor type, so
-    /// no drivers are supplied. See [`Assembly`] for a complete example.
-    pub fn with_assembly<S: Assembly>(self, installed: InstalledAssembly<S>) -> Self {
-        drop(installed);
-        S::Requires::control(self)
-    }
-}
-
-/// Proof that a Program installed Assembly `S`, carrying its Connector and exports.
-///
-/// [`ProgramBuilder::install`] returns it. Read the Assembly's address through
-/// [`Self::connector`] and anything else through [`Self::exports`] while
-/// assembling, then pass the token to `with_assembly` on the live or
-/// controlled builder. The token is itself [`Addressable`], so a Command can
-/// be sent to it directly. It cannot be created any other way, so drivers are
-/// only ever bound for an Assembly that is actually in the Program.
-///
-/// The `must_use` lint warns when the token is discarded outright. It cannot warn
-/// when the token is kept for its exports and never bound; the live and controlled
-/// builders still catch that at `build()` with the descriptor type named.
-#[must_use = "pass this token to `with_assembly` on the live or controlled builder"]
-pub struct InstalledAssembly<S: Assembly> {
-    connector: Connector<S::Accepts>,
-    exports: S::Exports,
-    marker: PhantomData<fn() -> S>,
-}
-
-impl<S: Assembly> InstalledAssembly<S> {
-    /// The Assembly's address: a [`Connector`] accepting [`Assembly::Accepts`].
-    ///
-    /// Connect it to a Port the host names, or clone it into a Config and
-    /// address it directly.
-    pub fn connector(&self) -> &Connector<S::Accepts> {
-        &self.connector
-    }
-
-    /// Whatever else the Assembly exported, such as a `ComponentRef` for tests.
-    pub fn exports(&self) -> &S::Exports {
-        &self.exports
-    }
-}
-
-impl<S: Assembly> Addressable for InstalledAssembly<S> {
-    type Message = S::Accepts;
-
-    fn to_address(&self) -> Address<S::Accepts> {
-        self.connector.to_address()
-    }
-}
-
-impl<S: Assembly> fmt::Debug for InstalledAssembly<S> {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("InstalledAssembly")
-            .field("assembly", &std::any::type_name::<S>())
-            .finish_non_exhaustive()
-    }
-}
-
-impl ProgramBuilder {
-    /// Installs an [`Assembly`] and returns the [`InstalledAssembly`] token holding its Connector and exports.
-    ///
-    /// Bind its drivers later with `with_assembly` on the live or controlled
-    /// builder. See [`Assembly`] for a complete example.
-    pub fn install<S: Assembly>(&mut self, config: S::Config) -> InstalledAssembly<S> {
-        let (connector, exports) = S::install(self, config);
-        InstalledAssembly {
-            connector,
-            exports,
-            marker: PhantomData,
-        }
     }
 }
 
@@ -6542,7 +6166,7 @@ pub struct PendingEffect<E: EffectDescriptor> {
 ///
 /// ```
 /// use samara::{Program, ControlledRuntime};
-/// let mut runtime = ControlledRuntime::builder(Program::builder().build()?).build()?;
+/// let mut runtime = ControlledRuntime::builder(Program::builder::<()>().0.build()?).control_all().build()?;
 /// runtime.run_until_idle()?;
 /// let work = runtime.pending_work();
 /// assert_eq!(work.pending_now, 0);
@@ -6820,6 +6444,7 @@ mod source_plan_tests {
     struct WrongTerminal;
 
     impl SourceDescriptor for WrongTerminal {
+        type Terminal = Self;
         type Item = u64;
         type Error = Infallible;
     }
@@ -6828,6 +6453,7 @@ mod source_plan_tests {
     struct MalformedInternalInner;
 
     impl SourceDescriptor for MalformedInternalInner {
+        type Terminal = Self;
         type Item = Vec<u8>;
         type Error = Infallible;
 
@@ -6887,16 +6513,21 @@ mod request_authority_tests {
     struct Replier;
 
     impl Component for Replier {
+        type Requires = ();
         type Config = ();
         type Model = ();
         type Message = ReplyWith<u64>;
 
-        fn init(_config: &Self::Config) -> Init<(), Self::Message> {
+        fn init(
+            _config: &Self::Config,
+            _: &crate::Capabilities<Self::Requires>,
+        ) -> Init<(), Self::Message> {
             Init::default()
         }
 
         fn update(
             _config: &Self::Config,
+            _: &crate::Capabilities<Self::Requires>,
             _: &mut (),
             reply_with: Self::Message,
         ) -> Command<Self::Message> {
@@ -6905,8 +6536,11 @@ mod request_authority_tests {
     }
 
     fn fixture() -> (Program, ComponentRef<Replier>, ReplyWith<u64>) {
-        let mut builder = Program::builder();
-        let replier = builder.component::<Replier>(ComponentId::new("replier"), ());
+        let (mut builder, ()) = crate::Program::builder::<()>();
+        let replier = builder
+            .component::<Replier>(ComponentId::new("replier"), ())
+            .finish()
+            .expect("component registration");
         let token = RequestToken::new(0, Arc::new(()));
         token.expire();
         (builder.build().unwrap(), replier, ReplyWith::runtime(token))
@@ -6915,7 +6549,10 @@ mod request_authority_tests {
     #[test]
     fn controlled_foreign_expired_reply_still_faults() {
         let (program, replier, foreign) = fixture();
-        let mut runtime = ControlledRuntime::builder(program).build().unwrap();
+        let mut runtime = ControlledRuntime::builder(program)
+            .control_all()
+            .build()
+            .unwrap();
         runtime.send(&replier, foreign).unwrap();
         let error = runtime.run_until_idle().unwrap_err();
         assert_eq!(error.component(), Some(replier.id()));

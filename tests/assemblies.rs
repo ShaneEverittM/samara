@@ -19,6 +19,7 @@ impl EffectDescriptor for Stamp {
 struct Pulses;
 
 impl SourceDescriptor for Pulses {
+    type Terminal = Self;
     type Item = u8;
     type Error = Infallible;
 }
@@ -32,10 +33,7 @@ pub enum LedgerMessage {
 
 struct Recorder;
 
-struct RecorderCapabilities {
-    stamp: EffectCapability<Stamp>,
-    pulses: SourceCapability<Pulses>,
-}
+type RecorderNeeds = (Effect<Stamp>, Source<Pulses>);
 
 enum RecorderMessage {
     Ledger(LedgerMessage),
@@ -50,23 +48,25 @@ impl From<LedgerMessage> for RecorderMessage {
 }
 
 impl Component for Recorder {
-    type Config = RecorderCapabilities;
+    type Requires = RecorderNeeds;
+    type Config = ();
     type Model = Vec<String>;
     type Message = RecorderMessage;
 
-    fn init(_: &RecorderCapabilities) -> Init<Vec<String>, RecorderMessage> {
+    fn init(_: &(), _: &Capabilities<RecorderNeeds>) -> Init<Vec<String>, RecorderMessage> {
         Init::new(Vec::new())
     }
 
     fn update(
-        config: &RecorderCapabilities,
+        _: &(),
+        (stamp, _pulses): &Capabilities<RecorderNeeds>,
         entries: &mut Vec<String>,
         message: RecorderMessage,
     ) -> Command<RecorderMessage> {
         match message {
             RecorderMessage::Ledger(LedgerMessage::Record(entry)) => {
                 entries.push(entry);
-                Command::effect_with(&config.stamp, Stamp, RecorderMessage::Stamped)
+                Command::effect_with(stamp, Stamp, RecorderMessage::Stamped)
             }
             RecorderMessage::Ledger(LedgerMessage::Count(reply_with)) => {
                 Command::reply(reply_with, entries.len())
@@ -84,11 +84,12 @@ impl Component for Recorder {
     }
 
     fn subscriptions(
-        config: &RecorderCapabilities,
+        _: &(),
+        (_stamp, pulses): &Capabilities<RecorderNeeds>,
         _: &Vec<String>,
     ) -> Subscriptions<RecorderMessage> {
         Subscriptions::one(Subscription::source_with(
-            &config.pulses,
+            pulses,
             SubscriptionId::new("pulses"),
             Pulses,
             RecorderMessage::Pulse,
@@ -108,17 +109,19 @@ impl Assembly for Recorder {
     type Exports = RecorderExports;
     type Requires = (Effect<Stamp>, Source<Pulses>);
 
-    fn install(program: &mut ProgramBuilder, _: ()) -> (Connector<LedgerMessage>, RecorderExports) {
-        let stamp = program.effect::<Stamp>();
-        let pulses = program.source::<Pulses>();
-        let recorder = program.component::<Recorder>(
-            ComponentId::new("recorder"),
-            RecorderCapabilities { stamp, pulses },
-        );
-        (
+    fn install<R: Requirements>(
+        program: &mut ProgramBuilder<R>,
+        _: (),
+        (stamp, pulses): Capabilities<RecorderNeeds>,
+    ) -> Result<(Connector<LedgerMessage>, RecorderExports), ProgramBuildError> {
+        let recorder = program
+            .component::<Recorder>(ComponentId::new("recorder"), ())
+            .with_capabilities((stamp, pulses))
+            .finish()?;
+        Ok((
             recorder.accepting(RecorderMessage::Ledger),
             RecorderExports { recorder },
-        )
+        ))
     }
 }
 
@@ -146,17 +149,25 @@ impl SourceDriver<Pulses> for SilentPulses {
 }
 
 impl VendorsDrivers for Recorder {
-    type Drivers = (CountingStamp, SilentPulses);
+    type Drivers = (CountingStamp, DrivenSource<SilentPulses>);
 
     fn drivers() -> Self::Drivers {
-        (CountingStamp::default(), SilentPulses)
+        (CountingStamp::default(), DrivenSource::new(SilentPulses))
     }
 }
 
 /// The host names its own Port and connects the Assembly's Connector to it.
-fn assemble() -> (Program, InstalledAssembly<Recorder>, Port<LedgerMessage>) {
-    let mut program = Program::builder();
-    let recorder = program.install::<Recorder>(());
+fn assemble() -> (
+    Program<RecorderNeeds>,
+    InstalledAssembly<Recorder>,
+    Port<LedgerMessage>,
+) {
+    let (mut program, caps) = Program::builder::<RecorderNeeds>();
+    let recorder = program
+        .install::<Recorder>(())
+        .with_capabilities(caps)
+        .finish()
+        .expect("assembly installation");
     let ledger = program.port::<LedgerMessage>(PortId::new("ledger"));
     program.connect(&ledger, recorder.connector());
     (
@@ -179,11 +190,10 @@ fn install_returns_a_token_carrying_the_connector_and_exports() {
 
 #[tokio::test]
 async fn live_builder_binds_every_requirement_through_with_assembly() {
-    let (program, recorder, ledger) = assemble();
+    let (program, _recorder, ledger) = assemble();
     let stamp = CountingStamp::default();
     let runtime = Runtime::builder(program)
-        .with_assembly(recorder)
-        .and_drivers((stamp.clone(), SilentPulses))
+        .with_drivers((stamp.clone(), DrivenSource::new(SilentPulses)))
         .build()
         .expect("every requirement is bound");
     let client = runtime.port_handle(&ledger).expect("ledger handle");
@@ -209,30 +219,21 @@ async fn live_builder_binds_every_requirement_through_with_assembly() {
 
 #[test]
 fn live_builder_accepts_the_drivers_a_assembly_vendors() {
-    let (program, recorder, _) = assemble();
+    let (program, _recorder, _) = assemble();
     Runtime::builder(program)
-        .with_assembly(recorder)
-        .and_its_vendored_drivers()
+        .with_drivers(Recorder::drivers())
         .build()
         .expect("vendored drivers satisfy the requirements");
 }
 
-#[test]
-fn live_build_fails_when_assembly_drivers_are_not_bound() {
-    let (program, _, _) = assemble();
-    let error = Runtime::builder(program)
-        .build()
-        .err()
-        .expect("unbound drivers are rejected");
-    assert!(error.to_string().contains("Stamp"), "{error}");
-}
+// Missing-binding coverage moved to RuntimeSetup compile-fail contracts (ADR-0019).
 
 #[test]
 fn controlled_builder_registers_every_requirement_through_with_assembly() {
     let (program, installed, _) = assemble();
     let recorder = installed.exports().recorder.clone();
     let mut runtime = ControlledRuntime::builder(program)
-        .with_assembly(installed)
+        .control_all()
         .build()
         .expect("every requirement is controlled");
 
@@ -252,12 +253,4 @@ fn controlled_builder_registers_every_requirement_through_with_assembly() {
     assert_eq!(entries, ["first", "stamp 7"]);
 }
 
-#[test]
-fn controlled_build_fails_when_assembly_drivers_are_not_controlled() {
-    let (program, _, _) = assemble();
-    let error = ControlledRuntime::builder(program)
-        .build()
-        .err()
-        .expect("uncontrolled drivers are rejected");
-    assert!(error.to_string().contains("Stamp"), "{error}");
-}
+// Missing-binding coverage moved to RuntimeSetup compile-fail contracts (ADR-0019).

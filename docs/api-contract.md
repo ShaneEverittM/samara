@@ -46,19 +46,19 @@ The accepted Phase 2 audit constrains Phase 3 to this slice:
   or registration-order token.
 - The type implementing `Component` names a kind and is never stored. Its
   immutable logical configuration is `Component::Config`, supplied at
-  registration as `component::<Kind>(id, config)`; behaviorally relevant
+  registration as `component::<Kind>(id, config).with_capabilities(caps).finish()?`; behaviorally relevant
   mutable state belongs in `Component::Model`
   ([ADR-0013](adr/0013-component-kinds-assemblies-and-first-party-effects.md)).
 - `Component::Message` is the only transition input.
-- `Component::init(&Config) -> Init<Model, Message>` declares initial state and
+- `Component::init(&Config, &Capabilities<Requires>) -> Init<Model, Message>` declares initial state and
   optional startup work.
-- `Component::update(&Config, &mut Model, Message) -> Command<Message>` is the
+- `Component::update(&Config, &Capabilities<Requires>, &mut Model, Message) -> Command<Message>` is the
   v0 Rust spelling of the conceptual pure transition. Exclusively owned
   in-place mutation is observationally equivalent to returning a new Model.
 - One composable `Command<Message>` is returned. `Command::none` represents no
   finite work and `Command::batch` groups declarations; batching does not
   promise completion order.
-- `Component::subscriptions(&Config, &Model) -> Subscriptions<Message>` is a
+- `Component::subscriptions(&Config, &Capabilities<Requires>, &Model) -> Subscriptions<Message>` is a
   pure projection with an empty default.
 - The base Component contract requires movable `Config`, Model, and Messages,
   but does not require `Config` to be `Sync`. Per-Component serialization does
@@ -483,12 +483,14 @@ tracing remain deferred.
 [ADR-0008](adr/0008-closed-program-capabilities.md) closes Program assembly
 around values issued by one `ProgramBuilder`:
 
-- `effect::<D>() -> EffectCapability<D>` and
-  `source::<S>() -> SourceCapability<S>` both declare a dependency and produce
-  the only public authority that can issue work through that dependency.
+- `Program::builder::<R>()` returns `(ProgramBuilder<R>, Capabilities<R>)`.
+  The sealed requirement shape declares every dependency and produces the
+  authority to issue work through it. No public declaration method can expand
+  this inventory later ([ADR-0019](adr/0019-typed-program-requirements.md)).
 - Component references and Ports remain the corresponding Program-issued
   values for concrete and provider-neutral Component communication.
-- Component configuration stores these inert values. They expose no I/O,
+- The kernel stores these inert values separately from Config and passes
+  `&Capabilities<Component::Requires>` to every callback. They expose no I/O,
   runtime handle, Driver, or controlled-world operation.
 - `Command::effect(&capability, descriptor)`,
   `Command::effect_with(&capability, descriptor, mapper)`, and
@@ -504,8 +506,8 @@ around values issued by one `ProgramBuilder`:
   requirement. Applications do not separately declare or bind the inner
   descriptor or Layer stack.
 
-After `ProgramBuilder::build()` consumes the builder, the logical capability
-set is closed. `RuntimeBuilder::build()` and
+The requirement shape fixes the capability inventory at builder creation.
+`ProgramBuilder::build()` closes the Component and connection graph. `RuntimeBuilder::build()` and
 `ControlledRuntimeBuilder::build()` synchronously require exactly one
 applicable terminal behavior for every declaration. Normal Drivers and
 controlled registrations are type-wide; the one-shot `mpsc` bridge uses an
@@ -591,19 +593,28 @@ interaction and leaves one way for a Command to reach a Component:
 ## Accepted and Implemented Contract: Assemblies
 
 [ADR-0013](adr/0013-component-kinds-assemblies-and-first-party-effects.md)
-as amended by [ADR-0018](adr/0018-assemblies-export-a-connector.md):
+as amended by [ADR-0018](adr/0018-assemblies-export-a-connector.md) and
+[ADR-0019](adr/0019-typed-program-requirements.md):
 
-- `Assembly` has `Config`, `Accepts`, `Exports`, and `Requires`, and
-  `install(&mut ProgramBuilder, Config) -> (Connector<Accepts>, Exports)`.
-  An Assembly declares Components and capabilities, never Ports or drivers.
-- `ProgramBuilder::install::<A>(config)` returns a `must_use`
-  `InstalledAssembly<A>` exposing `connector()` and `exports()`; the token
-  is `Addressable` with `Message = A::Accepts`.
-- `Runtime::builder(..).with_assembly(token).and_drivers(drivers)` binds
-  `A::Requires` position by position, or `.and_its_vendored_drivers()` when
-  `A: VendorsDrivers`; `ControlledRuntime::builder(..).with_assembly(token)`
-  controls every requirement. Either builder fails at `build()` when a
-  declared requirement is unbound, naming the descriptor.
+- `Assembly` has `Config`, `Accepts`, `Exports`, and `Requires`. Its generic
+  `install<R>(&mut ProgramBuilder<R>, Config, Capabilities<Self::Requires>)`
+  returns `Result<(Connector<Accepts>, Exports), ProgramBuildError>`.
+  It installs Components using supplied capabilities, and declares no Ports or drivers.
+- `program.install::<A>(config).with_capabilities(caps).finish()?` returns
+  `InstalledAssembly<A>` exposing `connector()` and `exports()`, and implementing
+  `Addressable`. It carries no separate runtime installation obligation.
+- The enclosing `Program<R>` carries all binding obligations. Live setup uses
+  `Runtime::builder(program).with_drivers(drivers).build()?`; controlled setup
+  uses `ControlledRuntime::builder(program).control_all().build()?`.
+  Incomplete binding stages have no `build` method (the empty requirement shape
+  may build directly). `VendorsDrivers::drivers()` can supply a matching tuple.
+- `DrivenSource::new(driver)` selects a type-wide terminal source implementation;
+  `MpscReceiver::new(receiver)` binds the exact capability at that position;
+  `StdinDriver` selects the process reader for its position. Controlled stream
+  requirements select exact identities and other sources select their terminal types.
+- Missing or incorrectly typed tuples fail compilation. Provenance, duplicate
+  identities, conflicting bindings and invalid startup work still fail synchronous
+  validation. Component and Assembly capability provenance is checked before init/install.
 
 ## Deliberately Unfrozen Surfaces
 

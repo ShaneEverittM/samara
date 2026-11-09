@@ -7,8 +7,8 @@ This repository is in a documentation-first, acceptance-contract-gated implement
 - `Model` is the single source of truth.
 - `Message` is the only path for state transitions.
 - The semantic transition `Model + Message -> Model + Commands` is pure,
-  deterministic, and side effect free. The Rust spelling (ADR-0013) is
-  `update(&Config, &mut Model, Message) -> Command<Message>`, where `Config` is
+  deterministic, and side effect free. The Rust spelling (ADR-0019) is
+  `update(&Config, &Capabilities<Requires>, &mut Model, Message) -> Command<Message>`, where `Config` is
   the Component's immutable wiring and the implementing type is only a name
   for the kind; in-place mutation is exclusively owned and one composable
   Command represents zero or more intents.

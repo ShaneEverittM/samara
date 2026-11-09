@@ -27,13 +27,13 @@ dependency after build.
 **Program assembly** — The construction of a Samara program: Component
 registration, issuance of ComponentRefs, Ports, and Effect and Source
 capabilities, Port binding, and profile selection. `ProgramBuilder::build()`
-rejects logical assembly errors and closes the capability inventory; the
-profile builders then validate every declared terminal requirement before
-execution (ADR-0008).
+rejects logical assembly errors. `Program::builder::<R>()` fixes the capability
+inventory and issues its values at construction; profile setup carries `R` until
+a full driver tuple or `control_all()` completes it (ADR-0019).
 
 **Assembly** — A reusable slice of Program assembly: a type whose `install`
-declares its own Components and capabilities into an enclosing
-`ProgramBuilder`, hands back a `Connector` accepting `Accepts` as its
+registers its own Components using capabilities supplied by the enclosing
+`ProgramBuilder<R>`, hands back a `Connector` accepting `Accepts` as its
 address plus any other `Exports`, and lists the world boundaries the host
 must drive as `Requires`. It declares no Ports; the host names its own and
 connects the Connector to them (ADR-0018). The unit of reuse in Samara is an
@@ -46,16 +46,17 @@ accepts, named from the host's side: the Assembly's public vocabulary. For a
 library it is usually an opaque type whose constructor functions are the
 API; an Assembly nobody sends to still names its facade Component's Message.
 
-**Requires (of an Assembly)** — The type-level list of `Effect<D>` and
-`Source<S>` markers naming what an Assembly needs driven. The live builder's
-`with_assembly(installed).and_drivers(..)` takes a matching tuple of Drivers,
-position by position; the controlled builder's `with_assembly(installed)`
-takes control of every entry and needs nothing else.
+**Requires** — A type-level shape of `Effect<D>`, `Source<S>`, `()`, or nested
+tuples. A `Program<R>` declares its full world boundary; Components and
+Assemblies use `Requires` to describe the capability values they receive.
+`Capabilities<R>` is the corresponding value tuple. Live setup's
+`with_drivers(..)` matches the Program shape position by position, while
+controlled setup's `control_all()` derives every control (ADR-0019).
 
-**VendorsDrivers** — An optional trait an Assembly implements to ship concrete
-live Drivers for its `Requires`, bound with `and_its_vendored_drivers()`. A
-library normally feature-gates the impl so consumers bringing their own
-Drivers do not pay for the vendored ones.
+**VendorsDrivers** — An optional trait an Assembly implements to supply concrete
+live Drivers for its `Requires` through `drivers()`. The caller incorporates
+that tuple into the Program's `with_drivers` tuple. A library normally
+feature-gates the implementation.
 
 **Program boundary** — The scope within which Samara's guarantees apply. Code
 outside this boundary is part of the surrounding world and interacts with the
@@ -78,8 +79,8 @@ and `component::<C>(..)` name the kind.
 
 **Component configuration / `Component::Config`** — The immutable value a
 kind is registered with. It holds logical wiring and declarative
-configuration, such as Ports, EffectCapabilities, SourceCapabilities, and
-SourceDescriptors, and is passed to every Component function by shared
+configuration, such as Ports and SourceDescriptors. Capabilities are stored
+separately as `Capabilities<Component::Requires>`; both are passed by shared
 reference, signaling that it is observationally read-only during execution.
 Because Rust permits interior mutability, preserving that property is also a
 conformance obligation. Behaviorally relevant mutable state does not belong
@@ -577,7 +578,7 @@ to hold.
 | `Connectable`, `connect_with`, `connector_with`, `to_connector` | `connect(&port, &connector)`, `ComponentRef::connector`, `accepting` | A Port takes a Connector and nothing else (ADR-0015 amendment, November 8, 2026); the conversion lives on the Connector side, under one verb. |
 | Recipient, Address | Connector | Working names while the provider-owned address was designed; *Connector* pairs with *Port* and names the thing held rather than a role. |
 | An Assembly exporting a `Port` | `Assembly::Accepts` and `InstalledAssembly::connector` | Removed November 9, 2026 (ADR-0018). Assemblies declare no Ports; the host names its own and connects the Assembly's Connector. |
-| `Installed<A>` | `InstalledAssembly<A>` | Renamed November 8, 2026 so `with_assembly(installed_assembly)` reads as a sentence; the token keeps the `must_use` nudge and `.exports()`. |
+| `Installed<A>` | `InstalledAssembly<A>` | Renamed November 8, 2026 so `with_assembly(installed_assembly)` reads as a sentence; ADR-0019 subsequently removed its runtime token role; it retains the Connector and exports. |
 | `LiveRuntime`, `LiveRuntimeBuilder` | `Runtime`, `RuntimeBuilder` | Renamed November 9, 2026: the live profile is the one every application names, so it carries no qualifier; *live execution* remains the glossary term for the profile, and `ControlledRuntime` keeps its adjective. |
 | `messages!`, `Notification<M>`, `Request<M>`, `RequestInvocation`, `Command::notify`, `request`, `request_with`, `request_timeout`, `request_timeout_with`, `TraceCommandKind::Notify` | `Command::send`, `Command::request_to`, `request_to_timeout`; a request variant carrying `ReplyWith<R>`; `TraceCommandKind::Send` with `target_port` | Removed November 8, 2026 (ADR-0016). The trait form and the constructor form gave the same guarantee twice; the message type is the protocol. |
 | `ask` | `request` | Use `Command::request` for command-now, Message-later Component request/reply and `PortHandle::request` for the deliberately awaitable live host boundary. |
