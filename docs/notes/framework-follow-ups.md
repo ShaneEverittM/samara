@@ -163,9 +163,16 @@ a journal Component; exploratory proposals, not accepted API decisions.
   `request_to_timeout` minting the `ReplyTo` against a Connector from a published
   constructor function, and `Connector::accepting`, Elm 0.16's `forwardTo`. A
   library written the Elm way, an opaque Message with constructor functions,
-  now needs no `messages!` and no Port; `tests/connectors.rs` has one. Still open:
-  there is no intent inspector for a Connector request, because its message does
-  not exist until the token is minted; controlled execution observes it.
+  now needs no shared enum and no Port; `tests/connectors.rs` has one.
+  `Command::into_request_to` inspects such a request with an inert token
+  (ADR-0016).
+
+- [ ] **Constructor-function derive.** ADR-0016 left one sending API, with
+  `M::Variant { .. }` spelled at every call site. If that proves noisy once
+  the examples have lived with it, a small derive that emits `pub fn
+  variant(args) -> Self` constructors (and `fn request(args, reply_to)` for
+  reply-token variants) is the remedy; it must not reintroduce a request
+  trait or a second Command form.
 
 - [ ] **No small-scale composition: `Command::map` and `Subscriptions::map`
   are missing.** Nothing lifts a `Command<Child>` into a `Command<Parent>` or

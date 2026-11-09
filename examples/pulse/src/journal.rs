@@ -5,18 +5,28 @@ const JOURNAL: &str = "pulse/journal";
 /// Where the recorder appends, relative to the root the host binds.
 pub const JOURNAL_FILE: &str = "pulse.journal";
 
-messages! {
-    pub enum ProtocolMessage {
-        Transition { name: String, from: String, to: String },
-        Recent(usize) -> Vec<String>,
-    }
+/// The journal's public vocabulary, carried by the `Port<JournalMessage>` the
+/// Assembly exports.
+#[derive(Debug)]
+pub enum JournalMessage {
+    /// Records one confirmed transition.
+    Transition {
+        name: String,
+        from: String,
+        to: String,
+    },
+    /// Asks for the most recent `count` recorded transitions.
+    Recent {
+        count: usize,
+        reply_to: ReplyTo<Vec<String>>,
+    },
 }
 
 /// Applies the hold policy and records confirmed transitions.
 struct Recorder;
 
 enum Message {
-    Protocol(ProtocolMessage),
+    Journal(JournalMessage),
 }
 
 enum Model {
@@ -40,12 +50,12 @@ impl Component for Recorder {
 
     fn update(config: &RecorderConfig, model: &mut Model, message: Message) -> Command<Message> {
         match message {
-            Message::Protocol(protocol) => match (model, protocol) {
-                (Model::Idle, ProtocolMessage::Transition { name, from, to }) => {
+            Message::Journal(journal) => match (model, journal) {
+                (Model::Idle, JournalMessage::Transition { name, from, to }) => {
                     let _ = (&config.append, &config.clock, name, from, to);
                     todo!()
                 }
-                (Model::Idle, ProtocolMessage::Recent(_)) => todo!(),
+                (Model::Idle, JournalMessage::Recent { .. }) => todo!(),
             },
         }
     }
@@ -54,23 +64,23 @@ impl Component for Recorder {
 // A marker is the Assembly, so `Recorder`, its Model, and its
 // Message stay private. Implementing it on the Component would make all three
 // public, because `Component`'s associated types are part of its interface.
-/// The Assembly's public name; it was the protocol marker before the message type became the Port's parameter.
+/// The Assembly's public name; the Port it exports is typed by `JournalMessage`.
 pub struct Journal;
 
 impl Assembly for Journal {
     type Config = ();
-    type Exports = Port<ProtocolMessage>;
+    type Exports = Port<JournalMessage>;
     type Requires = (Effect<AppendToFile>, Effect<ReadSystemTime>);
 
-    fn install(program: &mut ProgramBuilder, _: Self::Config) -> Port<ProtocolMessage> {
+    fn install(program: &mut ProgramBuilder, _: Self::Config) -> Port<JournalMessage> {
         let append = program.effect::<AppendToFile>();
         let clock = program.effect::<ReadSystemTime>();
-        let journal = program.port::<ProtocolMessage>(PortId::new(JOURNAL));
+        let journal = program.port::<JournalMessage>(PortId::new(JOURNAL));
         let recorder = program.component::<Recorder>(
             ComponentId::new("journal"),
             RecorderConfig { append, clock },
         );
-        program.connect_with(&journal, &recorder, Message::Protocol);
+        program.connect_with(&journal, &recorder, Message::Journal);
 
         journal
     }

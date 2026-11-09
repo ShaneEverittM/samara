@@ -1661,21 +1661,14 @@ async fn phase6_successful_shutdown_owns_zero_work() -> Result<(), RuntimeError>
     Ok(())
 }
 
-messages! {
-    enum EchoProtocolMessage {
-        Echo(u64) -> u64,
-    }
+/// The echo Port's vocabulary; the request carries its own reply token.
+enum EchoMessage {
+    Echo(u64, ReplyTo<u64>),
 }
 
 enum EchoProviderMessage {
-    Protocol(EchoProtocolMessage),
+    Echo(EchoMessage),
     Seen,
-}
-
-impl From<EchoProtocolMessage> for EchoProviderMessage {
-    fn from(message: EchoProtocolMessage) -> Self {
-        Self::Protocol(message)
-    }
 }
 
 #[derive(Debug)]
@@ -1724,9 +1717,9 @@ impl Component for EchoProvider {
         message: Self::Message,
     ) -> Command<Self::Message> {
         match message {
-            EchoProviderMessage::Protocol(EchoProtocolMessage::Echo(invocation)) => {
+            EchoProviderMessage::Echo(EchoMessage::Echo(value, reply_to)) => {
                 if config.reply {
-                    Command::reply(invocation.reply_to, invocation.request.0)
+                    Command::reply(reply_to, value)
                 } else {
                     Command::effect_with(&config.seen, ProviderSeen, |_| EchoProviderMessage::Seen)
                 }
@@ -1767,7 +1760,7 @@ enum EchoRequesterMessage {
 struct EchoRequester;
 
 struct EchoRequesterConfig {
-    echo: Port<EchoProtocolMessage>,
+    echo: Port<EchoMessage>,
     continuation_calls: Arc<AtomicUsize>,
     observe: EffectCapability<ObserveReply>,
 }
@@ -1789,10 +1782,14 @@ impl Component for EchoRequester {
         match message {
             EchoRequesterMessage::Start => {
                 let continuation_calls = config.continuation_calls.clone();
-                Command::request_with(config.echo.clone(), Echo(42), move |outcome| {
-                    continuation_calls.fetch_add(1, Ordering::SeqCst);
-                    EchoRequesterMessage::Outcome(outcome)
-                })
+                Command::request_to(
+                    config.echo.clone(),
+                    |reply_to| EchoMessage::Echo(42, reply_to),
+                    move |outcome| {
+                        continuation_calls.fetch_add(1, Ordering::SeqCst);
+                        EchoRequesterMessage::Outcome(outcome)
+                    },
+                )
             }
             EchoRequesterMessage::Outcome(RequestOutcome::Replied(value)) => {
                 Command::effect_with(&config.observe, ObserveReply(value), |_| {
@@ -1812,14 +1809,14 @@ fn echo_program(
     continuation_calls: Arc<AtomicUsize>,
 ) -> (Program, ComponentRef<EchoRequester>) {
     let mut program = Program::builder();
-    let echo = program.port(PortId::new("echo"));
+    let echo = program.port::<EchoMessage>(PortId::new("echo"));
     let seen = program.effect::<ProviderSeen>();
     let observe = program.effect::<ObserveReply>();
     let provider = program.component::<EchoProvider>(
         ComponentId::new("echo-provider"),
         EchoProviderConfig { reply, seen },
     );
-    program.connect(&echo, &provider);
+    program.connect_with(&echo, &provider, EchoProviderMessage::Echo);
     let requester = program.component::<EchoRequester>(
         ComponentId::new("echo-requester"),
         EchoRequesterConfig {

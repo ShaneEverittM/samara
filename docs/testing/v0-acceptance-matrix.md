@@ -128,14 +128,19 @@ The following evidence must pass before the Phase 2 audit:
   a non-`Sync` Component configuration accepted by the kernel contract.
 - `examples/minimal/src/main.rs` compiles the V11 onboarding shape and directly
   tests its transition and subscription projection.
-- `examples/api_pressure/src/main.rs` compiles a handwritten Port message enum and Request, Port,
+- `examples/api_pressure/src/main.rs` compiles a handwritten Port message enum with a reply-token request variant, Port,
   EffectDescriptor, timer, live assembly, and controlled assembly shapes.
-- `examples/framed_socket/src/main.rs` compiles the Layer/Driver, generated Port message enum,
+- `examples/framed_socket/src/main.rs` compiles the Layer/Driver, Port message enum,
   provider conversion, request-continuation, and subscription-replacement
   shapes. Its direct tests cover the pure decoder and command intent.
-- Library unit tests validate the `messages!` expansion for unit, tuple, and
-  struct-like entries, including flattened struct notification variants and
-  typed Request reply association.
+- `tests/addressing.rs` validates the one sending API (ADR-0016): a
+  hand-written message enum with a reply-token variant, `Command::send` and
+  `Command::request_to` through a Port resolved by its binding with the trace
+  recording a Send against the Port, a Port request timing out under ADR-0011
+  rules, `into_request_to` inspecting a request without a runtime including
+  its two refusal cases, an initial send to a foreign Port failing both
+  profile builds, and `PortHandle::send`, `request_to`, and
+  `request_to_timeout` live.
 - `tests/assemblies.rs` validates `Assembly`, `Requires`, `Drivers`,
   `VendorsDrivers`, and `Installed` (ADR-0013): `ProgramBuilder::install`
   returns a token carrying the exports, `with_assembly(token).and_drivers(..)`
@@ -153,11 +158,12 @@ The following evidence must pass before the Phase 2 audit:
   travel through the coupling in controlled execution, a `Connector` is inert and
   remembers only the Message type it accepts, and a Connector from another Program
   fails `build()`. As an address: a library written the Elm way (opaque
-  Message, constructor functions, no `messages!`) is driven through
+  Message, constructor functions, no public enum) is driven through
   `Command::send` and `Command::request_to` alone, a Connector request times out
   under ADR-0011 rules, `Connector::accepting` adapts a library Connector to the
   holder's vocabulary, an initial request to a foreign Connector fails both
-  profile builds, and `request_intents` ignores Connector requests.
+  profile builds, and `into_request_to` inspects a Connector request without a
+  runtime.
 - `tests/fs_effects.rs` (feature `fs`, provisional under ADR-0013) validates
   the filesystem effects as ordinary controlled boundaries asserted by
   relative path, a live append, read, replace, remove walk under a bound root
@@ -330,7 +336,7 @@ Driver lifecycle and faults:
 Standard `From` continuations:
 
 - `effect_default_uses_from_and_effect_with_preserves_context`
-- `request_default_uses_from_and_request_with_preserves_context`
+- `request_to_with_message_from_uses_from_and_a_closure_preserves_context`
 - `source_default_is_reusable_and_source_with_preserves_context`
 - `http_pipeline_default_uses_from_and_into_command_with_is_explicit`
 
@@ -465,20 +471,20 @@ activated its central cases as failing tests before implementation. With the
 
 | Contract | Evidence |
 | --- | --- |
-| `port_handle` accepts an exact Port of its Program and rejects a foreign, same-named lookalike | `live_port_handle_notifies_and_returns_typed_request_replies`; `live_port_handle_rejects_a_port_from_another_program` |
+| `port_handle` accepts an exact Port of its Program and rejects a foreign, same-named lookalike | `live_port_handle_sends_and_returns_typed_request_replies`; `live_port_handle_rejects_a_port_from_another_program` |
 | The handle has no Model access, is not an inert Port, and has no ControlledRuntime counterpart | `PortHandle` compile-fail doctests |
-| Notify converts through the Port binding and reaches the provider exactly once | `live_port_handle_notifies_and_returns_typed_request_replies`; `cloned_port_handles_deliver_each_notification_exactly_once` |
-| Successful notify means admitted, not provider conversion or transition complete | `notification_conversion_panics_are_contained_as_runtime_faults`; `notification_binding_panics_are_contained_as_runtime_faults` |
-| Notify after shutdown or fault is rejected without conversion | `live_port_handle_notifies_and_returns_typed_request_replies`; `a_runtime_fault_is_returned_to_the_external_request_waiter` |
-| Component and Port ingress share one cutoff; a racing notify is owned or rejected | `component_and_port_ingress_share_one_shutdown_cutoff` |
-| A host Request resolves to the direct `R::Reply`, with no RequestOutcome or requester Message | `live_port_handle_notifies_and_returns_typed_request_replies` |
+| Notify converts through the Port binding and reaches the provider exactly once | `live_port_handle_sends_and_returns_typed_request_replies`; `cloned_port_handles_deliver_each_send_exactly_once` |
+| Successful send means admitted, not provider conversion or transition complete | `send_binding_conversion_panics_are_contained_after_earlier_sends_land`; `send_binding_panics_are_contained_as_runtime_faults` |
+| Notify after shutdown or fault is rejected without conversion | `live_port_handle_sends_and_returns_typed_request_replies`; `a_runtime_fault_is_returned_to_the_external_request_waiter` |
+| Component and Port ingress share one cutoff; a racing send is owned or rejected | `component_and_port_ingress_share_one_shutdown_cutoff` |
+| A host Request resolves to the direct `R::Reply`, with no RequestOutcome or requester Message | `live_port_handle_sends_and_returns_typed_request_replies` |
 | Replies completing in reverse order keep their own correlation and request-to-reply causality (V8) | `concurrent_external_requests_keep_their_own_typed_reply` |
 | Drain retains an admitted Request until its Reply | `drain_preserves_an_admitted_external_request` |
 | An unanswered Request keeps Drain pending; dropping the waiter neither cancels the Request nor adds a second obligation (V9) | `dropping_the_waiter_does_not_cancel_runtime_owned_request_work` |
 | Cancel and owner closure wake the waiter with `RuntimeError` and no outcome | `cancel_wakes_an_external_request_waiter_without_inventing_a_reply`; `dropping_the_runtime_owner_wakes_an_external_request_waiter` |
 | A fault wakes the waiter with the scope's preserved `RuntimeError` | `a_runtime_fault_is_returned_to_the_external_request_waiter` |
 | An unpolled Request future admits nothing | `dropping_an_unpolled_request_admits_no_runtime_work` |
-| Port-message and binding conversion panics are runtime faults, not Replies | `request_conversion_panics_are_contained_as_runtime_faults`; `notification_conversion_panics_are_contained_as_runtime_faults`; `notification_binding_panics_are_contained_as_runtime_faults`; `request_binding_panics_are_contained_as_runtime_faults` |
+| Port-message and binding conversion panics are runtime faults, not Replies | `request_conversion_panics_are_contained_as_runtime_faults`; `send_binding_conversion_panics_are_contained_after_earlier_sends_land`; `send_binding_panics_are_contained_as_runtime_faults`; `request_binding_panics_are_contained_as_runtime_faults` |
 
 These tests assert Port routing, causal and terminal behavior, admission
 classification, and zero work after successful Cancel. They must not assert an

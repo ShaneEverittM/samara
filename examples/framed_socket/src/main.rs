@@ -7,8 +7,8 @@
 //! - A pure, stateful decoder turns arbitrarily split chunks into frames.
 //! - `Telemetry` owns application state and declares the feed it currently
 //!   wants as a reconciled subscription.
-//! - Storage is a one-shot effect; health reporting crosses a named protocol
-//!   Port through both notifications and correlated requests.
+//! - Storage is a one-shot effect; health reporting crosses a named Port
+//!   through both one-way sends and correlated requests.
 //! - Live and controlled runtimes consume the same Component definitions and
 //!   differ only in how runtime decisions and interactions with the world are
 //!   supplied.
@@ -206,32 +206,32 @@ async fn read_chunk(_endpoint: &Endpoint) -> Result<Option<Vec<u8>>, TcpError> {
 /// All mutable state owned by the health Component.
 #[derive(Debug, Default, PartialEq, Eq)]
 struct HealthModel {
-    /// Human-readable summary most recently derived from protocol input.
+    /// Human-readable summary most recently derived from Port-message input.
     status: String,
 
-    /// Count of frame notifications processed by this Component.
+    /// Count of `FrameSeen` messages processed by this Component.
     frames_seen: u64,
 }
 
-messages! {
-    /// Public interaction contract offered by the health provider.
-    ///
-    /// Requesters depend on this protocol through a `Port<HealthProtocolMessage>`; they
-    /// do not depend on `Health`, `HealthMessage`, or its Model representation.
-    /// The generated marker remains a normal, nameable Port parameter.
-    enum HealthProtocolMessage {
-        // One-way health observations with no correlated terminal result.
-        Connecting(Endpoint),
-        FrameSeen,
-        Disconnected,
-        Failed(String),
+/// Public interaction contract offered by the health provider.
+///
+/// Requesters depend on this message enum through a `Port<HealthProtocolMessage>`;
+/// they do not depend on `Health`, `HealthMessage`, or its Model
+/// representation. It is a plain, hand-written enum: a request variant carries
+/// the `ReplyTo` that types its reply.
+#[derive(Debug)]
+enum HealthProtocolMessage {
+    // One-way health observations with no correlated terminal result.
+    Connecting(Endpoint),
+    FrameSeen,
+    Disconnected,
+    Failed(String),
 
-        // A correlated snapshot request carrying a runtime-created reply route.
-        Read -> HealthSnapshot,
-    }
+    // A correlated snapshot request carrying a runtime-created reply token.
+    Read(ReplyTo<HealthSnapshot>),
 }
 
-/// Typed response paired with `Read` at the protocol declaration site.
+/// Typed response named by `Read`'s reply token at the message declaration site.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct HealthSnapshot {
     /// Provider status at the transition that handled the request.
@@ -247,7 +247,7 @@ struct HealthSnapshot {
 /// from the public Port message to this Component-specific message.
 #[derive(Debug)]
 enum HealthMessage {
-    /// An operation delivered through a bound `HealthProtocol` Port.
+    /// An operation delivered through a bound `Port<HealthProtocolMessage>`.
     Protocol(HealthProtocolMessage),
 }
 
@@ -257,7 +257,7 @@ impl From<HealthProtocolMessage> for HealthMessage {
     }
 }
 
-/// State-owning provider for `HealthProtocol`.
+/// State-owning provider behind `Port<HealthProtocolMessage>`.
 struct Health;
 
 impl Component for Health {
@@ -275,9 +275,9 @@ impl Component for Health {
         HealthMessage::Protocol(message): Self::Message,
     ) -> Command<Self::Message> {
         match message {
-            // Notifications update only this Component's Model. No sender
+            // One-way sends update only this Component's Model. No sender
             // observes completion and no transport handle leaks in. Each
-            // operation is a direct protocol-message variant rather than a
+            // operation is a direct Port-message variant rather than a
             // nested enum.
             HealthProtocolMessage::Connecting(endpoint) => {
                 model.status = format!("connecting to {}", endpoint.0);
@@ -296,13 +296,12 @@ impl Component for Health {
                 model.status = format!("failed: {error}");
                 Command::none()
             }
-            HealthProtocolMessage::Read(invocation) => {
-                // `ReplyTo` identifies this dynamic invocation. The provider
+            HealthProtocolMessage::Read(reply_to) => {
+                // `ReplyTo` identifies this dynamic request. The provider
                 // returns a typed reply intent without inspecting correlation
                 // IDs or sending directly from async code.
-                let _ = invocation.request;
                 Command::reply(
-                    invocation.reply_to,
+                    reply_to,
                     HealthSnapshot {
                         status: model.status.clone(),
                         frames_seen: model.frames_seen,
@@ -404,7 +403,7 @@ struct StoreError(String);
 struct Telemetry;
 
 struct TelemetryConfig {
-    /// Named protocol dependency, independent of the provider's message enum.
+    /// Named Port dependency, independent of the provider's message enum.
     health: Port<HealthProtocolMessage>,
 
     /// Declared finite storage boundary.
@@ -446,20 +445,26 @@ impl Component for Telemetry {
                 // below; the runtime performs the actual start or replacement.
                 model.desired = Some(config.clone());
                 model.last_failure = None;
-                Command::notify(telemetry.health.clone(), Connecting(config.endpoint))
+                Command::send(
+                    telemetry.health.clone(),
+                    HealthProtocolMessage::Connecting(config.endpoint),
+                )
             }
             TelemetryMessage::Disconnect => {
                 // Removing desire is enough. Reconciliation and cancellation
                 // are runtime work, not reducer-side effects.
                 model.desired = None;
-                Command::notify(telemetry.health.clone(), Disconnected)
+                Command::send(
+                    telemetry.health.clone(),
+                    HealthProtocolMessage::Disconnected,
+                )
             }
             TelemetryMessage::Socket(SourceEvent::Item(frame)) => {
                 model.received += 1;
                 // One transition can declare independent intents without
                 // performing either operation inline.
                 Command::batch([
-                    Command::notify(telemetry.health.clone(), FrameSeen),
+                    Command::send(telemetry.health.clone(), HealthProtocolMessage::FrameSeen),
                     Command::effect_with(
                         &telemetry.storage,
                         StoreFrame { frame },
@@ -473,11 +478,17 @@ impl Component for Telemetry {
                 model.desired = None;
                 let error = format!("{error:?}");
                 model.last_failure = Some(error.clone());
-                Command::notify(telemetry.health.clone(), Failed(error))
+                Command::send(
+                    telemetry.health.clone(),
+                    HealthProtocolMessage::Failed(error),
+                )
             }
             TelemetryMessage::Socket(SourceEvent::Ended) => {
                 model.desired = None;
-                Command::notify(telemetry.health.clone(), Disconnected)
+                Command::send(
+                    telemetry.health.clone(),
+                    HealthProtocolMessage::Disconnected,
+                )
             }
             TelemetryMessage::Stored(EffectOutcome::Succeeded(_frame_id)) => {
                 // Async completion re-enters the Component only as a Message.
@@ -497,9 +508,11 @@ impl Component for Telemetry {
                 // order is intentionally not assumed; each pure mapper captures
                 // the domain key needed to interpret its eventual reply.
                 Command::batch(probes.map(|probe| {
-                    Command::request_with(telemetry.health.clone(), Read, move |event| {
-                        TelemetryMessage::HealthChecked { probe, event }
-                    })
+                    Command::request_to(
+                        telemetry.health.clone(),
+                        HealthProtocolMessage::Read,
+                        health_checked(probe),
+                    )
                 }))
             }
             TelemetryMessage::HealthChecked { probe, event } => {
@@ -566,14 +579,14 @@ struct AppRefs {
     /// Direct low-level reference to the health Component.
     health: ComponentRef<Health>,
 
-    /// Named protocol boundary bound to the health provider.
+    /// Named Port bound to the health provider.
     health_port: Port<HealthProtocolMessage>,
 
     /// Reference used by the host to send telemetry messages.
     telemetry: ComponentRef<Telemetry>,
 }
 
-/// Declares the Component graph and resolves protocol dependency injection.
+/// Declares the Component graph and resolves Port dependency injection.
 ///
 /// Port declaration, provider binding, and consumer construction happen in one
 /// explicit composition root. The runtime receives a closed `Program` rather
@@ -584,7 +597,7 @@ fn program() -> (Program, AppRefs) {
     let socket = program.source::<TelemetryFeed>();
 
     // A named Port permits multiple independently bound instances of the same
-    // protocol; the protocol's Rust type alone is not a global service key.
+    // message enum; the message's Rust type alone is not a global service key.
     let health_port = program.port(PortId::new(HEALTH));
     let health = program.component::<Health>(ComponentId::new("health"), ());
 
@@ -734,7 +747,7 @@ fn main() {
 mod tests {
     use super::*;
 
-    /// Activates the controlled path through Port notification, composed Source
+    /// Activates the controlled path through Port sends, composed Source
     /// Layers, typed effects, replacement, and failure input.
     #[test]
     fn controlled_reference_program_runs_end_to_end() -> Result<(), RuntimeError> {
@@ -837,9 +850,9 @@ mod tests {
     }
 
     /// Proves named Ports, rather than message types alone, identify dependencies at
-    /// assembly time, so one protocol may have multiple bindings.
+    /// assembly time, so one message enum may have multiple bindings.
     #[test]
-    fn named_ports_bind_independently_even_for_the_same_protocol() {
+    fn named_ports_bind_independently_even_for_the_same_message_enum() {
         let mut builder = Program::builder();
         let primary = builder.port::<HealthProtocolMessage>(PortId::new("health/primary"));
         let fallback = builder.port::<HealthProtocolMessage>(PortId::new("health/fallback"));
@@ -859,10 +872,10 @@ mod tests {
         assert_eq!(fallback.id(), &PortId::new("health/fallback"));
     }
 
-    /// Proves consumers emit public protocol notifications without importing or
+    /// Proves consumers send public Port messages without importing or
     /// constructing the provider's private `HealthMessage` vocabulary.
     #[test]
-    fn telemetry_emits_protocol_notifications_without_provider_messages() {
+    fn telemetry_sends_port_messages_without_provider_messages() {
         let mut builder = Program::builder();
         let health = builder.port(PortId::new(HEALTH));
         let component = TelemetryConfig {
@@ -877,22 +890,69 @@ mod tests {
             &mut model,
             TelemetryMessage::Connect(config("one:7000", 1)),
         );
-        let notifications = command.notification_intents::<Connecting>();
+        let sends = command.send_intents::<HealthProtocolMessage>();
 
-        assert_eq!(notifications.len(), 1);
-        assert_eq!(notifications[0].0, &PortId::new(HEALTH));
-        assert_eq!(notifications[0].1.0, Endpoint::new("one:7000"));
+        assert_eq!(sends.len(), 1);
+        assert!(matches!(
+            sends[0],
+            HealthProtocolMessage::Connecting(endpoint) if *endpoint == Endpoint::new("one:7000")
+        ));
     }
 
     /// Proves concurrent requests use one result Message variant while preserving
     /// requester-owned identity independently of completion order.
+    ///
+    /// The two requests leave `update` inside one batch, so the controlled
+    /// runtime observes them being addressed to the named Port and replied to;
+    /// the completion-order half then drives `update` directly.
     #[test]
-    fn two_requests_share_one_result_variant_and_keep_domain_correlation() {
-        fn assert_reply_type<R>(_request: &R)
-        where
-            R: Request<HealthProtocolMessage, Reply = HealthSnapshot>,
-        {
-        }
+    fn two_requests_share_one_result_variant_and_keep_domain_correlation()
+    -> Result<(), RuntimeError> {
+        let (program, refs) = program();
+        let mut runtime = ControlledRuntime::builder(program)
+            .control_source::<TcpBytes>()
+            .control_effect::<StoreFrame>()
+            .build()?;
+
+        runtime.send(
+            &refs.telemetry,
+            TelemetryMessage::CheckHealth([ProbeId(17), ProbeId(29)]),
+        )?;
+        runtime.run_until_idle()?;
+
+        let requests = runtime
+            .trace()
+            .iter()
+            .filter(|record| {
+                matches!(
+                    &record.event,
+                    TraceEvent::CommandEmitted {
+                        kind: TraceCommandKind::Request,
+                        target_port: Some(port),
+                        ..
+                    } if port == &PortId::new(HEALTH)
+                )
+            })
+            .count();
+        assert_eq!(
+            requests, 2,
+            "both requests are addressed to the health Port"
+        );
+
+        let idle = HealthSnapshot {
+            status: String::new(),
+            frames_seen: 0,
+        };
+        let mut checked = runtime.state(&refs.telemetry)?.health_checks.clone();
+        checked.sort_by_key(|(probe, _)| probe.0);
+        assert_eq!(
+            checked,
+            vec![
+                (ProbeId(17), RequestOutcome::Replied(idle.clone())),
+                (ProbeId(29), RequestOutcome::Replied(idle)),
+            ]
+        );
+        assert!(runtime.cancel()?.is_clean());
 
         let mut builder = Program::builder();
         let health = builder.port(PortId::new(HEALTH));
@@ -902,22 +962,6 @@ mod tests {
             socket: builder.source::<TelemetryFeed>(),
         };
         let mut model = Telemetry::init(&component).model;
-
-        let command = Telemetry::update(
-            &component,
-            &mut model,
-            TelemetryMessage::CheckHealth([ProbeId(17), ProbeId(29)]),
-        );
-        let requests = command.request_intents::<Read>();
-
-        assert_eq!(requests.len(), 2);
-        assert!(
-            requests
-                .iter()
-                .all(|(port, _)| *port == &PortId::new(HEALTH))
-        );
-        assert_reply_type(requests[0].1);
-        assert_reply_type(requests[1].1);
 
         let snapshot = HealthSnapshot {
             status: "receiving".to_owned(),
@@ -935,5 +979,6 @@ mod tests {
                 (ProbeId(17), RequestOutcome::Replied(snapshot)),
             ]
         );
+        Ok(())
     }
 }

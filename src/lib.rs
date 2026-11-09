@@ -51,7 +51,7 @@
 //! - [`StdinLines`]: connect a component to input, with live and controlled examples.
 //! - [`Command`]: request work, send messages, and schedule timers.
 //! - [`HttpRequest`]: fetch a URL and handle its response.
-//! - [`ProgramBuilder::connect`]: connect components through a shared protocol.
+//! - [`ProgramBuilder::connect`]: connect components through a Port.
 //! - [`EffectDriver`] and [`SourceDriver`]: implement your own I/O.
 //! - [`RuntimeTask`]: shut down a running application and wait for cleanup.
 //!
@@ -122,15 +122,14 @@ pub mod prelude {
         EffectDescriptor, EffectDriver, EffectInvocation, EffectOutcome, EffectOutcomeKind, Framed,
         FramedError, FramedLayer, HttpError, HttpErrorKind, HttpJsonError, HttpRequest,
         HttpResponse, HttpResponseError, HttpStatusError, Init, Installed, LiveRuntime,
-        LiveRuntimeBuilder, LogicalTime, Notification, PendingEffect, PendingWork, Port,
-        PortHandle, PortId, PrintStderr, PrintStdout, Program, ProgramBuildError, ProgramBuilder,
-        ReadSystemTime, ReplyTo, Request, RequestError, RequestIntent, RequestInvocation,
-        RequestOutcome, RequestOutcomeKind, Requirements, RunReport, RuntimeError, RuntimeTask,
-        Shutdown, ShutdownReport, Source, SourceCapability, SourceDescriptor, SourceDriver,
-        SourceEvent, SourceEventKind, SourceSink, StatusCode, StdinError, StdinErrorKind,
-        StdinLines, StreamDescriptor, Subscription, SubscriptionAction, SubscriptionId,
-        Subscriptions, SystemClockDriver, TcpBytes, TcpError, TcpErrorKind, TraceCommandKind,
-        TraceEvent, TraceId, TraceRecord, VendorsDrivers, WithAssembly, messages,
+        LiveRuntimeBuilder, LogicalTime, PendingEffect, PendingWork, Port, PortHandle, PortId,
+        PrintStderr, PrintStdout, Program, ProgramBuildError, ProgramBuilder, ReadSystemTime,
+        ReplyTo, RequestError, RequestIntent, RequestOutcome, RequestOutcomeKind, Requirements,
+        RunReport, RuntimeError, RuntimeTask, Shutdown, ShutdownReport, Source, SourceCapability,
+        SourceDescriptor, SourceDriver, SourceEvent, SourceEventKind, SourceSink, StatusCode,
+        StdinError, StdinErrorKind, StdinLines, StreamDescriptor, Subscription, SubscriptionAction,
+        SubscriptionId, Subscriptions, SystemClockDriver, TcpBytes, TcpError, TcpErrorKind,
+        TraceCommandKind, TraceEvent, TraceId, TraceRecord, VendorsDrivers, WithAssembly,
     };
     #[cfg(feature = "fs")]
     pub use crate::{
@@ -285,7 +284,7 @@ impl ComponentId {
     }
 }
 
-/// The name of a protocol connection within a Program.
+/// The name of a Port within a Program.
 ///
 /// A port is identified by its message type and name. Use different names for
 /// two providers of the same protocol, such as `"primary"` and `"fallback"`.
@@ -800,50 +799,10 @@ pub trait Component: 'static {
     }
 }
 
-/// A message sent through a [`Port`] without expecting a reply.
-///
-/// `into_message` must be a pure conversion. [`messages!`] generates this
-/// implementation for entries without `-> Reply`.
-///
-/// ```
-/// use samara::prelude::*;
-/// messages! { enum AlertMessage { Changed(String), } }
-/// let mut program = Program::builder();
-/// let alerts = program.port::<AlertMessage>(PortId::new("alerts"));
-/// let command: Command<()> = Command::notify(alerts, Changed("ready".into()));
-/// assert_eq!(command.notification_intents::<Changed>().len(), 1);
-/// ```
-pub trait Notification<P: Send + 'static>: Send + 'static {
-    /// Converts this notification into the Port's message type.
-    fn into_message(self) -> P;
-}
-
-/// A message sent through a [`Port`] that expects a reply of type `Reply`.
-///
-/// `into_message` packages the request with the reply token; it must not perform
-/// I/O. [`messages!`] generates this implementation for entries with `-> Reply`.
-/// Use [`Command::request_with`] to receive the reply in your component.
-///
-/// ```
-/// use samara::prelude::*;
-/// messages! { enum CatalogMessage { Lookup(String) -> Option<u64>, } }
-/// let mut program = Program::builder();
-/// let catalog = program.port::<CatalogMessage>(PortId::new("catalog"));
-/// let command = Command::request_with(catalog, Lookup("widget".into()), |outcome| outcome);
-/// assert_eq!(command.request_intents::<Lookup>().len(), 1);
-/// ```
-pub trait Request<P: Send + 'static>: Send + 'static {
-    /// The value returned in response to this request.
-    type Reply: Send + 'static;
-
-    /// Packages this request and its reply token into the Port's message type.
-    fn into_message(self, reply_to: ReplyTo<Self::Reply>) -> P;
-}
-
 /// The reply or timeout delivered to a request's caller.
 ///
-/// Requests have no timeout unless you use [`Command::request_timeout`] or
-/// [`PortHandle::request_timeout`]. A timeout leaves the provider's work running
+/// Requests have no timeout unless you use [`Command::request_to_timeout`] or
+/// [`PortHandle::request_to_timeout`]. A timeout leaves the provider's work running
 /// and discards its later reply. Runtime cancellation does not send this value
 /// to a component. `Failed` and `Cancelled` are not produced by the built-in
 /// request implementation.
@@ -964,419 +923,6 @@ impl<Reply> fmt::Debug for ReplyTo<Reply> {
     }
 }
 
-/// A received request and the token used to answer it.
-///
-/// Read `request` and return [`Command::reply`] with `reply_to`.
-/// See [`ProgramBuilder::connect`] for a complete provider example.
-pub struct RequestInvocation<P, R>
-where
-    P: Send + 'static,
-    R: Request<P>,
-{
-    /// The request arguments.
-    pub request: R,
-    /// The token to pass to [`Command::reply`].
-    pub reply_to: ReplyTo<R::Reply>,
-    protocol: PhantomData<fn() -> P>,
-}
-
-impl<P, R> RequestInvocation<P, R>
-where
-    P: Send + 'static,
-    R: Request<P>,
-{
-    /// Packages a request and its reply token inside [`Request::into_message`].
-    pub fn new(request: R, reply_to: ReplyTo<R::Reply>) -> Self {
-        Self {
-            request,
-            reply_to,
-            protocol: PhantomData,
-        }
-    }
-}
-
-impl<P, R> fmt::Debug for RequestInvocation<P, R>
-where
-    P: Send + 'static,
-    R: Request<P> + fmt::Debug,
-{
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("RequestInvocation")
-            .field("request", &self.request)
-            .field("reply_to", &self.reply_to)
-            .finish()
-    }
-}
-
-/// Defines a message enum with its request and notification types.
-///
-/// Entries with `-> Reply` generate a [`Request`]; other entries generate a
-/// [`Notification`]. Each entry is a unit type, has one tuple field, or has
-/// named fields. Use `-> ()` for a request whose reply has no data.
-///
-/// ```
-/// use samara::prelude::*;
-/// messages! {
-///     pub enum HealthMessage {
-///         Changed(String),
-///         Degraded { service: String, attempts: u32 },
-///         Disconnected,
-///         Read -> bool,
-///         History { limit: usize } -> Vec<String>,
-///     }
-/// }
-/// let mut program = Program::builder();
-/// let health = program.port::<HealthMessage>(PortId::new("health"));
-/// let command = Command::request_with(health, Read, |outcome| outcome);
-/// assert_eq!(command.request_intents::<Read>().len(), 1);
-/// ```
-///
-/// The generated message enum carries a notification's fields directly, so a
-/// tuple notification becomes a tuple variant and a struct notification becomes
-/// a struct variant. A request's variant carries a [`RequestInvocation`]. All
-/// generated types implement `Debug`.
-/// Per-operation and per-field attributes, generics, and multiple tuple fields
-/// are not supported; write the enum and implement [`Request`] and
-/// [`Notification`] yourself for those cases.
-#[macro_export]
-macro_rules! messages {
-    (
-        $(#[$message_attr:meta])*
-        $visibility:vis enum $message:ident {
-            $($entries:tt)*
-        }
-    ) => {
-        $crate::messages! {
-            @parse
-            [$(#[$message_attr])*]
-            [$visibility]
-            [$message]
-            [$message]
-            []
-            []
-            []
-            $($entries)*
-        }
-    };
-
-    // Finishes the TT muncher after accumulating generated operation items,
-    // protocol-message variants, and trait implementations. Building the complete enum
-    // here avoids relying on nested macros to expand to individual variants.
-    (
-        @parse
-        [$(#[$protocol_attr:meta])*]
-        [$visibility:vis]
-        [$protocol:ident]
-        [$message:ident]
-        [$($operation_items:tt)*]
-        [$($message_variants:tt)*]
-        [$($implementations:tt)*]
-    ) => {
-        $($operation_items)*
-
-        $(#[$protocol_attr])*
-        #[doc = concat!("Messages accepted through a `Port<", stringify!($message), ">`.")]
-        #[derive(Debug)]
-        $visibility enum $message {
-            $($message_variants)*
-        }
-
-        $($implementations)*
-    };
-
-    // A struct-like request generates a named-field operation type, while its
-    // protocol-message variant carries the operation plus correlation token.
-    (
-        @parse
-        [$($protocol_attr:tt)*]
-        [$visibility:vis]
-        [$protocol:ident]
-        [$message:ident]
-        [$($operation_items:tt)*]
-        [$($message_variants:tt)*]
-        [$($implementations:tt)*]
-        $operation:ident { $($field:ident : $field_type:ty),* $(,)? } -> $reply:ty,
-        $($remaining:tt)*
-    ) => {
-        $crate::messages! {
-            @parse
-            [$($protocol_attr)*]
-            [$visibility]
-            [$protocol]
-            [$message]
-            [
-                $($operation_items)*
-                #[doc = concat!("Request arguments for `", stringify!($message), "`.")]
-                #[derive(Debug)]
-                $visibility struct $operation {
-                    $(
-                        #[doc = concat!("Request field `", stringify!($field), "`.")]
-                        $visibility $field: $field_type,
-                    )*
-                }
-            ]
-            [
-                $($message_variants)*
-                #[doc = concat!("Request `", stringify!($operation), "`.")]
-                $operation($crate::RequestInvocation<$message, $operation>),
-            ]
-            [
-                $($implementations)*
-                impl $crate::Request<$message> for $operation {
-                    type Reply = $reply;
-
-                    fn into_message(
-                        self,
-                        reply_to: $crate::ReplyTo<Self::Reply>,
-                    ) -> $message {
-                        $message::$operation($crate::RequestInvocation::new(self, reply_to))
-                    }
-                }
-            ]
-            $($remaining)*
-        }
-    };
-
-    // A struct-like notification is flattened into a struct variant of the
-    // provider-facing enum, mirroring the tuple notification below.
-    (
-        @parse
-        [$($protocol_attr:tt)*]
-        [$visibility:vis]
-        [$protocol:ident]
-        [$message:ident]
-        [$($operation_items:tt)*]
-        [$($message_variants:tt)*]
-        [$($implementations:tt)*]
-        $operation:ident { $($field:ident : $field_type:ty),* $(,)? },
-        $($remaining:tt)*
-    ) => {
-        $crate::messages! {
-            @parse
-            [$($protocol_attr)*]
-            [$visibility]
-            [$protocol]
-            [$message]
-            [
-                $($operation_items)*
-                #[doc = concat!("Notification arguments for `", stringify!($message), "`.")]
-                #[derive(Debug)]
-                $visibility struct $operation {
-                    $(
-                        #[doc = concat!("Notification field `", stringify!($field), "`.")]
-                        $visibility $field: $field_type,
-                    )*
-                }
-            ]
-            [
-                $($message_variants)*
-                #[doc = concat!("Notification `", stringify!($operation), "`.")]
-                $operation { $($field: $field_type),* },
-            ]
-            [
-                $($implementations)*
-                impl $crate::Notification<$message> for $operation {
-                    fn into_message(self) -> $message {
-                        let $operation { $($field),* } = self;
-                        $message::$operation { $($field),* }
-                    }
-                }
-            ]
-            $($remaining)*
-        }
-    };
-
-    // A payload-carrying request generates a tuple operation type, while its
-    // protocol-message variant carries the operation plus correlation token.
-    (
-        @parse
-        [$($protocol_attr:tt)*]
-        [$visibility:vis]
-        [$protocol:ident]
-        [$message:ident]
-        [$($operation_items:tt)*]
-        [$($message_variants:tt)*]
-        [$($implementations:tt)*]
-        $operation:ident($payload:ty) -> $reply:ty,
-        $($remaining:tt)*
-    ) => {
-        $crate::messages! {
-            @parse
-            [$($protocol_attr)*]
-            [$visibility]
-            [$protocol]
-            [$message]
-            [
-                $($operation_items)*
-                #[doc = concat!("Request arguments for `", stringify!($message), "`.")]
-                #[derive(Debug)]
-                $visibility struct $operation(
-                    #[doc = "Request payload."]
-                    $visibility $payload
-                );
-            ]
-            [
-                $($message_variants)*
-                #[doc = concat!("Request `", stringify!($operation), "`.")]
-                $operation($crate::RequestInvocation<$message, $operation>),
-            ]
-            [
-                $($implementations)*
-                impl $crate::Request<$message> for $operation {
-                    type Reply = $reply;
-
-                    fn into_message(
-                        self,
-                        reply_to: $crate::ReplyTo<Self::Reply>,
-                    ) -> $message {
-                        $message::$operation($crate::RequestInvocation::new(self, reply_to))
-                    }
-                }
-            ]
-            $($remaining)*
-        }
-    };
-
-    // A unit request still has a tuple protocol-message variant because
-    // `RequestInvocation`
-    // carries the runtime-created reply authority.
-    (
-        @parse
-        [$($protocol_attr:tt)*]
-        [$visibility:vis]
-        [$protocol:ident]
-        [$message:ident]
-        [$($operation_items:tt)*]
-        [$($message_variants:tt)*]
-        [$($implementations:tt)*]
-        $operation:ident -> $reply:ty,
-        $($remaining:tt)*
-    ) => {
-        $crate::messages! {
-            @parse
-            [$($protocol_attr)*]
-            [$visibility]
-            [$protocol]
-            [$message]
-            [
-                $($operation_items)*
-                #[doc = concat!("Request without arguments for `", stringify!($message), "`.")]
-                #[derive(Debug)]
-                $visibility struct $operation;
-            ]
-            [
-                $($message_variants)*
-                #[doc = concat!("Request `", stringify!($operation), "`.")]
-                $operation($crate::RequestInvocation<$message, $operation>),
-            ]
-            [
-                $($implementations)*
-                impl $crate::Request<$message> for $operation {
-                    type Reply = $reply;
-
-                    fn into_message(
-                        self,
-                        reply_to: $crate::ReplyTo<Self::Reply>,
-                    ) -> $message {
-                        $message::$operation($crate::RequestInvocation::new(self, reply_to))
-                    }
-                }
-            ]
-            $($remaining)*
-        }
-    };
-
-    // A payload notification is flattened in the provider-facing enum: the
-    // generated operation is the sender-side value, not another wrapper layer.
-    (
-        @parse
-        [$($protocol_attr:tt)*]
-        [$visibility:vis]
-        [$protocol:ident]
-        [$message:ident]
-        [$($operation_items:tt)*]
-        [$($message_variants:tt)*]
-        [$($implementations:tt)*]
-        $operation:ident($payload:ty),
-        $($remaining:tt)*
-    ) => {
-        $crate::messages! {
-            @parse
-            [$($protocol_attr)*]
-            [$visibility]
-            [$protocol]
-            [$message]
-            [
-                $($operation_items)*
-                #[doc = concat!("Notification arguments for `", stringify!($message), "`.")]
-                #[derive(Debug)]
-                $visibility struct $operation(
-                    #[doc = "Notification payload."]
-                    $visibility $payload
-                );
-            ]
-            [
-                $($message_variants)*
-                #[doc = concat!("Notification `", stringify!($operation), "`.")]
-                $operation($payload),
-            ]
-            [
-                $($implementations)*
-                impl $crate::Notification<$message> for $operation {
-                    fn into_message(self) -> $message {
-                        let $operation(payload) = self;
-                        $message::$operation(payload)
-                    }
-                }
-            ]
-            $($remaining)*
-        }
-    };
-
-    // A unit notification becomes a unit protocol-message variant.
-    (
-        @parse
-        [$($protocol_attr:tt)*]
-        [$visibility:vis]
-        [$protocol:ident]
-        [$message:ident]
-        [$($operation_items:tt)*]
-        [$($message_variants:tt)*]
-        [$($implementations:tt)*]
-        $operation:ident,
-        $($remaining:tt)*
-    ) => {
-        $crate::messages! {
-            @parse
-            [$($protocol_attr)*]
-            [$visibility]
-            [$protocol]
-            [$message]
-            [
-                $($operation_items)*
-                #[doc = concat!("Notification without arguments for `", stringify!($message), "`.")]
-                #[derive(Debug)]
-                $visibility struct $operation;
-            ]
-            [
-                $($message_variants)*
-                #[doc = concat!("Notification `", stringify!($operation), "`.")]
-                $operation,
-            ]
-            [
-                $($implementations)*
-                impl $crate::Notification<$message> for $operation {
-                    fn into_message(self) -> $message {
-                        $message::$operation
-                    }
-                }
-            ]
-            $($remaining)*
-        }
-    };
-}
-
 trait ErasedEffectCommand<Message>: Send {
     fn capability(&self) -> &CapabilityToken;
     fn intent(&self) -> &dyn Any;
@@ -1481,6 +1027,7 @@ where
 trait ErasedSendCommand: Send {
     fn target(&self) -> MessageTarget<'_>;
     fn message_type_name(&self) -> &'static str;
+    fn message(&self) -> &dyn Any;
     fn into_message(self: Box<Self>) -> Box<dyn Any + Send>;
 }
 
@@ -1498,62 +1045,13 @@ impl<M: Send + 'static> ErasedSendCommand for SendTo<M> {
         self.address.message_type_name()
     }
 
+    fn message(&self) -> &dyn Any {
+        &self.message
+    }
+
     fn into_message(self: Box<Self>) -> Box<dyn Any + Send> {
         let Self { address, message } = *self;
         address.into_message(message)
-    }
-}
-
-trait ErasedNotificationCommand: Send {
-    fn port(&self) -> &PortId;
-    fn port_program(&self) -> &Arc<()>;
-    fn notification(&self) -> &dyn Any;
-    fn notification_type_name(&self) -> &'static str;
-    fn protocol_type_id(&self) -> TypeId;
-    fn protocol_type_name(&self) -> &'static str;
-    fn into_message(self: Box<Self>) -> Box<dyn Any + Send>;
-}
-
-struct Notify<P, N>
-where
-    P: Send + 'static,
-    N: Notification<P>,
-{
-    port: Port<P>,
-    notification: N,
-}
-
-impl<P, N> ErasedNotificationCommand for Notify<P, N>
-where
-    P: Send + 'static,
-    N: Notification<P>,
-{
-    fn port(&self) -> &PortId {
-        self.port.id()
-    }
-
-    fn port_program(&self) -> &Arc<()> {
-        &self.port.program
-    }
-
-    fn notification(&self) -> &dyn Any {
-        &self.notification
-    }
-
-    fn notification_type_name(&self) -> &'static str {
-        std::any::type_name::<N>()
-    }
-
-    fn protocol_type_id(&self) -> TypeId {
-        TypeId::of::<P>()
-    }
-
-    fn protocol_type_name(&self) -> &'static str {
-        std::any::type_name::<P>()
-    }
-
-    fn into_message(self: Box<Self>) -> Box<dyn Any + Send> {
-        Box::new(self.notification.into_message())
     }
 }
 
@@ -1598,8 +1096,7 @@ trait ErasedRequestCommand<Message>: Send {
         token: Arc<RequestToken>,
     ) -> (Box<dyn Any + Send>, ErasedRequestMapper<Message>);
     /// For an addressed request, the message type the sender spelled, before
-    /// any Connector conversion; `None` for a Port request built from a
-    /// [`Request`] value.
+    /// any Connector conversion.
     fn addressed_message_type(&self) -> Option<TypeId>;
     /// Builds the message with an inert reply token for inspection in tests.
     /// Only meaningful when `addressed_message_type` is `Some`.
@@ -1621,75 +1118,6 @@ fn typed_request_outcome<Reply: Send + 'static>(
         RequestOutcome::TimedOut => RequestOutcome::TimedOut,
         RequestOutcome::Failed(error) => RequestOutcome::Failed(error),
         RequestOutcome::Cancelled => RequestOutcome::Cancelled,
-    }
-}
-
-struct RequestCommand<P, R, Map>
-where
-    P: Send + 'static,
-    R: Request<P>,
-{
-    port: Port<P>,
-    request: R,
-    timeout: Option<Duration>,
-    map: Map,
-}
-
-impl<Message, P, R, Map> ErasedRequestCommand<Message> for RequestCommand<P, R, Map>
-where
-    Message: Send + 'static,
-    P: Send + 'static,
-    R: Request<P>,
-    Map: FnOnce(RequestOutcome<R::Reply>) -> Message + Send + 'static,
-{
-    fn target(&self) -> MessageTarget<'_> {
-        MessageTarget::Port {
-            id: self.port.id(),
-            program: &self.port.program,
-            protocol: TypeId::of::<P>(),
-        }
-    }
-
-    fn request(&self) -> Option<&dyn Any> {
-        Some(&self.request)
-    }
-
-    fn timeout(&self) -> Option<Duration> {
-        self.timeout
-    }
-
-    fn request_type_name(&self) -> &'static str {
-        std::any::type_name::<R>()
-    }
-
-    fn reply_type_name(&self) -> &'static str {
-        std::any::type_name::<R::Reply>()
-    }
-
-    fn reply_type_id(&self) -> TypeId {
-        TypeId::of::<R::Reply>()
-    }
-
-    fn mapper_type_name(&self) -> &'static str {
-        std::any::type_name::<Map>()
-    }
-
-    fn into_parts(
-        self: Box<Self>,
-        token: Arc<RequestToken>,
-    ) -> (Box<dyn Any + Send>, ErasedRequestMapper<Message>) {
-        let Self { request, map, .. } = *self;
-        let message = request.into_message(ReplyTo::runtime(token));
-        let mapper = Box::new(move |outcome| map(typed_request_outcome::<R::Reply>(outcome)));
-        (Box::new(message), mapper)
-    }
-
-    fn addressed_message_type(&self) -> Option<TypeId> {
-        None
-    }
-
-    fn into_inspection(self: Box<Self>) -> (Box<dyn Any + Send>, ErasedRequestMapper<Message>) {
-        self.into_parts(RequestToken::inert())
     }
 }
 
@@ -1926,7 +1354,8 @@ where
 /// An effect's mapper converts its result to a message. Keep the mapper free of
 /// I/O and state changes; handle the message in `update`. Commands cannot be
 /// cloned or compared because they can own these mappers. Test their contents
-/// with methods such as [`Self::effect_intent`] and [`Self::request_intents`].
+/// with methods such as [`Self::effect_intent`], [`Self::send_intents`], and
+/// [`Self::into_request_to`].
 ///
 /// <details>
 /// <summary>Compile-time checks</summary>
@@ -1949,7 +1378,6 @@ enum CommandKind<Message> {
     None,
     Effect(Box<dyn ErasedEffectCommand<Message>>),
     Send(Box<dyn ErasedSendCommand>),
-    Notify(Box<dyn ErasedNotificationCommand>),
     Request(Box<dyn ErasedRequestCommand<Message>>),
     Reply(Box<dyn ErasedReplyCommand>),
     After { delay: Duration, message: Message },
@@ -2105,118 +1533,6 @@ impl<Message> Command<Message> {
         })))
     }
 
-    /// Sends a notification to the component bound to a Port.
-    ///
-    /// The notification is converted with [`Notification::into_message`]. The command
-    /// schedules delivery; it does not call the provider while being constructed.
-    /// No reply or delivery result is sent back. See [`Notification`] for an example.
-    pub fn notify<P, N>(port: Port<P>, notification: N) -> Self
-    where
-        P: Send + 'static,
-        N: Notification<P>,
-    {
-        Self(CommandKind::Notify(Box::new(Notify { port, notification })))
-    }
-
-    /// Sends a request through a Port and converts the reply with `Message::from`.
-    ///
-    /// Requires `Message: From<RequestOutcome<R::Reply>>`. Use [`Self::request_with`]
-    /// for a closure, or [`Self::request_timeout`] to limit how long to wait.
-    pub fn request<P, R>(port: Port<P>, request: R) -> Self
-    where
-        Message: From<RequestOutcome<R::Reply>> + Send + 'static,
-        P: Send + 'static,
-        R: Request<P>,
-    {
-        Self::request_with(port, request, Message::from)
-    }
-
-    /// Sends a request through a Port and maps its reply to a message.
-    ///
-    /// The component continues handling other messages while waiting. `map` runs at
-    /// most once and must not perform I/O or mutate state. You can capture an ID to
-    /// associate the reply with application work.
-    ///
-    /// ```
-    /// use samara::prelude::*;
-    /// messages! { enum CatalogMessage { Lookup(String) -> Option<u64>, } }
-    /// let mut program = Program::builder();
-    /// let catalog = program.port::<CatalogMessage>(PortId::new("catalog"));
-    /// let command = Command::request_with(catalog, Lookup("widget".into()), |reply| (7, reply));
-    /// assert_eq!(command.request_intents::<Lookup>().len(), 1);
-    /// ```
-    ///
-    /// There is no timeout. An unanswered request can keep [`Shutdown::Drain`] waiting;
-    /// use [`Self::request_timeout_with`] to bound the wait.
-    pub fn request_with<P, R, Map>(port: Port<P>, request: R, map: Map) -> Self
-    where
-        Message: Send + 'static,
-        P: Send + 'static,
-        R: Request<P>,
-        Map: FnOnce(RequestOutcome<R::Reply>) -> Message + Send + 'static,
-    {
-        Self(CommandKind::Request(Box::new(RequestCommand {
-            port,
-            request,
-            timeout: None,
-            map,
-        })))
-    }
-
-    /// Sends a request with a timeout and converts its result with `Message::from`.
-    ///
-    /// The timeout starts when Samara runs the command. A reply must be processed
-    /// before the deadline; a zero timeout always expires. On expiry, the caller gets
-    /// [`RequestOutcome::TimedOut`], the provider keeps running, and later replies are
-    /// ignored. A duration that overflows the clock faults the runtime.
-    ///
-    /// Live execution uses Tokio time; controlled tests advance time themselves.
-    /// See [`Self::request_timeout_with`] for a closure-based example.
-    pub fn request_timeout<P, R>(port: Port<P>, request: R, timeout: Duration) -> Self
-    where
-        Message: From<RequestOutcome<R::Reply>> + Send + 'static,
-        P: Send + 'static,
-        R: Request<P>,
-    {
-        Self::request_timeout_with(port, request, timeout, Message::from)
-    }
-
-    /// Sends a request with a timeout and maps its reply or timeout to a message.
-    ///
-    /// Uses the deadline rules of [`Self::request_timeout`]. Runtime cancellation
-    /// drops the mapper without sending a message.
-    ///
-    /// ```
-    /// use samara::prelude::*;
-    /// use std::time::Duration;
-    /// messages! { enum HealthMessage { Check -> bool, } }
-    /// let mut program = Program::builder();
-    /// let health = program.port::<HealthMessage>(PortId::new("health"));
-    /// let command = Command::request_timeout_with(
-    ///     health, Check, Duration::from_secs(2), |outcome| outcome,
-    /// );
-    /// assert_eq!(command.request_intents::<Check>().len(), 1);
-    /// ```
-    pub fn request_timeout_with<P, R, Map>(
-        port: Port<P>,
-        request: R,
-        timeout: Duration,
-        map: Map,
-    ) -> Self
-    where
-        Message: Send + 'static,
-        P: Send + 'static,
-        R: Request<P>,
-        Map: FnOnce(RequestOutcome<R::Reply>) -> Message + Send + 'static,
-    {
-        Self(CommandKind::Request(Box::new(RequestCommand {
-            port,
-            request,
-            timeout: Some(timeout),
-            map,
-        })))
-    }
-
     /// Sends a request to a [`Port`], [`Connector`], or [`ComponentRef`] and maps its reply to a message.
     ///
     /// `request` is a constructor that takes the reply token, such as
@@ -2266,8 +1582,10 @@ impl<Message> Command<Message> {
 
     /// Sends a request to a [`Port`], [`Connector`], or [`ComponentRef`] with a timeout.
     ///
-    /// Uses the deadline rules of [`Self::request_timeout`] and the constructor
-    /// form of [`Self::request_to`].
+    /// The deadline starts when Samara runs the command. A reply must be processed
+    /// before the deadline; a zero timeout always expires. On expiry, the caller gets
+    /// [`RequestOutcome::TimedOut`], the provider keeps running, and later replies are
+    /// ignored. Live execution uses Tokio time; controlled tests advance time themselves.
     pub fn request_to_timeout<T, R, Build, Map>(
         target: T,
         request: Build,
@@ -2364,7 +1682,6 @@ impl<Message> Command<Message> {
             }
             CommandKind::None
             | CommandKind::Send(_)
-            | CommandKind::Notify(_)
             | CommandKind::Request(_)
             | CommandKind::Reply(_)
             | CommandKind::After { .. } => {}
@@ -2424,6 +1741,50 @@ impl<Message> Command<Message> {
         }
     }
 
+    /// Returns the messages of type `M` this command sends, in declaration order.
+    ///
+    /// Searches batches without delivering anything. Messages sent to a Port,
+    /// a Connector, or a ComponentRef all count; `M` is the type the sender
+    /// spelled, before any binding or Connector conversion.
+    ///
+    /// ```
+    /// use samara::prelude::*;
+    /// #[derive(Debug, PartialEq)]
+    /// enum LedgerMessage { Add(u64) }
+    /// let mut program = Program::builder();
+    /// let ledger = program.port::<LedgerMessage>(PortId::new("ledger"));
+    /// let command: Command<()> = Command::batch([
+    ///     Command::send(ledger.clone(), LedgerMessage::Add(2)),
+    ///     Command::send(ledger, LedgerMessage::Add(3)),
+    /// ]);
+    /// assert_eq!(command.send_intents::<LedgerMessage>(), [&LedgerMessage::Add(2), &LedgerMessage::Add(3)]);
+    /// ```
+    pub fn send_intents<M: 'static>(&self) -> Vec<&M> {
+        let mut intents = Vec::new();
+        self.collect_send_intents(&mut intents);
+        intents
+    }
+
+    fn collect_send_intents<'a, M: 'static>(&'a self, intents: &mut Vec<&'a M>) {
+        match &self.0 {
+            CommandKind::Send(command) => {
+                if let Some(message) = command.message().downcast_ref() {
+                    intents.push(message);
+                }
+            }
+            CommandKind::Batch(commands) => {
+                for command in commands {
+                    command.collect_send_intents(intents);
+                }
+            }
+            CommandKind::None
+            | CommandKind::Effect(_)
+            | CommandKind::Request(_)
+            | CommandKind::Reply(_)
+            | CommandKind::After { .. } => {}
+        }
+    }
+
     /// Extracts a [`Self::request_to`] command for a unit test.
     ///
     /// Returns the message the constructor built, with an inert reply token that
@@ -2463,73 +1824,6 @@ impl<Message> Command<Message> {
         }
     }
 
-    /// Returns notifications of type `N` with their destination Port IDs.
-    ///
-    /// Searches batches in declaration order without delivering anything. See
-    /// [`Notification`] for an example.
-    pub fn notification_intents<N: 'static>(&self) -> Vec<(&PortId, &N)> {
-        let mut intents = Vec::new();
-        self.collect_notification_intents(&mut intents);
-        intents
-    }
-
-    fn collect_notification_intents<'a, N: 'static>(
-        &'a self,
-        intents: &mut Vec<(&'a PortId, &'a N)>,
-    ) {
-        match &self.0 {
-            CommandKind::Notify(command) => {
-                if let Some(notification) = command.notification().downcast_ref() {
-                    intents.push((command.port(), notification));
-                }
-            }
-            CommandKind::Batch(commands) => {
-                for command in commands {
-                    command.collect_notification_intents(intents);
-                }
-            }
-            CommandKind::None
-            | CommandKind::Effect(_)
-            | CommandKind::Send(_)
-            | CommandKind::Request(_)
-            | CommandKind::Reply(_)
-            | CommandKind::After { .. } => {}
-        }
-    }
-
-    /// Returns requests of type `R` with their destination Port IDs.
-    ///
-    /// Searches batches in declaration order. See [`Self::request_with`] for an example.
-    pub fn request_intents<R: 'static>(&self) -> Vec<(&PortId, &R)> {
-        let mut intents = Vec::new();
-        self.collect_request_intents(&mut intents);
-        intents
-    }
-
-    fn collect_request_intents<'a, R: 'static>(&'a self, intents: &mut Vec<(&'a PortId, &'a R)>) {
-        match &self.0 {
-            CommandKind::Request(command) => {
-                if let (MessageTarget::Port { id, .. }, Some(request)) =
-                    (command.target(), command.request())
-                    && let Some(request) = request.downcast_ref()
-                {
-                    intents.push((id, request));
-                }
-            }
-            CommandKind::Batch(commands) => {
-                for command in commands {
-                    command.collect_request_intents(intents);
-                }
-            }
-            CommandKind::None
-            | CommandKind::Effect(_)
-            | CommandKind::Send(_)
-            | CommandKind::Notify(_)
-            | CommandKind::Reply(_)
-            | CommandKind::After { .. } => {}
-        }
-    }
-
     /// Returns replies of type `ReplyValue`, searching inside batches in declaration order.
     ///
     /// This inspects reply values without consuming tokens or delivering replies.
@@ -2554,7 +1848,6 @@ impl<Message> Command<Message> {
             CommandKind::None
             | CommandKind::Effect(_)
             | CommandKind::Send(_)
-            | CommandKind::Notify(_)
             | CommandKind::Request(_)
             | CommandKind::After { .. } => {}
         }
@@ -2569,7 +1862,6 @@ impl<Message> Command<Message> {
             CommandKind::Effect(command) => Some(command.intent_type_name()),
             CommandKind::None
             | CommandKind::Send(_)
-            | CommandKind::Notify(_)
             | CommandKind::Request(_)
             | CommandKind::Reply(_)
             | CommandKind::After { .. }
@@ -4392,14 +3684,14 @@ impl<S: SourceDescriptor> fmt::Debug for SourceCapability<S> {
 ///
 /// The application declares the message enum in its own vocabulary, creates the
 /// Port with [`ProgramBuilder::port`], and connects a provider with
-/// [`ProgramBuilder::connect`]. Components use it with [`Command::notify`] and
-/// [`Command::request`]. Code outside the program uses a [`PortHandle`] instead.
+/// [`ProgramBuilder::connect`]. Components use it with [`Command::send`] and
+/// [`Command::request_to`]. Code outside the program uses a [`PortHandle`] instead.
 /// The provider-owned counterpart, an address a Component hands out itself,
 /// is [`Connector`].
 ///
 /// ```
 /// use samara::prelude::*;
-/// messages! { enum HealthMessage { Check -> bool, } }
+/// enum HealthMessage { Check(ReplyTo<bool>) }
 /// let mut program = Program::builder();
 /// let health = program.port::<HealthMessage>(PortId::new("primary"));
 /// assert_eq!(health.id(), &PortId::new("primary"));
@@ -4451,7 +3743,7 @@ impl<P: Send + 'static> fmt::Debug for Port<P> {
 /// or [`ControlledRuntime::state`] to inspect state in tests.
 ///
 /// See the [crate example](crate) for registration and controlled state inspection.
-/// Use a [`Port`] when a caller should depend on a protocol rather than the
+/// Use a [`Port`] when a caller should depend on a message type it owns rather than the
 /// component's complete message type.
 ///
 /// <details>
@@ -4551,7 +3843,7 @@ impl<C: Component> ComponentRef<C> {
 /// use samara::prelude::*;
 ///
 /// // A library's public vocabulary and private Component.
-/// messages! { pub enum JournalMessage { Note(String), } }
+/// pub enum JournalMessage { Note(String) }
 /// struct Recorder;
 /// struct RecorderMessage(JournalMessage);
 /// impl Component for Recorder {
@@ -4567,7 +3859,7 @@ impl<C: Component> ComponentRef<C> {
 /// }
 ///
 /// // The application's own Port, in its own vocabulary.
-/// messages! { pub enum AuditMessage { Changed(String), } }
+/// pub enum AuditMessage { Changed(String) }
 ///
 /// let mut program = Program::builder();
 /// let audit = program.port::<AuditMessage>(PortId::new("audit"));
@@ -4951,20 +4243,6 @@ where
                     }
                 }
             },
-            CommandKind::Notify(notification) => {
-                if program.declares_port_target(
-                    notification.port_program(),
-                    notification.port(),
-                    notification.protocol_type_id(),
-                ) {
-                    Ok(())
-                } else {
-                    Err(RuntimeError::harness(format!(
-                        "Component {component:?} has an initial notification Port {:?} from another Program or absent from this Program",
-                        notification.port()
-                    )))
-                }
-            }
             CommandKind::Request(request) => match request.target() {
                 MessageTarget::Port {
                     id,
@@ -5135,16 +4413,16 @@ where
 pub enum ProgramBuildError {
     /// Two components have the same name.
     DuplicateComponentId(ComponentId),
-    /// A port name was declared twice for the same protocol.
+    /// A port name was declared twice for the same message type.
     DuplicatePort {
-        /// The protocol's Rust type name.
+        /// The Port message type's Rust type name.
         protocol_type: &'static str,
         /// The duplicated port name.
         port: PortId,
     },
     /// A port has no provider or more than one provider.
     PortBindingCount {
-        /// The protocol's Rust type name.
+        /// The Port message type's Rust type name.
         protocol_type: &'static str,
         /// The port name.
         port: PortId,
@@ -5153,7 +4431,7 @@ pub enum ProgramBuildError {
     },
     /// A port belongs to another builder.
     ForeignPort {
-        /// The protocol's Rust type name.
+        /// The Port message type's Rust type name.
         protocol_type: &'static str,
         /// The port name.
         port: PortId,
@@ -5313,10 +4591,10 @@ impl ProgramBuilder {
         component_ref
     }
 
-    /// Declares a named connection to a provider of protocol `P`.
+    /// Declares a named Port carrying messages of type `P`.
     ///
     /// Bind exactly one provider with [`Self::connect`]. Different names allow
-    /// several providers of the same protocol. See [`Port`] for construction.
+    /// several providers for the same message type. See [`Port`] for construction.
     pub fn port<P>(&mut self, id: PortId) -> Port<P>
     where
         P: Send + 'static,
@@ -5337,7 +4615,7 @@ impl ProgramBuilder {
     /// Connects a Port to the component that will handle its messages.
     ///
     /// The provider is a [`ComponentRef`] or a [`Connector`] (see [`Connectable`]).
-    /// Its message type must implement `From<P>`; using the protocol
+    /// Its message type must implement `From<P>`; using the Port
     /// message type directly also works. When the provider's message type wraps
     /// the Port message in a variant without a `From` impl, or the Port
     /// speaks a different vocabulary than the provider, use
@@ -5347,7 +4625,7 @@ impl ProgramBuilder {
     ///
     /// ```
     /// use samara::prelude::*;
-    /// messages! { enum CountMessage { Read -> u64, } }
+    /// enum CountMessage { Read(ReplyTo<u64>) }
     ///
     /// struct Counter;
     /// impl Component for Counter {
@@ -5357,7 +4635,7 @@ impl ProgramBuilder {
     ///     fn init(_config: &Self::Config) -> Init<u64, CountMessage> { Init::new(42) }
     ///     fn update(_config: &Self::Config, count: &mut u64, message: CountMessage) -> Command<CountMessage> {
     ///         match message {
-    ///             CountMessage::Read(call) => Command::reply(call.reply_to, *count),
+    ///             CountMessage::Read(reply_to) => Command::reply(reply_to, *count),
     ///         }
     ///     }
     /// }
@@ -5370,7 +4648,7 @@ impl ProgramBuilder {
     ///     type Model = Option<u64>;
     ///     type Message = RequestOutcome<u64>;
     ///     fn init(config: &Self::Config) -> Init<Self::Model, Self::Message> {
-    ///         Init::default().with_command(Command::request(config.counter.clone(), Read))
+    ///         Init::default().with_command(Command::request_to(config.counter.clone(), CountMessage::Read, |outcome| outcome))
     ///     }
     ///     fn update(_config: &Self::Config, value: &mut Option<u64>, reply: Self::Message) -> Command<Self::Message> {
     ///         if let RequestOutcome::Replied(count) = reply { *value = Some(count); }
@@ -5411,7 +4689,7 @@ impl ProgramBuilder {
     ///
     /// ```
     /// use samara::prelude::*;
-    /// messages! { enum CountMessage { Read -> u64, } }
+    /// enum CountMessage { Read(ReplyTo<u64>) }
     ///
     /// enum CounterMessage {
     ///     Count(CountMessage),
@@ -5426,7 +4704,7 @@ impl ProgramBuilder {
     ///     fn init(_: &()) -> Init<u64, CounterMessage> { Init::new(42) }
     ///     fn update(_: &(), count: &mut u64, message: CounterMessage) -> Command<CounterMessage> {
     ///         match message {
-    ///             CounterMessage::Count(CountMessage::Read(call)) => Command::reply(call.reply_to, *count),
+    ///             CounterMessage::Count(CountMessage::Read(reply_to)) => Command::reply(reply_to, *count),
     ///             CounterMessage::Tick => { *count += 1; Command::none() }
     ///         }
     ///     }
@@ -5864,7 +5142,7 @@ impl LiveRuntime {
         })
     }
 
-    /// Creates a protocol client for code outside the Samara program.
+    /// Creates a Port client for code outside the Samara program.
     ///
     /// The port must be declared and bound in this Program. Otherwise returns an
     /// error. Keep the handle in host code; components use [`Port`] and Commands.
@@ -6140,15 +5418,15 @@ impl<C: Component> ComponentHandle<C> {
     }
 }
 
-/// Calls a protocol from async code outside a Samara program.
+/// Reaches a Port from async code outside a Samara program.
 ///
 /// Create it with [`LiveRuntime::port_handle`] before spawning the runtime.
-/// Clones use the same port. Notifications and requests still go through the
+/// Clones use the same port. Sends and requests still go through the
 /// provider's `update` method; the handle does not expose its model.
 ///
 /// ```
 /// use samara::prelude::*;
-/// messages! { enum CountMessage { Read -> u64, } }
+/// enum CountMessage { Read(ReplyTo<u64>) }
 /// struct Counter;
 /// impl Component for Counter {
 ///     type Config = ();
@@ -6157,7 +5435,7 @@ impl<C: Component> ComponentHandle<C> {
 ///     fn init(_config: &Self::Config) -> Init<u64, CountMessage> { Init::new(42) }
 ///     fn update(_config: &Self::Config, count: &mut u64, message: CountMessage) -> Command<CountMessage> {
 ///         match message {
-///             CountMessage::Read(call) => Command::reply(call.reply_to, *count),
+///             CountMessage::Read(reply_to) => Command::reply(reply_to, *count),
 ///         }
 ///     }
 /// }
@@ -6170,7 +5448,7 @@ impl<C: Component> ComponentHandle<C> {
 ///     let runtime = LiveRuntime::builder(builder.build()?).build()?;
 ///     let client = runtime.port_handle(&count)?;
 ///     let task = runtime.spawn();
-///     assert_eq!(client.request(Read).await?, 42);
+///     assert_eq!(client.request_to(CountMessage::Read).await?, 42);
 ///     assert!(task.shutdown(Shutdown::Drain).await?.is_clean());
 ///     Ok::<(), Box<dyn std::error::Error>>(())
 /// })?;
@@ -6191,19 +5469,12 @@ impl<C: Component> ComponentHandle<C> {
 /// ```
 ///
 /// ```compile_fail
-/// use samara::{Command, Notification, PortHandle};
+/// use samara::{Command, PortHandle};
 ///
 /// enum ExampleMessage { Notified }
-/// struct Notify;
-///
-/// impl Notification<ExampleMessage> for Notify {
-///     fn into_message(self) -> ExampleMessage {
-///         ExampleMessage::Notified
-///     }
-/// }
 ///
 /// fn misuse(handle: PortHandle<ExampleMessage>) -> Command<()> {
-///     Command::notify(handle, Notify)
+///     Command::send(handle, ExampleMessage::Notified)
 /// }
 /// ```
 ///
@@ -6288,8 +5559,10 @@ impl<P: Send + 'static> PortHandle<P> {
 
     /// Sends a request built from its reply token with a timeout.
     ///
-    /// Uses the deadline rules of [`Self::request_timeout`] and the constructor
-    /// form of [`Self::request_to`].
+    /// The deadline starts when Samara runs the command. A reply must be processed
+    /// before the deadline; a zero timeout always expires. On expiry, the caller gets
+    /// [`RequestOutcome::TimedOut`], the provider keeps running, and later replies are
+    /// ignored. Live execution uses Tokio time; controlled tests advance time themselves.
     pub async fn request_to_timeout<R, Build>(
         &self,
         request: Build,
@@ -6321,98 +5594,6 @@ impl<P: Send + 'static> PortHandle<P> {
         let (completion, reply) = tokio::sync::oneshot::channel();
         self.scope
             .accept_ingress(live_runtime::LiveEvent::port_request_to(
-                self.port.clone(),
-                request,
-                deadline,
-                completion,
-            ))?;
-        reply.await.map_err(|_| self.scope.request_ended_error())
-    }
-
-    /// Queues a notification for the provider.
-    ///
-    /// Success means accepted for delivery, not handled by the provider. Returns an
-    /// error if shutdown has begun or the runtime has failed.
-    ///
-    /// ```no_run
-    /// use samara::prelude::*;
-    /// messages! { enum EventMessage { Changed(String), } }
-    /// async fn notify(client: &PortHandle<EventMessage>) -> Result<(), RuntimeError> {
-    ///     client.notify(Changed("ready".into())).await
-    /// }
-    /// ```
-    pub async fn notify<N>(&self, notification: N) -> Result<(), RuntimeError>
-    where
-        N: Notification<P>,
-    {
-        self.scope
-            .accept_ingress(live_runtime::LiveEvent::port_notification(
-                self.port.clone(),
-                notification,
-            ))
-    }
-
-    /// Sends a request and waits for its reply without a timeout.
-    ///
-    /// Dropping this future after sending stops waiting but does not cancel the
-    /// provider's work or release the pending request. An unanswered request can
-    /// keep Drain waiting. Runtime shutdown or failure before the reply returns
-    /// [`RuntimeError`]. See [`PortHandle`] for an example.
-    pub async fn request<R>(&self, request: R) -> Result<R::Reply, RuntimeError>
-    where
-        R: Request<P>,
-    {
-        match self.request_inner(request, None).await? {
-            RequestOutcome::Replied(reply) => Ok(reply),
-            _ => unreachable!("unbounded host requests only complete with a reply"),
-        }
-    }
-
-    /// Sends a request and waits for its reply until `timeout` expires.
-    ///
-    /// The clock starts when the future is first polled, including time waiting in
-    /// the runtime's queue. A reply processed at or after the deadline produces
-    /// [`RequestOutcome::TimedOut`]. Zero always times out. The provider keeps working;
-    /// later replies are ignored. Dropping this future does not remove the timeout.
-    /// Shutdown, runtime failure, or clock overflow returns [`RuntimeError`].
-    ///
-    /// ```no_run
-    /// use samara::prelude::*;
-    /// use std::time::Duration;
-    /// messages! { enum HealthMessage { Check -> bool, } }
-    /// async fn check(client: &PortHandle<HealthMessage>) -> Result<RequestOutcome<bool>, RuntimeError> {
-    ///     client.request_timeout(Check, Duration::from_secs(2)).await
-    /// }
-    /// ```
-    pub async fn request_timeout<R>(
-        &self,
-        request: R,
-        timeout: Duration,
-    ) -> Result<RequestOutcome<R::Reply>, RuntimeError>
-    where
-        R: Request<P>,
-    {
-        self.request_inner(request, Some(timeout)).await
-    }
-
-    async fn request_inner<R>(
-        &self,
-        request: R,
-        timeout: Option<Duration>,
-    ) -> Result<RequestOutcome<R::Reply>, RuntimeError>
-    where
-        R: Request<P>,
-    {
-        let deadline = timeout
-            .map(|timeout| {
-                tokio::time::Instant::now()
-                    .checked_add(timeout)
-                    .ok_or_else(|| RuntimeError::harness("request deadline is unrepresentable"))
-            })
-            .transpose()?;
-        let (completion, reply) = tokio::sync::oneshot::channel();
-        self.scope
-            .accept_ingress(live_runtime::LiveEvent::port_request(
                 self.port.clone(),
                 request,
                 deadline,
@@ -6951,7 +6132,7 @@ impl ControlledRuntimeBuilder {
 ///     type Error = std::convert::Infallible;
 /// }
 ///
-/// messages! { pub enum BeaconMessage { Tick, } }
+/// pub enum BeaconMessage { Tick }
 ///
 /// struct Pinger;
 /// struct PingerConfig {
@@ -7458,8 +6639,6 @@ pub enum TraceCommandKind {
     Effect,
     /// A message was sent to another component.
     Send,
-    /// A notification was sent through a port.
-    Notify,
     /// A request was sent through a port.
     Request,
     /// A provider replied to a request.
@@ -7636,172 +6815,6 @@ pub enum TraceEvent {
         /// The diagnostic message.
         reason: Arc<str>,
     },
-}
-
-#[cfg(test)]
-mod protocol_macro_tests {
-    use super::*;
-
-    #[derive(Debug, PartialEq, Eq)]
-    struct Snapshot(u8);
-
-    messages! {
-        enum MacroProtocolMessage {
-            SnapshotRequest -> Snapshot,
-            Observation(u8),
-            Refresh,
-            Lookup(u16) -> Snapshot,
-            Transition { name: String, to: u8 },
-            Recent { count: usize, newest_first: bool } -> Vec<Snapshot>,
-            Empty {},
-        }
-    }
-
-    messages! {
-        enum UnitReplyProtocolMessage {
-            Reset -> (),
-        }
-    }
-
-    #[test]
-    fn generated_payload_notification_is_flattened() {
-        fn assert_notification<N>()
-        where
-            N: Notification<MacroProtocolMessage>,
-        {
-        }
-
-        assert_notification::<Observation>();
-        let message =
-            <Observation as Notification<MacroProtocolMessage>>::into_message(Observation(7));
-
-        match message {
-            MacroProtocolMessage::Observation(observed) => assert_eq!(observed, 7),
-            _ => panic!("notification became a different operation"),
-        }
-    }
-
-    #[test]
-    fn generated_unit_notification_is_flattened() {
-        let message = <Refresh as Notification<MacroProtocolMessage>>::into_message(Refresh);
-
-        assert!(matches!(message, MacroProtocolMessage::Refresh));
-    }
-
-    #[test]
-    fn generated_unit_request_preserves_typed_reply_association() {
-        fn assert_reply_type<R>()
-        where
-            R: Request<MacroProtocolMessage, Reply = Snapshot>,
-        {
-        }
-
-        assert_reply_type::<SnapshotRequest>();
-        let message = <SnapshotRequest as Request<MacroProtocolMessage>>::into_message(
-            SnapshotRequest,
-            ReplyTo::<Snapshot>::sketch(41),
-        );
-
-        match message {
-            MacroProtocolMessage::SnapshotRequest(invocation) => {
-                let SnapshotRequest = invocation.request;
-                assert_eq!(invocation.reply_to.token.correlation, 41);
-                let _: ReplyTo<Snapshot> = invocation.reply_to;
-            }
-            _ => panic!("request became a different operation"),
-        }
-    }
-
-    #[test]
-    fn generated_payload_request_preserves_its_operation_value() {
-        fn assert_reply_type<R>()
-        where
-            R: Request<MacroProtocolMessage, Reply = Snapshot>,
-        {
-        }
-
-        assert_reply_type::<Lookup>();
-        let message = <Lookup as Request<MacroProtocolMessage>>::into_message(
-            Lookup(17),
-            ReplyTo::<Snapshot>::sketch(42),
-        );
-
-        match message {
-            MacroProtocolMessage::Lookup(invocation) => {
-                assert_eq!(invocation.request.0, 17);
-                assert_eq!(invocation.reply_to.token.correlation, 42);
-            }
-            _ => panic!("request became a different operation"),
-        }
-    }
-
-    #[test]
-    fn explicit_unit_reply_is_still_a_request() {
-        fn assert_unit_reply<R>()
-        where
-            R: Request<UnitReplyProtocolMessage, Reply = ()>,
-        {
-        }
-
-        assert_unit_reply::<Reset>();
-    }
-
-    #[test]
-    fn generated_struct_notification_is_flattened_into_a_struct_variant() {
-        fn assert_notification<N>()
-        where
-            N: Notification<MacroProtocolMessage>,
-        {
-        }
-
-        assert_notification::<Transition>();
-        assert_notification::<Empty>();
-        let message =
-            <Transition as Notification<MacroProtocolMessage>>::into_message(Transition {
-                name: "api".into(),
-                to: 2,
-            });
-
-        match message {
-            MacroProtocolMessage::Transition { name, to } => {
-                assert_eq!(name, "api");
-                assert_eq!(to, 2);
-            }
-            _ => panic!("notification became a different operation"),
-        }
-
-        assert!(matches!(
-            <Empty as Notification<MacroProtocolMessage>>::into_message(Empty {}),
-            MacroProtocolMessage::Empty {}
-        ));
-    }
-
-    #[test]
-    fn generated_struct_request_preserves_its_fields_and_reply_type() {
-        fn assert_reply_type<R>()
-        where
-            R: Request<MacroProtocolMessage, Reply = Vec<Snapshot>>,
-        {
-        }
-
-        assert_reply_type::<Recent>();
-        let message = <Recent as Request<MacroProtocolMessage>>::into_message(
-            Recent {
-                count: 3,
-                newest_first: true,
-            },
-            ReplyTo::<Vec<Snapshot>>::sketch(43),
-        );
-
-        match message {
-            MacroProtocolMessage::Recent(invocation) => {
-                assert_eq!(invocation.request.count, 3);
-                assert!(invocation.request.newest_first);
-                assert_eq!(invocation.reply_to.token.correlation, 43);
-            }
-            _ => panic!("request became a different operation"),
-        }
-    }
 }
 
 #[cfg(test)]

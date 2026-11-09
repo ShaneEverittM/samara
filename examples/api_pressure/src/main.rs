@@ -31,21 +31,20 @@ const QUOTA: &str = "counter/quota";
 
 /// Provider-neutral vocabulary for quota operations.
 ///
-/// The protocol is separate from `QuotaMessage`, so consumers depend on the
-/// service contract rather than the provider Component's complete private
-/// Message API.
+/// This Port message enum is separate from `QuotaMessage`, so consumers depend
+/// on the service contract rather than the provider Component's complete
+/// private Message API. Program assembly routes these values through a
+/// `Port<QuotaProtocolMessage>`.
 #[derive(Debug)]
-/// Values that program assembly can route through a `QuotaProtocol` Port.
 enum QuotaProtocolMessage {
-    /// A typed request together with the inert token needed to return its reply.
-    Reserve(RequestInvocation<QuotaProtocolMessage, Reserve>),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-/// Requests authority to add `amount` to a Counter.
-struct Reserve {
-    /// The proposed increment.
-    amount: u64,
+    /// Requests authority to add `amount` to a Counter, together with the
+    /// inert token needed to return the decision.
+    Reserve {
+        /// The proposed increment.
+        amount: u64,
+        /// Runtime-owned correlation; neither side sees a correlation ID.
+        reply_to: ReplyTo<Reservation>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -56,16 +55,6 @@ enum Reservation {
 
     /// No capacity was consumed because the request exceeded what remained.
     Denied { requested: u64, remaining: u64 },
-}
-
-impl Request<QuotaProtocolMessage> for Reserve {
-    type Reply = Reservation;
-
-    fn into_message(self, reply_to: ReplyTo<Self::Reply>) -> QuotaProtocolMessage {
-        // This conversion packages domain data with runtime-owned correlation
-        // data. Neither requester nor provider needs to see a correlation ID.
-        QuotaProtocolMessage::Reserve(RequestInvocation::new(self, reply_to))
-    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -113,11 +102,13 @@ impl Component for Quota {
         message: Self::Message,
     ) -> Command<Self::Message> {
         match message {
-            QuotaMessage::Protocol(QuotaProtocolMessage::Reserve(invocation)) => {
+            QuotaMessage::Protocol(QuotaProtocolMessage::Reserve {
+                amount: requested,
+                reply_to,
+            }) => {
                 // This is an ordinary deterministic transition: decide from
                 // current state, update owned state, and describe a reply. The
                 // runtime—not this function—delivers that reply.
-                let requested = invocation.request.amount;
                 let reservation = if requested <= model.remaining {
                     model.remaining -= requested;
                     Reservation::Granted { amount: requested }
@@ -128,7 +119,7 @@ impl Component for Quota {
                     }
                 };
 
-                Command::reply(invocation.reply_to, reservation)
+                Command::reply(reply_to, reservation)
             }
         }
     }
@@ -204,7 +195,7 @@ struct CounterConfig {
     /// Declared authority for finite persistence effects.
     persistence: EffectCapability<PersistCount>,
 
-    /// Named dependency on any provider of the quota protocol.
+    /// Named dependency on any provider of the quota message enum.
     quota: Port<QuotaProtocolMessage>,
 }
 
@@ -231,9 +222,9 @@ impl Component for Counter {
                 // granted. `CounterMessage::Reserved` is the explicit continuation:
                 // the runtime maps this request's eventual terminal outcome back
                 // into the requester's ordinary message stream.
-                Command::request_with(
+                Command::request_to(
                     config.quota.clone(),
-                    Reserve { amount },
+                    move |reply_to| QuotaProtocolMessage::Reserve { amount, reply_to },
                     CounterMessage::Reserved,
                 )
             }
@@ -339,7 +330,7 @@ fn program(increments: StreamDescriptor<u64>) -> (Program, AppRefs) {
     let persistence = program.effect::<PersistCount>();
 
     // A named Port is immutable dependency wiring. Naming allows another Quota
-    // protocol instance to coexist without a global “one provider per type” rule.
+    // Port to coexist without a global “one provider per type” rule.
     let quota_port = program.port(PortId::new(QUOTA));
     let quota = program.component::<Quota>(ComponentId::new("quota"), QuotaConfig { initial: 100 });
 
@@ -496,18 +487,18 @@ mod tests {
         // message that can authorize this change.
         let command = Counter::update(&component, &mut model, CounterMessage::Increment(3));
         assert_eq!(model.count, 0);
-        let requests = command.request_intents::<Reserve>();
-        assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].0, &PortId::new(QUOTA));
-        assert_eq!(requests[0].1, &Reserve { amount: 3 });
+        let request = command
+            .into_request_to::<QuotaProtocolMessage>()
+            .unwrap_or_else(|_| panic!("an increment should request a reservation"));
+        assert!(matches!(
+            request.message,
+            QuotaProtocolMessage::Reserve { amount: 3, .. }
+        ));
 
-        // Supplying the message shape produced by the continuation exercises
+        // Running the request's own continuation on a chosen reply exercises
         // the resulting transition independently of transport correlation.
-        let command = Counter::update(
-            &component,
-            &mut model,
-            CounterMessage::Reserved(RequestOutcome::Replied(Reservation::Granted { amount: 3 })),
-        );
+        let granted = request.reply(RequestOutcome::Replied(Reservation::Granted { amount: 3 }));
+        let command = Counter::update(&component, &mut model, granted);
         assert_eq!(model.count, 3);
         let effect = command
             .into_effect::<PersistCount>()

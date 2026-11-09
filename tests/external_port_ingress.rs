@@ -9,81 +9,26 @@ use std::{
 
 use samara::prelude::*;
 
-messages! {
-    enum HostProtocolMessage {
-        Set(u64),
-        RecordIngress(u64),
-        Read -> u64,
-        Delayed(u64) -> u64,
-        Held(u64) -> u64,
-        Never -> (),
-        Crash -> (),
-    }
+/// The host's vocabulary, written by hand. A request variant carries its own
+/// reply token, which is what types the reply.
+#[derive(Debug)]
+enum HostMessage {
+    Set(u64),
+    RecordIngress(u64),
+    Read(ReplyTo<u64>),
+    Delayed(u64, ReplyTo<u64>),
+    Held(u64, ReplyTo<u64>),
+    Never(ReplyTo<()>),
+    Crash(ReplyTo<()>),
 }
 
-struct CountedSet {
-    value: u64,
-    conversions: Arc<AtomicUsize>,
-}
-
-impl Notification<HostProtocolMessage> for CountedSet {
-    fn into_message(self) -> HostProtocolMessage {
-        self.conversions.fetch_add(1, Ordering::SeqCst);
-        HostProtocolMessage::Set(self.value)
-    }
-}
-
-struct PanickingRequest;
-
-impl Request<HostProtocolMessage> for PanickingRequest {
-    type Reply = ();
-
-    fn into_message(self, _reply_to: ReplyTo<Self::Reply>) -> HostProtocolMessage {
-        panic!("request conversion panic")
-    }
-}
-
-struct PanickingNotification;
-
-impl Notification<HostProtocolMessage> for PanickingNotification {
-    fn into_message(self) -> HostProtocolMessage {
-        panic!("notification conversion panic")
-    }
-}
-
-enum BindingProtocolMessage {
-    Notification,
-    Request(RequestInvocation<BindingProtocolMessage, BindingRequest>),
-}
-
-struct BindingNotification;
-
-impl Notification<BindingProtocolMessage> for BindingNotification {
-    fn into_message(self) -> BindingProtocolMessage {
-        BindingProtocolMessage::Notification
-    }
-}
-
-struct BindingRequest;
-
-impl Request<BindingProtocolMessage> for BindingRequest {
-    type Reply = ();
-
-    fn into_message(self, reply_to: ReplyTo<Self::Reply>) -> BindingProtocolMessage {
-        BindingProtocolMessage::Request(RequestInvocation::new(self, reply_to))
-    }
+/// The vocabulary of a Port whose binding conversion panics for every message.
+enum BindingMessage {
+    Signal,
+    Ask(ReplyTo<()>),
 }
 
 struct PanickingBindingProviderMessage;
-
-impl From<BindingProtocolMessage> for PanickingBindingProviderMessage {
-    fn from(message: BindingProtocolMessage) -> Self {
-        if let BindingProtocolMessage::Request(request) = message {
-            let _ = request.reply_to;
-        }
-        panic!("provider binding conversion panic")
-    }
-}
 
 struct PanickingBindingProvider;
 
@@ -106,16 +51,10 @@ impl Component for PanickingBindingProvider {
 }
 
 enum ProviderMessage {
-    Protocol(HostProtocolMessage),
+    Host(HostMessage),
     RecordIngressDirect(u64),
     CompleteDelayed { reply_to: ReplyTo<u64>, value: u64 },
     Signalled,
-}
-
-impl From<HostProtocolMessage> for ProviderMessage {
-    fn from(message: HostProtocolMessage) -> Self {
-        Self::Protocol(message)
-    }
 }
 
 struct Provider;
@@ -141,19 +80,17 @@ impl Component for Provider {
         message: Self::Message,
     ) -> Command<Self::Message> {
         match message {
-            ProviderMessage::Protocol(HostProtocolMessage::Set(value)) => {
+            ProviderMessage::Host(HostMessage::Set(value)) => {
                 *model = value;
                 Command::none()
             }
-            ProviderMessage::Protocol(HostProtocolMessage::RecordIngress(value))
+            ProviderMessage::Host(HostMessage::RecordIngress(value))
             | ProviderMessage::RecordIngressDirect(value) => {
                 Command::effect_discarding_outcome(&config.ingress_observed, IngressObserved(value))
             }
-            ProviderMessage::Protocol(HostProtocolMessage::Read(request)) => {
-                Command::reply(request.reply_to, *model)
-            }
-            ProviderMessage::Protocol(HostProtocolMessage::Delayed(request)) => {
-                let delay = if request.request.0 == 11 {
+            ProviderMessage::Host(HostMessage::Read(reply_to)) => Command::reply(reply_to, *model),
+            ProviderMessage::Host(HostMessage::Delayed(value, reply_to)) => {
+                let delay = if value == 11 {
                     Duration::from_millis(50)
                 } else {
                     Duration::from_millis(10)
@@ -162,35 +99,26 @@ impl Component for Provider {
                     Command::effect_with(&config.request_observed, RequestObserved, |_| {
                         ProviderMessage::Signalled
                     }),
-                    Command::after(
-                        delay,
-                        ProviderMessage::CompleteDelayed {
-                            reply_to: request.reply_to,
-                            value: request.request.0,
-                        },
-                    ),
+                    Command::after(delay, ProviderMessage::CompleteDelayed { reply_to, value }),
                 ])
             }
-            ProviderMessage::Protocol(HostProtocolMessage::Held(request)) => {
-                let reply_to = request.reply_to;
-                Command::effect_with(
-                    &config.await_release,
-                    AwaitRelease(request.request.0),
-                    move |outcome| match outcome {
+            ProviderMessage::Host(HostMessage::Held(value, reply_to)) => {
+                Command::effect_with(&config.await_release, AwaitRelease(value), move |outcome| {
+                    match outcome {
                         EffectOutcome::Succeeded(value) => {
                             ProviderMessage::CompleteDelayed { reply_to, value }
                         }
                         EffectOutcome::Failed(never) => match never {},
                         EffectOutcome::Cancelled(_) => ProviderMessage::Signalled,
-                    },
-                )
+                    }
+                })
             }
-            ProviderMessage::Protocol(HostProtocolMessage::Never(_request)) => {
+            ProviderMessage::Host(HostMessage::Never(_reply_to)) => {
                 Command::effect_with(&config.request_observed, RequestObserved, |_| {
                     ProviderMessage::Signalled
                 })
             }
-            ProviderMessage::Protocol(HostProtocolMessage::Crash(_request)) => {
+            ProviderMessage::Host(HostMessage::Crash(_reply_to)) => {
                 panic!("provider crashed while handling an external request")
             }
             ProviderMessage::CompleteDelayed { reply_to, value } => Command::reply(reply_to, value),
@@ -280,9 +208,16 @@ impl EffectDriver<RequestObserved> for ObservationDriver {
     }
 }
 
-fn program() -> (Program, Port<HostProtocolMessage>) {
+fn program() -> (Program, Port<HostMessage>) {
+    let (program, port, _conversions) = counted_binding_program();
+    (program, port)
+}
+
+/// A Program whose Port binding counts every conversion it performs, so a
+/// test can tell whether a rejected ingress reached the binding at all.
+fn counted_binding_program() -> (Program, Port<HostMessage>, Arc<AtomicUsize>) {
     let mut builder = Program::builder();
-    let port = builder.port(PortId::new("host"));
+    let port = builder.port::<HostMessage>(PortId::new("host"));
     let ingress_observed = builder.effect::<IngressObserved>();
     let request_observed = builder.effect::<RequestObserved>();
     let await_release = builder.effect::<AwaitRelease>();
@@ -294,16 +229,49 @@ fn program() -> (Program, Port<HostProtocolMessage>) {
             await_release,
         },
     );
-    builder.connect(&port, &provider);
+    let conversions = Arc::new(AtomicUsize::new(0));
+    let counter = conversions.clone();
+    builder.connect_with(&port, &provider, move |message| {
+        counter.fetch_add(1, Ordering::SeqCst);
+        ProviderMessage::Host(message)
+    });
+    (builder.build().expect("valid Program"), port, conversions)
+}
+
+/// A Program whose Port binding panics only when converting `Set(0)`, so
+/// earlier sends land before the poisoned one faults the runtime.
+fn selectively_panicking_binding_program() -> (Program, Port<HostMessage>) {
+    let mut builder = Program::builder();
+    let port = builder.port::<HostMessage>(PortId::new("host"));
+    let ingress_observed = builder.effect::<IngressObserved>();
+    let request_observed = builder.effect::<RequestObserved>();
+    let await_release = builder.effect::<AwaitRelease>();
+    let provider = builder.component::<Provider>(
+        ComponentId::new("provider"),
+        ProviderConfig {
+            ingress_observed,
+            request_observed,
+            await_release,
+        },
+    );
+    builder.connect_with(&port, &provider, |message| match message {
+        HostMessage::Set(0) => panic!("send binding conversion panic"),
+        other => ProviderMessage::Host(other),
+    });
     (builder.build().expect("valid Program"), port)
 }
 
-fn panicking_binding_program() -> (Program, Port<BindingProtocolMessage>) {
+fn panicking_binding_program() -> (Program, Port<BindingMessage>) {
     let mut builder = Program::builder();
-    let port = builder.port(PortId::new("panicking-binding"));
+    let port = builder.port::<BindingMessage>(PortId::new("panicking-binding"));
     let provider = builder
         .component::<PanickingBindingProvider>(ComponentId::new("panicking-binding-provider"), ());
-    builder.connect(&port, &provider);
+    builder.connect_with(&port, &provider, |message| {
+        if let BindingMessage::Ask(reply_to) = message {
+            let _ = reply_to;
+        }
+        panic!("provider binding conversion panic")
+    });
     (builder.build().expect("valid binding Program"), port)
 }
 
@@ -344,7 +312,7 @@ fn live_port_handle_rejects_a_port_from_another_program() {
     let runtime = runtime_with_default_effects(program);
 
     let mut foreign_builder = Program::builder();
-    let foreign_port = foreign_builder.port::<HostProtocolMessage>(PortId::new("host"));
+    let foreign_port = foreign_builder.port::<HostMessage>(PortId::new("host"));
 
     let error = runtime
         .port_handle(&foreign_port)
@@ -353,35 +321,36 @@ fn live_port_handle_rejects_a_port_from_another_program() {
 }
 
 #[tokio::test]
-async fn live_port_handle_notifies_and_returns_typed_request_replies() -> Result<(), RuntimeError> {
-    let (program, port) = program();
+async fn live_port_handle_sends_and_returns_typed_request_replies() -> Result<(), RuntimeError> {
+    let (program, port, conversions) = counted_binding_program();
     let runtime = runtime_with_default_effects(program);
     let host = runtime.port_handle(&port)?;
     let task = runtime.spawn();
 
-    let notifications = host.clone();
-    notifications.notify(Set(41)).await?;
-    assert_eq!(host.request(Read).await?, 41);
+    let sends = host.clone();
+    sends.send(HostMessage::Set(41)).await?;
+    assert_eq!(host.request_to(HostMessage::Read).await?, 41);
+    assert_eq!(
+        conversions.load(Ordering::SeqCst),
+        2,
+        "the send and the request each crossed the binding once"
+    );
 
     assert!(task.shutdown(Shutdown::Drain).await?.is_clean());
-    let conversions = Arc::new(AtomicUsize::new(0));
-    assert!(
-        host.notify(CountedSet {
-            value: 42,
-            conversions: conversions.clone(),
-        })
-        .await
-        .is_err()
+    assert!(host.send(HostMessage::Set(42)).await.is_err());
+    assert!(host.request_to(HostMessage::Read).await.is_err());
+    assert_eq!(
+        conversions.load(Ordering::SeqCst),
+        2,
+        "ingress rejected after shutdown never reaches the binding conversion"
     );
-    assert_eq!(conversions.load(Ordering::SeqCst), 0);
-    assert!(host.request(Read).await.is_err());
     Ok(())
 }
 
 #[tokio::test]
-async fn cloned_port_handles_deliver_each_notification_exactly_once() -> Result<(), RuntimeError> {
+async fn cloned_port_handles_deliver_each_send_exactly_once() -> Result<(), RuntimeError> {
     let mut builder = Program::builder();
-    let port = builder.port::<HostProtocolMessage>(PortId::new("cloned-host"));
+    let port = builder.port::<HostMessage>(PortId::new("cloned-host"));
     let ingress_observed = builder.effect::<IngressObserved>();
     let request_observed = builder.effect::<RequestObserved>();
     let await_release = builder.effect::<AwaitRelease>();
@@ -393,7 +362,7 @@ async fn cloned_port_handles_deliver_each_notification_exactly_once() -> Result<
             await_release,
         },
     );
-    builder.connect(&port, &provider);
+    builder.connect_with(&port, &provider, ProviderMessage::Host);
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
     let (request_observed, _request_observations) = tokio::sync::mpsc::unbounded_channel();
     let runtime = LiveRuntime::builder(builder.build().expect("valid cloned-handle Program"))
@@ -410,10 +379,10 @@ async fn cloned_port_handles_deliver_each_notification_exactly_once() -> Result<
 
     for value in 0..count {
         let host = host.clone();
-        sends.spawn(async move { host.notify(RecordIngress(value)).await });
+        sends.spawn(async move { host.send(HostMessage::RecordIngress(value)).await });
     }
     while let Some(result) = sends.join_next().await {
-        result.expect("notification task did not panic")?;
+        result.expect("send task did not panic")?;
     }
     assert!(task.shutdown(Shutdown::Drain).await?.is_clean());
 
@@ -435,7 +404,10 @@ async fn concurrent_external_requests_keep_their_own_typed_reply() -> Result<(),
 
     // The second request replies first; a FIFO-only implementation would swap
     // these values instead of following each runtime-owned correlation.
-    let (left, right) = tokio::join!(host.request(Delayed(11)), host.request(Delayed(29)));
+    let (left, right) = tokio::join!(
+        host.request_to(|reply_to| HostMessage::Delayed(11, reply_to)),
+        host.request_to(|reply_to| HostMessage::Delayed(29, reply_to))
+    );
     assert_eq!(left?, 11);
     assert_eq!(right?, 29);
 
@@ -450,7 +422,10 @@ async fn drain_preserves_an_admitted_external_request() -> Result<(), RuntimeErr
     let host = runtime.port_handle(&port)?;
     let task = runtime.spawn();
 
-    let request = tokio::spawn(async move { host.request(Delayed(73)).await });
+    let request = tokio::spawn(async move {
+        host.request_to(|reply_to| HostMessage::Delayed(73, reply_to))
+            .await
+    });
     observations
         .recv()
         .await
@@ -470,7 +445,7 @@ async fn cancel_wakes_an_external_request_waiter_without_inventing_a_reply()
     let host = runtime.port_handle(&port)?;
     let task = runtime.spawn();
 
-    let request = tokio::spawn(async move { host.request(Never).await });
+    let request = tokio::spawn(async move { host.request_to(HostMessage::Never).await });
     observations
         .recv()
         .await
@@ -492,7 +467,7 @@ async fn dropping_an_unpolled_request_admits_no_runtime_work() -> Result<(), Run
     let host = runtime.port_handle(&port)?;
     let task = runtime.spawn();
 
-    let request = host.request(Never);
+    let request = host.request_to(HostMessage::Never);
     drop(request);
 
     let report = tokio::time::timeout(Duration::from_secs(1), task.shutdown(Shutdown::Drain))
@@ -525,7 +500,10 @@ async fn dropping_the_waiter_does_not_cancel_runtime_owned_request_work() -> Res
     let host = runtime.port_handle(&port)?;
     let task = runtime.spawn();
 
-    let request = tokio::spawn(async move { host.request(Held(5)).await });
+    let request = tokio::spawn(async move {
+        host.request_to(|reply_to| HostMessage::Held(5, reply_to))
+            .await
+    });
     request_started
         .await
         .expect("the provider issued held request work");
@@ -554,7 +532,7 @@ async fn dropping_the_runtime_owner_wakes_an_external_request_waiter() -> Result
     let host = runtime.port_handle(&port)?;
     let task = runtime.spawn();
 
-    let request = tokio::spawn(async move { host.request(Never).await });
+    let request = tokio::spawn(async move { host.request_to(HostMessage::Never).await });
     observations
         .recv()
         .await
@@ -573,7 +551,7 @@ async fn dropping_the_runtime_owner_wakes_an_external_request_waiter() -> Result
 #[tokio::test]
 async fn component_and_port_ingress_share_one_shutdown_cutoff() -> Result<(), RuntimeError> {
     let mut builder = Program::builder();
-    let port = builder.port::<HostProtocolMessage>(PortId::new("race-host"));
+    let port = builder.port::<HostMessage>(PortId::new("race-host"));
     let ingress_observed = builder.effect::<IngressObserved>();
     let request_observed = builder.effect::<RequestObserved>();
     let await_release = builder.effect::<AwaitRelease>();
@@ -585,7 +563,7 @@ async fn component_and_port_ingress_share_one_shutdown_cutoff() -> Result<(), Ru
             await_release,
         },
     );
-    builder.connect(&port, &provider);
+    builder.connect_with(&port, &provider, ProviderMessage::Host);
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
     let (request_observed, _request_observations) = tokio::sync::mpsc::unbounded_channel();
     let runtime = LiveRuntime::builder(builder.build().expect("valid race Program"))
@@ -613,7 +591,7 @@ async fn component_and_port_ingress_share_one_shutdown_cutoff() -> Result<(), Ru
         let barrier = barrier.clone();
         tokio::spawn(async move {
             barrier.wait().await;
-            protocol.notify(RecordIngress(2)).await
+            protocol.send(HostMessage::RecordIngress(2)).await
         })
     };
     let shutdown = tokio::spawn(async move {
@@ -653,12 +631,12 @@ async fn a_runtime_fault_is_returned_to_the_external_request_waiter() -> Result<
     let task = runtime.spawn();
 
     let request_error = host
-        .request(Crash)
+        .request_to(HostMessage::Crash)
         .await
         .expect_err("the provider transition faults the runtime");
     assert!(request_error.to_string().contains("transition panicked"));
     let later_error = host
-        .notify(Set(1))
+        .send(HostMessage::Set(1))
         .await
         .expect_err("later Port ingress observes the stored fault");
     assert_eq!(request_error.to_string(), later_error.to_string());
@@ -678,14 +656,18 @@ async fn request_conversion_panics_are_contained_as_runtime_faults() -> Result<(
     let host = runtime.port_handle(&port)?;
     let task = runtime.spawn();
 
+    // The constructor runs inside the runtime, when the request is processed,
+    // so its panic is contained as a runtime fault rather than unwinding the
+    // host task.
     let request_error = host
-        .request(PanickingRequest)
+        .request_to(|_reply_to: ReplyTo<()>| -> HostMessage { panic!("request conversion panic") })
         .await
         .expect_err("conversion panic faults the runtime");
     assert!(
         request_error
             .to_string()
-            .contains("external Request protocol conversion panicked")
+            .contains("protocol conversion panicked"),
+        "{request_error}"
     );
 
     let shutdown_error = task
@@ -697,42 +679,45 @@ async fn request_conversion_panics_are_contained_as_runtime_faults() -> Result<(
 }
 
 #[tokio::test]
-async fn notification_conversion_panics_are_contained_as_runtime_faults() -> Result<(), RuntimeError>
-{
-    let (program, port) = program();
+async fn send_binding_conversion_panics_are_contained_after_earlier_sends_land()
+-> Result<(), RuntimeError> {
+    let (program, port) = selectively_panicking_binding_program();
     let runtime = runtime_with_default_effects(program);
     let host = runtime.port_handle(&port)?;
     let task = runtime.spawn();
 
-    host.notify(PanickingNotification).await?;
+    // A send carries a finished value, so the only conversion that can panic
+    // for it is the Port's binding. Earlier sends through the same binding
+    // land; the poisoned one faults the runtime when it is processed.
+    host.send(HostMessage::Set(41)).await?;
+    assert_eq!(host.request_to(HostMessage::Read).await?, 41);
+    host.send(HostMessage::Set(0)).await?;
     let error = task
         .shutdown(Shutdown::Drain)
         .await
-        .expect_err("notification conversion panic faults the runtime");
+        .expect_err("send binding conversion panic faults the runtime");
     assert!(
-        error
-            .to_string()
-            .contains("external Notification protocol conversion panicked")
+        error.to_string().contains("binding conversion panicked"),
+        "{error}"
     );
     Ok(())
 }
 
 #[tokio::test]
-async fn notification_binding_panics_are_contained_as_runtime_faults() -> Result<(), RuntimeError> {
+async fn send_binding_panics_are_contained_as_runtime_faults() -> Result<(), RuntimeError> {
     let (program, port) = panicking_binding_program();
     let runtime = LiveRuntime::builder(program).build()?;
     let host = runtime.port_handle(&port)?;
     let task = runtime.spawn();
 
-    host.notify(BindingNotification).await?;
+    host.send(BindingMessage::Signal).await?;
     let error = task
         .shutdown(Shutdown::Drain)
         .await
-        .expect_err("notification binding panic faults the runtime");
+        .expect_err("send binding panic faults the runtime");
     assert!(
-        error
-            .to_string()
-            .contains("external Notification binding conversion panicked")
+        error.to_string().contains("binding conversion panicked"),
+        "{error}"
     );
     Ok(())
 }
@@ -745,13 +730,14 @@ async fn request_binding_panics_are_contained_as_runtime_faults() -> Result<(), 
     let task = runtime.spawn();
 
     let request_error = host
-        .request(BindingRequest)
+        .request_to(BindingMessage::Ask)
         .await
         .expect_err("request binding panic faults the runtime");
     assert!(
         request_error
             .to_string()
-            .contains("external Request binding conversion panicked")
+            .contains("binding conversion panicked"),
+        "{request_error}"
     );
     let shutdown_error = task
         .shutdown(Shutdown::Cancel)

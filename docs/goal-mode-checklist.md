@@ -29,6 +29,7 @@ Governing documents:
 - [ADR-0013: Component Kinds, Assemblies, and Provisional First-Party Effects](adr/0013-component-kinds-assemblies-and-first-party-effects.md)
 - [ADR-0014: Jacks and Plugs](adr/0014-jacks-and-plugs.md)
 - [ADR-0015: Ports, Connectors, and the Message Type](adr/0015-ports-connectors-and-the-message-type.md)
+- [ADR-0016: One Sending API](adr/0016-one-sending-api.md)
 - [Architecture Test Strategy](testing/architecture-test-strategy.md)
 - [v0 Acceptance Matrix](testing/v0-acceptance-matrix.md)
 

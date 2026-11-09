@@ -43,17 +43,11 @@ fn http_fixture() -> HttpTimeServerConfig {
 
 struct TimeReader;
 
-struct TimeReaderConfig(Port<TimeServerProtocolMessage>);
+struct TimeReaderConfig(Port<TimeServerMessage>);
 
 enum ReadMessage {
     Read,
     Received(RequestOutcome<Option<DateTime<Utc>>>),
-}
-
-impl From<RequestOutcome<Option<DateTime<Utc>>>> for ReadMessage {
-    fn from(outcome: RequestOutcome<Option<DateTime<Utc>>>) -> Self {
-        Self::Received(outcome)
-    }
 }
 
 impl Component for TimeReader {
@@ -71,7 +65,11 @@ impl Component for TimeReader {
         message: Self::Message,
     ) -> Command<Self::Message> {
         match message {
-            ReadMessage::Read => Command::request(config.0.clone(), GetCurrentTime),
+            ReadMessage::Read => Command::request_to(
+                config.0.clone(),
+                TimeServerMessage::GetCurrentTime,
+                ReadMessage::Received,
+            ),
             ReadMessage::Received(RequestOutcome::Replied(time)) => {
                 model.push(time);
                 Command::none()

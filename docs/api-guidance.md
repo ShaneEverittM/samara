@@ -549,11 +549,10 @@ one mechanism, exporting `Msg` as an opaque type and publishing constructor
 functions for the callable subset. A Rust library can do the same with a
 public newtype over a private enum as its `Component::Message`, public
 constructor functions including ones that take a `ReplyTo`, and a Connector of it,
-needing no `messages!` at all. `messages!` remains the monolith's tool: it
-types request and reply pairs as a trait on the request, which Elm never
-needed because its queries were function calls on a shared Model and its
-asynchronous replies were typed by the `expect` argument, which is what
-`request_to` does.
+and both sides of a Port binding are written the same way. Elm never needed a
+request trait because its queries were function calls on a shared Model and
+its asynchronous replies were typed by the `expect` argument, which is what
+`request_to` does; Samara had one briefly and removed it (ADR-0016).
 
 ### Why Are Ports the Normal Component Dependency Boundary?
 
@@ -586,26 +585,31 @@ transitive dependency of every consumer. Across a crate boundary, a `Connector<M
 exported by the target's Assembly gives the same direct delivery without
 naming the Component kind.
 
-### Why Are Notification and Request APIs Symmetric?
+### Why Is There One Sending API?
 
 
-The two Port interaction forms should teach each other. `Command::notify` accepts a
-value implementing `Notification<P>` and requests one-way delivery through a
-`Port<P>`. `Command::request` accepts a value implementing `Request<P>`, whose
-associated Reply type defines the successful result, and uses the requester's
-canonical `From<RequestOutcome<...>>` conversion. `Command::request_with`
-accepts an explicit continuation instead.
+A Command names its destination, a `Port<M>`, `Connector<M>`, or
+`ComponentRef<C>`, and delivers a value of `M`. `Command::send` delivers a
+one-way message. `Command::request_to` delivers a message whose variant
+carries a `ReplyTo<R>`: the caller passes the variant's constructor, the
+runtime mints the token, and the constructor's `ReplyTo<R>` parameter fixes
+the reply type the continuation must accept. That is the whole request
+protocol. No trait names a request, no macro generates one, and the pairing
+of request and reply is written once, in the variant, where the data is
+(ADR-0016).
 
-At the live host boundary, `PortHandle::notify` accepts the same Notification
-value and `PortHandle::request` accepts the same Request value. The successful
-host Request result is the associated Reply directly because ordinary Tokio host
-code can await; that convenience does not change the provider's Port message
-or `ReplyTo` path.
+The live host boundary has the same two forms. `PortHandle::send` takes the
+same message value and `PortHandle::request_to` the same constructor; the
+host awaits `R` directly because ordinary Tokio code can, which changes
+nothing on the provider's side.
 
-This naming states the relevant intent in the same vocabulary at both layers:
-notification values are notified, and request values are requested. An
-explicit continuation on `Command::request_with` is meaningful request/reply
-information, not incidental transport ceremony.
+Samara briefly had a second spelling, a `Request` trait with an associated
+`Reply` and a `messages!` macro to generate request types, before the
+constructor form existed. Once both were present they gave the same
+guarantee twice, and the two interaction forms are supposed to teach each
+other, not compete. The explicit continuation on `request_to` is meaningful
+request and reply information, not transport ceremony; `Message::from` is
+the canonical choice when one reply has one meaning.
 
 ### Why Can't a Correlated Request Feel Exactly Like a Function Call?
 
@@ -627,9 +631,9 @@ irreducible information is likely hiding magic or discarding semantics.
 For a Component-issued Request, the request continuation is a one-shot message
 mapper: it says what Component Message should be produced when the Request
 terminates. For a live host Request, the awaiting host future is the completion
-destination and successful completion returns `R::Reply` directly. Each dynamic
-occurrence is still a `RequestInvocation` containing the Request value and a
-`ReplyTo` for the provider. Opaque runtime bookkeeping distinguishes that
+destination and successful completion returns `R` directly. Each dynamic
+occurrence is a message variant carrying its arguments and a `ReplyTo<R>` for
+the provider. Opaque runtime bookkeeping distinguishes that
 invocation from every other invocation. Captured values, such as a domain
 request ID, preserve a Component's reason for making the Request.
 
@@ -672,34 +676,34 @@ waiter with `RuntimeError` without manufacturing a Component outcome.
 ### How Do I Bound a Request's Lifetime?
 
 
-Use `Command::request_timeout(port, request, duration)` for the canonical
-`From<RequestOutcome<Reply>>` conversion, or
-`Command::request_timeout_with(port, request, duration, mapper)` to capture
-application context. The runtime starts the duration when interpreting the
-Command, using logical time in controlled execution and Tokio time live.
+Use `Command::request_to_timeout(target, constructor, duration, mapper)`;
+pass `Message::from` as the mapper for the canonical
+`From<RequestOutcome<R>>` conversion or a closure to capture application
+context. The runtime starts the duration when interpreting the Command, using
+logical time in controlled execution and Tokio time live.
 
 A Reply succeeds only if interpreted strictly before the deadline; otherwise
 one `TimedOut` Message releases the request obligation. Zero always times out.
 Late Replies are discarded. The deadline is removed on either outcome, so a
 successful request does not leave a timer holding Drain open.
 
-Hosts use `port_handle.request_timeout(request, duration).await`, returning
-`Result<RequestOutcome<Reply>, RuntimeError>`. This duration includes time
-queued after admission on first poll. Dropping the waiter leaves the request
-and deadline owned by the runtime. Wrapping an unbounded `request` in
-`tokio::time::timeout` only stops host observation; it does not release Samara's
-outstanding request.
+Hosts use `port_handle.request_to_timeout(constructor, duration).await`,
+returning `Result<RequestOutcome<R>, RuntimeError>`. This duration includes
+time queued after admission on first poll. Dropping the waiter leaves the
+request and deadline owned by the runtime. Wrapping an unbounded `request_to`
+in `tokio::time::timeout` only stops host observation; it does not release
+Samara's outstanding request.
 
 Timeout bounds reply acceptance, not provider work or wall-clock response
 latency. The provider still receives an admitted Message and may finish effects
 after the requester has timed out. Stopping it or retrying safely needs an
-explicit application protocol. `request` and `request_with` remain unbounded.
+explicit application protocol. `request_to` remains unbounded.
 
 ### Why Do Component Request Outcomes Return as Messages Rather Than Futures?
 
 
 Components do not suspend inside `update` and do not retain runtime-owned
-futures. A Request is declared through `Command::request` now; its typed
+futures. A Request is declared through `Command::request_to` now; its typed
 `RequestOutcome` arrives later through the Component's ordinary Message and
 transition path. This keeps request/reply compatible with pure transitions,
 controlled execution, and per-Component serialization. `RequestError` carries
@@ -707,8 +711,8 @@ runtime-visible failures other than timeout and cancellation; the exact outcome
 and error variants remain subject to the lifecycle policy.
 
 Surrounding Tokio code is outside the Component transition boundary, so
-ADR-0006 deliberately gives `PortHandle::request` an awaitable
-`Result<R::Reply, RuntimeError>`. This is not an escape hatch for Components:
+ADR-0006 deliberately gives `PortHandle::request_to` an awaitable
+`Result<R, RuntimeError>`. This is not an escape hatch for Components:
 `PortHandle` is live-only, cannot access Model state, and must not be placed in a
 Component or passed to `update`. If the host wants a Reply to affect application
 state, it must submit another admitted Component Message or Port operation.
@@ -842,7 +846,7 @@ application model.
 Live host capabilities such as ComponentHandle and PortHandle are profile
 boundaries, not part of the Program stored in Component configuration. PortHandle
 therefore need not have a ControlledRuntime twin, but work admitted through it
-must enter the same Port binding, Port message, RequestInvocation, and
+must enter the same Port binding, Port message, reply token, and
 provider transition used by the shared Program.
 
 ### What Does Successful Live Ingress Mean?
@@ -850,7 +854,7 @@ provider transition used by the shared Program.
 
 Under ADR-0004, a successful `ComponentHandle::send` means the Message has
 crossed the admission boundary and is owned for runtime-managed delivery.
-ADR-0006 gives `PortHandle` the same cutoff. A successful notify means accepted,
+ADR-0006 gives `PortHandle` the same cutoff. A successful send means accepted,
 not transition completion. A request future attempts admission when first
 polled; once it is waiting for a Reply, the Request is runtime-owned even if the
 host drops the waiter. An operation racing shutdown or a runtime fault is either

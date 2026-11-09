@@ -446,26 +446,28 @@ fn initial_foreign_send_program() -> Program {
     owner.build().expect("valid owner Program")
 }
 
-messages! {
-    enum ForeignProtocolMessage {
-        Signal,
-        Read -> (),
-    }
+/// The foreign Port's vocabulary; the request carries its own reply token.
+/// Nothing is ever connected to the Port (the point is that it belongs to
+/// another Program), so no provider reads the token.
+#[allow(dead_code)]
+enum ForeignMessage {
+    Signal,
+    Read(ReplyTo<()>),
 }
 
-struct InitialForeignNotification;
+struct InitialForeignPortSend;
 
-struct InitialForeignNotificationConfig {
-    port: Port<ForeignProtocolMessage>,
+struct InitialForeignPortSendConfig {
+    port: Port<ForeignMessage>,
 }
 
-impl Component for InitialForeignNotification {
-    type Config = InitialForeignNotificationConfig;
+impl Component for InitialForeignPortSend {
+    type Config = InitialForeignPortSendConfig;
     type Model = ();
     type Message = ();
 
     fn init(config: &Self::Config) -> Init<Self::Model, Self::Message> {
-        Init::new(()).with_command(Command::notify(config.port.clone(), Signal))
+        Init::new(()).with_command(Command::send(config.port.clone(), ForeignMessage::Signal))
     }
 
     fn update(
@@ -480,7 +482,7 @@ impl Component for InitialForeignNotification {
 struct InitialForeignRequest;
 
 struct InitialForeignRequestConfig {
-    port: Port<ForeignProtocolMessage>,
+    port: Port<ForeignMessage>,
 }
 
 impl Component for InitialForeignRequest {
@@ -489,7 +491,11 @@ impl Component for InitialForeignRequest {
     type Message = ();
 
     fn init(config: &Self::Config) -> Init<Self::Model, Self::Message> {
-        Init::new(()).with_command(Command::request_with(config.port.clone(), Read, |_| ()))
+        Init::new(()).with_command(Command::request_to(
+            config.port.clone(),
+            ForeignMessage::Read,
+            |_| (),
+        ))
     }
 
     fn update(
@@ -503,7 +509,7 @@ impl Component for InitialForeignRequest {
 
 fn initial_foreign_port_program(request: bool) -> Program {
     let mut foreign = Program::builder();
-    let port = foreign.port(PortId::new("foreign"));
+    let port = foreign.port::<ForeignMessage>(PortId::new("foreign"));
     let mut owner = Program::builder();
     if request {
         owner.component::<InitialForeignRequest>(
@@ -511,9 +517,9 @@ fn initial_foreign_port_program(request: bool) -> Program {
             InitialForeignRequestConfig { port },
         );
     } else {
-        owner.component::<InitialForeignNotification>(
-            ComponentId::new("initial-foreign-notification"),
-            InitialForeignNotificationConfig { port },
+        owner.component::<InitialForeignPortSend>(
+            ComponentId::new("initial-foreign-port-send"),
+            InitialForeignPortSendConfig { port },
         );
     }
     owner.build().expect("valid owner Program")

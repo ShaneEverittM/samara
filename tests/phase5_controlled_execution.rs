@@ -1196,7 +1196,11 @@ impl Component for OwnershipComponent {
         match message {
             OwnershipMessage::Kick => Command::batch([
                 Command::effect_with(&config.effect, ProbeEffect(1), OwnershipMessage::Effect),
-                Command::request_with(config.port.clone(), Echo(1), OwnershipMessage::Request),
+                Command::request_to(
+                    config.port.clone(),
+                    |reply_to| EchoProtocolMessage::Echo(1, reply_to),
+                    OwnershipMessage::Request,
+                ),
             ]),
             OwnershipMessage::Effect(outcome) => {
                 let _ = outcome;
@@ -1370,20 +1374,11 @@ fn v10_reading_controlled_trace_after_drive_has_no_feedback_path() {
 
 // Successful and unanswered typed Requests --------------------------------
 
+/// The provider's vocabulary, written by hand: the request variant carries
+/// its own reply token.
 #[derive(Debug)]
 enum EchoProtocolMessage {
-    Echo(RequestInvocation<EchoProtocolMessage, Echo>),
-}
-
-#[derive(Debug)]
-struct Echo(u64);
-
-impl Request<EchoProtocolMessage> for Echo {
-    type Reply = u64;
-
-    fn into_message(self, reply_to: ReplyTo<Self::Reply>) -> EchoProtocolMessage {
-        EchoProtocolMessage::Echo(RequestInvocation::new(self, reply_to))
-    }
+    Echo(u64, ReplyTo<u64>),
 }
 
 #[derive(Debug)]
@@ -1417,11 +1412,11 @@ impl Component for EchoProvider {
         _model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
-        let EchoProviderMessage::Protocol(EchoProtocolMessage::Echo(invocation)) = message;
+        let EchoProviderMessage::Protocol(EchoProtocolMessage::Echo(value, reply_to)) = message;
         if config.reply {
-            Command::reply(invocation.reply_to, invocation.request.0)
+            Command::reply(reply_to, value)
         } else {
-            let _unanswered = invocation.reply_to;
+            let _unanswered = reply_to;
             Command::none()
         }
     }
@@ -1462,9 +1457,11 @@ impl Component for EchoRequester {
     ) -> Command<Self::Message> {
         match message {
             EchoRequesterMessage::Start => Command::batch((0..config.requests).map(|slot| {
-                Command::request_with(config.port.clone(), Echo(7), move |outcome| {
-                    EchoRequesterMessage::Replied { slot, outcome }
-                })
+                Command::request_to(
+                    config.port.clone(),
+                    |reply_to| EchoProtocolMessage::Echo(7, reply_to),
+                    move |outcome| EchoRequesterMessage::Replied { slot, outcome },
+                )
             })),
             EchoRequesterMessage::Replied {
                 slot,

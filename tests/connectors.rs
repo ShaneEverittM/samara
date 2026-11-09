@@ -11,11 +11,15 @@ use samara::prelude::*;
 mod journal_lib {
     use samara::prelude::*;
 
-    messages! {
-        pub enum JournalMessage {
-            Transition { name: String, from: String, to: String },
-            Recent(usize) -> Vec<String>,
-        }
+    /// The library's public vocabulary. A request carries its reply token.
+    #[derive(Debug)]
+    pub enum JournalMessage {
+        Transition {
+            name: String,
+            from: String,
+            to: String,
+        },
+        Recent(usize, ReplyTo<Vec<String>>),
     }
 
     struct Recorder;
@@ -43,10 +47,10 @@ mod journal_lib {
                     entries.push(format!("{name}: {from} -> {to}"));
                     Command::none()
                 }
-                JournalMessage::Recent(call) => {
-                    let count = call.request.0.min(entries.len());
+                JournalMessage::Recent(count, reply_to) => {
+                    let count = count.min(entries.len());
                     let recent = entries[entries.len() - count..].to_vec();
-                    Command::reply(call.reply_to, recent)
+                    Command::reply(reply_to, recent)
                 }
             }
         }
@@ -68,15 +72,18 @@ mod journal_lib {
     }
 }
 
-use journal_lib::{Journal, JournalMessage, Recent};
+use journal_lib::{Journal, JournalMessage};
 
 // The application's own vocabulary. Its Components depend on this Port and
 // never name `JournalMessage`.
-messages! {
-    pub enum AuditMessage {
-        Changed { what: String, from: String, to: String },
-        Tail(usize) -> Vec<String>,
-    }
+#[derive(Debug)]
+pub enum AuditMessage {
+    Changed {
+        what: String,
+        from: String,
+        to: String,
+    },
+    Tail(usize, ReplyTo<Vec<String>>),
 }
 
 struct Monitor;
@@ -111,23 +118,27 @@ impl Component for Monitor {
     ) -> Command<MonitorMessage> {
         match message {
             MonitorMessage::Start => Command::batch([
-                Command::notify(
+                Command::send(
                     config.audit.clone(),
-                    Changed {
+                    AuditMessage::Changed {
                         what: "api".into(),
                         from: "up".into(),
                         to: "down".into(),
                     },
                 ),
-                Command::notify(
+                Command::send(
                     config.audit.clone(),
-                    Changed {
+                    AuditMessage::Changed {
                         what: "api".into(),
                         from: "down".into(),
                         to: "up".into(),
                     },
                 ),
-                Command::request_with(config.audit.clone(), Tail(1), MonitorMessage::Tail),
+                Command::request_to(
+                    config.audit.clone(),
+                    |reply_to| AuditMessage::Tail(1, reply_to),
+                    MonitorMessage::Tail,
+                ),
             ]),
             MonitorMessage::Tail(RequestOutcome::Replied(tail)) => {
                 model.tail = Some(tail);
@@ -147,10 +158,7 @@ fn couple(message: AuditMessage) -> JournalMessage {
             from,
             to,
         },
-        AuditMessage::Tail(call) => JournalMessage::Recent(RequestInvocation::new(
-            Recent(call.request.0),
-            call.reply_to,
-        )),
+        AuditMessage::Tail(count, reply_to) => JournalMessage::Recent(count, reply_to),
     }
 }
 
@@ -227,11 +235,11 @@ fn a_connector_from_another_program_is_rejected_at_build() {
 
 // ---------------------------------------------------------------------------
 // A Connector as a first-class address: send and request with no Port and no
-// message macro, the way an Elm module exposes an opaque `Msg` with constructors.
+// message enum, the way an Elm module exposes an opaque `Msg` with constructors.
 // ---------------------------------------------------------------------------
 
 /// Stands in for a crate written the Elm way: an opaque message type whose
-/// public surface is its constructor functions. No `messages!`, no Port.
+/// public surface is its constructor functions. No shared enum, no Port.
 mod tally_lib {
     use samara::prelude::*;
 
@@ -485,7 +493,7 @@ impl Component for DirectMonitor {
                 ),
                 Command::request_to(
                     config.audit.clone(),
-                    |reply_to| AuditMessage::Tail(RequestInvocation::new(Tail(1), reply_to)),
+                    |reply_to| AuditMessage::Tail(1, reply_to),
                     MonitorMessage::Tail,
                 ),
             ]),
@@ -582,7 +590,7 @@ fn an_initial_request_to_a_foreign_connector_fails_both_profile_builds() {
 }
 
 #[test]
-fn request_intents_only_see_port_requests() {
+fn a_connector_request_is_inspectable_without_a_runtime() {
     let mut program = Program::builder();
     let tally = program.install::<Tally>(());
     let command: Command<TellerMessage> = Command::request_to(
@@ -590,8 +598,15 @@ fn request_intents_only_see_port_requests() {
         TallyMessage::total,
         TellerMessage::Total,
     );
-    // A Connector request has no request value until the runtime mints its token;
-    // it is observed through controlled execution instead.
-    assert!(command.request_intents::<()>().is_empty());
-    assert!(command.request_intents::<TallyMessage>().is_empty());
+    // The message is built with an inert reply token; the continuation runs on
+    // an outcome the test chooses. The library's private `Inner` stays private,
+    // so the test can only observe what the constructor exposes.
+    let intent = command
+        .into_request_to::<TallyMessage>()
+        .ok()
+        .expect("a request addressed with TallyMessage");
+    assert!(matches!(
+        intent.reply(RequestOutcome::Replied(5u64)),
+        TellerMessage::Total(RequestOutcome::Replied(5))
+    ));
 }

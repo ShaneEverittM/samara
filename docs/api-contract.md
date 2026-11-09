@@ -105,12 +105,13 @@ The July 25 API revision adopts one consistent continuation convention without
 changing these lifecycle semantics or the concrete
 `Component::update(...) -> Command<Message>` boundary:
 
-- `Command::effect(&capability, effect)`, `Command::request(port, request)`,
+- `Command::effect(&capability, effect)`,
   `Subscription::source(&capability, id, descriptor)`, and
   `HttpResponsePipeline::into_command(&capability)` use the standard
   `Message: From<BoundaryValue>` conversion as their default mapper.
-- Their `effect_with`, `request_with`, `source_with`, and
-  `into_command_with` counterparts accept an explicit pure mapper.
+- Their `effect_with`, `source_with`, and `into_command_with` counterparts
+  accept an explicit pure mapper. `Command::request_to` always takes the
+  mapper explicitly; `Message::from` is the canonical argument (ADR-0016).
 - The default is appropriate only when one boundary type has one canonical
   Message meaning. Captured domain correlation or call-site-specific meaning
   remains explicit through the `_with` form.
@@ -223,14 +224,15 @@ boundary to provider-neutral Ports:
 - `Port<P>` remains inert logical wiring suitable for Component configuration.
   `PortHandle<P>` is a live capability for surrounding Tokio code and exposes no
   provider, Model, transition, channel, or runtime topology.
-- `PortHandle::notify` and `PortHandle::request` attempt admission when their
-  futures are first polled. They share the same atomic cutoff as
-  `ComponentHandle` and the owning `RuntimeTask`.
-- Successful notify means accepted for runtime-managed conversion and delivery,
+- `PortHandle::send` and `PortHandle::request_to` (originally `notify` and
+  `request`; ADR-0016) attempt admission when their futures are first polled.
+  They share the same atomic cutoff as `ComponentHandle` and the owning
+  `RuntimeTask`.
+- Successful send means accepted for runtime-managed conversion and delivery,
   not that the provider transition completed.
-- An admitted host Request uses the same Port binding, `RequestInvocation`,
-  opaque correlation, and `ReplyTo` path as `Command::request`, but its awaited
-  success is `R::Reply` directly. It creates neither a requester Component
+- An admitted host request uses the same Port binding, message variant,
+  opaque correlation, and `ReplyTo` path as `Command::request_to`, but its
+  awaited success is `R` directly. It creates neither a requester Component
   Message nor `RequestOutcome::Replied`.
 - Drain closes new Port ingress and retains admitted Notifications, Requests,
   Replies, and their causal finite work. An unanswered host Request may keep
@@ -252,9 +254,9 @@ remain deferred.
 
 ## Accepted and Implemented Contract: Request Timeouts
 
-[ADR-0011](adr/0011-request-timeouts.md) adds opt-in
-`Command::request_timeout`, `Command::request_timeout_with`, and
-`PortHandle::request_timeout`. Existing request forms remain unbounded.
+[ADR-0011](adr/0011-request-timeouts.md) adds opt-in request deadlines, now
+spelled `Command::request_to_timeout` and `PortHandle::request_to_timeout`
+(ADR-0016). `request_to` remains unbounded.
 
 - Component durations start at Command interpretation; host durations start at
   admission on first poll, including queued time. Controlled deadlines use
@@ -554,9 +556,36 @@ exposed and renames the consumer-owned one:
   ADR-0008.
 - `Connector::accepting(map)` returns a Connector of another Message type that converts
   through `map` first; `map` must be pure.
-- `Command::request_intents` sees Port requests only. A Connector request has no
-  request value before its token exists and is observed through controlled
-  execution.
+- A Connector request is inspected with `Command::into_request_to`, which
+  builds its message with an inert reply token (ADR-0016).
+
+## Accepted and Implemented Contract: One Sending API
+
+[ADR-0016](adr/0016-one-sending-api.md) removes the trait form of Port
+interaction and leaves one way for a Command to reach a Component:
+
+- `Addressable` is implemented for `Port<M>`, `Connector<M>`, and
+  `ComponentRef<C>`. `Command::send(target, message)`,
+  `Command::request_to(target, constructor, map)`, and
+  `Command::request_to_timeout(target, constructor, timeout, map)` accept any
+  of them and deliver a value of the destination's message type.
+- A request is a message variant carrying `ReplyTo<R>`; `constructor:
+  FnOnce(ReplyTo<R>) -> M` fixes `R`, and `map: FnOnce(RequestOutcome<R>) ->
+  Message` is checked against it. The provider answers with
+  `Command::reply(reply_to, value)`.
+- A Port-addressed send resolves through the Port's binding at
+  interpretation and is traced as `TraceCommandKind::Send` with
+  `target_port` set and `target_component` empty. `TraceCommandKind::Notify`
+  no longer exists.
+- `Command::send_intents::<M>()` searches batches for sends of `M`.
+  `Command::into_request_to::<M>()` extracts a top-level request as a
+  `RequestIntent` whose `message` was built with an inert `ReplyTo` and whose
+  `reply(outcome)` runs the continuation. The inert token belongs to no
+  Program and is rejected as foreign if a reply is ever attempted through it.
+- Removed: `messages!`, `Notification`, `Request`, `RequestInvocation`,
+  `Command::notify`, `request`, `request_with`, `request_timeout`,
+  `request_timeout_with`, `PortHandle::notify`, `request`, `request_timeout`,
+  `Command::notification_intents`, `request_intents`.
 
 ## Deliberately Unfrozen Surfaces
 

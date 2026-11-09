@@ -12,8 +12,8 @@ enum HttpTimeMessage {
     // A tick to drive our model.
     Tick,
 
-    // Received when we are asked for our current time.
-    GetTime(RequestInvocation<TimeServerProtocolMessage, GetCurrentTime>),
+    // Received when we are asked for our current time; the token routes the reply.
+    GetTime(ReplyTo<Option<DateTime<Utc>>>),
 
     // One terminal Message keeps poll cleanup common to every outcome.
     PollFinished(Result<DateTime<Utc>, GetTimeError>),
@@ -31,10 +31,10 @@ impl From<EffectOutcome<TimeResponse, HttpResponseError>> for HttpTimeMessage {
     }
 }
 
-impl From<TimeServerProtocolMessage> for HttpTimeMessage {
-    fn from(value: TimeServerProtocolMessage) -> Self {
+impl From<TimeServerMessage> for HttpTimeMessage {
+    fn from(value: TimeServerMessage) -> Self {
         match value {
-            TimeServerProtocolMessage::GetCurrentTime(request) => Self::GetTime(request),
+            TimeServerMessage::GetCurrentTime(reply_to) => Self::GetTime(reply_to),
         }
     }
 }
@@ -119,7 +119,7 @@ impl Component for HttpTimeServer {
             (Idle { .. }, PollFinished(_)) => Command::none(),
 
             // Cached reads are available in either state.
-            (state, GetTime(request)) => Command::reply(request.reply_to, state.current_time()),
+            (state, GetTime(reply_to)) => Command::reply(reply_to, state.current_time()),
         }
     }
 }
@@ -150,12 +150,6 @@ enum CliMessage {
 
     /// Terminal outcome of a request sent to the time-server Port.
     TimeReceived(RequestOutcome<Option<DateTime<Utc>>>),
-}
-
-impl From<RequestOutcome<Option<DateTime<Utc>>>> for CliMessage {
-    fn from(outcome: RequestOutcome<Option<DateTime<Utc>>>) -> Self {
-        Self::TimeReceived(outcome)
-    }
 }
 
 /// Parses one terminal line without performing I/O or mutating Component state.
@@ -189,7 +183,7 @@ struct CliConfig {
     stdout: EffectCapability<PrintStdout>,
     stderr: EffectCapability<PrintStderr>,
 
-    time_server: Port<TimeServerProtocolMessage>,
+    time_server: Port<TimeServerMessage>,
 }
 
 impl Component for Cli {
@@ -213,9 +207,11 @@ impl Component for Cli {
             CliMessage::Command(CliCommand::Print(text)) => {
                 samara::println!(&config.stdout, "{text}")
             }
-            CliMessage::Command(CliCommand::GetTime) => {
-                Command::request(config.time_server.clone(), GetCurrentTime)
-            }
+            CliMessage::Command(CliCommand::GetTime) => Command::request_to(
+                config.time_server.clone(),
+                TimeServerMessage::GetCurrentTime,
+                CliMessage::TimeReceived,
+            ),
             CliMessage::InvalidCommand(command) => samara::eprintln!(
                 &config.stderr,
                 "Unknown command `{command}`; use `print <text>` or `time`"
@@ -286,10 +282,13 @@ struct TimeResponse {
     data: TimeResponseData,
 }
 
-messages! {
-    enum TimeServerProtocolMessage {
-        GetCurrentTime -> Option<DateTime<Utc>>,
-    }
+/// Provider-neutral vocabulary of the time service, carried by
+/// `Port<TimeServerMessage>`.
+#[derive(Debug)]
+enum TimeServerMessage {
+    /// Asks for the provider's most recently observed time; `None` until it
+    /// has one.
+    GetCurrentTime(ReplyTo<Option<DateTime<Utc>>>),
 }
 
 #[cfg(unix)]
@@ -307,7 +306,7 @@ async fn main() -> Result<()> {
     let cli_input = builder.source::<StdinLines>();
 
     // A Port names the provider-neutral time service consumed by the CLI.
-    let time_port = builder.port::<TimeServerProtocolMessage>(PortId::new(TIME_SERVER_PORT));
+    let time_port = builder.port::<TimeServerMessage>(PortId::new(TIME_SERVER_PORT));
 
     // The concrete provider happens to obtain time over HTTP.
     let http_time_server = builder.component::<HttpTimeServer>(
@@ -413,9 +412,17 @@ mod tests {
         );
 
         let time = Cli::update(&cli, &mut model, CliMessage::Command(CliCommand::GetTime));
-        let requests = time.request_intents::<GetCurrentTime>();
-        assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].0, &PortId::new(TIME_SERVER_PORT));
+        let request = time
+            .into_request_to::<TimeServerMessage>()
+            .unwrap_or_else(|_| panic!("`time` should request the time server"));
+        assert!(matches!(
+            request.message,
+            TimeServerMessage::GetCurrentTime(_)
+        ));
+        assert!(matches!(
+            request.reply(RequestOutcome::Replied(None::<DateTime<Utc>>)),
+            CliMessage::TimeReceived(RequestOutcome::Replied(None))
+        ));
     }
 
     #[test]

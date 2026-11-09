@@ -23,11 +23,11 @@ impl SourceDescriptor for Pulses {
     type Error = Infallible;
 }
 
-messages! {
-    pub enum LedgerMessage {
-        Record(String),
-        Count -> usize,
-    }
+/// The Assembly's exported vocabulary, written by hand: the request variant
+/// carries its own reply token.
+pub enum LedgerMessage {
+    Record(String),
+    Count(ReplyTo<usize>),
 }
 
 struct Recorder;
@@ -68,8 +68,8 @@ impl Component for Recorder {
                 entries.push(entry);
                 Command::effect_with(&config.stamp, Stamp, RecorderMessage::Stamped)
             }
-            RecorderMessage::Ledger(LedgerMessage::Count(call)) => {
-                Command::reply(call.reply_to, entries.len())
+            RecorderMessage::Ledger(LedgerMessage::Count(reply_to)) => {
+                Command::reply(reply_to, entries.len())
             }
             RecorderMessage::Stamped(EffectOutcome::Succeeded(stamp)) => {
                 entries.push(format!("stamp {stamp}"));
@@ -120,7 +120,7 @@ impl Assembly for Recorder {
             ComponentId::new("recorder"),
             RecorderCapabilities { stamp, pulses },
         );
-        program.connect(&ledger, &recorder);
+        program.connect_with(&ledger, &recorder, RecorderMessage::Ledger);
         RecorderExports { ledger, recorder }
     }
 }
@@ -183,10 +183,16 @@ async fn live_builder_binds_every_requirement_through_with_assembly() {
     let task = runtime.spawn();
 
     client
-        .notify(Record("first".into()))
+        .send(LedgerMessage::Record("first".into()))
         .await
-        .expect("notification accepted");
-    assert_eq!(client.request(Count).await.expect("count reply"), 1);
+        .expect("send accepted");
+    assert_eq!(
+        client
+            .request_to(LedgerMessage::Count)
+            .await
+            .expect("count reply"),
+        1
+    );
 
     task.shutdown(Shutdown::Drain)
         .await

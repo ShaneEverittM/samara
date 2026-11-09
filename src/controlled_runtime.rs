@@ -854,57 +854,6 @@ impl ControlledCore {
                         self.now,
                     );
                 }
-                CommandKind::Notify(command) => {
-                    let port = command.port().clone();
-                    let protocol = command.protocol_type_id();
-                    let detail_type = command.notification_type_name();
-                    let work = self.command_trace(
-                        cause,
-                        component,
-                        TraceCommandKind::Notify,
-                        detail_type,
-                        None,
-                        Some(port.clone()),
-                    );
-                    if !Arc::ptr_eq(command.port_program(), &self.program.program) {
-                        return Err(self.set_fault(
-                            component.clone(),
-                            None,
-                            work,
-                            "notification Port belongs to another Program",
-                        ));
-                    }
-                    let Some(binding_index) = self.binding_index(protocol, &port) else {
-                        return Err(self.set_fault(
-                            component.clone(),
-                            None,
-                            work,
-                            "notification Port has no runtime binding",
-                        ));
-                    };
-                    let protocol_message = command.into_message();
-                    let (target, message_type, message_type_name, message) = {
-                        let binding = &self.program.bindings[binding_index];
-                        (
-                            binding.provider_id().clone(),
-                            binding.provider_message_type(),
-                            binding.provider_message_type_name(),
-                            binding.convert(protocol_message),
-                        )
-                    };
-                    self.schedule_message(
-                        QueuedMessage {
-                            target,
-                            target_message_type: message_type,
-                            message_type_name,
-                            message,
-                            cause: work,
-                            source: None,
-                            delivery: DeliveryKind::Message,
-                        },
-                        self.now,
-                    );
-                }
                 CommandKind::Request(command) => {
                     let request_type = command.request_type_name();
                     let reply_type = command.reply_type_id();
@@ -993,7 +942,7 @@ impl ControlledCore {
                     let correlation = self.next_correlation;
                     self.next_correlation += 1;
                     let token = RequestToken::new(correlation, self.program.program.clone());
-                    let (protocol_message, mapper): (_, ErasedRequestMapper<Message>) =
+                    let (port_message, mapper): (_, ErasedRequestMapper<Message>) =
                         command.into_parts(token.clone());
                     let mapper: ErasedRequestMapper<ErasedValue> =
                         Box::new(move |reply| Box::new(mapper(reply)));
@@ -1004,14 +953,14 @@ impl ControlledCore {
                                 binding.provider_id().clone(),
                                 binding.provider_message_type(),
                                 binding.provider_message_type_name(),
-                                binding.convert(protocol_message),
+                                binding.convert(port_message),
                             )
                         }
                         MessageRoute::Direct {
                             target,
                             message_type,
                             message_type_name,
-                        } => (target, message_type, message_type_name, protocol_message),
+                        } => (target, message_type, message_type_name, port_message),
                     };
                     self.requests.push(OutstandingRequest {
                         token,
