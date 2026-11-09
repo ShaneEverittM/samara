@@ -327,16 +327,13 @@ which Samara does not have.
 Message type it accepts, `Connector<M>`, together with the pure conversion from `M`
 into the Component's private Message. A Component or Assembly hands out a Connector
 to expose itself without naming its Component kind; the holder connects it to
-one of its own Ports with `connect_with`, writing the coupling between the two
-vocabularies once at that site, or holds it directly and addresses it with
+one of its own Ports with `connect` after adapting it with `accepting`,
+writing the coupling between the two vocabularies once at that site, or
+holds it directly and addresses it with
 `Command::send` and `Command::request_to`, whose request is a constructor
 function the provider published taking `ReplyTo<R>`. `Connector::accepting`
 adapts a Connector to the holder's vocabulary. Like `ComponentRef` and `Port`, a
 Connector grants no delivery capability.
-
-**Connectable** — The trait of things a Port can be bound to: `ComponentRef<C>`
-and `Connector<M>`. `connect` and `connect_with` accept either. Applications do
-not implement it.
 
 **Provider** — The Component that receives what is sent through a Port or to
 a Connector: selected at program assembly for a Port, named by the Connector
@@ -348,11 +345,13 @@ awaits its Reply through `PortHandle`. In both cases the runtime owns transport
 correlation.
 
 **Port binding** — The assembly-time mapping from one exact named Port to a
-Connectable provider and its Message vocabulary. `connect` uses the provider
-Message's `From<M>` for a `Port<M>`; `connect_with` takes the pure conversion
-explicitly, normally the wrapping enum variant for a `ComponentRef` or the
-coupling between vocabularies for a `Connector`. Multiple named Ports of the
-same message type may still be bound independently.
+`Connector<M>` of the same message type, made with
+`ProgramBuilder::connect(&port, &connector)`. A Component provides the
+Connector: `ComponentRef::connector()` when its Message is `M` or implements
+`From<M>`, or `accepting(map)` with the pure conversion, normally the enum
+variant that wraps the Port message. A library Connector in another
+vocabulary is adapted the same way with `Connector::accepting`. Multiple
+named Ports of the same message type may still be bound independently.
 
 **Notification** — Informal name for a one-way message: a variant with no
 reply token, delivered with `Command::send` or `PortHandle::send`. The sender
@@ -567,7 +566,8 @@ to hold.
 | Protocol, `Protocol::Message`, `protocol!`, `HealthProtocolMessage` | Port message type, `messages!`, `HealthMessage` | Removed November 8, 2026 (ADR-0015). The marker type named one associated type and nothing else; a Port is typed by the message type it carries. ADRs 0006 to 0014 keep the old word. |
 | `Protocol::Inbound`, `HealthInbound` | `HealthMessage` | Name what the enum contains, not its direction. |
 | `ActorRef`, `Addr`, `PortRef`, `RuntimeRef` | `ComponentRef`, `Connector`, `ComponentHandle`, `Port`, or `PortHandle` | Choose the term that distinguishes kind-typed logical address, Message-typed logical address, live private-Message ingress, inert consumer-owned dependency, or live Port ingress. |
-| Jack, `JackId`, `JackHandle`, `plug_in`, Plug, `Pluggable` | Port, `PortId`, `PortHandle`, `connect`, Connector, `Connectable` | ADR-0014's names, replaced the same day by ADR-0015 with domain-neutral words. `bind_port` was the pre-0014 spelling of `connect`. |
+| Jack, `JackId`, `JackHandle`, `plug_in`, Plug, `Pluggable` | Port, `PortId`, `PortHandle`, `connect`, Connector | ADR-0014's names, replaced the same day by ADR-0015 with domain-neutral words. `bind_port` was the pre-0014 spelling of `connect`. |
+| `Connectable`, `connect_with`, `connector_with`, `to_connector` | `connect(&port, &connector)`, `ComponentRef::connector`, `accepting` | A Port takes a Connector and nothing else (ADR-0015 amendment, November 8, 2026); the conversion lives on the Connector side, under one verb. |
 | Recipient, Address | Connector | Working names while the provider-owned address was designed; *Connector* pairs with *Port* and names the thing held rather than a role. |
 | `messages!`, `Notification<M>`, `Request<M>`, `RequestInvocation`, `Command::notify`, `request`, `request_with`, `request_timeout`, `request_timeout_with`, `TraceCommandKind::Notify` | `Command::send`, `Command::request_to`, `request_to_timeout`; a request variant carrying `ReplyTo<R>`; `TraceCommandKind::Send` with `target_port` | Removed November 8, 2026 (ADR-0016). The trait form and the constructor form gave the same guarantee twice; the message type is the protocol. |
 | `ask` | `request` | Use `Command::request` for command-now, Message-later Component request/reply and `PortHandle::request` for the deliberately awaitable live host boundary. |

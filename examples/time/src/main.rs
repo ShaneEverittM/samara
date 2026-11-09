@@ -318,7 +318,7 @@ async fn main() -> Result<()> {
     );
 
     // Program assembly chooses which concrete Component provides that service.
-    builder.connect(&time_port, &http_time_server);
+    builder.connect(&time_port, &http_time_server.connector());
 
     // Raw terminal lines cross the runtime boundary as an ongoing Source. The
     // CLI owns parsing, presentation, and its dependency on the time service.

@@ -85,6 +85,20 @@ named hole that accepts `M`, filled at assembly. A `Connector<M>` is a
 provider-owned address that accepts `M`, used directly or connected to a
 Port.
 
+## Amendment, November 8, 2026: a Port takes a Connector
+
+`connect` and `connect_with` accepted any `Connectable`, a trait whose only
+purpose was to let a `ComponentRef` stand where a `Connector` belongs.
+Plugging an identity into a socket read wrong. Now
+`ProgramBuilder::connect(&port, &connector)` takes a `Connector<M>` for a
+`Port<M>` and nothing else, and the conversion moves to the Connector side
+under one verb: `ComponentRef::connector()` when the Component's Message is
+`M` or implements `From<M>`, `ComponentRef::accepting(map)` when it wraps the
+Port message in a variant, `Connector::accepting(map)` for a library
+Connector in another vocabulary. `connect_with`, `Connectable`,
+`connector_with`, and `to_connector` are removed. `Addressable` is
+unaffected: sending to a Component by identity is not the odd thing.
+
 ## Alternatives considered
 
 - **Keep `Protocol` as a blanket-implemented marker.** It would have kept

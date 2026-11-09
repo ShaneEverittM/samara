@@ -534,21 +534,22 @@ exposed and renames the consumer-owned one:
 
 - `Port<P>` (formerly `Port<P>`) is a consumer-owned, named, inert dependency
   on a message type, created with `ProgramBuilder::port` and filled at assembly
-  with `connect` or `connect_with`. `PortId`, `PortHandle`, and
+  with `connect`. `PortId`, `PortHandle`, and
   `LiveRuntime::port_handle` follow the rename; their semantics are those of
   ADR-0006.
 - `Connector<M>` is a provider-owned, inert address: a `ComponentRef<C>` erased to
   the Message type it accepts, obtained with `ComponentRef::connector` (a `From`
-  conversion) or `ComponentRef::connector_with` (an explicit pure conversion). It
+  conversion) or `ComponentRef::accepting` (an explicit pure conversion). It
   grants no delivery capability and its `Debug` output names `M`, not `C`.
-- `Connectable` is implemented for `ComponentRef<C>` and `Connector<M>`; `connect`
-  and `connect_with` accept either. A Port binding is stored as the Port and a
+- `connect(&port, &connector)` takes a `Connector<M>` for a `Port<M>` and
+  nothing else (ADR-0015 amendment); a `ComponentRef` is connected through
+  `connector()` or `accepting(map)`. A Port binding is stored as the Port and a
   `Connector<P::Message>`, so both forms share one boxed conversion.
 - A Connector from another `ProgramBuilder` fails `build()` as a foreign provider
   under ADR-0008's existing rule.
-- `Command::send(target, message)` takes any `Connectable`.
+- `Command::send(target, message)` takes any `Addressable`.
   `Command::request_to(target, constructor, map)` and `request_to_timeout`
-  address a request to a `Connectable`: `constructor: FnOnce(ReplyTo<R>) ->
+  address a request to an `Addressable`: `constructor: FnOnce(ReplyTo<R>) ->
   T::Message` is a function the provider published, its `ReplyTo<R>`
   parameter fixes the reply type, and the runtime mints the token and routes
   the message exactly as for a Port request, including ADR-0011 deadlines.

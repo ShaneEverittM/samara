@@ -303,7 +303,7 @@ fn request_to_with_message_from_uses_from_and_a_closure_preserves_context() {
     let mut builder = Program::builder();
     let echo = builder.port::<EchoProtocolMessage>(PortId::new("echo"));
     let provider = builder.component::<EchoProvider>(ComponentId::new("provider"), ());
-    builder.connect(&echo, &provider);
+    builder.connect(&echo, &provider.connector());
     let requester = builder.component::<Requester>(
         ComponentId::new("requester"),
         RequesterConfig { echo: echo.clone() },

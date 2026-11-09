@@ -531,7 +531,7 @@ A **Connector** is provider-owned. A Component publishes where it lives and what
 accepts as a `Connector<M>`, an erased `ComponentRef` typed by the Message it
 accepts rather than by the Component kind. This is the tool for exposing a
 Component across a dependency boundary: a library Assembly exports a Connector, the
-application connects it to one of its own Ports with `connect_with`, and the
+application adapts it with `accepting` and connects it to one of its own Ports, and the
 coupling between the two vocabularies is written once at that site. The
 dependency points the right way, from application to library, and the
 library's Component kind never becomes nameable outside its crate.
@@ -562,14 +562,15 @@ another Component's private one. Program assembly binds that enum to a
 concrete provider, allowing consumers to remain unchanged when the provider is
 replaced, wrapped, or controlled in a test.
 
-Port binding follows the same paired convention as effects and sources.
-`connect` uses the provider Message's `From<M>` for a `Port<M>` and states
-only which exact named Port reaches which provider, which also makes
-acceptance of a Port message type visible on the provider Message type itself.
-`connect_with` takes the conversion explicitly, normally the enum variant
-that wraps the Port message, for providers that would otherwise write a
-`From` impl whose body is that one variant. Both bind one Port to one
-provider; the conversion must be pure either way.
+A Port takes a Connector of its own message type and nothing else:
+`program.connect(&port, &connector)`. The conversion into the provider's
+private Message lives on the Connector side, under one verb. A Component whose
+Message is the Port's type, or implements `From` of it, hands over
+`ComponentRef::connector()`; one that wraps the Port's messages in a variant
+hands over `accepting(RecorderMessage::Audit)`; a library's Connector in
+another vocabulary is adapted with `Connector::accepting(couple)`. The
+sentence at every binding site is then the architecture: connect this Port to
+that Connector. Each conversion must be pure.
 
 Ports are named rather than globally selected by message type. Two dependencies
 may carry the same message type while representing distinct roles, such as a
@@ -812,8 +813,8 @@ costs one line and names nothing else.
 
 An Assembly's `Exports` is normally a Port when the Assembly is part of your
 own application and a `Connector<M>` when it is a library: the Connector lets the
-application keep its own message enum and couple to the library's vocabulary at
-`connect_with`. See
+application keep its own message enum and couple to the library's vocabulary with
+`accepting` at the `connect` site. See
 [How Does a Component Expose Itself?](#how-does-a-component-expose-itself).
 
 Controlled execution delivers messages and inspects state by `ComponentRef<C>`,

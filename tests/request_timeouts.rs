@@ -172,7 +172,7 @@ fn fixture() -> Fixture {
     let port = builder.port::<ProbeProtocolMessage>(PortId::new("probe"));
     let observe = builder.effect::<Observation>();
     let provider = builder.component::<Provider>(ComponentId::new("provider"), ());
-    builder.connect(&port, &provider);
+    builder.connect(&port, &provider.connector());
     let requester = builder.component::<Requester>(
         ComponentId::new("requester"),
         RequesterConfig {

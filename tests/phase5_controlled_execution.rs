@@ -66,8 +66,8 @@ fn phase5_program_build_requires_exactly_one_binding_per_port() {
     let mut duplicate = Program::builder();
     let port = duplicate.port::<()>(PortId::new("service"));
     let provider = duplicate.component::<Empty>(ComponentId::new("provider"), ());
-    duplicate.connect(&port, &provider);
-    duplicate.connect(&port, &provider);
+    duplicate.connect(&port, &provider.connector());
+    duplicate.connect(&port, &provider.connector());
     assert!(duplicate.build().is_err());
 }
 
@@ -78,7 +78,7 @@ fn phase5_program_build_rejects_provider_from_another_builder() {
 
     let mut consumer_builder = Program::builder();
     let port = consumer_builder.port::<()>(PortId::new("service"));
-    consumer_builder.connect(&port, &provider);
+    consumer_builder.connect(&port, &provider.connector());
 
     assert!(consumer_builder.build().is_err());
 }
@@ -148,8 +148,8 @@ fn phase5_program_build_allows_port_cycles() {
             _left: left_port.clone(),
         },
     );
-    builder.connect(&left_port, &left);
-    builder.connect(&right_port, &right);
+    builder.connect(&left_port, &left.connector());
+    builder.connect(&right_port, &right.connector());
 
     assert!(builder.build().is_ok());
 }
@@ -1235,7 +1235,7 @@ fn ownership_runtime() -> (ControlledRuntime, ComponentRef<OwnershipComponent>) 
         ComponentId::new("provider"),
         EchoProviderConfig { reply: false },
     );
-    builder.connect(&port, &provider);
+    builder.connect(&port, &provider.connector());
     let effect = builder.effect::<ProbeEffect>();
     let input = builder.source::<StreamDescriptor<u64>>();
     let component = builder.component::<OwnershipComponent>(
@@ -1480,7 +1480,7 @@ fn echo_program(reply: bool, requests: usize) -> (Program, ComponentRef<EchoRequ
     let port = builder.port::<EchoProtocolMessage>(PortId::new("echo"));
     let provider = builder
         .component::<EchoProvider>(ComponentId::new("provider"), EchoProviderConfig { reply });
-    builder.connect(&port, &provider);
+    builder.connect(&port, &provider.connector());
     let requester = builder.component::<EchoRequester>(
         ComponentId::new("requester"),
         EchoRequesterConfig { port, requests },

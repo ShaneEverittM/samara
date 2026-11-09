@@ -1816,7 +1816,7 @@ fn echo_program(
         ComponentId::new("echo-provider"),
         EchoProviderConfig { reply, seen },
     );
-    program.connect_with(&echo, &provider, EchoProviderMessage::Echo);
+    program.connect(&echo, &provider.accepting(EchoProviderMessage::Echo));
     let requester = program.component::<EchoRequester>(
         ComponentId::new("echo-requester"),
         EchoRequesterConfig {

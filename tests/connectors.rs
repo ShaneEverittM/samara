@@ -1,4 +1,4 @@
-//! Acceptance evidence for `Connector` and `Connectable`: a library Assembly
+//! Acceptance evidence for `Connector`: a library Assembly
 //! exports an erased provider instead of a Port of its own protocol, the
 //! application declares the Port in its own vocabulary, and the coupling
 //! between the two is written once, at the binding site. The library's
@@ -67,7 +67,7 @@ mod journal_lib {
         fn install(program: &mut ProgramBuilder, _: ()) -> Connector<JournalMessage> {
             program
                 .component::<Recorder>(ComponentId::new("journal"), ())
-                .connector_with(RecorderMessage::Journal)
+                .accepting(RecorderMessage::Journal)
         }
     }
 }
@@ -166,7 +166,7 @@ fn assemble() -> (Program, Installed<Journal>, ComponentRef<Monitor>) {
     let mut program = Program::builder();
     let audit = program.port::<AuditMessage>(PortId::new("audit"));
     let journal = program.install::<Journal>(());
-    program.connect_with(&audit, journal.exports(), couple);
+    program.connect(&audit, &journal.exports().accepting(couple));
     let monitor =
         program.component::<Monitor>(ComponentId::new("monitor"), MonitorConfig { audit });
     (
@@ -211,11 +211,11 @@ fn connectors_are_inert_addresses_that_remember_only_what_they_accept() {
     assert!(!shown.contains("Recorder"), "{shown}");
 
     // A ComponentRef erases to a connector of its own message type through
-    // `Connectable`, and `connect` accepts either form.
+    // `connector()`, which is what `connect` takes.
     let audit = program.port::<AuditMessage>(PortId::new("audit"));
     let monitor =
         program.component::<Monitor>(ComponentId::new("monitor"), MonitorConfig { audit });
-    let same: Connector<MonitorMessage> = monitor.to_connector();
+    let same: Connector<MonitorMessage> = monitor.connector();
     assert_eq!(same.id(), monitor.id());
 }
 
@@ -226,7 +226,7 @@ fn a_connector_from_another_program_is_rejected_at_build() {
 
     let mut program = Program::builder();
     let audit = program.port::<AuditMessage>(PortId::new("audit"));
-    program.connect_with(&audit, foreign.exports(), couple);
+    program.connect(&audit, &foreign.exports().accepting(couple));
     assert!(
         program.build().is_err(),
         "a foreign connector is not a provider here"
@@ -315,7 +315,7 @@ mod tally_lib {
         fn install(program: &mut ProgramBuilder, _: ()) -> Connector<TallyMessage> {
             program
                 .component::<Counter>(ComponentId::new("tally"), ())
-                .to_connector()
+                .connector()
         }
     }
 }

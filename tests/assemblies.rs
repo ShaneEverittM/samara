@@ -120,7 +120,7 @@ impl Assembly for Recorder {
             ComponentId::new("recorder"),
             RecorderCapabilities { stamp, pulses },
         );
-        program.connect_with(&ledger, &recorder, RecorderMessage::Ledger);
+        program.connect(&ledger, &recorder.accepting(RecorderMessage::Ledger));
         RecorderExports { ledger, recorder }
     }
 }

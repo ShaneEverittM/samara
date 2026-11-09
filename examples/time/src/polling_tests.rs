@@ -92,7 +92,7 @@ fn controlled_http_fixture() -> (
         ComponentId::new("time-server"),
         HttpTimeServerConfig { http, stderr },
     );
-    builder.connect(&port, &server);
+    builder.connect(&port, &server.connector());
     let reader =
         builder.component::<TimeReader>(ComponentId::new("reader"), TimeReaderConfig(port));
     let runtime = ControlledRuntime::builder(builder.build().unwrap())

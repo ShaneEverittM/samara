@@ -603,7 +603,7 @@ fn program() -> (Program, AppRefs) {
 
     // Assembly selects the provider; `HealthMessage` declares the canonical
     // Port-message conversion through its `From` implementation.
-    program.connect(&health_port, &health);
+    program.connect(&health_port, &health.connector());
 
     let telemetry = program.component::<Telemetry>(
         ComponentId::new("telemetry"),
@@ -858,8 +858,8 @@ mod tests {
         let fallback = builder.port::<HealthProtocolMessage>(PortId::new("health/fallback"));
         let provider = builder.component::<Health>(ComponentId::new("health"), ());
 
-        builder.connect(&primary, &provider);
-        builder.connect(&fallback, &provider);
+        builder.connect(&primary, &provider.connector());
+        builder.connect(&fallback, &provider.connector());
 
         let converted: HealthMessage = HealthProtocolMessage::FrameSeen.into();
         assert!(matches!(

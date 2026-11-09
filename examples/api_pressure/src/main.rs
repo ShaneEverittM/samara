@@ -337,7 +337,7 @@ fn program(increments: StreamDescriptor<u64>) -> (Program, AppRefs) {
     // Assembly chooses the concrete provider. `QuotaMessage` declares its
     // canonical Port-message conversion through `From`; Counter never needs to
     // know that private Message vocabulary.
-    program.connect(&quota_port, &quota);
+    program.connect(&quota_port, &quota.connector());
     let counter = program.component::<Counter>(
         ComponentId::new("counter"),
         CounterConfig {

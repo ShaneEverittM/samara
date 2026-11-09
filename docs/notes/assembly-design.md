@@ -134,7 +134,7 @@ pulse journal (`examples/pulse/src/journal.rs`) is the worked example: one
   `ComponentId` under an Assembly scope, is open.
 - **Exports beyond a Port.** Partly settled November 8, 2026 (ADR-0014): a
   library Assembly exports a `Connector<M>` rather than a Port of its own message type,
-  so the application keeps its own vocabulary and couples at `connect_with`.
+  so the application keeps its own vocabulary and couples with `accepting` at the `connect` site.
   The url checker's tests also wanted a private `ComponentRef` retained;
   whether `Exports` should carry test-only handles, or whether that is what
   the isolated Component runtime follow-up is for, is still open.

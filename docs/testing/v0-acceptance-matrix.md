@@ -151,7 +151,7 @@ The following evidence must pass before the Phase 2 audit:
   not met. The `Assembly` rustdoc compile-fail cases show that a driver for
   the wrong effect cannot be passed and that a chain which skips
   `and_drivers` has no builder to finish.
-- `tests/connectors.rs` validates `Connector` and `Connectable` (ADR-0014): a library
+- `tests/connectors.rs` validates `Connector` (ADR-0014, ADR-0015): a library
   Assembly exports a `Connector<M>` of its public message type while its Component
   stays private to its module, the application connects it to a Port of its
   own message enum with one coupling function, notify, request, and reply all

@@ -80,7 +80,7 @@ impl Assembly for Journal {
             ComponentId::new("journal"),
             RecorderConfig { append, clock },
         );
-        program.connect_with(&journal, &recorder, Message::Journal);
+        program.connect(&journal, &recorder.accepting(Message::Journal));
 
         journal
     }

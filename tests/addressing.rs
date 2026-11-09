@@ -119,7 +119,7 @@ fn assemble(patience: Option<Duration>) -> (Program, Port<LedgerMessage>, Compon
     let mut program = Program::builder();
     let ledger = program.port::<LedgerMessage>(PortId::new("ledger"));
     let provider = program.component::<Ledger>(ComponentId::new("ledger"), ());
-    program.connect_with(&ledger, &provider, LedgerProviderMessage::Ledger);
+    program.connect(&ledger, &provider.accepting(LedgerProviderMessage::Ledger));
     let clerk = program.component::<Clerk>(
         ComponentId::new("clerk"),
         ClerkConfig {

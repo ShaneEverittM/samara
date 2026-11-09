@@ -117,19 +117,19 @@ pub use http::StatusCode;
 pub mod prelude {
     pub use crate::{
         Addressable, Assembly, BoxFuture, CancelReason, Command, Component, ComponentHandle,
-        ComponentId, ComponentRef, Connectable, Connector, ControlledRuntime,
-        ControlledRuntimeBuilder, Decoder, DriverStopped, Drivers, Effect, EffectCapability,
-        EffectDescriptor, EffectDriver, EffectInvocation, EffectOutcome, EffectOutcomeKind, Framed,
-        FramedError, FramedLayer, HttpError, HttpErrorKind, HttpJsonError, HttpRequest,
-        HttpResponse, HttpResponseError, HttpStatusError, Init, Installed, LiveRuntime,
-        LiveRuntimeBuilder, LogicalTime, PendingEffect, PendingWork, Port, PortHandle, PortId,
-        PrintStderr, PrintStdout, Program, ProgramBuildError, ProgramBuilder, ReadSystemTime,
-        ReplyTo, RequestError, RequestIntent, RequestOutcome, RequestOutcomeKind, Requirements,
-        RunReport, RuntimeError, RuntimeTask, Shutdown, ShutdownReport, Source, SourceCapability,
-        SourceDescriptor, SourceDriver, SourceEvent, SourceEventKind, SourceSink, StatusCode,
-        StdinError, StdinErrorKind, StdinLines, StreamDescriptor, Subscription, SubscriptionAction,
-        SubscriptionId, Subscriptions, SystemClockDriver, TcpBytes, TcpError, TcpErrorKind,
-        TraceCommandKind, TraceEvent, TraceId, TraceRecord, VendorsDrivers, WithAssembly,
+        ComponentId, ComponentRef, Connector, ControlledRuntime, ControlledRuntimeBuilder, Decoder,
+        DriverStopped, Drivers, Effect, EffectCapability, EffectDescriptor, EffectDriver,
+        EffectInvocation, EffectOutcome, EffectOutcomeKind, Framed, FramedError, FramedLayer,
+        HttpError, HttpErrorKind, HttpJsonError, HttpRequest, HttpResponse, HttpResponseError,
+        HttpStatusError, Init, Installed, LiveRuntime, LiveRuntimeBuilder, LogicalTime,
+        PendingEffect, PendingWork, Port, PortHandle, PortId, PrintStderr, PrintStdout, Program,
+        ProgramBuildError, ProgramBuilder, ReadSystemTime, ReplyTo, RequestError, RequestIntent,
+        RequestOutcome, RequestOutcomeKind, Requirements, RunReport, RuntimeError, RuntimeTask,
+        Shutdown, ShutdownReport, Source, SourceCapability, SourceDescriptor, SourceDriver,
+        SourceEvent, SourceEventKind, SourceSink, StatusCode, StdinError, StdinErrorKind,
+        StdinLines, StreamDescriptor, Subscription, SubscriptionAction, SubscriptionId,
+        Subscriptions, SystemClockDriver, TcpBytes, TcpError, TcpErrorKind, TraceCommandKind,
+        TraceEvent, TraceId, TraceRecord, VendorsDrivers, WithAssembly,
     };
     #[cfg(feature = "fs")]
     pub use crate::{
@@ -1558,7 +1558,7 @@ impl<Message> Command<Message> {
     /// #     }
     /// # }
     /// let mut program = Program::builder();
-    /// let tally: Connector<TallyMessage> = program.component::<Tally>(ComponentId::new("tally"), ()).to_connector();
+    /// let tally: Connector<TallyMessage> = program.component::<Tally>(ComponentId::new("tally"), ()).connector();
     /// let command: Command<RequestOutcome<u64>> =
     ///     Command::request_to(tally, TallyMessage::total, |outcome| outcome);
     /// # let _ = command;
@@ -3793,21 +3793,24 @@ impl<C: Component> fmt::Debug for ComponentRef<C> {
 impl<C: Component> ComponentRef<C> {
     /// Erases this address to a provider of `M`, converting with `From`.
     ///
-    /// See [`Connector`] for why and [`Self::connector_with`] for an explicit
+    /// See [`Connector`] for why and [`Self::accepting`] for an explicit
     /// conversion.
     pub fn connector<M>(&self) -> Connector<M>
     where
         M: Send + 'static,
         C::Message: From<M>,
     {
-        self.connector_with(C::Message::from)
+        self.accepting(C::Message::from)
     }
 
-    /// Erases this address to a provider of `M`, converting with `map`.
+    /// Returns a connector that accepts `M` by converting it into this
+    /// Component's Message with `map`, normally the enum variant that wraps it.
     ///
-    /// `map` is usually the enum variant of the Component's Message that wraps
-    /// `M`. It must be pure. See [`Connector`] for a complete example.
-    pub fn connector_with<M, Map>(&self, map: Map) -> Connector<M>
+    /// This is how a Component that wraps a Port's messages in a variant of its
+    /// own Message is connected to that Port:
+    /// `program.connect(&port, &recorder.accepting(RecorderMessage::Audit))`.
+    /// `map` must be pure. See [`Connector`] for the library case.
+    pub fn accepting<M, Map>(&self, map: Map) -> Connector<M>
     where
         M: Send + 'static,
         Map: Fn(M) -> C::Message + Send + Sync + 'static,
@@ -3834,7 +3837,7 @@ impl<C: Component> ComponentRef<C> {
 /// Its purpose is to let a reusable unit hand out a provider without naming
 /// its Component. An [`Assembly`] exports a `Connector<LibraryMessage>`; the
 /// application declares its own [`Port`] in its own message vocabulary and couples
-/// the two with [`ProgramBuilder::connect_with`], writing the conversion
+/// the two with [`ProgramBuilder::connect`] after [`Connector::accepting`], writing the conversion
 /// from its vocabulary to the library's at the binding site. The
 /// application's Components then depend only on the Port they own, and the
 /// library's vocabulary appears in exactly one place: the coupling.
@@ -3864,10 +3867,10 @@ impl<C: Component> ComponentRef<C> {
 /// let mut program = Program::builder();
 /// let audit = program.port::<AuditMessage>(PortId::new("audit"));
 /// let recorder = program.component::<Recorder>(ComponentId::new("recorder"), ());
-/// let provider: Connector<JournalMessage> = recorder.connector_with(RecorderMessage);
-/// program.connect_with(&audit, &provider, |message| match message {
+/// let provider: Connector<JournalMessage> = recorder.accepting(RecorderMessage);
+/// program.connect(&audit, &provider.accepting(|message| match message {
 ///     AuditMessage::Changed(what) => JournalMessage::Note(what),
-/// });
+/// }));
 /// # let _ = program.build()?;
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
@@ -3891,8 +3894,8 @@ impl<M: Send + 'static> Connector<M> {
     /// This is Elm 0.16's `Signal.forwardTo`: the holder of a library's
     /// `Connector<LibraryMessage>` adapts it to its own vocabulary once, and its
     /// Components then hold a `Connector<AppMessage>` and never name the library's
-    /// types. `map` must be pure. [`ProgramBuilder::connect_with`] does the same
-    /// adaptation for a Port binding.
+    /// types, or it connects the adapted connector to one of its own Ports with
+    /// [`ProgramBuilder::connect`]. `map` must be pure.
     pub fn accepting<N, Map>(&self, map: Map) -> Connector<N>
     where
         N: Send + 'static,
@@ -3933,36 +3936,6 @@ impl<M> fmt::Debug for Connector<M> {
     }
 }
 
-/// Something a Port can be bound to and a Command can be addressed to: a
-/// [`ComponentRef`] or a [`Connector`].
-///
-/// [`ProgramBuilder::connect`], [`ProgramBuilder::connect_with`],
-/// [`Command::send`], and [`Command::request_to`] accept either. Applications
-/// do not implement it.
-pub trait Connectable {
-    /// The message type this provider accepts.
-    type Message: Send + 'static;
-
-    /// Erases this provider to a connector of its message type.
-    fn to_connector(&self) -> Connector<Self::Message>;
-}
-
-impl<C: Component> Connectable for ComponentRef<C> {
-    type Message = C::Message;
-
-    fn to_connector(&self) -> Connector<C::Message> {
-        self.connector_with(|message| message)
-    }
-}
-
-impl<M: Send + 'static> Connectable for Connector<M> {
-    type Message = M;
-
-    fn to_connector(&self) -> Connector<M> {
-        self.clone()
-    }
-}
-
 /// Something a Command can be addressed to: a [`Port`], a [`Connector`], or a
 /// [`ComponentRef`].
 ///
@@ -3999,7 +3972,7 @@ impl<C: Component> Addressable for ComponentRef<C> {
     type Message = C::Message;
 
     fn to_address(&self) -> Address<C::Message> {
-        Address(AddressKind::Connector(self.to_connector()))
+        Address(AddressKind::Connector(self.accepting(|message| message)))
     }
 }
 
@@ -4612,80 +4585,16 @@ impl ProgramBuilder {
         }
     }
 
-    /// Connects a Port to the component that will handle its messages.
+    /// Connects a Port to the Connector that will handle its messages.
     ///
-    /// The provider is a [`ComponentRef`] or a [`Connector`] (see [`Connectable`]).
-    /// Its message type must implement `From<P>`; using the Port
-    /// message type directly also works. When the provider's message type wraps
-    /// the Port message in a variant without a `From` impl, or the Port
-    /// speaks a different vocabulary than the provider, use
-    /// [`Self::connect_with`]. Both the port and provider must belong to this
-    /// builder. [`Self::build`] checks that every port has exactly one provider.
-    /// Cyclic connections are allowed.
-    ///
-    /// ```
-    /// use samara::prelude::*;
-    /// enum CountMessage { Read(ReplyTo<u64>) }
-    ///
-    /// struct Counter;
-    /// impl Component for Counter {
-    ///     type Config = ();
-    ///     type Model = u64;
-    ///     type Message = CountMessage;
-    ///     fn init(_config: &Self::Config) -> Init<u64, CountMessage> { Init::new(42) }
-    ///     fn update(_config: &Self::Config, count: &mut u64, message: CountMessage) -> Command<CountMessage> {
-    ///         match message {
-    ///             CountMessage::Read(reply_to) => Command::reply(reply_to, *count),
-    ///         }
-    ///     }
-    /// }
-    ///
-    /// struct Client;
-    ///
-    /// struct ClientConfig { counter: Port<CountMessage> }
-    /// impl Component for Client {
-    ///     type Config = ClientConfig;
-    ///     type Model = Option<u64>;
-    ///     type Message = RequestOutcome<u64>;
-    ///     fn init(config: &Self::Config) -> Init<Self::Model, Self::Message> {
-    ///         Init::default().with_command(Command::request_to(config.counter.clone(), CountMessage::Read, |outcome| outcome))
-    ///     }
-    ///     fn update(_config: &Self::Config, value: &mut Option<u64>, reply: Self::Message) -> Command<Self::Message> {
-    ///         if let RequestOutcome::Replied(count) = reply { *value = Some(count); }
-    ///         Command::none()
-    ///     }
-    /// }
-    ///
-    /// let mut builder = Program::builder();
-    /// let port = builder.port::<CountMessage>(PortId::new("counter"));
-    /// let counter = builder.component::<Counter>(ComponentId::new("counter"), ());
-    /// builder.connect(&port, &counter);
-    /// let client = builder.component::<Client>(ComponentId::new("client"), ClientConfig { counter: port });
-    /// let mut runtime = ControlledRuntime::builder(builder.build()?).build()?;
-    /// runtime.run_until_idle()?;
-    /// assert_eq!(*runtime.state(&client)?, Some(42));
-    /// assert!(runtime.cancel()?.is_clean());
-    /// # Ok::<(), Box<dyn std::error::Error>>(())
-    /// ```
-    pub fn connect<P, R>(&mut self, port: &Port<P>, provider: &R)
-    where
-        P: Send + 'static,
-        R: Connectable,
-        R::Message: From<P>,
-    {
-        self.connect_with(port, provider, R::Message::from);
-    }
-
-    /// Connects a Port to its provider through an explicit message conversion.
-    ///
-    /// `map` turns each Port message into what the provider accepts, the
-    /// same way [`Command::effect_with`] and [`Subscription::source_with`] map
-    /// outcomes and events. For a [`ComponentRef`] it is usually the enum
-    /// variant that wraps the Port message, which saves writing a `From`
-    /// impl. For a [`Connector`] exported by a library it is the coupling from
-    /// the application's vocabulary to the library's; see [`Connector`]. The
-    /// conversion must be pure. [`Self::connect`] is the shortcut for when
-    /// `From` already holds.
+    /// The Connector must accept the Port's message type. A Component whose
+    /// Message is that type connects through [`ComponentRef::connector`]; one
+    /// that wraps the Port's messages in a variant, or a library Connector in
+    /// another vocabulary, is adapted first with `accepting`
+    /// ([`ComponentRef::accepting`], [`Connector::accepting`]). Both the port
+    /// and the connector must belong to this builder. [`Self::build`] checks
+    /// that every port has exactly one connector. Cyclic connections are
+    /// allowed.
     ///
     /// ```
     /// use samara::prelude::*;
@@ -4710,22 +4619,40 @@ impl ProgramBuilder {
     ///     }
     /// }
     ///
+    /// struct Client;
+    ///
+    /// struct ClientConfig { counter: Port<CountMessage> }
+    /// impl Component for Client {
+    ///     type Config = ClientConfig;
+    ///     type Model = Option<u64>;
+    ///     type Message = RequestOutcome<u64>;
+    ///     fn init(config: &Self::Config) -> Init<Self::Model, Self::Message> {
+    ///         Init::default().with_command(Command::request_to(config.counter.clone(), CountMessage::Read, |outcome| outcome))
+    ///     }
+    ///     fn update(_config: &Self::Config, value: &mut Option<u64>, reply: Self::Message) -> Command<Self::Message> {
+    ///         if let RequestOutcome::Replied(count) = reply { *value = Some(count); }
+    ///         Command::none()
+    ///     }
+    /// }
+    ///
     /// let mut builder = Program::builder();
     /// let port = builder.port::<CountMessage>(PortId::new("counter"));
     /// let counter = builder.component::<Counter>(ComponentId::new("counter"), ());
-    /// builder.connect_with(&port, &counter, CounterMessage::Count);
-    /// # let _ = builder.build()?;
+    /// builder.connect(&port, &counter.accepting(CounterMessage::Count));
+    /// let client = builder.component::<Client>(ComponentId::new("client"), ClientConfig { counter: port });
+    /// let mut runtime = ControlledRuntime::builder(builder.build()?).build()?;
+    /// runtime.run_until_idle()?;
+    /// assert_eq!(*runtime.state(&client)?, Some(42));
+    /// assert!(runtime.cancel()?.is_clean());
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub fn connect_with<P, R, Map>(&mut self, port: &Port<P>, provider: &R, map: Map)
+    pub fn connect<M>(&mut self, port: &Port<M>, connector: &Connector<M>)
     where
-        P: Send + 'static,
-        R: Connectable,
-        Map: Fn(P) -> R::Message + Send + Sync + 'static,
+        M: Send + 'static,
     {
         self.bindings.push(Box::new(PortBinding {
             port: port.clone(),
-            connector: provider.to_connector().accepting(map),
+            connector: connector.clone(),
         }));
     }
 
@@ -5444,7 +5371,7 @@ impl<C: Component> ComponentHandle<C> {
 ///     let mut builder = Program::builder();
 ///     let count = builder.port::<CountMessage>(PortId::new("count"));
 ///     let counter = builder.component::<Counter>(ComponentId::new("counter"), ());
-///     builder.connect(&count, &counter);
+///     builder.connect(&count, &counter.connector());
 ///     let runtime = LiveRuntime::builder(builder.build()?).build()?;
 ///     let client = runtime.port_handle(&count)?;
 ///     let task = runtime.spawn();
@@ -6157,7 +6084,7 @@ impl ControlledRuntimeBuilder {
 ///         let ping = program.effect::<Ping>();
 ///         let beacon = program.port::<BeaconMessage>(PortId::new("beacon"));
 ///         let pinger = program.component::<Pinger>(ComponentId::new("pinger"), PingerConfig { ping });
-///         program.connect(&beacon, &pinger);
+///         program.connect(&beacon, &pinger.connector());
 ///         beacon
 ///     }
 /// }

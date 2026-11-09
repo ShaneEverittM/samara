@@ -231,10 +231,13 @@ fn counted_binding_program() -> (Program, Port<HostMessage>, Arc<AtomicUsize>) {
     );
     let conversions = Arc::new(AtomicUsize::new(0));
     let counter = conversions.clone();
-    builder.connect_with(&port, &provider, move |message| {
-        counter.fetch_add(1, Ordering::SeqCst);
-        ProviderMessage::Host(message)
-    });
+    builder.connect(
+        &port,
+        &provider.accepting(move |message| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            ProviderMessage::Host(message)
+        }),
+    );
     (builder.build().expect("valid Program"), port, conversions)
 }
 
@@ -254,10 +257,13 @@ fn selectively_panicking_binding_program() -> (Program, Port<HostMessage>) {
             await_release,
         },
     );
-    builder.connect_with(&port, &provider, |message| match message {
-        HostMessage::Set(0) => panic!("send binding conversion panic"),
-        other => ProviderMessage::Host(other),
-    });
+    builder.connect(
+        &port,
+        &provider.accepting(|message| match message {
+            HostMessage::Set(0) => panic!("send binding conversion panic"),
+            other => ProviderMessage::Host(other),
+        }),
+    );
     (builder.build().expect("valid Program"), port)
 }
 
@@ -266,12 +272,15 @@ fn panicking_binding_program() -> (Program, Port<BindingMessage>) {
     let port = builder.port::<BindingMessage>(PortId::new("panicking-binding"));
     let provider = builder
         .component::<PanickingBindingProvider>(ComponentId::new("panicking-binding-provider"), ());
-    builder.connect_with(&port, &provider, |message| {
-        if let BindingMessage::Ask(reply_to) = message {
-            let _ = reply_to;
-        }
-        panic!("provider binding conversion panic")
-    });
+    builder.connect(
+        &port,
+        &provider.accepting(|message| {
+            if let BindingMessage::Ask(reply_to) = message {
+                let _ = reply_to;
+            }
+            panic!("provider binding conversion panic")
+        }),
+    );
     (builder.build().expect("valid binding Program"), port)
 }
 
@@ -362,7 +371,7 @@ async fn cloned_port_handles_deliver_each_send_exactly_once() -> Result<(), Runt
             await_release,
         },
     );
-    builder.connect_with(&port, &provider, ProviderMessage::Host);
+    builder.connect(&port, &provider.accepting(ProviderMessage::Host));
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
     let (request_observed, _request_observations) = tokio::sync::mpsc::unbounded_channel();
     let runtime = LiveRuntime::builder(builder.build().expect("valid cloned-handle Program"))
@@ -563,7 +572,7 @@ async fn component_and_port_ingress_share_one_shutdown_cutoff() -> Result<(), Ru
             await_release,
         },
     );
-    builder.connect_with(&port, &provider, ProviderMessage::Host);
+    builder.connect(&port, &provider.accepting(ProviderMessage::Host));
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
     let (request_observed, _request_observations) = tokio::sync::mpsc::unbounded_channel();
     let runtime = LiveRuntime::builder(builder.build().expect("valid race Program"))

@@ -159,7 +159,7 @@ a journal Component; exploratory proposals, not accepted API decisions.
   module.
 
 - [x] **Connectors as first-class addresses.** Landed November 8, 2026
-  (ADR-0014): `Command::send` over any `Connectable`, `Command::request_to` and
+  (ADR-0014): `Command::send` over any address, `Command::request_to` and
   `request_to_timeout` minting the `ReplyTo` against a Connector from a published
   constructor function, and `Connector::accepting`, Elm 0.16's `forwardTo`. A
   library written the Elm way, an opaque Message with constructor functions,
