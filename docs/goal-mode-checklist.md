@@ -26,6 +26,11 @@ Governing documents:
 - [ADR-0004: Initial Live Runtime Semantics](adr/0004-initial-live-runtime-semantics.md)
 - [ADR-0008: Closed Program Capabilities](adr/0008-closed-program-capabilities.md)
 - [ADR-0009: First-Party Standard-Input Line Source](adr/0009-first-party-stdin-lines.md)
+- [ADR-0013: Component Kinds, Assemblies, and Provisional First-Party Effects](adr/0013-component-kinds-assemblies-and-first-party-effects.md)
+- [ADR-0014: Jacks and Plugs](adr/0014-jacks-and-plugs.md)
+- [ADR-0015: Ports, Connectors, and the Message Type](adr/0015-ports-connectors-and-the-message-type.md)
+- [ADR-0016: One Sending API](adr/0016-one-sending-api.md)
+- [ADR-0018: Assemblies Export a Connector](adr/0018-assemblies-export-a-connector.md)
 - [Architecture Test Strategy](testing/architecture-test-strategy.md)
 - [v0 Acceptance Matrix](testing/v0-acceptance-matrix.md)
 
@@ -58,7 +63,7 @@ Governing documents:
 - [x] Audit for missing semantics, topology leakage, and untestable promises.
 - [x] Shane accepts the Phase 2 audit and freezes the Component-kernel contract.
 
-Audit packet: [Phase 2 Executable Acceptance Contract](audits/phase-2-executable-acceptance-contract.md).
+Audit: [Phase 2 Executable Acceptance Contract](audits/README.md#phase-2-executable-acceptance-contract).
 
 ### 3. Component Kernel
 
@@ -67,7 +72,7 @@ Audit packet: [Phase 2 Executable Acceptance Contract](audits/phase-2-executable
 - [x] Audit the reference Components and public API before continuing.
 - [x] Shane accepts the Phase 3 audit and authorizes Phase 4.
 
-Audit packet: [Phase 3 Component Kernel](audits/phase-3-component-kernel.md).
+Audit: [Phase 3 Component Kernel](audits/README.md#phase-3-component-kernel).
 
 ### 4. Declarative Work Kernel
 
@@ -81,7 +86,7 @@ Audit packet: [Phase 3 Component Kernel](audits/phase-3-component-kernel.md).
   retention and replacement, and the separation between Layers and Drivers.
 - [x] Shane accepts the Phase 4 audit and authorizes Phase 5.
 
-Audit packet: [Phase 4 Declarative Work Kernel](audits/phase-4-declarative-work-kernel.md).
+Audit: [Phase 4 Declarative Work Kernel](audits/README.md#phase-4-declarative-work-kernel).
 
 ### 5. Controlled Execution
 
@@ -96,7 +101,7 @@ Audit packet: [Phase 4 Declarative Work Kernel](audits/phase-4-declarative-work-
   failure diagnostics, and proof that controlled execution never silently
   invokes a live Driver.
 
-Audit packet: [Phase 5 Controlled Execution](audits/phase-5-controlled-execution.md).
+Audit: [Phase 5 Controlled Execution](audits/README.md#phase-5-controlled-execution).
 
 ### 6. Live Tokio Runtime
 
@@ -111,13 +116,56 @@ Audit packet: [Phase 5 Controlled Execution](audits/phase-5-controlled-execution
 - [x] Audit observable parity and any incidental topology assumptions.
 - [x] Shane accepts the Phase 6 audit and authorizes Phase 7.
 
-Audit packet: [Phase 6 Live Tokio Runtime](audits/phase-6-live-tokio-runtime.md).
+Audit: [Phase 6 Live Tokio Runtime](audits/README.md#phase-6-live-tokio-runtime).
 
 ### 7. Conformance and Release Readiness
 
 - [ ] Pass the topology-independent conformance suite and all V1-V11 scenarios.
 - [ ] Complete onboarding docs and record known gaps, failure modes, and deferrals.
 - [ ] Perform a final vision and developer-experience audit.
+
+## Release Plan
+
+Stated November 8, 2026. Releases are sequenced API-first; each stage has its
+own definition of what counts as a problem.
+
+- **0.1: land the design.** Phase 7 complete. The API is authored in the
+  abstract first (ideal snippets with prose, written before the compiler is
+  consulted), and the runtime is implemented as a black box to fit it, with no
+  constraint on how it works internally. During 0.1, runtime cost is not a
+  reason to reject an API shape; it is a reason to write the cost down.
+- **0.2: make the runtime as efficient as possible without changing the
+  API.** The conformance suite and controlled-execution contracts are what
+  make this safe: semantics are pinned by topology-neutral tests, so the
+  implementation is free. Anything that weakens them is a 0.1 regression, not
+  a 0.2 optimization. A benchmark application with many Components, sustained
+  Source traffic, and many small effects should exist before 0.2 begins, so
+  there is a target.
+- **0.3, 0.4, ... 0.N: trade API for performance, only if 0.2 was not
+  enough.** Worsen the API one deliberate step at a time, each step justified
+  by a measurement that names the shape it blames, until performance is
+  acceptable. This stage may not be needed; most known costs are Driver-side
+  or allocation-side and should fall to 0.2.
+- **1.0** when performance is acceptable.
+
+Cost ledger. API choices made for developer experience that are known to cost
+at runtime, recorded so 0.2 and 0.3 start from a list rather than a profile:
+
+- Assembly drivers are concrete at the host's call site and boxed once per
+  binding inside `and_drivers` (one allocation at startup).
+- `Assembly::Requires` is a positional tuple; a named-field form was deferred
+  (ADR-0013).
+- Every effect carries a boxed outcome mapper.
+- Every Port binding carries a boxed conversion, including `connect`'s
+  `From` (one allocation at assembly, one indirect call per delivered
+  message).
+- `Command::send` erases its target into a `Connector` so one constructor serves
+  `ComponentRef` and `Connector` targets: one `Arc` allocation per send Command
+  when the target is a `ComponentRef`, none beyond the clone when a `Connector`
+  is held in `Config` (ADR-0014).
+- Internal delivery is unbounded (ADR-0004).
+
+Add to this ledger whenever a cheaper shape is rejected for a better one.
 
 ## Goal Template
 

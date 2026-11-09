@@ -43,6 +43,65 @@ executable test function or a rustdoc compile-fail example identified by the
 item it documents. Placeholder names from Phase 2 that were implemented under
 other names now cite those tests.
 
+## Scenario Definitions
+
+The vision states its requirements as these twelve topology-neutral scenarios.
+Each row of the traceability table below cites the evidence for one of them.
+
+- **V1 Repeatable Component Transition.** The same conforming Component
+  implementation, equivalent configuration, initial Model, and Message produce
+  equivalent next Model and Commands, and the transition receives no ambient
+  world capability. Command equivalence compares descriptors and the Messages
+  produced from equivalent controlled outcomes, not closure identity.
+- **V2 Isolated State Ownership.** Concurrent messages to one Component never
+  overlap its transitions, no external handle mutates its Model, and it
+  interacts with another Component only through declared Messages and
+  Protocols.
+- **V3 Interceptable Effect Descriptor.** Controlled execution can observe a
+  Command's typed descriptor, apply the same Layers, and supply an outcome
+  without a live Driver. A mapped outcome enters as a Message; a discarded one
+  is traced but schedules none. Both remain runtime-owned finite work.
+- **V4 Declarative Subscription Lifecycle.** A Source starts when its identity
+  is first desired, is retained while capability and descriptor are equal
+  (adopting the newest mapper without restarting), is replaced on change with
+  stale work discarded before it can begin another transition, and is cancelled
+  when no longer desired. A composed descriptor lowers through the same Layers
+  in both profiles. Events and failures enter as Messages. No automatic restart
+  is asserted.
+- **V5 Live and Controlled Program Parity.** One program assembles against live
+  and controlled bindings with no change to Components, Models, Messages,
+  Commands, descriptors, Subscriptions, Layers, codecs, Protocol logic, or
+  mappers.
+- **V6 Program-Wide Controlled Determinism.** The same program, controlled
+  world, inputs, seeds, and runtime semantics produce equivalent structural
+  traces (transitions, command kinds, descriptor types, subscriptions, outcomes,
+  causation, logical time) and equivalent final state across all Components.
+  Same final models after different traces are not equivalent runs.
+- **V7 Controlled Time Progression.** Explicit and automatic time advancement
+  each produce the trace their input schedule defines, without wall-clock
+  sleeping.
+- **V8 Causal Semantics Without Global Order.** A multi-Component scenario
+  preserves causal relationships and per-Component non-overlap without assuming
+  an order between independent live events or a runtime topology.
+- **V9 Structured Work Ownership.** The runtime can account for all work it
+  owns at every observation point, and ending the scope leaves no detached
+  work. Controlled cancellation and successful live shutdown report zero
+  pending obligations; Cancel and runtime fault never synthesize application
+  outcomes to announce termination.
+- **V10 Non-Influential Structural Semantic Trace.** Reading the controlled
+  trace has no feedback path into Components, and the trace explains
+  transitions, effects, subscriptions, Source lifecycle, time, and causation.
+- **V11 Shallow Tokio Onboarding.** A compiling example embeds one Component in
+  a normal Tokio application through first-party `mpsc` interop and reuses it
+  in a controlled test with no custom runtime, Layer, Driver, or
+  controlled-world code.
+- **V12 Closed Program Capability Assembly.** Assembly issues every reference,
+  Port, and capability before closing the Program; raw descriptors cannot build
+  Commands or Subscriptions; both profile builders reject missing, duplicate,
+  ambiguous, foreign, or type-incompatible bindings before execution, including
+  a dependency first used after a later Message; a hidden foreign capability
+  faults before terminal behavior rather than extending the Program.
+
 ## Vision Traceability
 
 | Vision requirement | Named scenarios | Current contract evidence | Activation |
@@ -69,17 +128,54 @@ The following evidence must pass before the Phase 2 audit:
   a non-`Sync` Component configuration accepted by the kernel contract.
 - `examples/minimal/src/main.rs` compiles the V11 onboarding shape and directly
   tests its transition and subscription projection.
-- `examples/api_pressure/src/main.rs` compiles handwritten Protocol/Request, Port,
+- `examples/api_pressure/src/main.rs` compiles a handwritten Port message enum with a reply-token request variant, Port,
   EffectDescriptor, timer, live assembly, and controlled assembly shapes.
-- `examples/framed_socket/src/main.rs` compiles the Layer/Driver, generated Protocol,
+- `examples/framed_socket/src/main.rs` compiles the Layer/Driver, Port message enum,
   provider conversion, request-continuation, and subscription-replacement
   shapes. Its direct tests cover the pure decoder and command intent.
-- Library unit tests validate the `protocol!` expansion and typed Request reply
-  association.
+- `tests/addressing.rs` validates the one sending API (ADR-0016): a
+  hand-written message enum with a reply-token variant, `Command::send` and
+  `Command::request_to` through a Port resolved by its binding with the trace
+  recording a Send against the Port, a Port request timing out under ADR-0011
+  rules, `into_request_to` inspecting a request without a runtime including
+  its two refusal cases, an initial send to a foreign Port failing both
+  profile builds, and `PortHandle::send`, `request_to`, and
+  `request_to_timeout` live.
+- `tests/assemblies.rs` validates `Assembly`, `Requires`, `Drivers`,
+  `VendorsDrivers`, and `InstalledAssembly` (ADR-0013, ADR-0018):
+  `ProgramBuilder::install` returns a token carrying the Assembly's Connector
+  and exports, the host names its own Port and connects the Connector to it,
+  `with_assembly(token).and_drivers(..)`
+  binds a driver tuple position by position on the live builder,
+  `and_its_vendored_drivers()` binds what the Assembly vendors,
+  `with_assembly(token)` controls every requirement on the controlled
+  builder, and either builder fails synchronously when the requirements are
+  not met. The `Assembly` rustdoc compile-fail cases show that a driver for
+  the wrong effect cannot be passed and that a chain which skips
+  `and_drivers` has no builder to finish.
+- `tests/connectors.rs` validates `Connector` (ADR-0014, ADR-0015): a library
+  Assembly exports a `Connector<M>` of its public message type while its Component
+  stays private to its module, the application connects it to a Port of its
+  own message enum with one coupling function, notify, request, and reply all
+  travel through the coupling in controlled execution, a `Connector` is inert and
+  remembers only the Message type it accepts, and a Connector from another Program
+  fails `build()`. As an address: a library written the Elm way (opaque
+  Message, constructor functions, no public enum) is driven through
+  `Command::send` and `Command::request_to` alone, a Connector request times out
+  under ADR-0011 rules, `Connector::accepting` adapts a library Connector to the
+  holder's vocabulary, an initial request to a foreign Connector fails both
+  profile builds, and `into_request_to` inspects a Connector request without a
+  runtime.
+- `tests/fs_effects.rs` (feature `fs`, provisional under ADR-0013) validates
+  the filesystem effects as ordinary controlled boundaries asserted by
+  relative path, a live append, read, replace, remove walk under a bound root
+  with no temp files left behind, `OutsideRoot` rejection before any I/O, and
+  that `bind_fs` binds only declared effects and participates in duplicate
+  validation.
 - Rustdoc compile-fail cases validate that an arbitrary value cannot be passed
   as an EffectDescriptor, an async closure cannot replace a synchronous message
   mapper, raw descriptors cannot bypass Program-issued Effect/Source
-  capabilities, and discarding either `ReplyTo` or `Command` violates its
+  capabilities, and discarding either `ReplyWith` or `Command` violates its
   `#[must_use]` contract when the lint is denied.
 - Discarded-outcome conformance tests prove controlled outcomes remain traced
   without scheduling a Message and live Drain/Cancel retain structured
@@ -242,7 +338,7 @@ Driver lifecycle and faults:
 Standard `From` continuations:
 
 - `effect_default_uses_from_and_effect_with_preserves_context`
-- `request_default_uses_from_and_request_with_preserves_context`
+- `request_to_with_message_from_uses_from_and_a_closure_preserves_context`
 - `source_default_is_reusable_and_source_with_preserves_context`
 - `http_pipeline_default_uses_from_and_into_command_with_is_explicit`
 
@@ -377,22 +473,22 @@ activated its central cases as failing tests before implementation. With the
 
 | Contract | Evidence |
 | --- | --- |
-| `port_handle` accepts an exact Port of its Program and rejects a foreign, same-named lookalike | `live_port_handle_notifies_and_returns_typed_request_replies`; `live_port_handle_rejects_a_port_from_another_program` |
+| `port_handle` accepts an exact Port of its Program and rejects a foreign, same-named lookalike | `live_port_handle_sends_and_returns_typed_request_replies`; `live_port_handle_rejects_a_port_from_another_program` |
 | The handle has no Model access, is not an inert Port, and has no ControlledRuntime counterpart | `PortHandle` compile-fail doctests |
-| Notify converts through the bound Protocol and reaches the provider exactly once | `live_port_handle_notifies_and_returns_typed_request_replies`; `cloned_port_handles_deliver_each_notification_exactly_once` |
-| Successful notify means admitted, not provider conversion or transition complete | `notification_conversion_panics_are_contained_as_runtime_faults`; `notification_binding_panics_are_contained_as_runtime_faults` |
-| Notify after shutdown or fault is rejected without conversion | `live_port_handle_notifies_and_returns_typed_request_replies`; `a_runtime_fault_is_returned_to_the_external_request_waiter` |
-| Component and Port ingress share one cutoff; a racing notify is owned or rejected | `component_and_port_ingress_share_one_shutdown_cutoff` |
-| A host Request resolves to the direct `R::Reply`, with no RequestOutcome or requester Message | `live_port_handle_notifies_and_returns_typed_request_replies` |
+| Notify converts through the Port binding and reaches the provider exactly once | `live_port_handle_sends_and_returns_typed_request_replies`; `cloned_port_handles_deliver_each_send_exactly_once` |
+| Successful send means admitted, not provider conversion or transition complete | `send_binding_conversion_panics_are_contained_after_earlier_sends_land`; `send_binding_panics_are_contained_as_runtime_faults` |
+| Notify after shutdown or fault is rejected without conversion | `live_port_handle_sends_and_returns_typed_request_replies`; `a_runtime_fault_is_returned_to_the_external_request_waiter` |
+| Component and Port ingress share one cutoff; a racing send is owned or rejected | `component_and_port_ingress_share_one_shutdown_cutoff` |
+| A host Request resolves to the direct `R::Reply`, with no RequestOutcome or requester Message | `live_port_handle_sends_and_returns_typed_request_replies` |
 | Replies completing in reverse order keep their own correlation and request-to-reply causality (V8) | `concurrent_external_requests_keep_their_own_typed_reply` |
 | Drain retains an admitted Request until its Reply | `drain_preserves_an_admitted_external_request` |
 | An unanswered Request keeps Drain pending; dropping the waiter neither cancels the Request nor adds a second obligation (V9) | `dropping_the_waiter_does_not_cancel_runtime_owned_request_work` |
 | Cancel and owner closure wake the waiter with `RuntimeError` and no outcome | `cancel_wakes_an_external_request_waiter_without_inventing_a_reply`; `dropping_the_runtime_owner_wakes_an_external_request_waiter` |
 | A fault wakes the waiter with the scope's preserved `RuntimeError` | `a_runtime_fault_is_returned_to_the_external_request_waiter` |
 | An unpolled Request future admits nothing | `dropping_an_unpolled_request_admits_no_runtime_work` |
-| Protocol and binding conversion panics are runtime faults, not Replies | `request_conversion_panics_are_contained_as_runtime_faults`; `notification_conversion_panics_are_contained_as_runtime_faults`; `notification_binding_panics_are_contained_as_runtime_faults`; `request_binding_panics_are_contained_as_runtime_faults` |
+| Port-message and binding conversion panics are runtime faults, not Replies | `request_conversion_panics_are_contained_as_runtime_faults`; `send_binding_conversion_panics_are_contained_after_earlier_sends_land`; `send_binding_panics_are_contained_as_runtime_faults`; `request_binding_panics_are_contained_as_runtime_faults` |
 
-These tests assert Protocol routing, causal and terminal behavior, admission
+These tests assert Port routing, causal and terminal behavior, admission
 classification, and zero work after successful Cancel. They must not assert an
 internal channel, oneshot, correlation-table layout, global event order, or FIFO
 among independent handle clones.

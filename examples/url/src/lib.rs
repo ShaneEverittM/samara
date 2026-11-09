@@ -26,7 +26,14 @@ impl InputEvent {
         match (words.next(), words.next(), words.next()) {
             (Some("url"), Some(url), None) => match Url::parse(url) {
                 Ok(url) => Self::Command(UrlCommand::Url(url)),
-                Err(_) => Self::Malformed(format!("Invalid URL: {}", url)),
+                Err(_) => {
+                    let url = String::from("https://") + url;
+                    if let Ok(url) = Url::parse(&url) {
+                        return Self::Command(UrlCommand::Url(url));
+                    }
+
+                    Self::Malformed(format!("Invalid URL: {}", url))
+                }
             },
             (Some("status"), None, None) => Self::Command(UrlCommand::Status),
             (Some("clear"), None, None) => Self::Command(UrlCommand::Clear),
@@ -96,7 +103,9 @@ impl Status {
     }
 }
 
-struct Checker {
+struct Checker;
+
+struct CheckerConfig {
     input: SourceCapability<StdinLines>,
     stdout: EffectCapability<PrintStdout>,
     stderr: EffectCapability<PrintStderr>,
@@ -108,20 +117,21 @@ impl Checker {
 }
 
 impl Component for Checker {
+    type Config = CheckerConfig;
     type Model = Status;
     type Message = Message;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_: &CheckerConfig) -> Init<Status, Message> {
         Init::new(Status::Idle { revision: 0 })
     }
 
-    fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(config: &CheckerConfig, model: &mut Status, message: Message) -> Command<Message> {
         match message {
             Message::Input(event) => {
                 let command = match event {
                     InputEvent::Command(command) => command,
-                    InputEvent::Malformed(e) => return eprintln!(&self.stderr, "{e}"),
-                    InputEvent::Error(e) => return eprintln!(&self.stderr, "{e:?}"),
+                    InputEvent::Malformed(e) => return eprintln!(&config.stderr, "{e}"),
+                    InputEvent::Error(e) => return eprintln!(&config.stderr, "{e:?}"),
                     // This should return stop, and the runtime could perhaps exit
                     // if all components have stopped.
                     InputEvent::Eof => return Command::none(),
@@ -140,7 +150,11 @@ impl Component for Checker {
                             revision: next,
                         };
 
-                        let log = println!(&self.stdout, "Waiting 500ms before checking...");
+                        let log = println!(
+                            &config.stdout,
+                            "Waiting {:?} before checking...",
+                            Self::DELAY
+                        );
                         let check = Command::after(
                             Self::DELAY,
                             Message::CheckDue {
@@ -158,31 +172,31 @@ impl Component for Checker {
                         *model = Status::Idle {
                             revision: revision.checked_add(1).expect("revision overflow"),
                         };
-                        println!(&self.stdout, "Cleared")
+                        println!(&config.stdout, "Cleared")
                     }
 
                     UrlCommand::Status => match &model {
                         Status::Idle { .. } => {
                             println!(
-                                &self.stdout,
+                                &config.stdout,
                                 "URL: {}\nState: {}\nLast result: {}", "none", "idle", "none"
                             )
                         }
                         Status::Pending { url, .. } => {
                             println!(
-                                &self.stdout,
+                                &config.stdout,
                                 "URL: {}\nState: {}\nLast result: {}", url, "waiting", "none"
                             )
                         }
                         Status::InFlight { url, .. } => {
                             println!(
-                                &self.stdout,
+                                &config.stdout,
                                 "URL: {}\nState: {}\nLast result: {}", url, "checking", "none"
                             )
                         }
                         Status::Finished { url, result, .. } => {
                             println!(
-                                &self.stdout,
+                                &config.stdout,
                                 "URL: {}\nState: {}\nLast result: {}", url, "idle", result
                             )
                         }
@@ -204,9 +218,9 @@ impl Component for Checker {
                     url: Arc::clone(&url),
                     revision,
                 };
-                let log = println!(&self.stdout, "Checking {}", url);
+                let log = println!(&config.stdout, "Checking {}", url);
                 let request =
-                    request.into_command_with(&self.http, move |r| Message::CheckFinished {
+                    request.into_command_with(&config.http, move |r| Message::CheckFinished {
                         url,
                         revision,
                         outcome: r,
@@ -234,14 +248,14 @@ impl Component for Checker {
                     url: Arc::clone(&url),
                     result: result.clone(),
                 };
-                println!(&self.stdout, "{}: {}", url, result)
+                println!(&config.stdout, "{}: {}", url, result)
             }
         }
     }
 
-    fn subscriptions(&self, _: &Self::Model) -> Subscriptions<Self::Message> {
+    fn subscriptions(config: &CheckerConfig, _: &Status) -> Subscriptions<Message> {
         Subscriptions::one(Subscription::source_with(
-            &self.input,
+            &config.input,
             SubscriptionId::new("commands"),
             StdinLines::new(),
             |event| {
@@ -260,7 +274,7 @@ impl Component for Checker {
 /// ```
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let program = urlchecker::program()?;
-/// let runtime = samara::LiveRuntime::builder(program)
+/// let runtime = samara::Runtime::builder(program)
 ///     .bind_http()
 ///     .bind_stdio()
 ///     .bind_stdin()
@@ -283,9 +297,9 @@ fn assemble() -> Result<(Program, ComponentRef<Checker>), ProgramBuildError> {
     let stderr = builder.effect::<PrintStderr>();
     let input = builder.source::<StdinLines>();
 
-    let checker = builder.component(
+    let checker = builder.component::<Checker>(
         ComponentId::new("Url Checker"),
-        Checker {
+        CheckerConfig {
             input,
             stdout,
             stderr,

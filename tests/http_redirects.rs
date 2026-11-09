@@ -14,36 +14,44 @@ impl EffectDescriptor for Observed {
     type Output = ();
     type Error = Infallible;
 }
-struct Probe {
+struct Probe;
+
+struct ProbeConfig {
     http: EffectCapability<HttpRequest>,
     observed: EffectCapability<Observed>,
     request: HttpRequest,
     limit: usize,
 }
 impl Component for Probe {
+    type Config = ProbeConfig;
     type Model = Vec<Outcome>;
     type Message = Outcome;
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::default().with_command(
-            self.request
+            config
+                .request
                 .clone()
                 .on_response()
-                .follow_redirects(self.limit)
-                .into_command_with(&self.http, |outcome| outcome),
+                .follow_redirects(config.limit)
+                .into_command_with(&config.http, |outcome| outcome),
         )
     }
-    fn update(&self, model: &mut Self::Model, outcome: Outcome) -> Command<Outcome> {
+    fn update(
+        config: &Self::Config,
+        model: &mut Self::Model,
+        outcome: Outcome,
+    ) -> Command<Outcome> {
         model.push(outcome.clone());
-        Command::effect_discarding_outcome(&self.observed, Observed(outcome))
+        Command::effect_discarding_outcome(&config.observed, Observed(outcome))
     }
 }
 fn program(request: HttpRequest, limit: usize) -> (Program, ComponentRef<Probe>) {
     let mut builder = Program::builder();
     let http = builder.effect();
     let observed = builder.effect();
-    let probe = builder.component(
+    let probe = builder.component::<Probe>(
         ComponentId::new("probe"),
-        Probe {
+        ProbeConfig {
             http,
             observed,
             request,
@@ -305,7 +313,7 @@ async fn live_drain_follows_relative_redirect_through_the_same_driver() {
         });
         let (program, _) = program(HttpRequest::get(url), 3);
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let task = LiveRuntime::builder(program).bind_http().bind_effect::<Observed, _>(ObserveDriver(tx)).build().unwrap().spawn();
+        let task = Runtime::builder(program).bind_http().bind_effect::<Observed, _>(ObserveDriver(tx)).build().unwrap().spawn();
         assert!(task.shutdown(Shutdown::Drain).await.unwrap().is_clean());
         assert!(matches!(rx.recv().await.unwrap(), EffectOutcome::Succeeded(r) if r.status() == StatusCode::OK));
         assert!(rx.try_recv().is_err());
@@ -339,11 +347,14 @@ fn controlled_traces_repeat_and_next_hop_is_caused_by_previous_outcome() {
     assert_eq!(run(), run());
 }
 
-struct JsonProbe(EffectCapability<HttpRequest>);
+struct JsonProbe;
+
+struct JsonProbeConfig(EffectCapability<HttpRequest>);
 impl Component for JsonProbe {
+    type Config = JsonProbeConfig;
     type Model = Option<EffectOutcome<serde_json::Value, HttpResponseError>>;
     type Message = EffectOutcome<serde_json::Value, HttpResponseError>;
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::default().with_command(
             HttpRequest::get("https://example.test/")
                 .on_response()
@@ -351,10 +362,14 @@ impl Component for JsonProbe {
                 .follow_redirects(1)
                 .require_success()
                 .json::<serde_json::Value>()
-                .into_command_with(&self.0, |outcome| outcome),
+                .into_command_with(&config.0, |outcome| outcome),
         )
     }
-    fn update(&self, model: &mut Self::Model, outcome: Self::Message) -> Command<Self::Message> {
+    fn update(
+        _config: &Self::Config,
+        model: &mut Self::Model,
+        outcome: Self::Message,
+    ) -> Command<Self::Message> {
         *model = Some(outcome);
         Command::none()
     }
@@ -365,7 +380,7 @@ fn status_and_json_transforms_run_only_after_following_and_keep_typed_errors() {
     for status in [200, 404, 301] {
         let mut builder = Program::builder();
         let http = builder.effect();
-        let probe = builder.component(ComponentId::new("json"), JsonProbe(http));
+        let probe = builder.component::<JsonProbe>(ComponentId::new("json"), JsonProbeConfig(http));
         let mut runtime = ControlledRuntime::builder(builder.build().unwrap())
             .control_effect::<HttpRequest>()
             .build()
@@ -421,7 +436,7 @@ async fn live_cancel_aborts_active_redirect_hop_without_application_completion()
         });
         let (program, _) = program(HttpRequest::get(url), 3);
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let task = LiveRuntime::builder(program).bind_http().bind_effect::<Observed, _>(ObserveDriver(tx)).build().unwrap().spawn();
+        let task = Runtime::builder(program).bind_http().bind_effect::<Observed, _>(ObserveDriver(tx)).build().unwrap().spawn();
         let mut socket = server.await.unwrap();
         assert!(task.shutdown(Shutdown::Cancel).await.unwrap().is_clean());
         assert!(rx.try_recv().is_err());

@@ -3,7 +3,7 @@ resolver = "3"
 members = [
     "examples/api_pressure",
     "examples/framed_socket",
-    "examples/minimal",
+    "examples/minimal", "examples/pulse",
     "examples/time", "examples/url",
 ]
 default-members = [
@@ -18,6 +18,10 @@ default-members = [
 name = "samara"
 version = "0.1.0"
 edition = "2024"
+
+[features]
+# First-party filesystem effects: AppendToFile, ReplaceFile, ReadFile, RemoveFile, FsDriver.
+fs = ["tokio/fs"]
 
 [dependencies]
 bytes = "1.10.1"

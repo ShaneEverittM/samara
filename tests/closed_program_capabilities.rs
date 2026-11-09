@@ -24,22 +24,29 @@ enum EffectMessage {
     Finished(u64),
 }
 
-struct EffectComponent {
+struct EffectComponent;
+
+struct EffectComponentConfig {
     effect: EffectCapability<LateEffect>,
 }
 
 impl Component for EffectComponent {
+    type Config = EffectComponentConfig;
     type Model = Option<u64>;
     type Message = EffectMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(None)
     }
 
-    fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        config: &Self::Config,
+        model: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         match message {
             EffectMessage::Trigger => {
-                Command::effect_with(&self.effect, LateEffect(41), |outcome| match outcome {
+                Command::effect_with(&config.effect, LateEffect(41), |outcome| match outcome {
                     EffectOutcome::Succeeded(value) => EffectMessage::Finished(value),
                     EffectOutcome::Failed(never) => match never {},
                     EffectOutcome::Cancelled(_) => EffectMessage::Finished(0),
@@ -56,14 +63,15 @@ impl Component for EffectComponent {
 fn effect_program() -> (Program, ComponentRef<EffectComponent>) {
     let mut program = Program::builder();
     let effect = program.effect::<LateEffect>();
-    let component = program.component(ComponentId::new("effect"), EffectComponent { effect });
+    let component = program
+        .component::<EffectComponent>(ComponentId::new("effect"), EffectComponentConfig { effect });
     (program.build().expect("valid closed Program"), component)
 }
 
 #[test]
 fn later_effect_dependency_fails_live_and_controlled_build_when_unbound() {
     let (program, _) = effect_program();
-    let live_error = LiveRuntime::builder(program)
+    let live_error = Runtime::builder(program)
         .build()
         .err()
         .expect("the declared Effect dependency is unbound");
@@ -91,20 +99,27 @@ enum SourceMessage {
     Event(SourceEvent<u64, Infallible>),
 }
 
-struct SourceComponent {
+struct SourceComponent;
+
+struct SourceComponentConfig {
     source: SourceCapability<LateSource>,
     initially_enabled: bool,
 }
 
 impl Component for SourceComponent {
+    type Config = SourceComponentConfig;
     type Model = bool;
     type Message = SourceMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
-        Init::new(self.initially_enabled)
+    fn init(config: &Self::Config) -> Init<Self::Model, Self::Message> {
+        Init::new(config.initially_enabled)
     }
 
-    fn update(&self, enabled: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        _config: &Self::Config,
+        enabled: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         match message {
             SourceMessage::Enable => *enabled = true,
             SourceMessage::Event(_event) => {}
@@ -112,10 +127,10 @@ impl Component for SourceComponent {
         Command::none()
     }
 
-    fn subscriptions(&self, enabled: &Self::Model) -> Subscriptions<Self::Message> {
+    fn subscriptions(config: &Self::Config, enabled: &Self::Model) -> Subscriptions<Self::Message> {
         if *enabled {
             Subscriptions::one(Subscription::source_with(
-                &self.source,
+                &config.source,
                 SubscriptionId::new("late"),
                 LateSource,
                 SourceMessage::Event,
@@ -129,9 +144,9 @@ impl Component for SourceComponent {
 fn source_program() -> (Program, ComponentRef<SourceComponent>) {
     let mut program = Program::builder();
     let source = program.source::<LateSource>();
-    let component = program.component(
+    let component = program.component::<SourceComponent>(
         ComponentId::new("source"),
-        SourceComponent {
+        SourceComponentConfig {
             source,
             initially_enabled: false,
         },
@@ -142,7 +157,7 @@ fn source_program() -> (Program, ComponentRef<SourceComponent>) {
 #[test]
 fn later_source_dependency_fails_live_and_controlled_build_when_unbound() {
     let (program, _) = source_program();
-    let live_error = LiveRuntime::builder(program)
+    let live_error = Runtime::builder(program)
         .build()
         .err()
         .expect("the declared Source dependency is unbound");
@@ -181,9 +196,9 @@ fn foreign_source_program(initially_enabled: bool) -> (Program, ComponentRef<Sou
 
     let mut owner = Program::builder();
     let _owner_source = owner.source::<LateSource>();
-    let component = owner.component(
+    let component = owner.component::<SourceComponent>(
         ComponentId::new("foreign-source"),
-        SourceComponent {
+        SourceComponentConfig {
             source: foreign_source,
             initially_enabled,
         },
@@ -206,7 +221,7 @@ impl SourceDriver<LateSource> for CountingSourceDriver {
 fn initially_visible_foreign_source_capability_is_rejected_during_profile_build() {
     let starts = Arc::new(AtomicUsize::new(0));
     let (program, _) = foreign_source_program(true);
-    let error = LiveRuntime::builder(program)
+    let error = Runtime::builder(program)
         .bind_source::<LateSource, _>(CountingSourceDriver {
             starts: starts.clone(),
         })
@@ -242,7 +257,7 @@ async fn dynamically_reached_foreign_source_faults_before_terminal_behavior() {
 
     let starts = Arc::new(AtomicUsize::new(0));
     let (program, component) = foreign_source_program(false);
-    let runtime = LiveRuntime::builder(program)
+    let runtime = Runtime::builder(program)
         .bind_source::<LateSource, _>(CountingSourceDriver {
             starts: starts.clone(),
         })
@@ -297,7 +312,7 @@ fn declared_effect_runs_in_controlled_execution() -> Result<(), RuntimeError> {
 async fn declared_effect_runs_in_live_execution() -> Result<(), RuntimeError> {
     let (program, component) = effect_program();
     let calls = Arc::new(AtomicUsize::new(0));
-    let runtime = LiveRuntime::builder(program)
+    let runtime = Runtime::builder(program)
         .bind_effect::<LateEffect, _>(CountingEffectDriver {
             calls: calls.clone(),
         })
@@ -312,22 +327,29 @@ async fn declared_effect_runs_in_live_execution() -> Result<(), RuntimeError> {
     Ok(())
 }
 
-struct InitialEffectComponent {
+struct InitialEffectComponent;
+
+struct InitialEffectComponentConfig {
     effect: EffectCapability<LateEffect>,
 }
 
 impl Component for InitialEffectComponent {
+    type Config = InitialEffectComponentConfig;
     type Model = ();
     type Message = ();
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(()).with_command(Command::effect_discarding_outcome(
-            &self.effect,
+            &config.effect,
             LateEffect(1),
         ))
     }
 
-    fn update(&self, _model: &mut Self::Model, _message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        _config: &Self::Config,
+        _model: &mut Self::Model,
+        _message: Self::Message,
+    ) -> Command<Self::Message> {
         Command::none()
     }
 }
@@ -338,9 +360,9 @@ fn initial_foreign_effect_program() -> Program {
 
     let mut owner = Program::builder();
     let _owner_effect = owner.effect::<LateEffect>();
-    owner.component(
+    owner.component::<InitialEffectComponent>(
         ComponentId::new("initial-foreign-effect"),
-        InitialEffectComponent {
+        InitialEffectComponentConfig {
             effect: foreign_effect,
         },
     );
@@ -350,7 +372,7 @@ fn initial_foreign_effect_program() -> Program {
 #[test]
 fn initially_visible_foreign_effect_capability_is_rejected_during_profile_build() {
     let calls = Arc::new(AtomicUsize::new(0));
-    let live_error = LiveRuntime::builder(initial_foreign_effect_program())
+    let live_error = Runtime::builder(initial_foreign_effect_program())
         .bind_effect::<LateEffect, _>(CountingEffectDriver {
             calls: calls.clone(),
         })
@@ -371,101 +393,133 @@ fn initially_visible_foreign_effect_capability_is_rejected_during_profile_build(
 struct UnitComponent;
 
 impl Component for UnitComponent {
+    type Config = ();
     type Model = ();
     type Message = ();
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(())
     }
 
-    fn update(&self, _model: &mut Self::Model, _message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        _config: &Self::Config,
+        _model: &mut Self::Model,
+        _message: Self::Message,
+    ) -> Command<Self::Message> {
         Command::none()
     }
 }
 
-struct InitialForeignSend {
+struct InitialForeignSend;
+
+struct InitialForeignSendConfig {
     target: ComponentRef<UnitComponent>,
 }
 
 impl Component for InitialForeignSend {
+    type Config = InitialForeignSendConfig;
     type Model = ();
     type Message = ();
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
-        Init::new(()).with_command(Command::send(self.target.clone(), ()))
+    fn init(config: &Self::Config) -> Init<Self::Model, Self::Message> {
+        Init::new(()).with_command(Command::send(&config.target, ()))
     }
 
-    fn update(&self, _model: &mut Self::Model, _message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        _config: &Self::Config,
+        _model: &mut Self::Model,
+        _message: Self::Message,
+    ) -> Command<Self::Message> {
         Command::none()
     }
 }
 
 fn initial_foreign_send_program() -> Program {
     let mut foreign = Program::builder();
-    let target = foreign.component(ComponentId::new("foreign-target"), UnitComponent);
+    let target = foreign.component::<UnitComponent>(ComponentId::new("foreign-target"), ());
 
     let mut owner = Program::builder();
-    owner.component(
+    owner.component::<InitialForeignSend>(
         ComponentId::new("initial-foreign-send"),
-        InitialForeignSend { target },
+        InitialForeignSendConfig { target },
     );
     owner.build().expect("valid owner Program")
 }
 
-protocol! {
-    type ForeignProtocol => enum ForeignProtocolMessage {
-        Signal,
-        Read -> (),
-    }
+/// The foreign Port's vocabulary; the request carries its own reply token.
+/// Nothing is ever connected to the Port (the point is that it belongs to
+/// another Program), so no provider reads the token.
+#[allow(dead_code)]
+enum ForeignMessage {
+    Signal,
+    Read(ReplyWith<()>),
 }
 
-struct InitialForeignNotification {
-    port: Port<ForeignProtocol>,
+struct InitialForeignPortSend;
+
+struct InitialForeignPortSendConfig {
+    port: Port<ForeignMessage>,
 }
 
-impl Component for InitialForeignNotification {
+impl Component for InitialForeignPortSend {
+    type Config = InitialForeignPortSendConfig;
     type Model = ();
     type Message = ();
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
-        Init::new(()).with_command(Command::notify(self.port.clone(), Signal))
+    fn init(config: &Self::Config) -> Init<Self::Model, Self::Message> {
+        Init::new(()).with_command(Command::send(&config.port, ForeignMessage::Signal))
     }
 
-    fn update(&self, _model: &mut Self::Model, _message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        _config: &Self::Config,
+        _model: &mut Self::Model,
+        _message: Self::Message,
+    ) -> Command<Self::Message> {
         Command::none()
     }
 }
 
-struct InitialForeignRequest {
-    port: Port<ForeignProtocol>,
+struct InitialForeignRequest;
+
+struct InitialForeignRequestConfig {
+    port: Port<ForeignMessage>,
 }
 
 impl Component for InitialForeignRequest {
+    type Config = InitialForeignRequestConfig;
     type Model = ();
     type Message = ();
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
-        Init::new(()).with_command(Command::request_with(self.port.clone(), Read, |_| ()))
+    fn init(config: &Self::Config) -> Init<Self::Model, Self::Message> {
+        Init::new(()).with_command(Command::request_to(
+            &config.port,
+            ForeignMessage::Read,
+            |_| (),
+        ))
     }
 
-    fn update(&self, _model: &mut Self::Model, _message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        _config: &Self::Config,
+        _model: &mut Self::Model,
+        _message: Self::Message,
+    ) -> Command<Self::Message> {
         Command::none()
     }
 }
 
 fn initial_foreign_port_program(request: bool) -> Program {
     let mut foreign = Program::builder();
-    let port = foreign.port(PortId::new("foreign"));
+    let port = foreign.port::<ForeignMessage>(PortId::new("foreign"));
     let mut owner = Program::builder();
     if request {
-        owner.component(
+        owner.component::<InitialForeignRequest>(
             ComponentId::new("initial-foreign-request"),
-            InitialForeignRequest { port },
+            InitialForeignRequestConfig { port },
         );
     } else {
-        owner.component(
-            ComponentId::new("initial-foreign-notification"),
-            InitialForeignNotification { port },
+        owner.component::<InitialForeignPortSend>(
+            ComponentId::new("initial-foreign-port-send"),
+            InitialForeignPortSendConfig { port },
         );
     }
     owner.build().expect("valid owner Program")
@@ -478,7 +532,7 @@ fn initially_visible_foreign_component_and_port_capabilities_fail_profile_build(
         initial_foreign_port_program(false),
         initial_foreign_port_program(true),
     ] {
-        let error = LiveRuntime::builder(program)
+        let error = Runtime::builder(program)
             .build()
             .err()
             .expect("initial foreign connection must fail live build");
@@ -505,9 +559,9 @@ fn dynamically_used_foreign_effect_capability_is_rejected_before_controlled_beha
 
     let mut owner = Program::builder();
     let _owner_requirement = owner.effect::<LateEffect>();
-    let component = owner.component(
+    let component = owner.component::<EffectComponent>(
         ComponentId::new("foreign-effect"),
-        EffectComponent {
+        EffectComponentConfig {
             effect: foreign_effect,
         },
     );
@@ -534,14 +588,14 @@ async fn run_forever_surfaces_dynamic_foreign_capability_before_live_driver() {
 
     let mut owner = Program::builder();
     let _owner_requirement = owner.effect::<LateEffect>();
-    let component = owner.component(
+    let component = owner.component::<EffectComponent>(
         ComponentId::new("foreign-live-effect"),
-        EffectComponent {
+        EffectComponentConfig {
             effect: foreign_effect,
         },
     );
     let calls = Arc::new(AtomicUsize::new(0));
-    let runtime = LiveRuntime::builder(owner.build().expect("valid owner Program"))
+    let runtime = Runtime::builder(owner.build().expect("valid owner Program"))
         .bind_effect::<LateEffect, _>(CountingEffectDriver {
             calls: calls.clone(),
         })
@@ -572,7 +626,7 @@ fn exact_stream_binding_rejects_a_foreign_capability_during_build() {
     let program = owner.build().expect("valid owner Program");
     let (_sender, receiver) = tokio::sync::mpsc::channel(1);
 
-    let error = LiveRuntime::builder(program)
+    let error = Runtime::builder(program)
         .bind_mpsc(&foreign_stream, receiver)
         .build()
         .err()
@@ -601,7 +655,7 @@ fn two_exact_stream_capabilities_of_one_type_bind_independently() -> Result<(), 
     let (_first_sender, first_receiver) = tokio::sync::mpsc::channel(1);
     let (_second_sender, second_receiver) = tokio::sync::mpsc::channel(1);
 
-    LiveRuntime::builder(program)
+    Runtime::builder(program)
         .bind_mpsc(&first, first_receiver)
         .bind_mpsc(&second, second_receiver)
         .build()?;
@@ -672,7 +726,9 @@ impl EffectDriver<RecordDualStream> for RecordDualStreamDriver {
     }
 }
 
-struct DualStreamComponent {
+struct DualStreamComponent;
+
+struct DualStreamComponentConfig {
     first: SourceCapability<StreamDescriptor<u64>>,
     second: SourceCapability<StreamDescriptor<u64>>,
     descriptor: StreamDescriptor<u64>,
@@ -680,38 +736,49 @@ struct DualStreamComponent {
 }
 
 impl Component for DualStreamComponent {
+    type Config = DualStreamComponentConfig;
     type Model = (u64, u64);
     type Message = DualStreamMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new((0, 0))
     }
 
-    fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        config: &Self::Config,
+        model: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         match message {
             DualStreamMessage::First(SourceEvent::Item(value)) => {
                 model.0 += value;
-                self.observe.as_ref().map_or_else(Command::none, |observe| {
-                    Command::effect_discarding_outcome(
-                        observe,
-                        RecordDualStream {
-                            lane: "first",
-                            value,
-                        },
-                    )
-                })
+                config
+                    .observe
+                    .as_ref()
+                    .map_or_else(Command::none, |observe| {
+                        Command::effect_discarding_outcome(
+                            observe,
+                            RecordDualStream {
+                                lane: "first",
+                                value,
+                            },
+                        )
+                    })
             }
             DualStreamMessage::Second(SourceEvent::Item(value)) => {
                 model.1 += value;
-                self.observe.as_ref().map_or_else(Command::none, |observe| {
-                    Command::effect_discarding_outcome(
-                        observe,
-                        RecordDualStream {
-                            lane: "second",
-                            value,
-                        },
-                    )
-                })
+                config
+                    .observe
+                    .as_ref()
+                    .map_or_else(Command::none, |observe| {
+                        Command::effect_discarding_outcome(
+                            observe,
+                            RecordDualStream {
+                                lane: "second",
+                                value,
+                            },
+                        )
+                    })
             }
             DualStreamMessage::First(SourceEvent::Failed(never))
             | DualStreamMessage::Second(SourceEvent::Failed(never)) => match never {},
@@ -720,18 +787,18 @@ impl Component for DualStreamComponent {
         }
     }
 
-    fn subscriptions(&self, _model: &Self::Model) -> Subscriptions<Self::Message> {
+    fn subscriptions(config: &Self::Config, _model: &Self::Model) -> Subscriptions<Self::Message> {
         vec![
             Subscription::source_with(
-                &self.first,
+                &config.first,
                 SubscriptionId::new("first"),
-                self.descriptor.clone(),
+                config.descriptor.clone(),
                 DualStreamMessage::First,
             ),
             Subscription::source_with(
-                &self.second,
+                &config.second,
                 SubscriptionId::new("second"),
-                self.descriptor.clone(),
+                config.descriptor.clone(),
                 DualStreamMessage::Second,
             ),
         ]
@@ -745,9 +812,9 @@ fn exact_stream_input_is_disambiguated_by_capability_not_equal_descriptor()
     let mut program = Program::builder();
     let first = program.source::<StreamDescriptor<u64>>();
     let second = program.source::<StreamDescriptor<u64>>();
-    let component = program.component(
+    let component = program.component::<DualStreamComponent>(
         ComponentId::new("dual-stream"),
-        DualStreamComponent {
+        DualStreamComponentConfig {
             first: first.clone(),
             second: second.clone(),
             descriptor: StreamDescriptor::named("same-descriptor"),
@@ -773,9 +840,9 @@ async fn live_exact_streams_with_equal_descriptors_route_by_capability() -> Resu
     let first = program.source::<StreamDescriptor<u64>>();
     let second = program.source::<StreamDescriptor<u64>>();
     let observe = program.effect::<RecordDualStream>();
-    program.component(
+    program.component::<DualStreamComponent>(
         ComponentId::new("live-dual-stream"),
-        DualStreamComponent {
+        DualStreamComponentConfig {
             first: first.clone(),
             second: second.clone(),
             descriptor: StreamDescriptor::named("same-descriptor"),
@@ -785,7 +852,7 @@ async fn live_exact_streams_with_equal_descriptors_route_by_capability() -> Resu
     let (first_sender, first_receiver) = tokio::sync::mpsc::channel(1);
     let (second_sender, second_receiver) = tokio::sync::mpsc::channel(1);
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
-    let runtime = LiveRuntime::builder(program.build().expect("valid Program"))
+    let runtime = Runtime::builder(program.build().expect("valid Program"))
         .bind_mpsc(&first, first_receiver)
         .bind_mpsc(&second, second_receiver)
         .bind_effect::<RecordDualStream, _>(RecordDualStreamDriver { observed })
@@ -872,33 +939,43 @@ enum FramedStreamMessage {
 
 type FramedStream = Framed<StreamDescriptor<u64>, IncrementDecoder>;
 
-struct FramedStreamComponent {
+struct FramedStreamComponent;
+
+struct FramedStreamComponentConfig {
     source: SourceCapability<FramedStream>,
     observe: Option<EffectCapability<RecordDualStream>>,
 }
 
 impl Component for FramedStreamComponent {
+    type Config = FramedStreamComponentConfig;
     type Model = Vec<u64>;
     type Message = FramedStreamMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(Vec::new())
     }
 
-    fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        config: &Self::Config,
+        model: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         let FramedStreamMessage::Event(event) = message;
         match event {
             SourceEvent::Item(value) => {
                 model.push(value);
-                self.observe.as_ref().map_or_else(Command::none, |observe| {
-                    Command::effect_discarding_outcome(
-                        observe,
-                        RecordDualStream {
-                            lane: "framed",
-                            value,
-                        },
-                    )
-                })
+                config
+                    .observe
+                    .as_ref()
+                    .map_or_else(Command::none, |observe| {
+                        Command::effect_discarding_outcome(
+                            observe,
+                            RecordDualStream {
+                                lane: "framed",
+                                value,
+                            },
+                        )
+                    })
             }
             SourceEvent::Failed(FramedError::Source(never))
             | SourceEvent::Failed(FramedError::Decode(never)) => match never {},
@@ -906,9 +983,9 @@ impl Component for FramedStreamComponent {
         }
     }
 
-    fn subscriptions(&self, _model: &Self::Model) -> Subscriptions<Self::Message> {
+    fn subscriptions(config: &Self::Config, _model: &Self::Model) -> Subscriptions<Self::Message> {
         Subscriptions::one(Subscription::source_with(
-            &self.source,
+            &config.source,
             SubscriptionId::new("framed-stream"),
             Framed::new(StreamDescriptor::named("raw"), IncrementDecoder),
             FramedStreamMessage::Event,
@@ -923,9 +1000,9 @@ fn framed_stream_program() -> (
 ) {
     let mut program = Program::builder();
     let source = program.source::<FramedStream>();
-    let component = program.component(
+    let component = program.component::<FramedStreamComponent>(
         ComponentId::new("framed-stream"),
-        FramedStreamComponent {
+        FramedStreamComponentConfig {
             source: source.clone(),
             observe: None,
         },
@@ -941,7 +1018,7 @@ fn framed_stream_program() -> (
 fn exact_stream_bridge_accepts_a_composed_source_capability() -> Result<(), RuntimeError> {
     let (program, _component, source) = framed_stream_program();
     let (_sender, receiver) = tokio::sync::mpsc::channel(1);
-    LiveRuntime::builder(program)
+    Runtime::builder(program)
         .bind_mpsc(&source, receiver)
         .build()?;
 
@@ -962,16 +1039,16 @@ async fn live_exact_stream_bridge_runs_composed_layers_before_component_mapping(
     let mut program = Program::builder();
     let source = program.source::<FramedStream>();
     let observe = program.effect::<RecordDualStream>();
-    program.component(
+    program.component::<FramedStreamComponent>(
         ComponentId::new("live-framed-stream"),
-        FramedStreamComponent {
+        FramedStreamComponentConfig {
             source: source.clone(),
             observe: Some(observe),
         },
     );
     let (sender, receiver) = tokio::sync::mpsc::channel(1);
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
-    let runtime = LiveRuntime::builder(program.build().expect("valid composed stream Program"))
+    let runtime = Runtime::builder(program.build().expect("valid composed stream Program"))
         .bind_mpsc(&source, receiver)
         .bind_effect::<RecordDualStream, _>(RecordDualStreamDriver { observed })
         .build()?;
@@ -1007,7 +1084,7 @@ fn composed_source_program() -> Program {
 
 #[test]
 fn composed_source_capability_declares_only_its_terminal_requirement() -> Result<(), RuntimeError> {
-    LiveRuntime::builder(composed_source_program())
+    Runtime::builder(composed_source_program())
         .bind_source::<LateSource, _>(LateSourceDriver)
         .build()?;
 

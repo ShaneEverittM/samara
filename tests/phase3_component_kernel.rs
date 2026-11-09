@@ -17,18 +17,12 @@ use std::{
 
 use samara::prelude::*;
 
-struct KernelProtocol;
-
 enum KernelProtocolMessage {
     Add(u64),
 }
 
 enum ProviderMessage {
     Protocol(KernelProtocolMessage),
-}
-
-impl Protocol for KernelProtocol {
-    type Message = KernelProtocolMessage;
 }
 
 impl From<KernelProtocolMessage> for ProviderMessage {
@@ -47,7 +41,9 @@ enum KernelMessage {
     Add(u64),
 }
 
-struct KernelComponent {
+struct KernelComponent;
+
+struct KernelComponentConfig {
     scale: u64,
     init_calls: Arc<AtomicUsize>,
     configuration_drops: Arc<AtomicUsize>,
@@ -55,7 +51,7 @@ struct KernelComponent {
     not_sync: PhantomData<Cell<()>>,
 }
 
-impl Drop for KernelComponent {
+impl Drop for KernelComponentConfig {
     fn drop(&mut self) {
         self.configuration_drops.fetch_add(1, Ordering::SeqCst);
     }
@@ -81,7 +77,7 @@ impl PartialEq for OwnedModel {
 
 impl Eq for OwnedModel {}
 
-impl KernelComponent {
+impl KernelComponentConfig {
     fn fixture() -> (Self, Arc<AtomicUsize>, Arc<AtomicUsize>, Arc<AtomicUsize>) {
         let init_calls = Arc::new(AtomicUsize::new(0));
         let configuration_drops = Arc::new(AtomicUsize::new(0));
@@ -103,20 +99,25 @@ impl KernelComponent {
 }
 
 impl Component for KernelComponent {
+    type Config = KernelComponentConfig;
     type Model = OwnedModel;
     type Message = KernelMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
-        self.init_calls.fetch_add(1, Ordering::SeqCst);
+    fn init(config: &Self::Config) -> Init<Self::Model, Self::Message> {
+        config.init_calls.fetch_add(1, Ordering::SeqCst);
         Init::new(OwnedModel {
             state: KernelModel::default(),
-            drops: self.model_drops.clone(),
+            drops: config.model_drops.clone(),
         })
     }
 
-    fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        config: &Self::Config,
+        model: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         match message {
-            KernelMessage::Add(amount) => model.state.total += amount * self.scale,
+            KernelMessage::Add(amount) => model.state.total += amount * config.scale,
         }
         Command::none()
     }
@@ -124,12 +125,12 @@ impl Component for KernelComponent {
 
 #[test]
 fn v1_same_input_produces_equivalent_model_and_command_intent() {
-    let (component, _, _, _) = KernelComponent::fixture();
-    let mut left = component.init().model;
-    let mut right = component.init().model;
+    let (component, _, _, _) = KernelComponentConfig::fixture();
+    let mut left = KernelComponent::init(&component).model;
+    let mut right = KernelComponent::init(&component).model;
 
-    let left_command = component.update(&mut left, KernelMessage::Add(7));
-    let right_command = component.update(&mut right, KernelMessage::Add(7));
+    let left_command = KernelComponent::update(&component, &mut left, KernelMessage::Add(7));
+    let right_command = KernelComponent::update(&component, &mut right, KernelMessage::Add(7));
 
     assert!(left_command.is_none());
     assert!(right_command.is_none());
@@ -138,8 +139,11 @@ fn v1_same_input_produces_equivalent_model_and_command_intent() {
 
 #[test]
 fn v1_update_has_no_runtime_capability() {
-    let update: fn(&KernelComponent, &mut OwnedModel, KernelMessage) -> Command<KernelMessage> =
-        KernelComponent::update;
+    let update: fn(
+        &KernelComponentConfig,
+        &mut OwnedModel,
+        KernelMessage,
+    ) -> Command<KernelMessage> = KernelComponent::update;
 
     let _ = update;
 }
@@ -148,7 +152,6 @@ fn v1_update_has_no_runtime_capability() {
 fn v2_protocol_message_remains_distinct_from_provider_message() {
     fn assert_provider_conversion<Message: From<KernelProtocolMessage>>() {}
 
-    let _protocol = KernelProtocol;
     assert_provider_conversion::<ProviderMessage>();
     assert_ne!(
         TypeId::of::<KernelProtocolMessage>(),
@@ -163,16 +166,20 @@ fn v2_protocol_message_remains_distinct_from_provider_message() {
 #[test]
 fn component_identity_is_explicit_and_not_registration_order() {
     let mut left_program = Program::builder();
-    let (left_first, _, _, _) = KernelComponent::fixture();
-    let (left_second, _, _, _) = KernelComponent::fixture();
-    let alpha_left = left_program.component(ComponentId::new("alpha"), left_first);
-    let beta_left = left_program.component(ComponentId::new("beta"), left_second);
+    let (left_first, _, _, _) = KernelComponentConfig::fixture();
+    let (left_second, _, _, _) = KernelComponentConfig::fixture();
+    let alpha_left =
+        left_program.component::<KernelComponent>(ComponentId::new("alpha"), left_first);
+    let beta_left =
+        left_program.component::<KernelComponent>(ComponentId::new("beta"), left_second);
 
     let mut right_program = Program::builder();
-    let (right_first, _, _, _) = KernelComponent::fixture();
-    let (right_second, _, _, _) = KernelComponent::fixture();
-    let beta_right = right_program.component(ComponentId::new("beta"), right_first);
-    let alpha_right = right_program.component(ComponentId::new("alpha"), right_second);
+    let (right_first, _, _, _) = KernelComponentConfig::fixture();
+    let (right_second, _, _, _) = KernelComponentConfig::fixture();
+    let beta_right =
+        right_program.component::<KernelComponent>(ComponentId::new("beta"), right_first);
+    let alpha_right =
+        right_program.component::<KernelComponent>(ComponentId::new("alpha"), right_second);
 
     assert_eq!(alpha_left.id(), alpha_right.id());
     assert_eq!(beta_left.id(), beta_right.id());
@@ -181,10 +188,11 @@ fn component_identity_is_explicit_and_not_registration_order() {
 
 #[test]
 fn registration_transfers_configuration_and_model_ownership_to_program() {
-    let (component, init_calls, configuration_drops, model_drops) = KernelComponent::fixture();
+    let (component, init_calls, configuration_drops, model_drops) =
+        KernelComponentConfig::fixture();
     let mut builder = Program::builder();
 
-    let component_ref = builder.component(ComponentId::new("owned"), component);
+    let component_ref = builder.component::<KernelComponent>(ComponentId::new("owned"), component);
 
     assert_eq!(component_ref.id(), &ComponentId::new("owned"));
     assert_eq!(configuration_drops.load(Ordering::SeqCst), 0);

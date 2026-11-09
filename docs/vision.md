@@ -25,26 +25,13 @@ execution and fully reproducible when run in a controlled test world.
 This document defines Samara's north star. It is normative about the observable
 semantics Samara aims to preserve, but it is not an API specification or a
 runtime-topology decision. [`api-guidance.md`](api-guidance.md) records the
-consumer-facing design rationale that should guide API work beneath this vision.
-[`glossary.md`](glossary.md) defines the canonical vocabulary used by both documents.
+consumer-facing design rationale beneath this vision, and
+[`glossary.md`](glossary.md) defines the vocabulary both use.
 
-ADRs may select concrete implementation strategies and may narrow the scope of an
-initial release. They must not silently weaken this vision's observable guarantees.
-For example: ADR-0002 superseded ADR-0001's single-mailbox and global-order mandate:
-runtime topology is an implementation choice, while per-Component serialization,
-causality, and controlled determinism are observable contracts. ADR-0003 defines the
-initial controlled scheduling, Source cutover, structural trace, and work-accounting
-semantics beneath those guarantees. ADR-0004 selects a deliberately simple
-first live-runtime contract for admission, Driver completion, shutdown, framing EOF,
-pressure, faults, and the initial Tokio bridges; it does not claim to settle their mature
-product policies. ADR-0006 extends that same live admission and ownership boundary to
-provider-neutral host Port operations without changing Component purity or controlled
-execution. ADR-0007 adds cancellation-safe observation of the live owner so a host can
-compose immediate runtime-fault reporting with its own shutdown future while continuing
-to choose Drain or Cancel explicitly. ADR-0008 closes Program assembly around
-Program-issued capabilities: Components must receive every Component, Protocol, Effect,
-and Source dependency during assembly, and both execution profiles validate the complete
-declared world boundary before execution begins.
+ADRs select concrete strategies and may narrow the scope of a release. They must
+not silently weaken this vision's observable guarantees. Where an ADR refines a
+guarantee stated here, the ADR is the precise statement and this document is the
+intent.
 
 ## The Samara Program Boundary
 
@@ -74,7 +61,7 @@ code elsewhere in the process.
 
 That surrounding host may await a typed result from a live ingress API, but the result
 does not grant access to Component state. Any host decision that should change Samara
-application state must re-enter through the program's typed Message or Protocol boundary.
+application state must re-enter through the program's typed Message or Port boundary.
 
 This boundary makes incremental adoption possible without diluting the meaning of a
 conforming Samara program.
@@ -200,14 +187,6 @@ interaction, it composes a Program-issued `EffectCapability<D>`, an explicit des
 `D`, and a deterministic one-shot message mapper. The capability is inert authorization
 to describe work, not a handle that performs I/O.
 
-When an EffectOutcome type has one canonical meaning for the Component,
-`Command::effect(&capability, effect)` obtains that mapper through the standard
-`Message: From<EffectOutcome<Output, Error>>` relationship. When meaning is
-specific to the call site or captures domain context,
-`Command::effect_with(&capability, effect, mapper)` supplies it explicitly. This paired API
-is only a Rust spelling choice; both forms declare the same finite work and
-runtime-owned continuation.
-
 The EffectDescriptor must remain separately identifiable and interceptable by the
 runtime. A Command must not hide world interaction inside an arbitrary async closure.
 
@@ -244,40 +223,14 @@ Component's desire to maintain ongoing event production. It combines a stable
 Component-local identity, a comparable SourceDescriptor, and a reusable message mapper
 from SourceEvents to Component Messages.
 
-`Subscription::source(&capability, id, descriptor)` obtains the canonical mapper through
-`Message: From<SourceEvent<Item, Error>>`;
-`Subscription::source_with(&capability, id, descriptor, mapper)` supplies an explicit
-reusable mapper. The choice does not affect reconciliation identity or Source
-lifecycle.
-
 Subscriptions are derived purely from current Component state. Deriving a subscription
 does not start work; it describes the work the Component currently wants the runtime to
-maintain.
-
-After a committed transition, the runtime reconciles desired Subscriptions with active
-Subscription bookkeeping and Sources:
-
-- A newly desired identity starts a Source.
-- The same identity with the same Source capability and an equal SourceDescriptor retains
-  its Source without restarting and atomically adopts the latest message mapper projected
-  after the transition.
-- A removed identity cancels its Source.
-- The same identity with a changed Source capability or SourceDescriptor atomically
-  replaces its Source. Work from the withdrawn private runtime generation that has not
-  begun a Component transition is discarded and traced.
-- A Source failure that affects application behavior produces an explicit Component
-  Message.
-
-Messages already created for a retained Source keep their original meaning; events mapped
-after reconciliation use the latest mapper. An event from a replaced Source is never
-mapped through the replacement's mapper. Applications requiring overlapping or draining
-lifetimes declare separate Subscription identities or carry their own domain generation.
-
-A composed SourceDescriptor is automatically lowered to a runtime-owned SourcePlan: its
-terminal descriptor, ordered profile-independent Layers, capability identity, and message
-mapper. One `SourceCapability<Composed>` declaration records the lowered terminal
-requirement; applications neither declare the inner descriptor nor repeat the Layer stack.
-Live and controlled profiles bind only terminal descriptors.
+maintain. After each committed transition the runtime reconciles that desire against
+the Sources it owns: it starts what is newly wanted, retains what is unchanged, replaces
+what changed, and cancels what is no longer wanted, so that stale work from a replaced
+Source never enters a transition. A Source failure that affects application behavior
+produces an explicit Component Message. ADR-0003 and the glossary state the exact
+reconciliation and generation rules.
 
 A Source is the runtime-scoped ongoing realization behind the SourceDescriptor and may
 produce zero or more SourceEvents. A live SourceDriver may own world-facing operational
@@ -300,13 +253,10 @@ Samara owns the lifetime of the asynchronous work it authorizes.
 - Controlled execution can account for pending work and distinguish immediately runnable
   work from work awaiting logical time or controlled input.
 
-Ownership is not optional. ADR-0004 gives the first live runtime two bounded
-meanings: Drain stops Sources and recursively processes accepted and causally emitted
-finite work, while Cancel aborts application driving and closes all owned work without
-manufacturing application results solely because the runtime is ending. Drain is
-deliberately unbounded in time. ADR-0010 lets hosts request Drain, escalate to
-Cancel, and await cleanup through the same owner. Automatic shutdown deadlines
-and richer operational policy remain deferred.
+Shutdown is part of ownership: a host may drain accepted work to completion or cancel
+it, and neither manufactures application results merely because the runtime is ending.
+ADR-0004 and ADR-0010 define the two cutovers.
+
 
 ## Execution Profiles
 
@@ -345,10 +295,7 @@ Every terminal EffectDescriptor and SourceDescriptor used by the program must ha
 controlled behavior. Time, randomness, identifiers, external inputs, EffectOutcomes, and
 SourceEvents must be controlled or seeded. The controlled builder validates the complete
 closed capability declaration set before creating a run; missing behavior never silently
-falls back to a live Driver or the live world. Deliberately non-conforming code that later
-reveals a foreign or inconsistent capability faults before terminal behavior while
-preserving state and trace inspection and the ability to cancel runtime-owned work.
-
+falls back to a live Driver or the live world. 
 For a conforming program using conforming Components, Layers, and controlled bindings,
 identical initial state, Component configuration, controlled inputs, seeds, and runtime
 semantics must produce the same program-wide:
@@ -374,10 +321,8 @@ Controlled execution uses logical time and supports both:
   advances to the next scheduled event until a condition, deadline, or stopping point is
   reached.
 
-Events at the same logical time use deterministic causal insertion order: commands follow
-declaration traversal order, controlled inputs follow harness order, and initial Component
-work is canonicalized by Component identity rather than registration order. This v0
-runtime-semantics rule is reproducibility machinery, not a live or domain ordering
+Events at the same logical time follow a deterministic insertion order defined by
+ADR-0003. That rule is reproducibility machinery, not a live or domain ordering
 guarantee. Testing tools may explore alternative schedules only as explicitly different
 runtime semantics.
 
@@ -417,10 +362,7 @@ Message.
 ### Out-of-Band Semantic Trace
 
 Controlled execution always collects an in-memory structural semantic trace suitable for
-tests and diagnosis. Tests read it after driving the runtime; Phase 5 requires no callback
-inside the scheduler. Each record has identity, logical time, and an event. Initialization
-and controlled harness inputs are roots with no parent; every other record has exactly one
-immediate causal parent. The events represent, at minimum:
+tests and diagnosis. Each record has identity, logical time, causation, and an event. The events represent, at minimum:
 
 - Component identity.
 - Message receipt and transition commitment.
@@ -520,17 +462,6 @@ catalog belongs to the roadmap; it is not promised here. The canonical initial p
 a Tokio `mpsc` receiver translated into Component Messages through a first-party Source
 boundary.
 
-ADR-0004 additionally keeps one narrow TCP byte Source in Phase 6: one
-connection per Source realization, `bytes::Bytes` chunks, typed connect/read failure,
-peer EOF, and cancellation closure, with framing, retry, and reconnect left outside the
-terminal Driver.
-
-ADR-0005 adds one narrow raw HTTP Effect: owned method, URL, headers, and body;
-a pooled live client with redirects, retries, proxies, and automatic content
-decompression disabled; raw response status, headers, and body; and ordinary
-controlled interception. Decoding and endpoint policy remain outside the
-terminal Driver.
-
 Conceptually:
 
 ```text
@@ -566,142 +497,10 @@ architecture before receiving value.
 ## Executable Vision Requirements
 
 The vision is enforceable only when its observable semantics emerge from the
-implementation. Conformance requirements must therefore be topology-neutral and
-executable.
-
-The final APIs and test harness are not specified here, but a conforming runtime and
-representative conforming programs must be able to demonstrate the following scenarios.
-
-### V1. Repeatable Component Transition
-
-Given the same conforming Component implementation and equivalent immutable Component
-configuration, initial Model, and Message, repeated execution of a transition produces
-equivalent next Models and Commands. The runtime provides no ambient world capability to
-the transition.
-
-For Commands containing pure code, equivalence compares explicit EffectDescriptors and
-the Messages produced from equivalent controlled EffectOutcomes, not closure object
-identity.
-
-### V2. Isolated State Ownership
-
-When messages target the same Component concurrently, its transitions never overlap. No
-external runtime handle can mutate its model. Interaction with a second Component occurs
-only through declared messages and protocols.
-
-### V3. Interceptable Effect Descriptor
-
-Given a Command containing a Program-issued EffectCapability, typed
-EffectDescriptor, and either a pure one-shot message mapper or an explicit declaration
-that its outcome is discarded,
-controlled execution can observe the descriptor, apply the same declarative
-Layers, and provide an EffectOutcome without invoking a live terminal
-EffectDriver. A mapped outcome enters the target Component as a Message; a
-discarded outcome remains traceable but schedules no Message. Both forms remain
-runtime-owned finite work.
-
-### V4. Declarative Subscription Lifecycle
-
-Given a Model-derived Subscription containing a Program-issued SourceCapability, stable
-identity, SourceDescriptor, and message mapper:
-
-- A Source starts when the identity is first desired.
-- The Source remains active while the same identity has the same SourceCapability and an
-  equal SourceDescriptor.
-- The Source is canceled when the identity is no longer desired.
-- The Source is replaced when the same identity has a changed SourceCapability or
-  SourceDescriptor; stale work from the withdrawn generation is discarded before it can
-  begin another transition.
-- A retained Source atomically adopts the newest post-transition message mapper without
-  restarting.
-- A composed SourceDescriptor automatically lowers through the same ordered Layers to its
-  terminal descriptor in both profiles; its one outer SourceCapability declares that
-  terminal requirement.
-- Its controlled SourceEvents enter the Component through the message mapper.
-- Its failure enters the Component as a Message.
-
-No automatic restart behavior is asserted.
-
-### V5. Live and Controlled Program Parity
-
-The same Component program can be assembled once with live world bindings and once with
-controlled world bindings without changing Component implementations or configurations,
-Models, Messages, Commands, EffectDescriptors, SourceDescriptors, Subscriptions, Layers,
-codecs, Protocol logic, or message mappers. Only runtime decisions and terminal
-world-facing bindings differ.
-
-### V6. Program-Wide Controlled Determinism
-
-Given the same initial program, controlled world, logical-time inputs, seeds, and
-runtime semantics, two executions produce equivalent semantic traces and equivalent
-final state across all Components.
-
-The generic trace comparison includes structural transitions, command kinds and concrete
-descriptor types, subscriptions, outcomes, causation, and logical time—not only final
-model values. Direct typed-intent tests compare descriptor payloads where domain values
-matter; the generic trace need not copy those payloads.
-
-### V7. Controlled Time Progression
-
-A controlled program can be driven once through explicit time advancement and once
-through automatic advancement. Each style produces the deterministic trace defined by
-its input schedule without sleeping in wall-clock time.
-
-### V8. Causal Semantics Without Global Order
-
-A multi-Component scenario demonstrates preserved causal relationships and
-non-overlapping per-Component transitions without assuming an order between independent
-live events or assuming a particular runtime topology.
-
-### V9. Structured Work Ownership
-
-At every observation point, the runtime can account for work created by commands and
-subscriptions. Ending the owning scope leaves no detached Samara work. Failure and
-cancellation are visible through the appropriate semantic or diagnostic channel.
-
-In controlled execution, immediately runnable accepted Messages and due timers count as
-`pending_now`; pending effects, future timers, active Sources, and outstanding Requests
-count as `pending_later`. Runtime tasks, queues, locks, interpreter steps, and trace records
-are not separate semantic obligations. Controlled cancellation reduces both counts to
-zero.
-
-For the initial live profile, successful shutdown likewise reports zero
-remaining and pending obligations. Drain closes ingress, stops Sources, and processes
-work accepted before the cutoff or causally emitted while draining. Cancel and runtime
-fault may discard queued application work as part of aborting the scope, but they still
-join or abort every runtime-owned task and do not synthesize application outcomes merely
-to announce scope termination.
-
-### V10. Non-Influential Structural Semantic Trace
-
-Reading the always-collected controlled trace after runtime driving has no semantic
-feedback path. In live execution, any future public observer likewise has no semantic
-feedback path even though instrumentation may perturb the timing of independent events.
-The v0 conformance requirement does not require that future live API. The controlled
-trace contains enough structural information to explain transitions, effects,
-subscriptions, Source lifecycle, time, and causation.
-
-### V11. Shallow Tokio Onboarding
-
-A compiling example embeds one Component in a normal Tokio application, adapts an `mpsc`
-receiver into Messages using first-party interop, and reuses the same Component in a
-controlled test without custom runtime, Layer, Driver, or controlled-world
-infrastructure.
-
-### V12. Closed Program Capability Assembly
-
-Program assembly issues every Component reference, Port, EffectCapability, and
-SourceCapability before closing the Program. A raw EffectDescriptor cannot construct an
-Effect Command and a raw SourceDescriptor cannot construct a Subscription. Live and
-controlled profile builders reject every missing, duplicate, ambiguous, foreign, or
-type-incompatible declared terminal binding before execution begins, including a
-dependency first used only after a later Message.
-
-One capability for a composed Source declares only its lowered terminal binding
-requirement. Exact resource bridges select Source capability identity rather than future
-descriptor equality. A deliberately hidden foreign capability is a Component-conformance
-violation and faults before terminal behavior if it first becomes visible during
-execution; it does not extend the closed Program.
+implementation, so its requirements are stated as topology-neutral scenarios, V1
+through V12, that a conforming runtime and representative programs must demonstrate.
+Their definitions and the evidence for each live in the
+[acceptance matrix](testing/v0-acceptance-matrix.md).
 
 ## Not Promised Here
 
@@ -726,28 +525,5 @@ This vision deliberately does not promise:
 These are not permanent prohibitions. They are boundaries that keep this vision clear
 and leave later choices to focused ADRs and roadmaps.
 
-## Deferred Decisions
-
-The following questions remain intentionally open:
-
-- Whether to provide a blessed escape hatch and how it advertises weakened guarantees.
-- Named capability bundles and user-facing capability identity inspection.
-- The broader first-party Tokio bridge module organization and bindings beyond
-  the initial `StreamDescriptor<T>` plus `mpsc` bridge.
-- General Layer and execution-profile binding abstractions beyond the accepted
-  type-wide Driver and exact Source-capability forms.
-- Subscription restart and retry semantics.
-- Bounded delivery, backpressure, overload, coalescing, fairness, and shedding policies
-  beyond v0 unbounded internal delivery.
-- Automatic shutdown deadlines, grace periods, escalation policy, host-signal
-  behavior, and exact diagnostic accounting beyond ADR-0010's explicit requests.
-- The initial first-party Layer and Driver catalog beyond the canonical `mpsc`
-  bridge, accepted narrow TCP byte Source, and accepted raw HTTP Effect.
-- Domain-payload trace capture, typed trace projections, a public live observer, durable
-  trace storage, and replay tooling.
-- Request failure, abandonment, delegation, and in-band cancellation beyond
-  [ADR-0011](adr/0011-request-timeouts.md)'s opt-in timeouts and ADR-0006's
-  live-host whole-scope closure diagnostic.
-- First-party module/type naming, provided ADR-0004's accepted observable EOF and
-  `bytes` semantics are preserved.
-- The shape and release timing of reusable conformance harnesses.
+Open questions and deferred decisions are tracked in
+[`notes/framework-follow-ups.md`](notes/framework-follow-ups.md), not here.

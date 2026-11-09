@@ -11,7 +11,7 @@ substitute for the behavioral contracts in the vision and ADRs.
 The concepts below are canonical unless marked historical. Accepted API slices
 and the Phase 5 controlled-execution contract follow these spellings. Accepted
 ADR-0004 uses them for the active initial live-runtime contract.
-ADR-0008 closes Program assembly around Program-issued Component, Protocol,
+ADR-0008 closes Program assembly around Program-issued Component, Port,
 Effect, and Source capabilities.
 `api-contract.md` records which slice is frozen for each
 implementation phase and which policy-bearing surfaces remain provisional.
@@ -19,21 +19,43 @@ implementation phase and which policy-bearing surfaces remain provisional.
 ## Program and State
 
 **Samara program** — A closed declared collection of Components and the
-Component, Protocol, Effect, and Source capabilities they may use. It contains
+Component, Port, Effect, and Source capabilities they may use. It contains
 logical application structure, not live Tokio resources. Execution can issue
 new occurrences and Model-derived descriptor values but cannot add another
 dependency after build.
 
-**Program assembly** — The construction of a Samara program, including
-Component registration; ComponentRef, named Port, EffectCapability, and
-SourceCapability issuance; provider binding; and execution profile selection.
+**Program assembly** — The construction of a Samara program: Component
+registration, issuance of ComponentRefs, Ports, and Effect and Source
+capabilities, Port binding, and profile selection. `ProgramBuilder::build()`
+rejects logical assembly errors and closes the capability inventory; the
+profile builders then validate every declared terminal requirement before
+execution (ADR-0008).
 
-`ProgramBuilder::build()` rejects logical assembly errors and closes the
-Program-issued capability inventory. Live and controlled profile builders then
-validate every declared terminal Effect and Source requirement before
-execution. The inventory is closed even though assembly does not introspect
-arbitrary Component fields or statically enumerate behavior-dependent message
-edges.
+**Assembly** — A reusable slice of Program assembly: a type whose `install`
+declares its own Components and capabilities into an enclosing
+`ProgramBuilder`, hands back a `Connector` accepting `Accepts` as its
+address plus any other `Exports`, and lists the world boundaries the host
+must drive as `Requires`. It declares no Ports; the host names its own and
+connects the Connector to them (ADR-0018). The unit of reuse in Samara is an
+Assembly, not a Component. It leaves no trace at runtime: the Components it
+installs are ordinary peers. Not a *SubComponent*: Samara has no
+parent-child `update` nesting.
+
+**Accepts (of an Assembly)** — The message type the Assembly's Connector
+accepts, named from the host's side: the Assembly's public vocabulary. For a
+library it is usually an opaque type whose constructor functions are the
+API; an Assembly nobody sends to still names its facade Component's Message.
+
+**Requires (of an Assembly)** — The type-level list of `Effect<D>` and
+`Source<S>` markers naming what an Assembly needs driven. The live builder's
+`with_assembly(installed).and_drivers(..)` takes a matching tuple of Drivers,
+position by position; the controlled builder's `with_assembly(installed)`
+takes control of every entry and needs nothing else.
+
+**VendorsDrivers** — An optional trait an Assembly implements to ship concrete
+live Drivers for its `Requires`, bound with `and_its_vendored_drivers()`. A
+library normally feature-gates the impl so consumers bringing their own
+Drivers do not pay for the vendored ones.
 
 **Program boundary** — The scope within which Samara's guarantees apply. Code
 outside this boundary is part of the surrounding world and interacts with the
@@ -49,16 +71,19 @@ messages, applies one transition at a time, emits Commands, and declares
 Subscriptions. The name is the canonical replacement for the historical term
 *Actor*.
 
-**Component implementation** — The Rust type and `impl Component` that define a
-kind of Component. Its methods receive `&self`, signaling that the
-implementation's configuration is observationally read-only during execution.
-Because Rust permits interior mutability, preserving that property is also a
-conformance obligation.
+**Component kind** — The Rust type that implements `Component`. It is only a
+name: no value of it is ever stored, and `init`, `update`, and
+`subscriptions` are associated functions on it (ADR-0013). `ComponentRef<C>`
+and `component::<C>(..)` name the kind.
 
-**Component configuration** — A particular immutable value of a Component
-implementation type. It may hold logical wiring and declarative configuration,
-such as Ports, EffectCapabilities, SourceCapabilities, and SourceDescriptors.
-Behaviorally relevant mutable state does not belong here.
+**Component configuration / `Component::Config`** — The immutable value a
+kind is registered with. It holds logical wiring and declarative
+configuration, such as Ports, EffectCapabilities, SourceCapabilities, and
+SourceDescriptors, and is passed to every Component function by shared
+reference, signaling that it is observationally read-only during execution.
+Because Rust permits interior mutability, preserving that property is also a
+conformance obligation. Behaviorally relevant mutable state does not belong
+here.
 
 **Model** — The mutable behavioral state exclusively owned by one Component.
 Sockets, tasks, clocks, transport-correlation tables, and other operational
@@ -93,278 +118,166 @@ specific observable property is deliberately promised.
 ## Finite Work and Ongoing Work
 
 **Command / `Command<Message>`** — An inert value describing finite work
-requested by a transition. A Command may request an EffectDescriptor, schedule
-a Message, communicate with another Component, issue a correlated Request, or
-emit a Reply. Commands are must-use declarations: merely constructing and
-discarding one requests no work. *Command* and *effect* are therefore not
-synonyms.
+requested by a transition: an effect, a scheduled Message, a send to another
+Component, a correlated Request, or a Reply. Constructing and discarding one
+requests no work. *Command* and *effect* are not synonyms.
 
 **EffectDescriptor** — An inert, typed description of one finite world-facing
-interaction. Each Command occurrence creates a distinct effect invocation,
-even when two descriptors contain equal-looking data. EffectDescriptors need
-not be comparable or cloneable.
+interaction. Each Command occurrence is a distinct invocation even when two
+descriptors hold equal data, so descriptors need not be comparable or
+cloneable.
 
 **EffectCapability / `EffectCapability<D>`** — An inert Program-issued value
-declaring that its Program may issue EffectDescriptor type `D`. The capability
-is required by every public Effect Command constructor but performs no I/O and
-contains no Driver or runtime handle. Cloning it does not declare another
-dependency. Its private Program provenance prevents it from authorizing work
-in another Program.
+declaring that its Program may issue descriptor type `D`. Required by every
+Effect Command constructor; performs no I/O and holds no handle. Cloning it
+declares nothing new, and its private provenance stops it authorizing work in
+another Program.
 
-**EffectOutcome** — The single terminal completion of an effect invocation: a
-typed success, a failure carrying typed Error data, or cancellation as defined
-by that effect's contract. `Command::effect(&capability, effect)` supplies the
-one-shot mapper through `Message: From<EffectOutcome<Output, Error>>`, while
-`Command::effect_with(&capability, effect, mapper)` supplies it explicitly. A
-Command may instead explicitly discard the outcome when no terminal
-application reaction is meaningful. That mode remains runtime-owned finite
-work rather than "fire and forget". Aborting the entire live runtime scope under
-ADR-0004 is ownership cleanup rather than an effect-contract cancellation: the
-live future is dropped or cancelled and no EffectOutcome or mapped Message is
-manufactured for an application that is ending.
+**EffectOutcome** — The single terminal completion of an effect invocation:
+typed success, failure carrying typed Error data, or cancellation as the
+effect's contract defines. A Command may instead declare that it discards the
+outcome; that is still runtime-owned finite work, not fire and forget. Aborting
+the whole live scope is ownership cleanup and manufactures no outcome
+(ADR-0004).
 
-**HttpRequest** — The first-party terminal EffectDescriptor for one raw finite
-HTTP interaction. It owns method, URL text, headers, and body bytes; it is not
-an executing client or a typed application endpoint.
+**HttpRequest / HttpResponse / HttpError** — The first-party raw HTTP boundary
+(ADR-0005). The descriptor owns method, URL, headers, and body; the response is
+the complete buffered status, headers, and body, and an error status is still
+a response; `HttpError` is configuration or transport failure, never a remote
+status.
 
-**HttpResponse** — The complete raw output of one HttpRequest: status, version,
-headers, and fully buffered body bytes. An HTTP error status is still an
-HttpResponse; application status policy is distinct from transport failure.
+**HttpResponsePipeline** — The must-use pure continuation `on_response`
+produces from an `HttpRequest`. It declares status policy and decoding and
+lowers to the same raw effect plus a composed mapper; it is not a Driver,
+Layer, or separately traced effect. Its error algebra, `HttpResponseError`,
+distinguishes transport `HttpError`, an explicit `HttpStatusError` rejection
+that retains the response, and `HttpJsonError`, which retains the response and
+the decode error. Cancellation is not a variant.
 
-**HttpError** — Typed explanatory data for failure to configure or transport a
-first-party HttpRequest. It does not represent an HTTP status selected by the
-remote endpoint.
+**StdinLines / StdinError** — The first-party terminal SourceDescriptor for
+UTF-8 lines from process stdin (ADR-0009), with line-ending stripping and one
+final unterminated Item at EOF. `StdinError` is a typed `Read` or
+`InvalidUtf8` failure that ends the Source without `Ended`. The descriptor is
+platform-neutral; `bind_stdin` is the Unix-only exact live binding of the sole
+declared stdin capability, one per runtime, sharing one process-wide lease.
 
-**HttpResponsePipeline** — An inert, must-use, one-shot pure continuation
-created when `HttpRequest::on_response` consumes a request. It declares ordered
-response policy and decoding, then lowers through `into_command(&capability)`
-using the matching EffectCapability and the Component Message's canonical
-`From` conversion, or through `into_command_with(&capability, mapper)` using an
-explicit conversion. Both produce the same raw HttpRequest Effect plus a
-composed Message mapper. It is not a Driver, runtime Layer, or separately
-traced Effect.
-
-**HttpResponseError** — The non-exhaustive response-pipeline error algebra
-distinguishing a raw configuration/transport HttpError, an explicitly selected
-status-policy rejection, and JSON decoding failure. Runtime cancellation is
-not a variant; it remains `EffectOutcome::Cancelled`.
-
-**HttpStatusError** — A non-2xx HttpResponse rejected by an explicit
-`require_success` policy. It retains the complete raw response, including
-headers and diagnostic body.
-
-**HttpJsonError** — Failure to decode an owned HttpResponse body as JSON. It
-retains both the complete raw response and the original `serde_json::Error`.
-
-**StdinLines** — The first-party terminal SourceDescriptor for UTF-8 lines from
-process standard input. Each Item is a `String` with its terminating LF and one
-immediately preceding CR removed. Empty lines are preserved; nonempty bytes at
-clean EOF form one final unterminated Item before `Ended`. The descriptor is
-platform-neutral, while Samara's first-party `bind_stdin` live realization is
-currently Unix-only.
-
-**StdinError / StdinErrorKind** — Typed explanatory data for terminal
-`StdinLines` failure. `Read` identifies failure to read process input, and
-`InvalidUtf8` identifies a line payload, including final unterminated input,
-that was not valid UTF-8.
-`StdinError::new` constructs the same boundary value in controlled fixtures.
-Either failure produces `SourceEvent::Failed` without a later `Ended`.
-
-**stdin live binding / `bind_stdin`** — The Unix-only first-party exact binding
-of process stdin to the sole declared capability whose terminal descriptor is
-`StdinLines`, discovered during build. Zero or multiple matches fail build.
-The capability may be direct or place built-in Layers above that terminal
-descriptor. One live runtime has at most one such binding, and first-party
-bindings across runtimes share one process-wide active lease. Each realization
-owns an interruptible reader thread; removal, replacement, shutdown, fault,
-EOF, or failure joins it before releasing the Source. Code outside Samara must
-not read process stdin concurrently. Controlled execution uses ordinary
-type-wide `control_source::<StdinLines>()` behavior rather than this live
-binding.
-
-**Error** — Typed data explaining why an operation could not complete as
-intended, such as `TcpError`, `DecodeError`, or `RequestError`. Concrete payload
-types use the `Error` noun rather than `Failure`.
+**Error** — Typed data explaining why an operation could not complete, such as
+`TcpError` or `RequestError`. Payload types use the `Error` noun.
 
 **Failure** — The semantic occurrence of an operation failing, normally
-carrying Error data. *Failed* is appropriate for an outcome or event variant,
-as in `EffectOutcome::Failed(error)`. Normal Source ending and cancellation are
-terminal conditions but are not failures.
+carrying Error data, as in `EffectOutcome::Failed(error)`. Normal Source ending
+and cancellation are terminal conditions, not failures.
 
 **SourceDescriptor** — An inert, typed, comparable description of ongoing event
-production. Comparability exists so Subscription reconciliation can determine
-whether desired work is unchanged; a SourceDescriptor does not contain a live
-resource or stable Subscription identity.
+production. Comparability exists so reconciliation can tell whether desired
+work is unchanged; it holds no live resource and no Subscription identity.
 
 **SourceCapability / `SourceCapability<S>`** — An inert Program-issued value
-declaring that its Program may subscribe to SourceDescriptor type `S`. It is
-required by every public Source Subscription constructor and has private
-Program provenance and identity. For a composed `S`, the one outer capability
-also records the sealed lowered terminal descriptor requirement; applications
-do not separately declare inner descriptors or Layers.
+declaring that its Program may subscribe to descriptor type `S`. For a
+composed `S` it also records the lowered terminal requirement, so applications
+never declare inner descriptors or Layers separately.
 
-**Terminal descriptor** — An EffectDescriptor or SourceDescriptor directly
-realized by a matching Driver in live execution or by terminal controlled
-behavior. `TcpBytes` is a terminal SourceDescriptor.
+**Terminal descriptor** — A descriptor realized directly by a Driver or by
+terminal controlled behavior. `TcpBytes` is one.
 
-**Composed descriptor** — An EffectDescriptor or SourceDescriptor built by one
-or more Layers around another descriptor. Interpretation applies those Layers
-until it reaches a terminal descriptor. `Framed<TcpBytes, D>` is a composed
-SourceDescriptor whose framed event vocabulary is visible to its Subscription.
+**Composed descriptor** — A descriptor built by one or more Layers around
+another. Interpretation applies the Layers until it reaches a terminal
+descriptor. `Framed<TcpBytes, D>` is one.
 
-**SourcePlan** — The runtime-owned compiled mechanism produced by lowering one
-desired composed SourceDescriptor during reconciliation. It contains the
-terminal SourceDescriptor, its ordered profile-independent Layers,
-SourceCapability identity, and Subscription message mapper. It is not another
-application declaration, Subscription identity, or running Source.
-Applications bind live or controlled behavior only for the terminal
-descriptor.
+**SourcePlan** — The runtime-owned result of lowering a composed
+SourceDescriptor during reconciliation: terminal descriptor, ordered Layers,
+capability identity, and mapper. Not an application declaration, identity, or
+running Source.
 
 **Subscription / `Subscription<Message>`** — A Component's declarative desire
-to maintain a Source matching a SourceDescriptor under a stable,
-Component-local identity through a SourceCapability, plus a message mapper from
-SourceEvents to Component Messages.
-`Subscription::source(&capability, id, descriptor)` obtains that mapper through
-`Message: From<SourceEvent<Item, Error>>`;
-`Subscription::source_with(&capability, ...)` accepts it explicitly. Declaring
-a Subscription does not itself start work, and the constructor spelling does
-not affect reconciliation.
+to maintain a Source for a SourceDescriptor under a stable Component-local
+identity, through a SourceCapability, with a reusable mapper from SourceEvents
+to Messages. Declaring one starts nothing.
 
-**Source** — The runtime-scoped ongoing realization executing behind a
-SourceDescriptor. It may contain operational resources such as tasks, sockets,
-and partial framing buffers. A Source can produce zero or more SourceEvents
-until it ends, fails, or is canceled.
+**Source** — The runtime-scoped ongoing realization behind a SourceDescriptor.
+It may own tasks, sockets, and partial buffers, and produces zero or more
+SourceEvents until it ends, fails, or is cancelled.
 
 **Source generation** — Private runtime identity for one Source realization.
-Replacing a descriptor atomically withdraws the old generation. Its events or
-mapped Messages that have not begun a Component transition are stale, are
-discarded, and are recorded in the structural trace. Components observe a
-generation only when the application deliberately carries its own domain
-generation.
+Replacement withdraws the old generation atomically; its stale events are
+discarded and traced. Applications that need to observe generations carry
+their own.
 
-**SourceEvent** — One repeatable occurrence produced by a Source. A reusable
-message mapper transforms each SourceEvent into a Component Message.
+**SourceEvent** — One repeatable occurrence produced by a Source, mapped into a
+Component Message each time.
 
-**Source terminal arbitration** — The accepted Phase 6 rule that exactly one
-terminal condition wins while a live Source generation is active. An accepted
-`SourceSink::end`, accepted `SourceSink::fail`, or active SourceDriver return
-produces one terminal event; a cancellation, replacement, shutdown, or runtime
-fault cutover winning first suppresses later terminal events. Sink calls after
-termination return `DriverStopped`.
+**Source terminal arbitration** — Exactly one terminal condition wins for an
+active live Source: an accepted `end`, an accepted `fail`, or Driver return;
+cancellation, replacement, shutdown, or fault winning first suppresses later
+terminal events (ADR-0004).
 
-**Desired Subscription** — A Subscription returned from the Component's
-current Model during reconciliation.
+**Desired Subscription / Active Subscription** — What the Component's current
+Model asks for, and the runtime's bookkeeping for what it currently maintains.
 
-**Active Subscription** — Runtime bookkeeping for desired ongoing work,
-including any currently maintained Source.
-
-**Subscription reconciliation** — The post-transition comparison of desired
-and active Subscriptions. A new stable identity starts a Source; the same
-identity, SourceCapability, and equal SourceDescriptor retain it; the same
-identity with a changed capability or descriptor replaces it; a removed
-identity cancels it. Removal or replacement does not inherently manufacture a
+**Subscription reconciliation** — The post-transition comparison of desired and
+active Subscriptions: a new identity starts a Source; the same identity,
+capability, and equal descriptor retain it and install the latest mapper; a
+changed capability or descriptor replaces it with a hard generation cutover; a
+removed identity cancels it. Removal and replacement manufacture no
 SourceEvent.
 
-When a Source is retained, reconciliation atomically installs the latest
-mapper returned by `subscriptions()`. Already-created Messages are unchanged;
-subsequent SourceEvents use the latest mapper. Replacement is instead a hard
-Source-generation cutover.
-
-**Message mapper** — Pure synchronous application logic that converts boundary
-data into a Component Message. EffectOutcome and request-outcome mappers are
-one-shot and may be represented by `FnOnce`; SourceEvent and protocol-binding
-mappers are reusable and may be represented by `Fn`. Mapper object identity is
-not itself part of Command or Subscription semantics. Continuation-bearing APIs
-use the short method when `Message: From<BoundaryValue>` expresses one
-canonical conversion and a `_with` method for an explicit call-site mapper.
-These are two ways to supply the same semantic mapper, not different runtime
-operations.
+**Message mapper** — Pure synchronous application logic converting boundary
+data into a Component Message. Outcome mappers are one-shot (`FnOnce`); event
+and protocol mappers are reusable (`Fn`). Mapper identity is not part of
+Command or Subscription semantics.
 
 **Adapter** — The conceptual umbrella for code that translates or realizes a
-declared boundary. It is useful in architecture and user-guide prose, but
-Samara does not currently require a universal `Adapter` trait or an `Adapter`
-suffix on concrete types. The two important categories are Layers and Drivers.
+declared boundary. No universal trait; the two categories that matter are
+Layers and Drivers.
 
-**Compositional Adapter / Layer** — A declarative transformation that stays
-inside the Samara boundary and composes one descriptor or event vocabulary into
-another. A Layer behaves identically in live and controlled execution. It may
-have runtime-scoped deterministic state, such as a framing buffer, but it does
-not perform ambient I/O. Samara may eventually have multiple Layer kinds rather
-than one universal `Layer` trait.
+**Layer** — A compositional adapter: a declarative transformation of one
+descriptor or event vocabulary into another, identical in live and controlled
+execution, holding at most deterministic state such as a framing buffer, and
+performing no ambient I/O. More than one Layer kind may exist.
 
-**Terminal Adapter / Driver** — The code-level abstraction that realizes a
-terminal descriptor against a selected live surrounding world. Drivers may use
-Tokio and operational resources, but all work remains runtime-scoped and
-cancellable. An execution profile supplies Drivers through program assembly;
-they are not associated with a Component implementation.
+**Driver** — A terminal adapter: the code that realizes a terminal descriptor
+against the live world, under runtime scope and cancellation, supplied by
+assembly rather than attached to a Component. `EffectDriver<D>` and
+`SourceDriver<D>` are the two roles. A normal return maps to exactly one
+outcome or terminal event; a panic faults the runtime instead of inventing an
+application result.
 
-**`EffectDriver<D>`** — The provisional static relationship between a terminal
-EffectDescriptor type `D` and its live-world Driver.
+**Type-wide binding** — One Driver or controlled registration satisfying every
+capability that lowers to the same terminal descriptor type.
 
-**`SourceDriver<D>`** — The provisional static relationship between a terminal
-SourceDescriptor type `D` and its live-world Driver.
+**Exact binding** — A binding tied to one capability identity because it owns
+one concrete resource, such as a one-shot `mpsc` receiver or process stdin.
 
-**Type-wide binding** — One live Driver or controlled behavior registration
-that can satisfy every declared capability lowering to the same terminal
-descriptor type.
+**Mechanism** — A reusable execution capability owned by the runtime or a
+low-level Layer or Driver: scheduling, transport I/O, cancellation, task
+supervision.
 
-**Exact binding** — A profile binding associated with one private capability
-identity because it owns one concrete resource rather than an implementation
-for every value of a descriptor type. The first-party one-shot `mpsc` receiver
-bridge selects one independently bindable receiver. Unix `bind_stdin` also
-selects one exact capability, but process stdin permits only one such binding
-in a live runtime even when the capabilities differ.
+**Policy** — An application or protocol decision: retry, reconnect, framing
+choice, timeout meaning, domain error mapping. Policy must not hide in
+mechanism.
 
-Under ADR-0004, normal EffectDriver return maps success or failure
-exactly once. A SourceDriver that returns without an accepted terminal sink
-call normally ends its still-active Source exactly once. Driver panic instead
-faults the runtime and produces no fabricated typed application result.
+**Structured concurrency / runtime-owned scope** — Every Samara-authorized
+asynchronous activity stays owned, cancellable, and accountable through a
+runtime scope. Detached work is non-conforming.
 
-Controlled execution provides deterministic behavior for the same terminal
-descriptor contracts without silently invoking live Drivers. Normal Driver and
-controlled registrations are type-wide; exact resource bridges such as Tokio
-`mpsc` and Unix process stdin select one SourceCapability identity.
+**Decoder finalization** — The pure EOF operation a Decoder performs once when
+its underlying Source ends normally, emitting final frames before `Ended` or
+one decode failure without `Ended`. Failure, replacement, cancellation,
+shutdown, and fault do not invoke it (ADR-0004).
 
-The finite and ongoing lifecycles are deliberately similar only where their
-semantics are actually similar:
+The two lifecycles are parallel only where their semantics are:
 
 ```text
 Command + EffectCapability + EffectDescriptor
-    -> zero or more Layers
-    -> terminal EffectDriver in live execution, or controlled behavior
-    -> EffectOutcome exactly once on normal completion
-       (whole-scope abort may produce none)
-    -> one-shot message mapper -> Component Message,
-       or explicitly discard outcome -> no Message
+    -> zero or more Layers -> terminal Driver or controlled behavior
+    -> EffectOutcome exactly once (whole-scope abort may produce none)
+    -> one-shot mapper -> Message, or discarded -> no Message
 
-Subscription(identity + SourceCapability + SourceDescriptor + message mapper)
-    -> reconciliation
-    -> SourcePlan(ordered Layers + terminal descriptor + latest mapper)
-    -> terminal SourceDriver in live execution, or controlled behavior
-    -> Source
-    -> SourceEvent zero or more times
-    -> reusable message mapper
-    -> Component Message
+Subscription(identity + SourceCapability + SourceDescriptor + mapper)
+    -> reconciliation -> SourcePlan -> terminal Driver or controlled behavior
+    -> Source -> SourceEvent zero or more times
+    -> reusable mapper -> Message
 ```
-
-**Mechanism** — A reusable execution capability owned by the runtime or a
-low-level Layer or Driver, such as scheduling, transport I/O, cancellation, or
-task supervision.
-
-**Policy** — An application or protocol decision such as retry, reconnect,
-framing choice, timeout meaning, or domain error mapping. Policy must not be
-hidden in runtime-owned mechanism.
-
-**Structured concurrency / runtime-owned scope** — The rule that every
-Samara-authorized asynchronous activity remains owned, cancellable, and
-accountable through a runtime scope. Detached work is non-conforming.
-
-**Decoder finalization** — The pure EOF operation required for Phase 6. Normal
-ending of the underlying Source asks the Decoder to emit zero or more final
-frames or one typed decode Error. Final frames precede `Ended`; finalization
-failure emits `Failed` without `Ended`. Underlying failure, an earlier decoder
-failure, replacement, cancellation, shutdown, and runtime fault are not decoder
-EOF and do not invoke finalization.
 
 ## Descriptor Naming
 
@@ -402,22 +315,36 @@ labels, not additional Samara runtime concepts.
 
 ## Component Interaction
 
-**Protocol** — A provider-neutral typed vocabulary exposed through a Port
-rather than through a provider Component's private Message type. Qualify
-network formats as *wire protocols* to avoid ambiguity.
+**Port message type** — The message enum a `Port<M>` or `Connector<M>`
+carries: the complete vocabulary of one dependency, written by hand. A
+one-way variant carries only its data; a request variant also carries a
+`ReplyWith<R>`, which is what types its reply. Name the enum for what it
+contains, such as `HealthMessage`; directional names such as `HealthInbound`
+are avoided. The word *protocol* is reserved for wire protocols.
 
-**Protocol message / `Protocol::Message`** — The complete provider-neutral
-typed vocabulary carried through a Protocol's Ports. It includes one-way
-Notification variants and dynamic RequestInvocation variants. Concrete enum
-names should make the association explicit, such as `HealthProtocolMessage`;
-directional names such as `HealthInbound` are avoided.
-
-**Port** — A named, inert Program-issued logical dependency on a Protocol. A Port contains no
+**Port** — A consumer-owned, named, inert Program-issued dependency on a
+message type: `Port<M>` is a hole the consuming application cuts in its own
+vocabulary and fills at assembly by connecting a provider. A Port contains no
 provider reference, channel, runtime handle, or lookup capability. It remains
 distinct from the live-only `PortHandle` obtained from an assembled runtime.
+This is the hexagonal *port*; Elm uses the same word for JavaScript interop,
+which Samara does not have.
 
-**Provider** — The concrete Component selected during program assembly to
-receive Protocol Messages sent through a Port.
+**Connector** — A provider-owned, inert address: a `ComponentRef` erased to the
+Message type it accepts, `Connector<M>`, together with the pure conversion from `M`
+into the Component's private Message. A Component or Assembly hands out a Connector
+to expose itself without naming its Component kind; the holder connects it to
+one of its own Ports with `connect` after adapting it with `accepting`,
+writing the coupling between the two vocabularies once at that site, or
+holds it directly and addresses it with
+`Command::send` and `Command::request_to`, whose request is a constructor
+function the provider published taking `ReplyWith<R>`. `Connector::accepting`
+adapts a Connector to the holder's vocabulary. Like `ComponentRef` and `Port`, a
+Connector grants no delivery capability.
+
+**Provider** — The Component that receives what is sent through a Port or to
+a Connector: selected at program assembly for a Port, named by the Connector
+otherwise.
 
 **Requester** — The origin of a Request through a Port. A Component requester
 owns a Message continuation and any domain correlation. A live host requester
@@ -425,91 +352,73 @@ awaits its Reply through `PortHandle`. In both cases the runtime owns transport
 correlation.
 
 **Port binding** — The assembly-time mapping from one exact named Port to a
-provider and its private Component Message vocabulary. The provider's Message
-implements `From<Protocol::Message>`, making the pure vocabulary conversion a
-standard type relationship rather than a closure repeated at each binding.
-Multiple named Ports of the same Protocol may still be bound independently.
+`Connector<M>` of the same message type, made with
+`ProgramBuilder::connect(&port, &connector)`. A Component provides the
+Connector: `ComponentRef::connector()` when its Message is `M` or implements
+`From<M>`, or `accepting(map)` with the pure conversion, normally the enum
+variant that wraps the Port message. A library Connector in another
+vocabulary is adapted the same way with `Connector::accepting`. Multiple
+named Ports of the same message type may still be bound independently.
 
-**Notification** — A one-way Protocol value implementing `Notification<P>` and
-sent through `Command::notify` or live `PortHandle::notify`. It has no correlated
-terminal outcome for the sender. Notification delivery-failure policy beyond
-accepted live admission and whole-scope cutovers remains unresolved.
+**Notification** — Informal name for a one-way message: a variant with no
+reply token, delivered with `Command::send` or `PortHandle::send`. The sender
+gets no correlated outcome. There is no trait; the word only distinguishes it
+from a request in prose.
 
-**Request** — A Protocol operation/value implementing `Request<P>` with a
-statically associated `Reply` type. `Command::request(port, request)` issues it
-as finite correlated work using
-`Message: From<RequestOutcome<Reply>>`; `Command::request_with` accepts an
-explicit continuation. Its eventual typed RequestOutcome is transformed into
-an ordinary requester Component Message; the requester does not await inside
-`update`. A live host may instead issue the same value through
-`PortHandle::request` and await `Result<Reply, RuntimeError>` directly.
+**Request** — A message variant carrying a `ReplyWith<R>`. A Component issues
+one with `Command::request_to(&target, constructor, map)`, passing the
+variant's constructor; the runtime mints the token, the constructor's
+`ReplyWith<R>` fixes the reply type, and the typed `RequestOutcome<R>` arrives
+later through `map` as an ordinary Message. A live host issues the same
+constructor through `PortHandle::request_to` and awaits `R` directly
+(ADR-0016).
 
-**RequestInvocation** — One dynamic Request occurrence delivered to the
-provider. It contains the Request value and a one-shot `ReplyTo` authority. The
-runtime, not application code, associates the invocation with its eventual
-outcome.
+**Reply** — The successful response type `R` named by a request variant's
+`ReplyWith<R>`. A provider emits a value of that type with `Command::reply`.
 
-**Reply** — The successful response type statically associated with a Request.
-A provider emits a value of that type using the invocation's `ReplyTo`
-authority.
-
-**Request outcome / `RequestOutcome`** — The single terminal result mapped to
-an ordinary requester Message. The runtime produces `Replied` or, for the
-opt-in timeout forms in ADR-0011, `TimedOut`. Deadline equality times out;
-late Replies are discarded and provider work continues. `Failed` and
-`Cancelled` remain reserved. Unbounded `PortHandle::request` returns Reply
-directly; `request_timeout` returns RequestOutcome. Host scope failures use
-`RuntimeError` without manufacturing Component outcomes.
+**Request outcome / `RequestOutcome`** — The single terminal result of a
+Component-issued Request, mapped to a requester Message: `Replied`, or
+`TimedOut` for the opt-in timeout forms (ADR-0011). `Failed` and `Cancelled`
+are reserved.
 
 **`RequestError`** — The current provisional type for a Request's runtime-level
 terminal error data. Domain-level negative replies remain ordinary Reply
 values.
 
-**Request continuation** — The one-shot Message mapper attached to a
-Component-issued Request. The default `Command::request` form obtains it through
-the requester's canonical `From<RequestOutcome<Reply>>` conversion. The explicit
-`Command::request_with` form may capture domain context or assign
-call-site-specific meaning. Both produce the requester's Component Message
-through the same runtime lifecycle. A live host Request has a waiter rather than
-a Message continuation.
+**Request continuation** — The one-shot Message mapper passed to
+`Command::request_to`, `Message::from` when one reply has one meaning or a
+closure that captures domain context. A live host request has a waiter
+instead.
 
 **Transport correlation** — Opaque runtime bookkeeping that distinguishes one
-dynamic RequestInvocation from every other invocation. Components and live host
+dynamic request from every other. Components and live host
 callers neither create nor compare transport-correlation identifiers.
 
 **Domain correlation** — Application-owned identity that explains the business
 meaning of a Request or Reply. It is commonly captured by the request
 continuation and returned in the resulting Component Message.
 
-**`ReplyTo`** — The current provisional name for an opaque, one-shot authority
-that permits a provider to emit the correctly typed Reply. It is inert data,
-not a channel, future, or runtime handle.
+**`ReplyWith<R>`** — The opaque, one-shot authority carried by a request
+variant that obliges and permits its holder to reply with an `R`. It is inert
+data, not a channel, future, or runtime handle; `Command::reply` consumes it.
 
 **`ComponentRef`** — The current provisional name for an inert typed logical
 address issued during Program assembly when direct coupling to another
 Component's complete Message API is deliberate.
 
-**`ComponentHandle`** — The current provisional name for a live
-external-ingress capability available at the Samara program boundary. Unlike a
-`ComponentRef`, it is a runtime capability and must not be available inside
-Components. Under ADR-0004, successful `send` means accepted for
-runtime-managed delivery, not transition completion; shutdown or a runtime
-fault closes admission and later sends fail explicitly.
+**`ComponentHandle`** — A live external-ingress capability for one Component,
+available only at the program boundary and never inside Components.
+Successful `send` means accepted for delivery, not transition completion.
 
-**`PortHandle`** — A cloneable live external-ingress capability for one exact
-bound `Port<P>`. `LiveRuntime::port_handle` validates the Port against its built
-Program. The handle admits Notifications and typed Requests through the normal
-Protocol binding without exposing the provider. A host Request awaits `Reply`
-directly; Drain retains it, Cancel or clean closure wakes it with `RuntimeError`,
-and a runtime fault preserves that fault. Dropping an admitted waiter does not
-cancel runtime-owned work. PortHandle is not inert Component wiring and has no
-ControlledRuntime counterpart under ADR-0006.
+**`PortHandle`** — A cloneable live external-ingress capability for one bound
+`Port<M>`, admitting sends and requests through the normal Port binding
+without exposing the provider. A host request awaits its
+Reply directly; closure or fault wakes it with `RuntimeError`. Live-only; it
+has no ControlledRuntime counterpart (ADR-0006).
 
-**`RuntimeTask`** — The unique live structured-ownership handle returned by
-`LiveRuntime::spawn`. `shutdown` consumes it and explicitly selects Drain or
-Cancel. Under ADR-0007, `run_forever(&mut self)` observes owner termination
-without initiating shutdown; cancelling that observation leaves the task
-owning the scope so a host can select it against its own shutdown future.
+**`RuntimeTask`** — The live structured-ownership handle from
+`Runtime::spawn`. `run_forever` observes termination without initiating
+shutdown; `shutdown` selects Drain or Cancel explicitly (ADR-0007, ADR-0010).
 
 ## Execution and Ordering
 
@@ -523,11 +432,9 @@ controlled or seeded reproducibly. It is the guarantee-bearing term;
 simulation is one use case for it.
 
 **Controlled world** — The scripted or seeded substitute for the surrounding
-world used during controlled execution. Missing controlled behavior fails
-explicitly rather than falling back to live behavior. Reaching an unhandled
-terminal descriptor faults the run without invoking a live Driver or message
-mapper; state and trace remain inspectable and controlled cancellation remains
-available.
+world in controlled execution. Missing controlled behavior faults the run
+explicitly rather than falling back to a live Driver; state and trace remain
+inspectable.
 
 **Logical time / controlled time** — Runtime-controlled time that can advance
 manually or automatically without wall-clock sleeping.
@@ -535,12 +442,9 @@ manually or automatically without wall-clock sleeping.
 **Runtime semantics** — The observable scheduling, lifecycle, and tie-breaking
 rules whose sameness is part of a controlled-determinism claim.
 
-**Deterministic insertion ticket** — The stable secondary key used after
-logical deadline to order equal-time controlled work. One transition's
-Commands follow declaration traversal order, controlled inputs follow harness
-order, initial Component work follows canonical Component identity rather than
-registration order, and causally emitted work follows its cause. Tickets are
-controlled reproducibility machinery, not live domain order.
+**Deterministic insertion ticket** — The stable secondary key that orders
+equal-time controlled work after logical deadline (ADR-0003). Reproducibility
+machinery, not live or domain order.
 
 **Transition determinism** — For a fixed conforming Component implementation
 and configuration, equivalent Model and Component Message inputs produce
@@ -567,32 +471,23 @@ delivery or work contract rather than inferred from runtime topology.
 **Global total order** — One comparable sequence containing every program
 event. Samara explicitly does not promise this for independent live events.
 
-**Admission** — The point at which live boundary input becomes
-runtime-owned work. ADR-0004 gives `ComponentHandle::send` and `SourceSink` this
-meaning; ADR-0006 extends the same external cutoff to PortHandle Notifications
-and Requests. A PortHandle future attempts admission when first polled. A call
-racing shutdown is either accepted under the selected shutdown policy or
-rejected; accepted work is not silently dropped because an internal capacity
-was reached.
+**Admission** — The point at which live boundary input becomes runtime-owned
+work, through `ComponentHandle::send`, `SourceSink`, or a `PortHandle`
+operation. A call racing shutdown is accepted or rejected explicitly; accepted
+work is not silently dropped for capacity (ADR-0004, ADR-0006).
 
-**Unbounded internal delivery** — The accepted v0 live mechanism after
-admission. It has no configurable capacity or silent overload drop and can
-therefore grow memory without bound under sustained pressure. This is a
-documented first-cut limitation, not a stable throughput, fairness, or
-backpressure promise.
+**Unbounded internal delivery** — The v0 live mechanism after admission: no
+configurable capacity and no overload drop, so memory can grow without bound
+under sustained pressure. A documented first-cut limitation, not a throughput
+or backpressure promise.
 
-**Drain shutdown / `Shutdown::Drain`** — Structured closure that
-closes external ingress, stops Sources, realizes no new Sources, and recursively
-processes accepted and causally emitted finite work. It has no implicit
-deadline and may wait forever for Drivers, Requests, timers, or self-sustaining
-application work.
+**Drain shutdown / `Shutdown::Drain`** — Closes ingress, stops Sources, and
+processes accepted and causally emitted finite work to completion, with no
+implicit deadline.
 
-**Cancel shutdown / `Shutdown::Cancel`** — Structured closure that
-closes ingress, stops application driving, cancels semantic obligations and
-runtime-owned tasks, and joins or aborts all owned work without manufacturing
-application outcomes merely because the scope ended. Pending live host Request
-waiters are woken through the out-of-band `RuntimeError` channel rather than a
-fabricated RequestOutcome.
+**Cancel shutdown / `Shutdown::Cancel`** — Closes ingress, stops driving,
+cancels obligations and owned tasks, and joins or aborts everything without
+manufacturing application outcomes. Host waiters wake with `RuntimeError`.
 
 **Quiescence** — The absence of immediately runnable work. Work may still be
 waiting for logical time, a controlled input, or an external event.
@@ -648,10 +543,10 @@ to hold.
 | SourceCapability, SourceDescriptor, Subscription, SourcePlan, and Source | A SourceCapability declares one closed Program dependency, a SourceDescriptor describes concrete ongoing production, a Subscription adds desire, identity, and mapping, a SourcePlan lowers that desire to ordered Layers and a terminal descriptor, and a Source is the runtime-scoped realization. |
 | Layer and Driver | A Layer composes declarations inside the program boundary; a Driver terminates a descriptor into the selected live world. |
 | Adapter and a code abstraction | Adapter is the conceptual category; Layer and Driver are the code-level roles Samara currently names. |
-| Component Message and Protocol Message | A Component Message is private transition input; a Protocol Message is the provider-neutral vocabulary crossing a Port. |
-| Request and RequestInvocation | A Request is the typed operation/value; a RequestInvocation is one dynamic occurrence carrying Request and `ReplyTo`. |
+| Component Message and Port message | A Component Message is private transition input; a Port message is a value of the provider-neutral vocabulary crossing a Port. A library written the Elm way makes one opaque type serve as both. |
+| Request and reply token | A request is a message variant; its `ReplyWith<R>` field is the one-shot authority to answer it and the type that fixes the reply. |
 | Port and provider | A Port is an inert dependency; the provider is the Component selected during assembly. |
-| Notification and Request | `Notification<P>` is one-way input issued by `Command::notify` or live `PortHandle::notify`; `Request<P>` has an associated Reply and is issued by `Command::request` with a canonical continuation, `Command::request_with` with an explicit one, or live `PortHandle::request` with a direct host waiter. |
+| Send and request | `Command::send` delivers a variant with no reply token and gets no outcome; `Command::request_to` delivers one built around a `ReplyWith<R>` and maps the `RequestOutcome<R>` through its continuation. `PortHandle::send` and `PortHandle::request_to` are the live host's forms, the latter with a direct waiter. |
 | Protocol and wire protocol | A Samara Protocol is a typed Component boundary; a wire protocol defines external data exchange. |
 | Message and event | Boundary events and outcomes are mapped into Component Messages; trace events remain out of band. |
 | Per-Component serialization and ordering | Non-overlapping transitions do not create a global order or imply unspecified FIFO behavior. |
@@ -665,8 +560,8 @@ to hold.
 | Historical or ambiguous term | Current vocabulary | Guidance |
 | --- | --- | --- |
 | Actor | Component | Use *Component* for Samara's topology-neutral application unit. Actor language survives in older PoC documents. |
-| Component value | Component configuration | Name the role rather than implying a second application unit. |
-| `Msg` | Message / `Component::Message` | Use *Component Message* when it must be distinguished from a Protocol Message. |
+| Component value, Component implementation | Component kind, Component configuration | The implementing type is a name; the configuration is the value it is registered with. |
+| `Msg` | Message / `Component::Message` | Use *Component Message* when it must be distinguished from a Port message. |
 | `Cmd` | Command | Use the full word in type and method names. |
 | Effect value / Effect intent | EffectDescriptor | Use *effect* generically for the interaction, not as a second ambiguous type noun. |
 | `EffectEvent` | EffectOutcome | An accepted EffectOutcome is terminal and occurs once; whole-scope abort may close ownership without one, while repeatable occurrences are SourceEvents. |
@@ -674,38 +569,20 @@ to hold.
 | Result mapper | Message mapper | Name what the pure function produces. A request's one-shot mapper is its request continuation. |
 | Source meaning a descriptor | SourceDescriptor | Reserve *Source* for the runtime-scoped ongoing realization. |
 | `MpscSource<T>`, `MpscInput<T>` | `StreamDescriptor<T>` | Name the inert logical stream independently of its live adapter; reserve Source for its runtime realization. |
-| `Incoming<P, R>` | `RequestInvocation<P, R>` | Name the dynamic Request occurrence, not merely its direction. |
-| `Protocol::Inbound`, `HealthInbound` | `Protocol::Message`, `HealthProtocolMessage` | Name what the enum contains and associate concrete names with their Protocol. |
-| `ActorRef`, `Addr`, `PortRef`, `RuntimeRef` | `ComponentRef`, `ComponentHandle`, `Port`, or `PortHandle` | Choose the term that distinguishes logical address, live private-Message ingress, inert Protocol dependency, or live Protocol ingress. |
+| `Incoming<P, R>`, `RequestInvocation<M, R>` | a request variant carrying `ReplyWith<R>` | The dynamic request occurrence is the message itself (ADR-0016). |
+| Protocol, `Protocol::Message`, `protocol!`, `HealthProtocolMessage` | Port message type, `messages!`, `HealthMessage` | Removed November 8, 2026 (ADR-0015). The marker type named one associated type and nothing else; a Port is typed by the message type it carries. ADRs 0006 to 0014 keep the old word. |
+| `Protocol::Inbound`, `HealthInbound` | `HealthMessage` | Name what the enum contains, not its direction. |
+| `ActorRef`, `Addr`, `PortRef`, `RuntimeRef` | `ComponentRef`, `Connector`, `ComponentHandle`, `Port`, or `PortHandle` | Choose the term that distinguishes kind-typed logical address, Message-typed logical address, live private-Message ingress, inert consumer-owned dependency, or live Port ingress. |
+| Jack, `JackId`, `JackHandle`, `plug_in`, Plug, `Pluggable` | Port, `PortId`, `PortHandle`, `connect`, Connector | ADR-0014's names, replaced the same day by ADR-0015 with domain-neutral words. `bind_port` was the pre-0014 spelling of `connect`. |
+| `Connectable`, `connect_with`, `connector_with`, `to_connector` | `connect(&port, &connector)`, `ComponentRef::connector`, `accepting` | A Port takes a Connector and nothing else (ADR-0015 amendment, November 8, 2026); the conversion lives on the Connector side, under one verb. |
+| Recipient, Address | Connector | Working names while the provider-owned address was designed; *Connector* pairs with *Port* and names the thing held rather than a role. |
+| An Assembly exporting a `Port` | `Assembly::Accepts` and `InstalledAssembly::connector` | Removed November 9, 2026 (ADR-0018). Assemblies declare no Ports; the host names its own and connects the Assembly's Connector. |
+| `Installed<A>` | `InstalledAssembly<A>` | Renamed November 8, 2026 so `with_assembly(installed_assembly)` reads as a sentence; the token keeps the `must_use` nudge and `.exports()`. |
+| `LiveRuntime`, `LiveRuntimeBuilder` | `Runtime`, `RuntimeBuilder` | Renamed November 9, 2026: the live profile is the one every application names, so it carries no qualifier; *live execution* remains the glossary term for the profile, and `ControlledRuntime` keeps its adjective. |
+| `messages!`, `Notification<M>`, `Request<M>`, `RequestInvocation`, `Command::notify`, `request`, `request_with`, `request_timeout`, `request_timeout_with`, `TraceCommandKind::Notify` | `Command::send`, `Command::request_to`, `request_to_timeout`; a request variant carrying `ReplyWith<R>`; `TraceCommandKind::Send` with `target_port` | Removed November 8, 2026 (ADR-0016). The trait form and the constructor form gave the same guarantee twice; the message type is the protocol. |
 | `ask` | `request` | Use `Command::request` for command-now, Message-later Component request/reply and `PortHandle::request` for the deliberately awaitable live host boundary. |
-| `tell` | `notify` or `send` | Use *notify* for provider-neutral one-way Protocol interaction through `Command` or `PortHandle`, and *send* for deliberate direct delivery to a Component Message API. |
-| `ReplyToken` | `ReplyTo` | `ReplyTo` is the current provisional spelling; do not canonize both. |
+| `tell`, `notify` | `send` | One-way delivery to a Port, Connector, or ComponentRef is `send`; *notify* survives only as prose for a variant without a reply token. |
+| `ReplyToken`, `ReplyTo` | `ReplyWith` | Renamed November 8, 2026: in a variant, `Total(ReplyWith<u64>)` states the obligation, reply with a `u64`, where `ReplyTo` named a destination only the runtime knows. |
 | Simulated execution | Controlled execution | Use *controlled* for the semantic profile; use *simulation* for the workload or product use case. |
 | Mailbox loop | Runtime topology | A mailbox or event loop may be an implementation technique, not the definition of a Component. |
 | Effect handler, interpreter, backend, source adapter | Driver or controlled behavior, qualified by role | Use *Driver* for a terminal live-world code boundary, *Layer* for declarative composition, and *Adapter* only as the umbrella concept. Controlled execution supplies behavior without falling through to live Drivers. |
-
-## Open API Questions
-
-These questions are intentionally recorded rather than answered by the Phase 2
-Component-kernel freeze:
-
-- Request failure, explicit cancellation, abandonment, and delegation policy
-  beyond ADR-0011's opt-in timeouts and ADR-0006's host scope diagnostics.
-- Notification delivery-failure semantics beyond accepted live admission and
-  whole-scope Cancel/fault cutovers.
-- The initial code shape of Layer abstractions. Multiple Layer kinds are
-  expected, so this checkpoint does not promise one universal `Layer` trait.
-- General live and controlled execution-profile binding abstractions beyond
-  ADR-0008's type-wide Driver and exact Source-capability forms.
-- Named capability bundles, capability identity inspection, and any blessed
-  dynamic or ambient escape hatch. The current Program capability set is
-  closed after assembly.
-- Descriptor/message payload tracing, typed trace projections, streaming/live
-  observer APIs, and durable trace storage. ADR-0004 explicitly leaves
-  a public live observer outside v0.
-- Bounded internal delivery, overload control, shutdown deadlines and
-  escalation, exact shutdown diagnostic counts, Driver recovery, and
-  restartable or shared bridges beyond ADR-0004's simple first cut.
-- Exact public bridge module/type names and the exact Rust spelling of Decoder
-  finalization, provided ADR-0004's accepted observable semantics are
-  preserved.

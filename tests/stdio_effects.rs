@@ -36,25 +36,40 @@ enum OutputMessage {
     Observed,
 }
 
-struct OutputProbe {
+struct OutputProbe;
+
+struct OutputProbeConfig {
     stdout: EffectCapability<PrintStdout>,
     stderr: EffectCapability<PrintStderr>,
     observe: Option<EffectCapability<ObserveOutput>>,
 }
 
 impl Component for OutputProbe {
+    type Config = OutputProbeConfig;
     type Model = OutputModel;
     type Message = OutputMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(OutputModel::default())
     }
 
-    fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        config: &Self::Config,
+        model: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         match message {
             OutputMessage::Start => Command::batch([
-                Command::effect_with(&self.stdout, PrintStdout::text(""), OutputMessage::Finished),
-                Command::effect_with(&self.stderr, PrintStderr::text(""), OutputMessage::Finished),
+                Command::effect_with(
+                    &config.stdout,
+                    PrintStdout::text(""),
+                    OutputMessage::Finished,
+                ),
+                Command::effect_with(
+                    &config.stderr,
+                    PrintStderr::text(""),
+                    OutputMessage::Finished,
+                ),
             ]),
             OutputMessage::Finished(outcome) => {
                 let succeeded = match outcome {
@@ -68,7 +83,7 @@ impl Component for OutputProbe {
                         false
                     }
                 };
-                if let Some(observe) = &self.observe {
+                if let Some(observe) = &config.observe {
                     Command::effect_with(observe, ObserveOutput(succeeded), |_| {
                         OutputMessage::Observed
                     })
@@ -86,9 +101,9 @@ fn output_program(observe: bool) -> (Program, ComponentRef<OutputProbe>) {
     let stdout = builder.effect::<PrintStdout>();
     let stderr = builder.effect::<PrintStderr>();
     let observe = observe.then(|| builder.effect::<ObserveOutput>());
-    let probe = builder.component(
+    let probe = builder.component::<OutputProbe>(
         ComponentId::new("standard-output"),
-        OutputProbe {
+        OutputProbeConfig {
             stdout,
             stderr,
             observe,
@@ -158,7 +173,7 @@ fn standard_output_effects_are_ordinary_controlled_boundaries() {
 async fn bound_standard_output_drivers_write_and_flush_successfully() {
     let (program, probe) = output_program(true);
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
-    let runtime = LiveRuntime::builder(program)
+    let runtime = Runtime::builder(program)
         .bind_stdio()
         .bind_effect::<ObserveOutput, _>(OutputObserver {
             observations: observed,
@@ -189,7 +204,7 @@ impl EffectDriver<PrintStdout> for DuplicateStdoutDriver {
 fn bind_stdio_participates_in_normal_duplicate_binding_validation() {
     let (program, _) = output_program(false);
     assert!(
-        LiveRuntime::builder(program)
+        Runtime::builder(program)
             .bind_stdio()
             .bind_effect::<PrintStdout, _>(DuplicateStdoutDriver)
             .build()

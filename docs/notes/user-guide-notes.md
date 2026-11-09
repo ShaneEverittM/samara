@@ -44,8 +44,9 @@ documentation only; architecture contracts and runtime behavior are unchanged.
   and hiding application retry or workflow policy inside a Driver. Also explain
   the testing boundary: controlled execution supplies the whole Effect's
   outcome; its internal steps need their own Driver tests, or a finer boundary
-  if application logic must observe or coordinate them. See the existing
-  [Layer/Driver distinction](../architecture/effects-layering.md).
+  if application logic must observe or coordinate them. See
+  [Why Have Both Layers and Drivers?](../api-guidance.md#why-have-both-layers-and-drivers)
+  in the API guidance.
 
 - **Hidden application-state management suggests the Effect's aperture is
   wrong.** Workshop wording, not yet a finished rule:
@@ -76,3 +77,34 @@ documentation only; architecture contracts and runtime behavior are unchanged.
   teaches users what to put in a Driver and what to keep in application logic;
   review the first-party catalog alongside custom examples when workshopping
   these principles.
+
+## One message, end to end
+
+Teaching sequence retired from the July architecture doc on November 8, 2026.
+It is the order a guide should walk a reader through once the vocabulary is
+in place; every step below is specified by an ADR, so this is narrative, not
+contract.
+
+1. A Component Message enters runtime-managed delivery for a target Component.
+2. The runtime selects it according to per-Component serialization, causality,
+   and any explicitly promised sequencing contract.
+3. The runtime calls the target Component's pure transition using its immutable
+   configuration, current Model, and Message, then commits the resulting Model.
+4. The runtime interprets emitted Commands and reconciles desired Subscriptions.
+5. The runtime first validates the Command's EffectCapability provenance. Its
+   EffectDescriptor then passes through zero or more Layers. The terminal
+   descriptor reaches a live EffectDriver or controlled behavior. Every
+   accepted EffectOutcome passes through the composed path exactly once. A
+   mapped effect invokes its one-shot mapper to produce one Component Message;
+   an explicitly discarded outcome schedules no Message. Whole-scope live abort
+   may instead cancel the Driver without manufacturing an outcome.
+6. The runtime validates each desired Subscription's SourceCapability. Its
+   SourceDescriptor then passes through zero or more Layers. The terminal
+   descriptor, ordered Layers, capability identity, and mapper compile into a
+   SourcePlan. The terminal descriptor reaches a live SourceDriver or
+   controlled behavior, producing a runtime-owned Source whose SourceEvents
+   return through the same Layers and repeatedly pass through the current
+   reusable message mapper.
+7. Resulting Messages return through runtime-managed delivery, and execution
+   continues until the applicable lifecycle, fault, or shutdown policy
+   triggers.

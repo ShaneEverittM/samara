@@ -31,22 +31,43 @@ Related research: [Lessons from TypeScript Effect](effect-ts-research.md).
   Component boundaries and reduce repeated ceremony.
 - **Optional integrations:** Feature-gate or split HTTP/JSON/TLS and platform
   integrations so consumers can use the runtime without unrelated dependencies.
+- **Owned-Model transition signature:** The time example's enum Model works
+  with `update(&Config, &mut Model, Message)` without cloning the Model or
+  replacing it with a temporary default, because the cached timestamp is Copy.
+  Moving non-Copy payloads between Model variants would put more pressure on
+  this borrowed API. Evaluate that in a suitable example before proposing an
+  owned-Model transition signature; changing the kernel signature in
+  [the API contract](../api-contract.md) needs an ADR. Making the Model the
+  implementing type (`Model = Self`) was considered on November 8, 2026 and
+  declined for the borrowed signature (ADR-0013); it is the natural spelling
+  of the owned one, so the two decisions go together.
+- **Descriptor declaration shorthand:** A derive or small macro for
+  declaring a descriptor's Output and Error types, and less boilerplate for
+  explanatory error wrappers, should wait for evidence from another real custom
+  Effect. The time example conflated ordinary Rust error-modeling ceremony with
+  Samara-specific ceremony: `thiserror` makes an intentional domain error
+  compact, and `EffectDescriptor::Error` only requires `Send + 'static`, so a
+  custom wrapper is not required merely to satisfy Samara. The crate's `fs`
+  descriptors and `FsError` are the next data point. Any shorthand must keep
+  the descriptor, output, error, and live/controlled boundary visible.
+
+- **Deferred API areas, recorded so they are not forgotten:** a blessed escape
+  hatch and how it advertises weakened guarantees; named capability bundles and
+  capability identity inspection; a universal `Layer` trait or other general
+  profile-binding abstraction beyond type-wide Drivers and exact Source
+  capabilities; notification delivery-failure semantics; domain-payload trace
+  capture, typed trace projections, a public live observer, and durable trace
+  storage; exact shutdown diagnostic counts. Each was listed in the vision or
+  glossary before November 8, 2026 and now lives only here.
 
 ## URL Checker API Exercise — September 23, 2026
 
 Open items from writing the application by hand; these are exploratory proposals,
 not accepted API decisions or a review of the unfinished application.
 
-- [x] **Example-led rustdoc:** Make Source construction discoverable without
-  navigating several types. Show a small, complete path from declaring a Program
-  capability, storing it on a Component, and returning a Subscription to binding
-  its live implementation. Include the controlled equivalent and handling for
-  `SourceEvent::Item`, `Ended`, and `Failed`. Link the recipe from the relevant
-  constructors and traits, and compile-check the examples as doctests. Completed
-  September 24, 2026 in [`src/lib.rs`](../../src/lib.rs): public API descriptions
-  now lead with caller behavior, with complete source wiring, request/reply,
-  HTTP, driver, shutdown, and controlled-test examples. Existing compile-fail
-  checks remain covered; no runtime behavior changed.
+- [x] **Example-led rustdoc.** Done September 24, 2026: public API docs in
+  `src/lib.rs` lead with caller behavior and carry complete, compile-checked
+  source, request/reply, HTTP, Driver, shutdown, and controlled-test examples.
 - [ ] **Explicit Subscription restart revision:** Explore a Model-owned revision
   that the Component can increment to request a fresh Source realization with
   unchanged configuration. Consider keeping the stable Subscription identity
@@ -63,13 +84,13 @@ not accepted API decisions or a review of the unfinished application.
   shutdown and supervision policy in ordinary Components, with only the required
   lifecycle mechanisms in the runtime. This is a design direction, not an
   accepted API; work through the questions below before implementation.
-- [ ] **Composable Programs / subprograms:** Explore `urlchecker::program()` as
+- [ ] **Composable Programs / assemblies:** Explore `urlchecker::program()` as
   an application library's public assembly boundary, shared by its executable
   and controlled tests. Let callers use deliberately exposed handles,
   capabilities, and protocols without knowing the internal wiring. Extend that
   idea to composing assemblies into a larger Program while keeping internal
   Components, timers, and capabilities private where appropriate.
-  Separate assembly from execution: a subprogram could contribute Components
+  Separate assembly from execution: an assembly could contribute Components
   and binding requirements to one enclosing runtime, preserving runtime
   ownership and controlled execution without requiring a nested runtime.
   Define identity scoping, capability ownership, binding configuration, and
@@ -86,7 +107,7 @@ not accepted API decisions or a review of the unfinished application.
   the runtime's transition and command machinery so isolated tests preserve
   execution semantics. Define how capabilities are supplied and how external
   effects, sources, and ports are explicitly controlled or stubbed.
-  LiveRuntime and ControlledRuntime both accept a Program without sharing a
+  Runtime and ControlledRuntime both accept a Program without sharing a
   runtime interface; preserve that flexibility and let ComponentRuntime expose
   APIs suited to isolated tests. Prioritize this over per-Component transition
   counts in integration tests, which should generally assert behavior across
@@ -95,6 +116,96 @@ not accepted API decisions or a review of the unfinished application.
   executed; tests can separately assert resulting model state and commands.
   This September 24 proposal is exploratory; settle construction, dependency
   boundaries, and conformance evidence before implementation.
+
+## Pulse Monitor API Exercise — October 8, 2026
+
+Open items from designing `examples/pulse`, a multi-target uptime monitor with
+a journal Component; exploratory proposals, not accepted API decisions.
+
+- [x] **Time access beyond delayed delivery:** The provider-effect shape
+  landed November 8, 2026 as `ReadSystemTime` with `SystemClockDriver`
+  (ADR-0013); controlled tests complete it with any instant. The subscription
+  shape and the logical-clock-backed controlled driver below remain open.
+  Original statement: Logical time currently reaches
+  Components only through `Command::after`. That covers scheduling but not
+  observation: a Component cannot learn the current time to stamp a journal
+  entry, compute an age, or compare against a deadline without reading the wall
+  clock inside `update`, which the purity rule forbids. The workaround is an
+  application-defined `GetTime` effect with its own Driver, which is ceremony for
+  something every real application needs. Explore two first-party shapes and
+  decide which, or both, the runtime should own:
+  - A time provider effect: a built-in descriptor whose outcome carries the
+    current time, served by the runtime clock live and by the logical clock in
+    controlled execution. This keeps time a message like any other outcome.
+  - A time subscription: a `SourceDescriptor` that ticks at a declared interval
+    and carries the time of each tick, reconciled like other subscriptions.
+    This replaces hand-rolled `after` loops for periodic work and gives
+    controlled tests one place to advance time.
+  Either shape must keep `update` free of clocks, must be served from the same
+  logical clock that drives timers so observed time and scheduled time agree,
+  and must preserve deterministic controlled traces. Decide the representation
+  of time (monotonic runtime instant, wall-clock timestamp, or both) and how a
+  controlled test sets the epoch. Additive API, but it changes what controlled
+  execution must supply, so write an ADR and matching live and controlled tests
+  before implementation.
+
+- [x] **Library assembly via `install`.** Landed November 7, 2026 and
+  redesigned November 8 as the `Assembly` trait with a type-level `Requires`
+  list, `with_assembly(..).and_drivers(..)` on the live builder and
+  `with_assembly(..)` alone on the controlled one, and `VendorsDrivers`
+  (ADR-0013); design, rejected alternatives, and remaining open items are in
+  the [Assembly design note](assembly-design.md). Amended November 9 by
+  ADR-0018: every Assembly returns a `Connector<Accepts>` and declares no
+  Ports. Still open from it: `ComponentId` scoping through `Config`, named
+  `Requires` positions, and a
+  Port-level controlled ingress so an Assembly can be tested from outside its
+  module.
+
+- [x] **Connectors as first-class addresses.** Landed November 8, 2026
+  (ADR-0014): `Command::send` over any address, `Command::request_to` and
+  `request_to_timeout` minting the `ReplyWith` against a Connector from a published
+  constructor function, and `Connector::accepting`, Elm 0.16's `forwardTo`. A
+  library written the Elm way, an opaque Message with constructor functions,
+  now needs no shared enum and no Port; `tests/connectors.rs` has one.
+  `Command::into_request_to` inspects such a request with an inert token
+  (ADR-0016).
+
+- [ ] **Declared Clock capability.** Titled as
+  [ADR-0017](../adr/0017-declared-clock-capability.md), not yet written:
+  `program.clock()` so timers and deadlines are declared like effects, a
+  live runtime binds a wall, scaled, or paused clock or has no time, and
+  controlled execution keeps logical time. Decided to pursue November 9,
+  2026, after the `Runtime` rename.
+
+- [ ] **Constructor-function derive.** ADR-0016 left one sending API, with
+  `M::Variant { .. }` spelled at every call site. If that proves noisy once
+  the examples have lived with it, a small derive that emits `pub fn
+  variant(args) -> Self` constructors (and `fn request(args, reply_with)` for
+  reply-token variants) is the remedy; it must not reintroduce a request
+  trait or a second Command form.
+
+- [ ] **No small-scale composition: `Command::map` and `Subscriptions::map`
+  are missing.** Nothing lifts a `Command<Child>` into a `Command<Parent>` or
+  a `Subscriptions<Child>` into a `Subscriptions<Parent>`; the existing `map_*`
+  methods are test inspectors. Without Elm's `Cmd.map` and `Sub.map`, every
+  reusable piece of stateful logic, however small, must become a Component
+  with a Port, a `From` impl, and a message enum. The pulse journal raised it:
+  on the merits it is roughly 60/40 an Assembly over an embedded
+  sub-reducer, but the question could not be decided because only one shape
+  exists. Both maps are implementable from what Commands already carry.
+  Specify trace attribution for a lifted Command and document the
+  pure-sub-reducer pattern before implementing. Decision for pulse, November
+  7, 2026: the journal stays an Assembly as the test bed for that design,
+  not because the sub-component shape was weighed and rejected.
+
+- [ ] **First-party filesystem effects.** Governing principle: if a sequence
+  must fail together, it is one effect. Owned and Shared handles, a bound root
+  for runtime-named files, the five file uses the capability model forces us
+  to name, the dispatch-order ADR prerequisite for ordered sinks, lifecycle
+  under Drain and Cancel, and sessions as a separate concept are all worked
+  through in the [filesystem design note](filesystem-design.md). A provisional
+  `fs` module landed November 8, 2026 (ADR-0013); the ordering ADR and the
+  handle questions remain the open design work.
 
 ## Component Completion and Supervision — Open Design Questions
 

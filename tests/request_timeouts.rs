@@ -4,19 +4,33 @@ use std::{convert::Infallible, time::Duration};
 
 use samara::prelude::*;
 
-protocol! {
-    type ProbeProtocol => enum ProbeProtocolMessage {
-        Ask((u64, Option<Duration>)) -> u64,
-    }
+/// The provider's vocabulary, written by hand. `Ask` carries the value to
+/// echo, how the provider should answer (`None` never replies, `Some(ZERO)`
+/// replies inline, otherwise after a delay), and its own reply token.
+enum ProbeProtocolMessage {
+    Ask {
+        value: u64,
+        delay: Option<Duration>,
+        reply_with: ReplyWith<u64>,
+    },
 }
 
-fn ask(value: u64, delay: Option<Duration>) -> Ask {
-    Ask((value, delay))
+/// The request constructor `Command::request_to*` and
+/// `PortHandle::request_to*` take.
+fn ask(
+    value: u64,
+    delay: Option<Duration>,
+) -> impl FnOnce(ReplyWith<u64>) -> ProbeProtocolMessage + Send + 'static {
+    move |reply_with| ProbeProtocolMessage::Ask {
+        value,
+        delay,
+        reply_with,
+    }
 }
 
 enum ProviderMessage {
     Protocol(ProbeProtocolMessage),
-    Reply(ReplyTo<u64>, u64),
+    Reply(ReplyWith<u64>, u64),
 }
 
 impl From<ProbeProtocolMessage> for ProviderMessage {
@@ -28,28 +42,34 @@ impl From<ProbeProtocolMessage> for ProviderMessage {
 struct Provider;
 
 impl Component for Provider {
+    type Config = ();
     type Model = Vec<u64>;
     type Message = ProviderMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::default()
     }
 
-    fn update(&self, seen: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        _config: &Self::Config,
+        seen: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         match message {
-            ProviderMessage::Protocol(ProbeProtocolMessage::Ask(invocation)) => {
-                let Ask((value, delay)) = invocation.request;
+            ProviderMessage::Protocol(ProbeProtocolMessage::Ask {
+                value,
+                delay,
+                reply_with,
+            }) => {
                 assert_ne!(value, u64::MAX, "provider fault fixture");
                 seen.push(value);
                 match delay {
-                    Some(Duration::ZERO) => Command::reply(invocation.reply_to, value),
-                    Some(delay) => {
-                        Command::after(delay, ProviderMessage::Reply(invocation.reply_to, value))
-                    }
+                    Some(Duration::ZERO) => Command::reply(reply_with, value),
+                    Some(delay) => Command::after(delay, ProviderMessage::Reply(reply_with, value)),
                     None => Command::none(),
                 }
             }
-            ProviderMessage::Reply(reply_to, value) => Command::reply(reply_to, value),
+            ProviderMessage::Reply(reply_with, value) => Command::reply(reply_with, value),
         }
     }
 }
@@ -67,7 +87,8 @@ impl EffectDescriptor for Observation {
 
 enum RequesterMessage {
     Start {
-        request: Ask,
+        value: u64,
+        delay: Option<Duration>,
         timeout: Option<Duration>,
         key: Option<u64>,
     },
@@ -80,29 +101,37 @@ impl From<RequestOutcome<u64>> for RequesterMessage {
     }
 }
 
-struct Requester {
-    port: Port<ProbeProtocol>,
+struct Requester;
+
+struct RequesterConfig {
+    port: Port<ProbeProtocolMessage>,
     observe: EffectCapability<Observation>,
 }
 
 impl Component for Requester {
+    type Config = RequesterConfig;
     type Model = Vec<Observation>;
     type Message = RequesterMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::default()
     }
 
-    fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        config: &Self::Config,
+        model: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         match message {
             RequesterMessage::Start {
-                request,
+                value,
+                delay,
                 timeout,
                 key,
             } => match (timeout, key) {
-                (Some(timeout), Some(key)) => Command::request_timeout_with(
-                    self.port.clone(),
-                    request,
+                (Some(timeout), Some(key)) => Command::request_to_timeout(
+                    &config.port,
+                    ask(value, delay),
                     timeout,
                     move |outcome| {
                         RequesterMessage::Outcome(Observation {
@@ -111,14 +140,19 @@ impl Component for Requester {
                         })
                     },
                 ),
-                (Some(timeout), None) => {
-                    Command::request_timeout(self.port.clone(), request, timeout)
+                (Some(timeout), None) => Command::request_to_timeout(
+                    &config.port,
+                    ask(value, delay),
+                    timeout,
+                    RequesterMessage::from,
+                ),
+                (None, _) => {
+                    Command::request_to(&config.port, ask(value, delay), RequesterMessage::from)
                 }
-                (None, _) => Command::request(self.port.clone(), request),
             },
             RequesterMessage::Outcome(observation) => {
                 model.push(observation.clone());
-                Command::effect_discarding_outcome(&self.observe, observation)
+                Command::effect_discarding_outcome(&config.observe, observation)
             }
         }
     }
@@ -128,18 +162,18 @@ struct Fixture {
     program: Program,
     requester: ComponentRef<Requester>,
     provider: ComponentRef<Provider>,
-    port: Port<ProbeProtocol>,
+    port: Port<ProbeProtocolMessage>,
 }
 
 fn fixture() -> Fixture {
     let mut builder = Program::builder();
-    let port = builder.port(PortId::new("probe"));
+    let port = builder.port::<ProbeProtocolMessage>(PortId::new("probe"));
     let observe = builder.effect::<Observation>();
-    let provider = builder.component(ComponentId::new("provider"), Provider);
-    builder.bind_port(&port, &provider);
-    let requester = builder.component(
+    let provider = builder.component::<Provider>(ComponentId::new("provider"), ());
+    builder.connect(&port, &provider.connector());
+    let requester = builder.component::<Requester>(
         ComponentId::new("requester"),
-        Requester {
+        RequesterConfig {
             port: port.clone(),
             observe,
         },
@@ -154,7 +188,8 @@ fn fixture() -> Fixture {
 
 fn start(value: u64, delay: Option<Duration>, timeout: Option<Duration>) -> RequesterMessage {
     RequesterMessage::Start {
-        request: ask(value, delay),
+        value,
+        delay,
         timeout,
         key: None,
     }
@@ -341,7 +376,8 @@ fn controlled_concurrent_requests_preserve_explicit_mapper_context() {
             .send(
                 &requester,
                 RequesterMessage::Start {
-                    request: ask(7, delay),
+                    value: 7,
+                    delay,
                     timeout: Some(SECOND),
                     key: Some(key),
                 },
@@ -415,15 +451,10 @@ impl EffectDriver<Observation> for Observer {
     }
 }
 
-fn live(
-    program: Program,
-) -> (
-    LiveRuntime,
-    tokio::sync::mpsc::UnboundedReceiver<Observation>,
-) {
+fn live(program: Program) -> (Runtime, tokio::sync::mpsc::UnboundedReceiver<Observation>) {
     let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
     (
-        LiveRuntime::builder(program)
+        Runtime::builder(program)
             .bind_effect::<Observation, _>(Observer(sender))
             .build()
             .unwrap(),
@@ -491,7 +522,7 @@ async fn host_timeout_includes_time_queued_before_owner_starts() {
     let Fixture { program, port, .. } = fixture();
     let (runtime, _observed) = live(program);
     let port = runtime.port_handle(&port).unwrap();
-    let mut request = Box::pin(port.request_timeout(ask(7, Some(Duration::ZERO)), SECOND));
+    let mut request = Box::pin(port.request_to_timeout(ask(7, Some(Duration::ZERO)), SECOND));
     assert!(futures_util::poll!(request.as_mut()).is_pending());
     tokio::time::advance(SECOND * 2).await;
     let task = runtime.spawn();
@@ -504,7 +535,7 @@ async fn dropped_host_waiter_keeps_deadline_and_drain_releases_unanswered_reques
     let Fixture { program, port, .. } = fixture();
     let (runtime, _observed) = live(program);
     let port = runtime.port_handle(&port).unwrap();
-    let mut request = Box::pin(port.request_timeout(ask(7, None), SECOND));
+    let mut request = Box::pin(port.request_to_timeout(ask(7, None), SECOND));
     assert!(futures_util::poll!(request.as_mut()).is_pending());
     drop(request);
     let task = runtime.spawn();
@@ -528,7 +559,7 @@ async fn live_zero_and_equal_deadlines_timeout() {
         let port = runtime.port_handle(&port).unwrap();
         let task = runtime.spawn();
         assert_eq!(
-            port.request_timeout(ask(7, Some(duration)), duration)
+            port.request_to_timeout(ask(7, Some(duration)), duration)
                 .await
                 .unwrap(),
             RequestOutcome::TimedOut
@@ -544,8 +575,8 @@ async fn live_concurrent_host_timeouts_keep_correlation() {
     let port = runtime.port_handle(&port).unwrap();
     let task = runtime.spawn();
     let (late, early) = tokio::join!(
-        port.request_timeout(ask(11, Some(SECOND * 2)), SECOND),
-        port.request_timeout(ask(22, Some(Duration::ZERO)), SECOND),
+        port.request_to_timeout(ask(11, Some(SECOND * 2)), SECOND),
+        port.request_to_timeout(ask(22, Some(Duration::ZERO)), SECOND),
     );
     assert_eq!(late.unwrap(), RequestOutcome::TimedOut);
     assert_eq!(early.unwrap(), RequestOutcome::Replied(22));
@@ -568,7 +599,7 @@ async fn live_scope_cancel_does_not_manufacture_timeout() {
         .send(start(7, None, Some(SECOND * 60)))
         .await
         .unwrap();
-    let mut request = Box::pin(port.request_timeout(ask(8, None), SECOND * 60));
+    let mut request = Box::pin(port.request_to_timeout(ask(8, None), SECOND * 60));
     assert!(futures_util::poll!(request.as_mut()).is_pending());
     tokio::task::yield_now().await;
     assert!(task.shutdown(Shutdown::Cancel).await.unwrap().is_clean());
@@ -583,12 +614,12 @@ async fn live_timeout_preserves_runtime_fault_and_rejects_overflow() {
     let port = runtime.port_handle(&port).unwrap();
     let task = runtime.spawn();
     let overflow = port
-        .request_timeout(ask(7, None), Duration::MAX)
+        .request_to_timeout(ask(7, None), Duration::MAX)
         .await
         .unwrap_err();
     assert!(overflow.to_string().contains("deadline"));
     let fault = port
-        .request_timeout(ask(u64::MAX, None), SECOND)
+        .request_to_timeout(ask(u64::MAX, None), SECOND)
         .await
         .unwrap_err();
     assert_eq!(fault.component(), Some(&ComponentId::new("provider")));

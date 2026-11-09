@@ -33,38 +33,43 @@ fn failed_http_outcomes() -> Vec<EffectOutcome<HttpResponse, HttpError>> {
     ]
 }
 
-fn http_fixture() -> HttpTimeServer {
+fn http_fixture() -> HttpTimeServerConfig {
     let mut builder = Program::builder();
-    HttpTimeServer {
+    HttpTimeServerConfig {
         http: builder.effect::<HttpRequest>(),
         stderr: builder.effect::<PrintStderr>(),
     }
 }
 
-struct TimeReader(Port<TimeServerProtocol>);
+struct TimeReader;
+
+struct TimeReaderConfig(Port<TimeServerMessage>);
 
 enum ReadMessage {
     Read,
     Received(RequestOutcome<Option<DateTime<Utc>>>),
 }
 
-impl From<RequestOutcome<Option<DateTime<Utc>>>> for ReadMessage {
-    fn from(outcome: RequestOutcome<Option<DateTime<Utc>>>) -> Self {
-        Self::Received(outcome)
-    }
-}
-
 impl Component for TimeReader {
+    type Config = TimeReaderConfig;
     type Model = Vec<Option<DateTime<Utc>>>;
     type Message = ReadMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::default()
     }
 
-    fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        config: &Self::Config,
+        model: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         match message {
-            ReadMessage::Read => Command::request(self.0.clone(), GetCurrentTime),
+            ReadMessage::Read => Command::request_to(
+                &config.0,
+                TimeServerMessage::GetCurrentTime,
+                ReadMessage::Received,
+            ),
             ReadMessage::Received(RequestOutcome::Replied(time)) => {
                 model.push(time);
                 Command::none()
@@ -83,12 +88,13 @@ fn controlled_http_fixture() -> (
     let http = builder.effect::<HttpRequest>();
     let stderr = builder.effect::<PrintStderr>();
     let port = builder.port(PortId::new(TIME_SERVER_PORT));
-    let server = builder.component(
+    let server = builder.component::<HttpTimeServer>(
         ComponentId::new("time-server"),
-        HttpTimeServer { http, stderr },
+        HttpTimeServerConfig { http, stderr },
     );
-    builder.bind_port(&port, &server);
-    let reader = builder.component(ComponentId::new("reader"), TimeReader(port));
+    builder.connect(&port, &server.connector());
+    let reader =
+        builder.component::<TimeReader>(ComponentId::new("reader"), TimeReaderConfig(port));
     let runtime = ControlledRuntime::builder(builder.build().unwrap())
         .control_effect::<HttpRequest>()
         .control_effect::<PrintStderr>()
@@ -116,7 +122,7 @@ fn http_idle_ignores_unsolicited_poll_completion() {
                 .map_effect_outcome::<HttpRequest>(outcome)
                 .ok()
                 .unwrap();
-            let command = server.update(&mut model, message);
+            let command = HttpTimeServer::update(&server, &mut model, message);
             assert!(command.is_none(), "Idle has no poll to complete");
             assert_eq!(
                 model,
@@ -131,12 +137,12 @@ fn http_idle_ignores_unsolicited_poll_completion() {
 #[test]
 fn http_poll_skips_busy_ticks() {
     let server = http_fixture();
-    let mut model = server.init().model;
+    let mut model = HttpTimeServer::init(&server).model;
     assert_eq!(model, HttpTimeModel::Idle { current_time: None });
-    let first = server.update(&mut model, HttpTimeMessage::Tick);
+    let first = HttpTimeServer::update(&server, &mut model, HttpTimeMessage::Tick);
     assert_eq!(first.effect_intents::<HttpRequest>().len(), 1);
     for _ in 0..3 {
-        let busy = server.update(&mut model, HttpTimeMessage::Tick);
+        let busy = HttpTimeServer::update(&server, &mut model, HttpTimeMessage::Tick);
         assert!(
             busy.effect_intents::<HttpRequest>().is_empty(),
             "busy ticks must skip HTTP work"
@@ -155,7 +161,7 @@ fn http_poll_terminal_outcomes_update_state_and_allow_next_poll() {
         let mut model = HttpTimeModel::Idle {
             current_time: Some(timestamp(100)),
         };
-        let first = server.update(&mut model, HttpTimeMessage::Tick);
+        let first = HttpTimeServer::update(&server, &mut model, HttpTimeMessage::Tick);
         assert_eq!(
             model,
             HttpTimeModel::Polling {
@@ -168,7 +174,7 @@ fn http_poll_terminal_outcomes_update_state_and_allow_next_poll() {
             .find_map(|command| command.into_effect::<HttpRequest>().ok())
             .unwrap();
         let terminal = invocation.map_outcome(outcome);
-        let follow_up = server.update(&mut model, terminal);
+        let follow_up = HttpTimeServer::update(&server, &mut model, terminal);
         let succeeded = index == success_index;
         assert_eq!(
             model,
@@ -184,11 +190,10 @@ fn http_poll_terminal_outcomes_update_state_and_allow_next_poll() {
             follow_up.effect_intents::<HttpRequest>().is_empty(),
             "wait for the next tick"
         );
-        let next = server.update(&mut model, HttpTimeMessage::Tick);
+        let next = HttpTimeServer::update(&server, &mut model, HttpTimeMessage::Tick);
         assert_eq!(next.effect_intents::<HttpRequest>().len(), 1);
         assert!(
-            server
-                .update(&mut model, HttpTimeMessage::Tick)
+            HttpTimeServer::update(&server, &mut model, HttpTimeMessage::Tick)
                 .effect_intents::<HttpRequest>()
                 .is_empty()
         );

@@ -47,8 +47,8 @@ use crate::controlled_runtime::{
 use crate::{
     BoxFuture, CapabilityToken, Command, CommandKind, ComponentId, DriverStopped, EffectDescriptor,
     EffectDriver, EffectOutcome, ErasedRequestMapper, ErasedSourceEvent, HttpError, HttpRequest,
-    HttpResponse, Notification, Port, PortId, PrintStderr, PrintStdout, Program, Protocol, ReplyTo,
-    Request, RequestOutcome, RequestToken, RuntimeError, Shutdown, ShutdownReport,
+    HttpResponse, MessageRoute, MessageTarget, Port, PortId, PrintStderr, PrintStdout, Program,
+    ReplyWith, RequestOutcome, RequestToken, RuntimeError, Shutdown, ShutdownReport,
     SourceCapability, SourceDescriptor, SourceDriver, SourceEvent, SourcePlan, SourceRequirement,
     SourceSink, StreamDescriptor, StreamSourceDescriptor, SubscriptionId, TcpBytes, TcpError,
     TraceId,
@@ -1356,11 +1356,11 @@ pub(crate) struct LiveIngress {
 }
 
 pub(crate) enum LivePortIngress {
-    Notification(Box<dyn ErasedLivePortNotification>),
+    Send(Box<dyn ErasedLivePortSend>),
     Request(Box<dyn ErasedLivePortRequest>),
 }
 
-pub(crate) trait ErasedLivePortNotification: Send {
+pub(crate) trait ErasedLivePortSend: Send {
     fn port(&self) -> &PortId;
     fn port_program(&self) -> &Arc<()>;
     fn protocol_type(&self) -> TypeId;
@@ -1376,20 +1376,13 @@ pub(crate) trait ErasedLivePortRequest: Send {
     fn into_conversion(self: Box<Self>) -> (ProtocolRequestConversion, HostReplyCompletion);
 }
 
-struct TypedLivePortNotification<P, N>
-where
-    P: Protocol,
-    N: Notification<P>,
-{
+/// A plain message of the Port's type sent by a live host through `PortHandle::send`.
+struct LivePortSend<P: Send + 'static> {
     port: Port<P>,
-    notification: N,
+    message: P,
 }
 
-impl<P, N> ErasedLivePortNotification for TypedLivePortNotification<P, N>
-where
-    P: Protocol,
-    N: Notification<P>,
-{
+impl<P: Send + 'static> ErasedLivePortSend for LivePortSend<P> {
     fn port(&self) -> &PortId {
         self.port.id()
     }
@@ -1403,25 +1396,23 @@ where
     }
 
     fn into_message(self: Box<Self>) -> ErasedValue {
-        Box::new(self.notification.into_message())
+        Box::new(self.message)
     }
 }
 
-struct TypedLivePortRequest<P, R>
-where
-    P: Protocol,
-    R: Request<P>,
-{
+/// A request built from its reply token by a live host through `PortHandle::request_to`.
+struct LivePortRequestTo<P: Send + 'static, R, Build> {
     port: Port<P>,
-    request: R,
+    build: Build,
     deadline: Option<tokio::time::Instant>,
-    completion: oneshot::Sender<RequestOutcome<R::Reply>>,
+    completion: oneshot::Sender<RequestOutcome<R>>,
 }
 
-impl<P, R> ErasedLivePortRequest for TypedLivePortRequest<P, R>
+impl<P, R, Build> ErasedLivePortRequest for LivePortRequestTo<P, R, Build>
 where
-    P: Protocol,
-    R: Request<P>,
+    P: Send + 'static,
+    R: Send + 'static,
+    Build: FnOnce(ReplyWith<R>) -> P + Send + 'static,
 {
     fn port(&self) -> &PortId {
         self.port.id()
@@ -1436,7 +1427,7 @@ where
     }
 
     fn reply_type(&self) -> TypeId {
-        TypeId::of::<R::Reply>()
+        TypeId::of::<R>()
     }
 
     fn deadline(&self) -> Option<tokio::time::Instant> {
@@ -1445,14 +1436,12 @@ where
 
     fn into_conversion(self: Box<Self>) -> (ProtocolRequestConversion, HostReplyCompletion) {
         let Self {
-            request,
-            completion,
-            ..
+            build, completion, ..
         } = *self;
         let conversion: ProtocolRequestConversion =
-            Box::new(move |token| Box::new(request.into_message(ReplyTo::runtime(token))));
+            Box::new(move |token| Box::new(build(ReplyWith::runtime(token))));
         let completion: HostReplyCompletion = Box::new(move |outcome| {
-            let _ = completion.send(crate::typed_request_outcome::<R::Reply>(outcome));
+            let _ = completion.send(crate::typed_request_outcome::<R>(outcome));
         });
         (conversion, completion)
     }
@@ -1491,29 +1480,27 @@ impl LiveEvent {
         })
     }
 
-    pub(crate) fn port_notification<P, N>(port: Port<P>, notification: N) -> Self
-    where
-        P: Protocol,
-        N: Notification<P>,
-    {
-        Self::PortIngress(LivePortIngress::Notification(Box::new(
-            TypedLivePortNotification { port, notification },
-        )))
+    pub(crate) fn port_send<P: Send + 'static>(port: Port<P>, message: P) -> Self {
+        Self::PortIngress(LivePortIngress::Send(Box::new(LivePortSend {
+            port,
+            message,
+        })))
     }
 
-    pub(crate) fn port_request<P, R>(
+    pub(crate) fn port_request_to<P, R, Build>(
         port: Port<P>,
-        request: R,
+        build: Build,
         deadline: Option<tokio::time::Instant>,
-        completion: oneshot::Sender<RequestOutcome<R::Reply>>,
+        completion: oneshot::Sender<RequestOutcome<R>>,
     ) -> Self
     where
-        P: Protocol,
-        R: Request<P>,
+        P: Send + 'static,
+        R: Send + 'static,
+        Build: FnOnce(ReplyWith<R>) -> P + Send + 'static,
     {
-        Self::PortIngress(LivePortIngress::Request(Box::new(TypedLivePortRequest {
+        Self::PortIngress(LivePortIngress::Request(Box::new(LivePortRequestTo {
             port,
-            request,
+            build,
             deadline,
             completion,
         })))
@@ -1974,74 +1961,128 @@ impl LiveCore {
                     });
                 }
                 CommandKind::Send(command) => {
-                    let target = command.target().clone();
-                    let message_type = command.message_type_id();
-                    if !Arc::ptr_eq(command.target_program(), &self.program.program)
-                        || self.component_index(&target, message_type).is_none()
-                    {
-                        return Err(self.runtime_fault(
-                            component.clone(),
-                            None,
-                            work,
-                            format!("direct send target {target:?} is absent from the Program"),
-                        ));
-                    }
-                    let _ = self.scope.accept_finite(LiveEvent::Message(QueuedMessage {
-                        target,
-                        target_message_type: message_type,
-                        message_type_name: command.message_type_name(),
-                        message: command.into_message(),
-                        source: None,
-                    }));
-                }
-                CommandKind::Notify(command) => {
-                    let port = command.port().clone();
-                    let protocol = command.protocol_type_id();
-                    if !Arc::ptr_eq(command.port_program(), &self.program.program) {
-                        return Err(self.runtime_fault(
-                            component.clone(),
-                            None,
-                            work,
-                            "notification Port belongs to another Program",
-                        ));
-                    }
-                    let Some(binding_index) = self.binding_index(protocol, &port) else {
-                        return Err(self.runtime_fault(
-                            component.clone(),
-                            None,
-                            work,
-                            "notification Port has no runtime binding",
-                        ));
+                    let route = match command.target() {
+                        MessageTarget::Port {
+                            id,
+                            program,
+                            protocol,
+                        } => {
+                            if !Arc::ptr_eq(program, &self.program.program) {
+                                return Err(self.runtime_fault(
+                                    component.clone(),
+                                    None,
+                                    work,
+                                    "send Port belongs to another Program",
+                                ));
+                            }
+                            let Some(binding_index) = self.binding_index(protocol, id) else {
+                                return Err(self.runtime_fault(
+                                    component.clone(),
+                                    None,
+                                    work,
+                                    "send Port has no runtime binding",
+                                ));
+                            };
+                            MessageRoute::Binding(binding_index)
+                        }
+                        MessageTarget::Connector {
+                            id,
+                            program,
+                            message_type,
+                            message_type_name,
+                        } => {
+                            if !Arc::ptr_eq(program, &self.program.program)
+                                || self.component_index(id, message_type).is_none()
+                            {
+                                return Err(self.runtime_fault(
+                                    component.clone(),
+                                    None,
+                                    work,
+                                    format!("direct send target {id:?} is absent from the Program"),
+                                ));
+                            }
+                            MessageRoute::Direct {
+                                target: id.clone(),
+                                message_type,
+                                message_type_name,
+                            }
+                        }
                     };
-                    let protocol_message = command.into_message();
-                    let binding = &self.program.bindings[binding_index];
-                    let message = QueuedMessage {
-                        target: binding.provider_id().clone(),
-                        target_message_type: binding.provider_message_type(),
-                        message_type_name: binding.provider_message_type_name(),
-                        message: binding.convert(protocol_message),
-                        source: None,
+                    let message = command.into_message();
+                    let message = match route {
+                        MessageRoute::Binding(binding_index) => {
+                            let binding = &self.program.bindings[binding_index];
+                            QueuedMessage {
+                                target: binding.provider_id().clone(),
+                                target_message_type: binding.provider_message_type(),
+                                message_type_name: binding.provider_message_type_name(),
+                                message: binding.convert(message),
+                                source: None,
+                            }
+                        }
+                        MessageRoute::Direct {
+                            target,
+                            message_type,
+                            message_type_name,
+                        } => QueuedMessage {
+                            target,
+                            target_message_type: message_type,
+                            message_type_name,
+                            message,
+                            source: None,
+                        },
                     };
                     let _ = self.scope.accept_finite(LiveEvent::Message(message));
                 }
                 CommandKind::Request(command) => {
-                    let port = command.port().clone();
-                    let protocol = command.protocol_type_id();
-                    if !Arc::ptr_eq(command.port_program(), &self.program.program) {
-                        return Err(self.runtime_fault(
-                            component.clone(),
-                            None,
-                            work,
-                            "request Port belongs to another Program",
-                        ));
-                    }
-                    let Some(binding_index) = self.binding_index(protocol, &port) else {
-                        return Err(self.runtime_fault(
-                            component.clone(),
-                            None,
-                            work,
-                            "request Port has no runtime binding",
-                        ));
+                    let route = match command.target() {
+                        MessageTarget::Port {
+                            id,
+                            program,
+                            protocol,
+                        } => {
+                            if !Arc::ptr_eq(program, &self.program.program) {
+                                return Err(self.runtime_fault(
+                                    component.clone(),
+                                    None,
+                                    work,
+                                    "request Port belongs to another Program",
+                                ));
+                            }
+                            let Some(binding_index) = self.binding_index(protocol, id) else {
+                                return Err(self.runtime_fault(
+                                    component.clone(),
+                                    None,
+                                    work,
+                                    "request Port has no runtime binding",
+                                ));
+                            };
+                            MessageRoute::Binding(binding_index)
+                        }
+                        MessageTarget::Connector {
+                            id,
+                            program,
+                            message_type,
+                            message_type_name,
+                        } => {
+                            if !Arc::ptr_eq(program, &self.program.program)
+                                || self.component_index(id, message_type).is_none()
+                            {
+                                return Err(self.runtime_fault(
+                                    component.clone(),
+                                    None,
+                                    work,
+                                    format!(
+                                        "request Connector target {id:?} is absent from the Program"
+                                    ),
+                                ));
+                            }
+                            MessageRoute::Direct {
+                                target: id.clone(),
+                                message_type,
+                                message_type_name,
+                            }
+                        }
                     };
                     let deadline = match command.timeout() {
                         Some(timeout) => Some(
@@ -2062,17 +2103,32 @@ impl LiveCore {
                     self.next_request += 1;
                     let reply_type = command.reply_type_id();
                     let token = RequestToken::new(correlation, self.program.program.clone());
-                    let (protocol_message, mapper): (_, ErasedRequestMapper<Message>) =
+                    let (port_message, mapper): (_, ErasedRequestMapper<Message>) =
                         command.into_parts(token.clone());
                     let mapper: ErasedRequestMapper<ErasedValue> =
                         Box::new(move |reply| Box::new(mapper(reply)));
-                    let binding = &self.program.bindings[binding_index];
-                    let message = QueuedMessage {
-                        target: binding.provider_id().clone(),
-                        target_message_type: binding.provider_message_type(),
-                        message_type_name: binding.provider_message_type_name(),
-                        message: binding.convert(protocol_message),
-                        source: None,
+                    let message = match route {
+                        MessageRoute::Binding(binding_index) => {
+                            let binding = &self.program.bindings[binding_index];
+                            QueuedMessage {
+                                target: binding.provider_id().clone(),
+                                target_message_type: binding.provider_message_type(),
+                                message_type_name: binding.provider_message_type_name(),
+                                message: binding.convert(port_message),
+                                source: None,
+                            }
+                        }
+                        MessageRoute::Direct {
+                            target,
+                            message_type,
+                            message_type_name,
+                        } => QueuedMessage {
+                            target,
+                            target_message_type: message_type,
+                            message_type_name,
+                            message: port_message,
+                            source: None,
+                        },
                     };
                     let deadline_task =
                         self.schedule_request_deadline(correlation, deadline, component, work);
@@ -2100,7 +2156,7 @@ impl LiveCore {
                             component.clone(),
                             None,
                             work,
-                            "ReplyTo belongs to another Program",
+                            "ReplyWith belongs to another Program",
                         ));
                     }
                     if token.is_expired() {
@@ -2115,7 +2171,7 @@ impl LiveCore {
                             component.clone(),
                             None,
                             work,
-                            "ReplyTo no longer names an outstanding Request",
+                            "ReplyWith no longer names an outstanding Request",
                         ));
                     };
                     if self.requests[index].reply_type != reply_type {
@@ -2342,15 +2398,15 @@ impl LiveCore {
     fn process_port_ingress(&mut self, ingress: LivePortIngress) -> Result<(), RuntimeError> {
         let work = self.work();
         match ingress {
-            LivePortIngress::Notification(notification) => {
-                let port = notification.port().clone();
-                let protocol_type = notification.protocol_type();
-                if !Arc::ptr_eq(notification.port_program(), &self.program.program) {
+            LivePortIngress::Send(send) => {
+                let port = send.port().clone();
+                let protocol_type = send.protocol_type();
+                if !Arc::ptr_eq(send.port_program(), &self.program.program) {
                     return Err(self.runtime_fault(
                         ComponentId::new("<external-port>"),
                         None,
                         work,
-                        "notification Port belongs to another Program",
+                        "send Port belongs to another Program",
                     ));
                 }
                 let Some(binding_index) = self.binding_index(protocol_type, &port) else {
@@ -2358,7 +2414,7 @@ impl LiveCore {
                         ComponentId::new("<external-port>"),
                         None,
                         work,
-                        "notification Port has no runtime binding",
+                        "send Port has no runtime binding",
                     ));
                 };
                 let (provider, target_message_type, message_type_name) = {
@@ -2369,21 +2425,20 @@ impl LiveCore {
                         binding.provider_message_type_name(),
                     )
                 };
-                let protocol_message =
-                    match catch_unwind(AssertUnwindSafe(|| notification.into_message())) {
-                        Ok(message) => message,
-                        Err(_) => {
-                            return Err(self.runtime_fault(
-                                provider,
-                                None,
-                                work,
-                                "external Notification protocol conversion panicked",
-                            ));
-                        }
-                    };
+                let port_message = match catch_unwind(AssertUnwindSafe(|| send.into_message())) {
+                    Ok(message) => message,
+                    Err(_) => {
+                        return Err(self.runtime_fault(
+                            provider,
+                            None,
+                            work,
+                            "external send conversion panicked",
+                        ));
+                    }
+                };
                 let provider_message = {
                     let binding = &self.program.bindings[binding_index];
-                    catch_unwind(AssertUnwindSafe(|| binding.convert(protocol_message)))
+                    catch_unwind(AssertUnwindSafe(|| binding.convert(port_message)))
                 };
                 let provider_message = match provider_message {
                     Ok(message) => message,
@@ -2392,7 +2447,7 @@ impl LiveCore {
                             provider.clone(),
                             None,
                             work,
-                            "external Notification binding conversion panicked",
+                            "external send binding conversion panicked",
                         ));
                     }
                 };
@@ -2450,7 +2505,7 @@ impl LiveCore {
                     reply_type,
                     continuation: RequestContinuation::Host(completion),
                 });
-                let protocol_message = match catch_unwind(AssertUnwindSafe(|| conversion(token))) {
+                let port_message = match catch_unwind(AssertUnwindSafe(|| conversion(token))) {
                     Ok(message) => message,
                     Err(_) => {
                         return Err(self.runtime_fault(
@@ -2463,7 +2518,7 @@ impl LiveCore {
                 };
                 let provider_message = {
                     let binding = &self.program.bindings[binding_index];
-                    catch_unwind(AssertUnwindSafe(|| binding.convert(protocol_message)))
+                    catch_unwind(AssertUnwindSafe(|| binding.convert(port_message)))
                 };
                 let provider_message = match provider_message {
                     Ok(message) => message,
@@ -2934,27 +2989,30 @@ mod tests {
         Outcome,
     }
 
-    struct CutoffComponent {
+    struct CutoffComponent;
+
+    struct CutoffComponentConfig {
         effect: crate::EffectCapability<CutoffIntent>,
     }
 
     impl Component for CutoffComponent {
+        type Config = CutoffComponentConfig;
         type Model = bool;
         type Message = CutoffMessage;
 
-        fn init(&self) -> Init<Self::Model, Self::Message> {
+        fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
             Init::new(false)
         }
 
         fn update(
-            &self,
+            config: &Self::Config,
             started: &mut Self::Model,
             message: Self::Message,
         ) -> Command<Self::Message> {
             match message {
                 CutoffMessage::Start => {
                     *started = true;
-                    Command::effect_with(&self.effect, CutoffIntent, |_| CutoffMessage::Outcome)
+                    Command::effect_with(&config.effect, CutoffIntent, |_| CutoffMessage::Outcome)
                 }
                 CutoffMessage::Outcome => Command::none(),
             }
@@ -2980,15 +3038,18 @@ mod tests {
         items: Vec<u64>,
     }
 
-    struct GenerationComponent {
+    struct GenerationComponent;
+
+    struct GenerationComponentConfig {
         source: crate::SourceCapability<GenerationSource>,
     }
 
     impl Component for GenerationComponent {
+        type Config = GenerationComponentConfig;
         type Model = GenerationModel;
         type Message = GenerationMessage;
 
-        fn init(&self) -> Init<Self::Model, Self::Message> {
+        fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
             Init::new(GenerationModel {
                 generation: 1,
                 items: Vec::new(),
@@ -2996,7 +3057,7 @@ mod tests {
         }
 
         fn update(
-            &self,
+            _config: &Self::Config,
             model: &mut Self::Model,
             message: Self::Message,
         ) -> Command<Self::Message> {
@@ -3009,9 +3070,12 @@ mod tests {
             Command::none()
         }
 
-        fn subscriptions(&self, model: &Self::Model) -> Subscriptions<Self::Message> {
+        fn subscriptions(
+            config: &Self::Config,
+            model: &Self::Model,
+        ) -> Subscriptions<Self::Message> {
             Subscriptions::one(Subscription::source_with(
-                &self.source,
+                &config.source,
                 SubscriptionId::new("generation"),
                 GenerationSource(model.generation),
                 GenerationMessage::Event,
@@ -3062,32 +3126,38 @@ mod tests {
         }
     }
 
-    struct FramedDrainComponent {
+    struct FramedDrainComponent;
+
+    struct FramedDrainComponentConfig {
         source: crate::SourceCapability<Framed<GenerationSource, DrainFailDecoder>>,
         decoder: DrainFailDecoder,
     }
 
     impl Component for FramedDrainComponent {
+        type Config = FramedDrainComponentConfig;
         type Model = ();
         type Message = SourceEvent<u64, FramedError<Infallible, &'static str>>;
 
-        fn init(&self) -> Init<Self::Model, Self::Message> {
+        fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
             Init::new(())
         }
 
         fn update(
-            &self,
+            _config: &Self::Config,
             _model: &mut Self::Model,
             _message: Self::Message,
         ) -> Command<Self::Message> {
             Command::none()
         }
 
-        fn subscriptions(&self, _model: &Self::Model) -> Subscriptions<Self::Message> {
+        fn subscriptions(
+            config: &Self::Config,
+            _model: &Self::Model,
+        ) -> Subscriptions<Self::Message> {
             Subscriptions::one(Subscription::source_with(
-                &self.source,
+                &config.source,
                 SubscriptionId::new("framed-drain"),
-                Framed::new(GenerationSource(1), self.decoder.clone()),
+                Framed::new(GenerationSource(1), config.decoder.clone()),
                 std::convert::identity,
             ))
         }
@@ -3135,9 +3205,9 @@ mod tests {
     fn generation_core() -> GenerationFixture {
         let mut builder = Program::builder();
         let source = builder.source::<GenerationSource>();
-        let component = builder.component(
+        let component = builder.component::<GenerationComponent>(
             ComponentId::new("generation"),
-            GenerationComponent { source },
+            GenerationComponentConfig { source },
         );
         let program = builder.build().expect("valid generation Program");
         let id = component.id().clone();
@@ -3204,9 +3274,9 @@ mod tests {
     async fn phase6_cancel_cutoff_starts_no_work_from_a_committed_transition() {
         let mut builder = Program::builder();
         let effect = builder.effect::<CutoffIntent>();
-        let component = builder.component(
+        let component = builder.component::<CutoffComponent>(
             ComponentId::new("cancel-cutoff"),
-            CutoffComponent { effect },
+            CutoffComponentConfig { effect },
         );
         let program = builder.build().expect("valid cutoff Program");
         let id = component.id().clone();
@@ -3335,9 +3405,9 @@ mod tests {
         let finish_calls = Arc::new(AtomicUsize::new(0));
         let mut builder = Program::builder();
         let source = builder.source::<Framed<GenerationSource, DrainFailDecoder>>();
-        let _ = builder.component(
+        let _ = builder.component::<FramedDrainComponent>(
             ComponentId::new("framed-drain"),
-            FramedDrainComponent {
+            FramedDrainComponentConfig {
                 source,
                 decoder: DrainFailDecoder {
                     finish_calls: finish_calls.clone(),
@@ -3395,9 +3465,9 @@ mod tests {
     async fn phase6_drain_preserves_a_source_panic_completed_before_cutoff() {
         let mut builder = Program::builder();
         let source = builder.source::<GenerationSource>();
-        let component = builder.component(
+        let component = builder.component::<GenerationComponent>(
             ComponentId::new("drain-panic"),
-            GenerationComponent { source },
+            GenerationComponentConfig { source },
         );
         let program = builder.build().expect("valid Source panic Program");
         let (entered, entered_rx) = tokio::sync::oneshot::channel();
@@ -3439,9 +3509,9 @@ mod tests {
         for observe_drain in [false, true] {
             let mut builder = Program::builder();
             let source = builder.source::<GenerationSource>();
-            let component = builder.component(
+            let component = builder.component::<GenerationComponent>(
                 ComponentId::new("escalation-panic"),
-                GenerationComponent { source },
+                GenerationComponentConfig { source },
             );
             let (entered, entered_rx) = tokio::sync::oneshot::channel();
             let mut bindings = LiveBindings::new();

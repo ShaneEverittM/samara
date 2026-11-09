@@ -22,29 +22,28 @@ use samara::prelude::*;
 struct Empty;
 
 impl Component for Empty {
+    type Config = ();
     type Model = ();
     type Message = ();
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(())
     }
 
-    fn update(&self, _model: &mut Self::Model, _message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        _config: &Self::Config,
+        _model: &mut Self::Model,
+        _message: Self::Message,
+    ) -> Command<Self::Message> {
         Command::none()
     }
-}
-
-struct AssemblyProtocol;
-
-impl Protocol for AssemblyProtocol {
-    type Message = ();
 }
 
 #[test]
 fn phase5_program_build_rejects_duplicate_component_id() {
     let mut builder = Program::builder();
-    let _ = builder.component(ComponentId::new("duplicate"), Empty);
-    let _ = builder.component(ComponentId::new("duplicate"), Empty);
+    let _ = builder.component::<Empty>(ComponentId::new("duplicate"), ());
+    let _ = builder.component::<Empty>(ComponentId::new("duplicate"), ());
 
     assert!(builder.build().is_err());
 }
@@ -52,8 +51,8 @@ fn phase5_program_build_rejects_duplicate_component_id() {
 #[test]
 fn phase5_program_build_rejects_duplicate_protocol_and_port_id() {
     let mut builder = Program::builder();
-    let _ = builder.port::<AssemblyProtocol>(PortId::new("service"));
-    let _ = builder.port::<AssemblyProtocol>(PortId::new("service"));
+    let _ = builder.port::<()>(PortId::new("service"));
+    let _ = builder.port::<()>(PortId::new("service"));
 
     assert!(builder.build().is_err());
 }
@@ -61,70 +60,73 @@ fn phase5_program_build_rejects_duplicate_protocol_and_port_id() {
 #[test]
 fn phase5_program_build_requires_exactly_one_binding_per_port() {
     let mut unbound = Program::builder();
-    let _ = unbound.port::<AssemblyProtocol>(PortId::new("service"));
+    let _ = unbound.port::<()>(PortId::new("service"));
     assert!(unbound.build().is_err());
 
     let mut duplicate = Program::builder();
-    let port = duplicate.port::<AssemblyProtocol>(PortId::new("service"));
-    let provider = duplicate.component(ComponentId::new("provider"), Empty);
-    duplicate.bind_port(&port, &provider);
-    duplicate.bind_port(&port, &provider);
+    let port = duplicate.port::<()>(PortId::new("service"));
+    let provider = duplicate.component::<Empty>(ComponentId::new("provider"), ());
+    duplicate.connect(&port, &provider.connector());
+    duplicate.connect(&port, &provider.connector());
     assert!(duplicate.build().is_err());
 }
 
 #[test]
 fn phase5_program_build_rejects_provider_from_another_builder() {
     let mut provider_builder = Program::builder();
-    let provider = provider_builder.component(ComponentId::new("provider"), Empty);
+    let provider = provider_builder.component::<Empty>(ComponentId::new("provider"), ());
 
     let mut consumer_builder = Program::builder();
-    let port = consumer_builder.port::<AssemblyProtocol>(PortId::new("service"));
-    consumer_builder.bind_port(&port, &provider);
+    let port = consumer_builder.port::<()>(PortId::new("service"));
+    consumer_builder.connect(&port, &provider.connector());
 
     assert!(consumer_builder.build().is_err());
 }
 
-struct LeftProtocol;
-struct RightProtocol;
+struct Left;
 
-impl Protocol for LeftProtocol {
-    type Message = ();
+struct LeftConfig {
+    _right: Port<()>,
 }
 
-impl Protocol for RightProtocol {
-    type Message = ();
-}
+struct Right;
 
-struct Left {
-    _right: Port<RightProtocol>,
-}
-
-struct Right {
-    _left: Port<LeftProtocol>,
+struct RightConfig {
+    _left: Port<()>,
 }
 
 impl Component for Left {
+    type Config = LeftConfig;
     type Model = ();
     type Message = ();
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(())
     }
 
-    fn update(&self, _model: &mut Self::Model, _message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        _config: &Self::Config,
+        _model: &mut Self::Model,
+        _message: Self::Message,
+    ) -> Command<Self::Message> {
         Command::none()
     }
 }
 
 impl Component for Right {
+    type Config = RightConfig;
     type Model = ();
     type Message = ();
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(())
     }
 
-    fn update(&self, _model: &mut Self::Model, _message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        _config: &Self::Config,
+        _model: &mut Self::Model,
+        _message: Self::Message,
+    ) -> Command<Self::Message> {
         Command::none()
     }
 }
@@ -132,22 +134,22 @@ impl Component for Right {
 #[test]
 fn phase5_program_build_allows_port_cycles() {
     let mut builder = Program::builder();
-    let left_port = builder.port::<LeftProtocol>(PortId::new("left"));
-    let right_port = builder.port::<RightProtocol>(PortId::new("right"));
-    let left = builder.component(
+    let left_port = builder.port::<()>(PortId::new("left"));
+    let right_port = builder.port::<()>(PortId::new("right"));
+    let left = builder.component::<Left>(
         ComponentId::new("left"),
-        Left {
+        LeftConfig {
             _right: right_port.clone(),
         },
     );
-    let right = builder.component(
+    let right = builder.component::<Right>(
         ComponentId::new("right"),
-        Right {
+        RightConfig {
             _left: left_port.clone(),
         },
     );
-    builder.bind_port(&left_port, &left);
-    builder.bind_port(&right_port, &right);
+    builder.connect(&left_port, &left.connector());
+    builder.connect(&right_port, &right.connector());
 
     assert!(builder.build().is_ok());
 }
@@ -174,25 +176,32 @@ struct EffectModel {
     output: Option<u64>,
 }
 
-struct EffectComponent {
+struct EffectComponent;
+
+struct EffectComponentConfig {
     mapper_calls: Arc<AtomicUsize>,
     effect: EffectCapability<ProbeEffect>,
 }
 
 impl Component for EffectComponent {
+    type Config = EffectComponentConfig;
     type Model = EffectModel;
     type Message = EffectMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(EffectModel::default())
     }
 
-    fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        config: &Self::Config,
+        model: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         match message {
             EffectMessage::Start => {
                 model.starts += 1;
-                let mapper_calls = self.mapper_calls.clone();
-                Command::effect_with(&self.effect, ProbeEffect(41), move |outcome| {
+                let mapper_calls = config.mapper_calls.clone();
+                Command::effect_with(&config.effect, ProbeEffect(41), move |outcome| {
                     mapper_calls.fetch_add(1, Ordering::SeqCst);
                     EffectMessage::Finished(outcome)
                 })
@@ -210,9 +219,9 @@ impl Component for EffectComponent {
 fn effect_program(mapper_calls: Arc<AtomicUsize>) -> (Program, ComponentRef<EffectComponent>) {
     let mut builder = Program::builder();
     let effect = builder.effect::<ProbeEffect>();
-    let component = builder.component(
+    let component = builder.component::<EffectComponent>(
         ComponentId::new("effect"),
-        EffectComponent {
+        EffectComponentConfig {
             mapper_calls,
             effect,
         },
@@ -367,15 +376,18 @@ enum MappingMessage {
     Ended,
 }
 
-struct MappingComponent {
+struct MappingComponent;
+
+struct MappingComponentConfig {
     input: SourceCapability<StreamDescriptor<u64>>,
 }
 
 impl Component for MappingComponent {
+    type Config = MappingComponentConfig;
     type Model = MappingModel;
     type Message = MappingMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(MappingModel {
             mapper_version: 1,
             binding: "one",
@@ -383,7 +395,11 @@ impl Component for MappingComponent {
         })
     }
 
-    fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        _config: &Self::Config,
+        model: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         match message {
             MappingMessage::UseMapper(version) => model.mapper_version = version,
             MappingMessage::Replace(binding) => model.binding = binding,
@@ -393,10 +409,10 @@ impl Component for MappingComponent {
         Command::none()
     }
 
-    fn subscriptions(&self, model: &Self::Model) -> Subscriptions<Self::Message> {
+    fn subscriptions(config: &Self::Config, model: &Self::Model) -> Subscriptions<Self::Message> {
         let mapper = model.mapper_version;
         Subscriptions::one(Subscription::source_with(
-            &self.input,
+            &config.input,
             SubscriptionId::new("input"),
             StreamDescriptor::<u64>::named(model.binding),
             move |event| match event {
@@ -411,7 +427,10 @@ impl Component for MappingComponent {
 fn mapping_program() -> (Program, ComponentRef<MappingComponent>) {
     let mut builder = Program::builder();
     let input = builder.source::<StreamDescriptor<u64>>();
-    let component = builder.component(ComponentId::new("mapping"), MappingComponent { input });
+    let component = builder.component::<MappingComponent>(
+        ComponentId::new("mapping"),
+        MappingComponentConfig { input },
+    );
     (builder.build().expect("valid source program"), component)
 }
 
@@ -639,19 +658,26 @@ enum FramedMessage {
 #[derive(Default, Debug, PartialEq, Eq)]
 struct FramedModel(Vec<Vec<u8>>);
 
-struct FramedComponent {
+struct FramedComponent;
+
+struct FramedComponentConfig {
     source: SourceCapability<TwiceFramed>,
 }
 
 impl Component for FramedComponent {
+    type Config = FramedComponentConfig;
     type Model = FramedModel;
     type Message = FramedMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(FramedModel::default())
     }
 
-    fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        _config: &Self::Config,
+        model: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         let FramedMessage::Event(event) = message;
         if let SourceEvent::Item(frame) = event {
             model.0.push(frame);
@@ -659,9 +685,9 @@ impl Component for FramedComponent {
         Command::none()
     }
 
-    fn subscriptions(&self, _model: &Self::Model) -> Subscriptions<Self::Message> {
+    fn subscriptions(config: &Self::Config, _model: &Self::Model) -> Subscriptions<Self::Message> {
         Subscriptions::one(Subscription::source_with(
-            &self.source,
+            &config.source,
             SubscriptionId::new("framed"),
             Framed::new(Framed::new(RawBytes, LengthPrefix), LengthPrefix),
             FramedMessage::Event,
@@ -673,7 +699,8 @@ impl Component for FramedComponent {
 fn v4_composed_source_plan_reaches_terminal_controlled_behavior() {
     let mut builder = Program::builder();
     let source = builder.source::<TwiceFramed>();
-    let component = builder.component(ComponentId::new("framed"), FramedComponent { source });
+    let component = builder
+        .component::<FramedComponent>(ComponentId::new("framed"), FramedComponentConfig { source });
     let program = builder.build().unwrap();
     let mut runtime = ControlledRuntime::builder(program)
         .control_source::<RawBytes>()
@@ -705,7 +732,8 @@ fn v4_composed_source_plan_reaches_terminal_controlled_behavior() {
 fn v4_composed_source_binding_must_name_the_terminal_descriptor() {
     let mut builder = Program::builder();
     let source = builder.source::<TwiceFramed>();
-    let _component = builder.component(ComponentId::new("framed"), FramedComponent { source });
+    let _component = builder
+        .component::<FramedComponent>(ComponentId::new("framed"), FramedComponentConfig { source });
     let program = builder.build().unwrap();
     let error = ControlledRuntime::builder(program)
         .control_source::<TwiceFramed>()
@@ -732,17 +760,22 @@ struct TimerModel(Vec<&'static str>);
 struct TimerComponent;
 
 impl Component for TimerComponent {
+    type Config = ();
     type Model = TimerModel;
     type Message = TimerMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(TimerModel::default()).with_command(Command::batch([
             Command::after(Duration::from_millis(5), TimerMessage::Mark("first")),
             Command::after(Duration::from_millis(5), TimerMessage::Mark("second")),
         ]))
     }
 
-    fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        _config: &Self::Config,
+        model: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         let TimerMessage::Mark(value) = message;
         model.0.push(value);
         Command::none()
@@ -758,12 +791,12 @@ fn timer_program(
 ) {
     let mut builder = Program::builder();
     let (alpha, beta) = if reverse_registration {
-        let beta = builder.component(ComponentId::new("beta"), TimerComponent);
-        let alpha = builder.component(ComponentId::new("alpha"), TimerComponent);
+        let beta = builder.component::<TimerComponent>(ComponentId::new("beta"), ());
+        let alpha = builder.component::<TimerComponent>(ComponentId::new("alpha"), ());
         (alpha, beta)
     } else {
-        let alpha = builder.component(ComponentId::new("alpha"), TimerComponent);
-        let beta = builder.component(ComponentId::new("beta"), TimerComponent);
+        let alpha = builder.component::<TimerComponent>(ComponentId::new("alpha"), ());
+        let beta = builder.component::<TimerComponent>(ComponentId::new("beta"), ());
         (alpha, beta)
     };
     (builder.build().unwrap(), alpha, beta)
@@ -816,14 +849,19 @@ enum CausalTimerMessage {
 struct CausalTimer;
 
 impl Component for CausalTimer {
+    type Config = ();
     type Model = Vec<&'static str>;
     type Message = CausalTimerMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(Vec::new())
     }
 
-    fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        _config: &Self::Config,
+        model: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         match message {
             CausalTimerMessage::Start => {
                 model.push("start");
@@ -839,7 +877,7 @@ impl Component for CausalTimer {
 
 fn run_causal_timer(automatic: bool) -> (Vec<&'static str>, Vec<TraceRecord>) {
     let mut builder = Program::builder();
-    let component = builder.component(ComponentId::new("causal-timer"), CausalTimer);
+    let component = builder.component::<CausalTimer>(ComponentId::new("causal-timer"), ());
     let program = builder.build().unwrap();
     let mut runtime = ControlledRuntime::builder(program).build().unwrap();
     runtime.send(&component, CausalTimerMessage::Start).unwrap();
@@ -882,14 +920,19 @@ enum OverflowTimerMessage {
 struct OverflowTimer;
 
 impl Component for OverflowTimer {
+    type Config = ();
     type Model = bool;
     type Message = OverflowTimerMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(false)
     }
 
-    fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        _config: &Self::Config,
+        model: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         match message {
             OverflowTimerMessage::Arm => Command::after(Duration::MAX, OverflowTimerMessage::Fire),
             OverflowTimerMessage::Fire => {
@@ -903,7 +946,7 @@ impl Component for OverflowTimer {
 #[test]
 fn phase5_timer_deadline_overflow_faults_instead_of_panicking() {
     let mut builder = Program::builder();
-    let component = builder.component(ComponentId::new("overflow"), OverflowTimer);
+    let component = builder.component::<OverflowTimer>(ComponentId::new("overflow"), ());
     let program = builder.build().unwrap();
     let mut runtime = ControlledRuntime::builder(program).build().unwrap();
     runtime.advance(Duration::from_nanos(1)).unwrap();
@@ -925,15 +968,16 @@ fn v6_equal_final_state_with_different_structural_trace_is_not_equivalent() {
     struct Balance;
 
     impl Component for Balance {
+        type Config = ();
         type Model = i32;
         type Message = i32;
 
-        fn init(&self) -> Init<Self::Model, Self::Message> {
+        fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
             Init::new(0)
         }
 
         fn update(
-            &self,
+            _config: &Self::Config,
             model: &mut Self::Model,
             message: Self::Message,
         ) -> Command<Self::Message> {
@@ -944,7 +988,7 @@ fn v6_equal_final_state_with_different_structural_trace_is_not_equivalent() {
 
     fn run(inputs: &[i32]) -> (i32, Vec<TraceRecord>) {
         let mut builder = Program::builder();
-        let balance = builder.component(ComponentId::new("balance"), Balance);
+        let balance = builder.component::<Balance>(ComponentId::new("balance"), ());
         let program = builder.build().unwrap();
         let mut runtime = ControlledRuntime::builder(program).build().unwrap();
         for input in inputs {
@@ -978,30 +1022,37 @@ fn v7_controlled_inputs_follow_harness_order() {
     );
 }
 
-struct Forwarder {
+struct Forwarder;
+
+struct ForwarderConfig {
     target: ComponentRef<TimerComponent>,
 }
 
 impl Component for Forwarder {
+    type Config = ForwarderConfig;
     type Model = ();
     type Message = ();
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(())
     }
 
-    fn update(&self, _model: &mut Self::Model, _message: Self::Message) -> Command<Self::Message> {
-        Command::send(self.target.clone(), TimerMessage::Mark("direct-send"))
+    fn update(
+        config: &Self::Config,
+        _model: &mut Self::Model,
+        _message: Self::Message,
+    ) -> Command<Self::Message> {
+        Command::send(&config.target, TimerMessage::Mark("direct-send"))
     }
 }
 
 #[test]
 fn v2_cross_component_interaction_reenters_as_message() {
     let mut builder = Program::builder();
-    let target = builder.component(ComponentId::new("target"), TimerComponent);
-    let forwarder = builder.component(
+    let target = builder.component::<TimerComponent>(ComponentId::new("target"), ());
+    let forwarder = builder.component::<Forwarder>(
         ComponentId::new("forwarder"),
-        Forwarder {
+        ForwarderConfig {
             target: target.clone(),
         },
     );
@@ -1070,14 +1121,19 @@ enum DueMessage {
 struct DueComponent;
 
 impl Component for DueComponent {
+    type Config = ();
     type Model = usize;
     type Message = DueMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(0).with_command(Command::after(Duration::ZERO, DueMessage::Tick))
     }
 
-    fn update(&self, model: &mut Self::Model, _message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        _config: &Self::Config,
+        model: &mut Self::Model,
+        _message: Self::Message,
+    ) -> Command<Self::Message> {
         *model += 1;
         Command::none()
     }
@@ -1086,7 +1142,7 @@ impl Component for DueComponent {
 #[test]
 fn v9_pending_now_counts_ready_messages_and_due_timers() {
     let mut builder = Program::builder();
-    let component = builder.component(ComponentId::new("due"), DueComponent);
+    let component = builder.component::<DueComponent>(ComponentId::new("due"), ());
     let program = builder.build().unwrap();
     let mut runtime = ControlledRuntime::builder(program).build().unwrap();
 
@@ -1112,28 +1168,39 @@ enum OwnershipMessage {
     Timer,
 }
 
-struct OwnershipComponent {
-    port: Port<EchoProtocol>,
+struct OwnershipComponent;
+
+struct OwnershipComponentConfig {
+    port: Port<EchoProtocolMessage>,
     effect: EffectCapability<ProbeEffect>,
     input: SourceCapability<StreamDescriptor<u64>>,
 }
 
 impl Component for OwnershipComponent {
+    type Config = OwnershipComponentConfig;
     type Model = ();
     type Message = OwnershipMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(()).with_command(Command::after(
             Duration::from_secs(60),
             OwnershipMessage::Timer,
         ))
     }
 
-    fn update(&self, _model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        config: &Self::Config,
+        _model: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         match message {
             OwnershipMessage::Kick => Command::batch([
-                Command::effect_with(&self.effect, ProbeEffect(1), OwnershipMessage::Effect),
-                Command::request_with(self.port.clone(), Echo(1), OwnershipMessage::Request),
+                Command::effect_with(&config.effect, ProbeEffect(1), OwnershipMessage::Effect),
+                Command::request_to(
+                    &config.port,
+                    |reply_with| EchoProtocolMessage::Echo(1, reply_with),
+                    OwnershipMessage::Request,
+                ),
             ]),
             OwnershipMessage::Effect(outcome) => {
                 let _ = outcome;
@@ -1151,9 +1218,9 @@ impl Component for OwnershipComponent {
         }
     }
 
-    fn subscriptions(&self, _model: &Self::Model) -> Subscriptions<Self::Message> {
+    fn subscriptions(config: &Self::Config, _model: &Self::Model) -> Subscriptions<Self::Message> {
         Subscriptions::one(Subscription::source_with(
-            &self.input,
+            &config.input,
             SubscriptionId::new("input"),
             StreamDescriptor::named("ownership/input"),
             OwnershipMessage::Input,
@@ -1163,14 +1230,17 @@ impl Component for OwnershipComponent {
 
 fn ownership_runtime() -> (ControlledRuntime, ComponentRef<OwnershipComponent>) {
     let mut builder = Program::builder();
-    let port = builder.port::<EchoProtocol>(PortId::new("echo"));
-    let provider = builder.component(ComponentId::new("provider"), EchoProvider { reply: false });
-    builder.bind_port(&port, &provider);
+    let port = builder.port::<EchoProtocolMessage>(PortId::new("echo"));
+    let provider = builder.component::<EchoProvider>(
+        ComponentId::new("provider"),
+        EchoProviderConfig { reply: false },
+    );
+    builder.connect(&port, &provider.connector());
     let effect = builder.effect::<ProbeEffect>();
     let input = builder.source::<StreamDescriptor<u64>>();
-    let component = builder.component(
+    let component = builder.component::<OwnershipComponent>(
         ComponentId::new("owner"),
-        OwnershipComponent {
+        OwnershipComponentConfig {
             port,
             effect,
             input: input.clone(),
@@ -1220,27 +1290,34 @@ fn v9_controlled_cancel_leaves_zero_work() {
     assert_eq!(report.pending_later, 0);
 }
 
-struct CancellationProbe {
+struct CancellationProbe;
+
+struct CancellationProbeConfig {
     mapper_calls: Arc<AtomicUsize>,
     source: SourceCapability<StreamDescriptor<u64>>,
 }
 
 impl Component for CancellationProbe {
+    type Config = CancellationProbeConfig;
     type Model = ();
     type Message = ();
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(())
     }
 
-    fn update(&self, _model: &mut Self::Model, _message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        _config: &Self::Config,
+        _model: &mut Self::Model,
+        _message: Self::Message,
+    ) -> Command<Self::Message> {
         Command::none()
     }
 
-    fn subscriptions(&self, _model: &Self::Model) -> Subscriptions<Self::Message> {
-        let mapper_calls = self.mapper_calls.clone();
+    fn subscriptions(config: &Self::Config, _model: &Self::Model) -> Subscriptions<Self::Message> {
+        let mapper_calls = config.mapper_calls.clone();
         Subscriptions::one(Subscription::source_with(
-            &self.source,
+            &config.source,
             SubscriptionId::new("cancellation-probe"),
             StreamDescriptor::<u64>::named("cancellation-probe"),
             move |_event| {
@@ -1255,9 +1332,9 @@ fn v9_source_cancellation_emits_no_unpromised_event() {
     let mapper_calls = Arc::new(AtomicUsize::new(0));
     let mut builder = Program::builder();
     let source = builder.source::<StreamDescriptor<u64>>();
-    let _component = builder.component(
+    let _component = builder.component::<CancellationProbe>(
         ComponentId::new("cancellation-probe"),
-        CancellationProbe {
+        CancellationProbeConfig {
             mapper_calls: mapper_calls.clone(),
             source,
         },
@@ -1297,26 +1374,11 @@ fn v10_reading_controlled_trace_after_drive_has_no_feedback_path() {
 
 // Successful and unanswered typed Requests --------------------------------
 
-struct EchoProtocol;
-
+/// The provider's vocabulary, written by hand: the request variant carries
+/// its own reply token.
 #[derive(Debug)]
 enum EchoProtocolMessage {
-    Echo(RequestInvocation<EchoProtocol, Echo>),
-}
-
-impl Protocol for EchoProtocol {
-    type Message = EchoProtocolMessage;
-}
-
-#[derive(Debug)]
-struct Echo(u64);
-
-impl Request<EchoProtocol> for Echo {
-    type Reply = u64;
-
-    fn into_message(self, reply_to: ReplyTo<Self::Reply>) -> EchoProtocolMessage {
-        EchoProtocolMessage::Echo(RequestInvocation::new(self, reply_to))
-    }
+    Echo(u64, ReplyWith<u64>),
 }
 
 #[derive(Debug)]
@@ -1330,24 +1392,31 @@ impl From<EchoProtocolMessage> for EchoProviderMessage {
     }
 }
 
-struct EchoProvider {
+struct EchoProvider;
+
+struct EchoProviderConfig {
     reply: bool,
 }
 
 impl Component for EchoProvider {
+    type Config = EchoProviderConfig;
     type Model = ();
     type Message = EchoProviderMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(())
     }
 
-    fn update(&self, _model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
-        let EchoProviderMessage::Protocol(EchoProtocolMessage::Echo(invocation)) = message;
-        if self.reply {
-            Command::reply(invocation.reply_to, invocation.request.0)
+    fn update(
+        config: &Self::Config,
+        _model: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
+        let EchoProviderMessage::Protocol(EchoProtocolMessage::Echo(value, reply_with)) = message;
+        if config.reply {
+            Command::reply(reply_with, value)
         } else {
-            let _unanswered = invocation.reply_to;
+            let _unanswered = reply_with;
             Command::none()
         }
     }
@@ -1365,25 +1434,34 @@ enum EchoRequesterMessage {
 #[derive(Default, Debug, PartialEq, Eq)]
 struct EchoRequesterModel(Vec<(usize, u64)>);
 
-struct EchoRequester {
-    port: Port<EchoProtocol>,
+struct EchoRequester;
+
+struct EchoRequesterConfig {
+    port: Port<EchoProtocolMessage>,
     requests: usize,
 }
 
 impl Component for EchoRequester {
+    type Config = EchoRequesterConfig;
     type Model = EchoRequesterModel;
     type Message = EchoRequesterMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(EchoRequesterModel::default())
     }
 
-    fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        config: &Self::Config,
+        model: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         match message {
-            EchoRequesterMessage::Start => Command::batch((0..self.requests).map(|slot| {
-                Command::request_with(self.port.clone(), Echo(7), move |outcome| {
-                    EchoRequesterMessage::Replied { slot, outcome }
-                })
+            EchoRequesterMessage::Start => Command::batch((0..config.requests).map(|slot| {
+                Command::request_to(
+                    &config.port,
+                    |reply_with| EchoProtocolMessage::Echo(7, reply_with),
+                    move |outcome| EchoRequesterMessage::Replied { slot, outcome },
+                )
             })),
             EchoRequesterMessage::Replied {
                 slot,
@@ -1399,12 +1477,13 @@ impl Component for EchoRequester {
 
 fn echo_program(reply: bool, requests: usize) -> (Program, ComponentRef<EchoRequester>) {
     let mut builder = Program::builder();
-    let port = builder.port::<EchoProtocol>(PortId::new("echo"));
-    let provider = builder.component(ComponentId::new("provider"), EchoProvider { reply });
-    builder.bind_port(&port, &provider);
-    let requester = builder.component(
+    let port = builder.port::<EchoProtocolMessage>(PortId::new("echo"));
+    let provider = builder
+        .component::<EchoProvider>(ComponentId::new("provider"), EchoProviderConfig { reply });
+    builder.connect(&port, &provider.connector());
+    let requester = builder.component::<EchoRequester>(
         ComponentId::new("requester"),
-        EchoRequester { port, requests },
+        EchoRequesterConfig { port, requests },
     );
     (builder.build().unwrap(), requester)
 }

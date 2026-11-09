@@ -435,7 +435,7 @@ fn malformed_stdin_leaves_the_pending_selection_unchanged() -> Result<()> {
         ("", usage),
         ("wat", usage),
         ("url", usage),
-        ("url not-a-url", "Invalid URL: not-a-url\n"),
+        ("url ::", "Invalid URL: https://::\n"),
         ("status extra", usage),
         ("clear extra", usage),
     ] {

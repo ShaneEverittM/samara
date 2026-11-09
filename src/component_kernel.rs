@@ -18,20 +18,20 @@ use crate::{Command, Component, ComponentId, Init, SubscriptionId};
 /// boundary when concurrent entry is required.
 pub(crate) struct ComponentKernel<C: Component> {
     id: ComponentId,
-    component: C,
+    config: C::Config,
     model: C::Model,
     initial_command: Option<Command<C::Message>>,
     subscriptions: SubscriptionReconciler<C::Message>,
 }
 
 impl<C: Component> ComponentKernel<C> {
-    pub(crate) fn new(id: ComponentId, component: C) -> Self {
-        let Init { model, command } = component.init();
+    pub(crate) fn new(id: ComponentId, config: C::Config) -> Self {
+        let Init { model, command } = C::init(&config);
         let subscriptions = SubscriptionReconciler::new(id.clone());
 
         Self {
             id,
-            component,
+            config,
             model,
             initial_command: Some(command),
             subscriptions,
@@ -43,7 +43,7 @@ impl<C: Component> ComponentKernel<C> {
     }
 
     pub(crate) fn transition(&mut self, message: C::Message) -> Command<C::Message> {
-        self.component.update(&mut self.model, message)
+        C::update(&self.config, &mut self.model, message)
     }
 
     pub(crate) fn model(&self) -> &C::Model {
@@ -62,7 +62,7 @@ impl<C: Component> ComponentKernel<C> {
     pub(crate) fn reconcile_subscriptions(
         &mut self,
     ) -> Result<Vec<SubscriptionChange<C::Message>>, DuplicateSubscriptionIdError> {
-        let desired = self.component.subscriptions(&self.model);
+        let desired = C::subscriptions(&self.config, &self.model);
         self.subscriptions.reconcile(desired)
     }
 }
@@ -184,7 +184,7 @@ impl<C: Component> ErasedComponentKernel for ComponentKernel<C> {
         &self,
         program: &crate::Program,
     ) -> Result<(), crate::RuntimeError> {
-        let subscriptions = self.component.subscriptions(&self.model);
+        let subscriptions = C::subscriptions(&self.config, &self.model);
         crate::validate_initial_capabilities(
             program,
             &self.id,
@@ -217,20 +217,23 @@ mod tests {
     use crate::{Command, Component, ComponentId, Init};
     use tokio::sync::oneshot;
 
-    struct ProbeComponent {
+    struct ProbeComponent;
+
+    struct ProbeComponentConfig {
         not_sync: PhantomData<Cell<()>>,
     }
 
     impl Component for ProbeComponent {
+        type Config = ProbeComponentConfig;
         type Model = Vec<usize>;
         type Message = usize;
 
-        fn init(&self) -> Init<Self::Model, Self::Message> {
+        fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
             Init::new(Vec::new())
         }
 
         fn update(
-            &self,
+            _config: &Self::Config,
             model: &mut Self::Model,
             message: Self::Message,
         ) -> Command<Self::Message> {
@@ -253,9 +256,9 @@ mod tests {
     }
 
     async fn assert_local_serialization(id: &str) {
-        let component = SerializedComponent::new(ComponentKernel::new(
+        let component = SerializedComponent::new(ComponentKernel::<ProbeComponent>::new(
             ComponentId::new(id),
-            ProbeComponent {
+            ProbeComponentConfig {
                 not_sync: PhantomData,
             },
         ));
@@ -307,15 +310,16 @@ mod tests {
         struct Startup;
 
         impl Component for Startup {
+            type Config = ();
             type Model = ();
             type Message = ();
 
-            fn init(&self) -> Init<Self::Model, Self::Message> {
+            fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
                 Init::new(()).with_command(Command::after(Duration::ZERO, ()))
             }
 
             fn update(
-                &self,
+                _config: &Self::Config,
                 _model: &mut Self::Model,
                 _message: Self::Message,
             ) -> Command<Self::Message> {
@@ -323,7 +327,7 @@ mod tests {
             }
         }
 
-        let mut kernel = ComponentKernel::new(ComponentId::new("startup"), Startup);
+        let mut kernel = ComponentKernel::<Startup>::new(ComponentId::new("startup"), ());
 
         assert!(kernel.take_initial_command().is_some());
         assert!(kernel.take_initial_command().is_none());

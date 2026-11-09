@@ -1,8 +1,11 @@
 //! Conformance evidence for Samara's standard `From` continuation convention.
 //!
 //! Each continuation-bearing boundary offers a short form using
-//! `Message: From<BoundaryValue>` and a `_with` form for call-site-specific
-//! mapping or captured domain context.
+//! `Message: From<BoundaryValue>` and an explicit form for call-site-specific
+//! mapping or captured domain context. Effects and Sources spell the pair as
+//! a default and a `_with` method; `Command::request_to` takes the map as an
+//! argument, so the short form is passing `Message::from` and the explicit
+//! form is passing a closure.
 
 use std::convert::Infallible;
 
@@ -188,24 +191,10 @@ fn http_pipeline_default_uses_from_and_into_command_with_is_explicit() {
     ));
 }
 
-struct EchoProtocol;
-
+/// The provider's vocabulary, written by hand: the request variant carries
+/// its own reply token.
 enum EchoProtocolMessage {
-    Echo(RequestInvocation<EchoProtocol, Echo>),
-}
-
-impl Protocol for EchoProtocol {
-    type Message = EchoProtocolMessage;
-}
-
-struct Echo(u64);
-
-impl Request<EchoProtocol> for Echo {
-    type Reply = u64;
-
-    fn into_message(self, reply_to: ReplyTo<Self::Reply>) -> EchoProtocolMessage {
-        EchoProtocolMessage::Echo(RequestInvocation::new(self, reply_to))
-    }
+    Echo(u64, ReplyWith<u64>),
 }
 
 enum ProviderMessage {
@@ -221,16 +210,21 @@ impl From<EchoProtocolMessage> for ProviderMessage {
 struct EchoProvider;
 
 impl Component for EchoProvider {
+    type Config = ();
     type Model = ();
     type Message = ProviderMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(())
     }
 
-    fn update(&self, _model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
-        let ProviderMessage::Protocol(EchoProtocolMessage::Echo(invocation)) = message;
-        Command::reply(invocation.reply_to, invocation.request.0)
+    fn update(
+        _config: &Self::Config,
+        _model: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
+        let ProviderMessage::Protocol(EchoProtocolMessage::Echo(value, reply_with)) = message;
+        Command::reply(reply_with, value)
     }
 }
 
@@ -256,26 +250,41 @@ impl From<RequestOutcome<u64>> for RequesterMessage {
     }
 }
 
-struct Requester {
-    echo: Port<EchoProtocol>,
+struct Requester;
+
+struct RequesterConfig {
+    echo: Port<EchoProtocolMessage>,
 }
 
 impl Component for Requester {
+    type Config = RequesterConfig;
     type Model = RequesterModel;
     type Message = RequesterMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(RequesterModel::default())
     }
 
-    fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        config: &Self::Config,
+        model: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         match message {
-            RequesterMessage::StartDefault => Command::request(self.echo.clone(), Echo(11)),
+            // The short form: `Message::from` is the continuation, so the
+            // `From<RequestOutcome<u64>>` impl above still decides the variant.
+            RequesterMessage::StartDefault => Command::request_to(
+                &config.echo,
+                |reply_with| EchoProtocolMessage::Echo(11, reply_with),
+                RequesterMessage::from,
+            ),
             RequesterMessage::StartExplicit => {
                 let context = "second request";
-                Command::request_with(self.echo.clone(), Echo(12), move |outcome| {
-                    RequesterMessage::Explicit { context, outcome }
-                })
+                Command::request_to(
+                    &config.echo,
+                    |reply_with| EchoProtocolMessage::Echo(12, reply_with),
+                    move |outcome| RequesterMessage::Explicit { context, outcome },
+                )
             }
             RequesterMessage::Canonical(outcome) => {
                 model.canonical = Some(outcome);
@@ -290,14 +299,14 @@ impl Component for Requester {
 }
 
 #[test]
-fn request_default_uses_from_and_request_with_preserves_context() {
+fn request_to_with_message_from_uses_from_and_a_closure_preserves_context() {
     let mut builder = Program::builder();
-    let echo = builder.port::<EchoProtocol>(PortId::new("echo"));
-    let provider = builder.component(ComponentId::new("provider"), EchoProvider);
-    builder.bind_port(&echo, &provider);
-    let requester = builder.component(
+    let echo = builder.port::<EchoProtocolMessage>(PortId::new("echo"));
+    let provider = builder.component::<EchoProvider>(ComponentId::new("provider"), ());
+    builder.connect(&echo, &provider.connector());
+    let requester = builder.component::<Requester>(
         ComponentId::new("requester"),
-        Requester { echo: echo.clone() },
+        RequesterConfig { echo: echo.clone() },
     );
     let mut runtime = ControlledRuntime::builder(builder.build().unwrap())
         .build()

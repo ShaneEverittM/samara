@@ -33,11 +33,7 @@ The earlier Actor proof of concept remains available in Git history at commit
 - [Architecture test strategy](docs/testing/architecture-test-strategy.md)
 - [V1-V11 acceptance matrix](docs/testing/v0-acceptance-matrix.md)
 - [Goal-mode implementation checklist](docs/goal-mode-checklist.md)
-- [Phase 2 audit packet](docs/audits/phase-2-executable-acceptance-contract.md)
-- [Phase 3 audit packet](docs/audits/phase-3-component-kernel.md)
-- [Phase 4 audit packet](docs/audits/phase-4-declarative-work-kernel.md)
-- [Phase 5 audit packet](docs/audits/phase-5-controlled-execution.md)
-- [Phase 6 audit packet](docs/audits/phase-6-live-tokio-runtime.md)
+- [Phase audit history](docs/audits/README.md)
 
 ## Standalone Examples
 

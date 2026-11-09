@@ -44,23 +44,26 @@ The accepted Phase 2 audit constrains Phase 3 to this slice:
 
 - `ComponentId` is stable logical identity, not a task, mailbox, type singleton,
   or registration-order token.
-- A `Component` value is immutable logical configuration. Behaviorally relevant
-  mutable state belongs in `Component::Model`.
+- The type implementing `Component` names a kind and is never stored. Its
+  immutable logical configuration is `Component::Config`, supplied at
+  registration as `component::<Kind>(id, config)`; behaviorally relevant
+  mutable state belongs in `Component::Model`
+  ([ADR-0013](adr/0013-component-kinds-assemblies-and-first-party-effects.md)).
 - `Component::Message` is the only transition input.
-- `Component::init(&self) -> Init<Model, Message>` declares initial state and
+- `Component::init(&Config) -> Init<Model, Message>` declares initial state and
   optional startup work.
-- `Component::update(&self, &mut Model, Message) -> Command<Message>` is the v0
-  Rust spelling of the conceptual pure transition. Exclusively owned in-place
-  mutation is observationally equivalent to returning a new Model.
+- `Component::update(&Config, &mut Model, Message) -> Command<Message>` is the
+  v0 Rust spelling of the conceptual pure transition. Exclusively owned
+  in-place mutation is observationally equivalent to returning a new Model.
 - One composable `Command<Message>` is returned. `Command::none` represents no
   finite work and `Command::batch` groups declarations; batching does not
   promise completion order.
-- `Component::subscriptions(&self, &Model) -> Subscriptions<Message>` is a pure
-  projection with an empty default.
-- The base Component contract requires movable configuration, Model, and
-  Messages, but does not require the Component configuration itself to be
-  `Sync`. Per-Component serialization does not require concurrent access to the
-  configuration, and a stronger bound would prematurely constrain placement.
+- `Component::subscriptions(&Config, &Model) -> Subscriptions<Message>` is a
+  pure projection with an empty default.
+- The base Component contract requires movable `Config`, Model, and Messages,
+  but does not require `Config` to be `Sync`. Per-Component serialization does
+  not require concurrent access to the configuration, and a stronger bound
+  would prematurely constrain placement.
 - `ComponentRef<C>` is an inert typed logical address. It grants neither model
   access nor live delivery capability.
 - `ComponentHandle<C>` is a live boundary capability and is deliberately
@@ -102,12 +105,13 @@ The July 25 API revision adopts one consistent continuation convention without
 changing these lifecycle semantics or the concrete
 `Component::update(...) -> Command<Message>` boundary:
 
-- `Command::effect(&capability, effect)`, `Command::request(port, request)`,
+- `Command::effect(&capability, effect)`,
   `Subscription::source(&capability, id, descriptor)`, and
   `HttpResponsePipeline::into_command(&capability)` use the standard
   `Message: From<BoundaryValue>` conversion as their default mapper.
-- Their `effect_with`, `request_with`, `source_with`, and
-  `into_command_with` counterparts accept an explicit pure mapper.
+- Their `effect_with`, `source_with`, and `into_command_with` counterparts
+  accept an explicit pure mapper. `Command::request_to` always takes the
+  mapper explicitly; `Message::from` is the canonical argument (ADR-0016).
 - The default is appropriate only when one boundary type has one canonical
   Message meaning. Captured domain correlation or call-site-specific meaning
   remains explicit through the `_with` form.
@@ -213,21 +217,22 @@ overload, shutdown deadlines, Driver recovery, or bridge restartability.
 [ADR-0006](adr/0006-live-port-ingress.md) extends the existing live ingress
 boundary to provider-neutral Ports:
 
-- `LiveRuntime::port_handle(&Port<P>)` returns a cloneable `PortHandle<P>` only
+- `Runtime::port_handle(&Port<P>)` returns a cloneable `PortHandle<P>` only
   when the Port belongs to that runtime's exact Program and has its exact built
-  Protocol-and-name binding. Foreign or absent exact bindings fail synchronously
+  message-type-and-name binding. Foreign or absent exact bindings fail synchronously
   with `RuntimeError`.
 - `Port<P>` remains inert logical wiring suitable for Component configuration.
   `PortHandle<P>` is a live capability for surrounding Tokio code and exposes no
   provider, Model, transition, channel, or runtime topology.
-- `PortHandle::notify` and `PortHandle::request` attempt admission when their
-  futures are first polled. They share the same atomic cutoff as
-  `ComponentHandle` and the owning `RuntimeTask`.
-- Successful notify means accepted for runtime-managed conversion and delivery,
+- `PortHandle::send` and `PortHandle::request_to` (originally `notify` and
+  `request`; ADR-0016) attempt admission when their futures are first polled.
+  They share the same atomic cutoff as `ComponentHandle` and the owning
+  `RuntimeTask`.
+- Successful send means accepted for runtime-managed conversion and delivery,
   not that the provider transition completed.
-- An admitted host Request uses the same Port binding, `RequestInvocation`,
-  opaque correlation, and `ReplyTo` path as `Command::request`, but its awaited
-  success is `R::Reply` directly. It creates neither a requester Component
+- An admitted host request uses the same Port binding, message variant,
+  opaque correlation, and `ReplyWith` path as `Command::request_to`, but its
+  awaited success is `R` directly. It creates neither a requester Component
   Message nor `RequestOutcome::Replied`.
 - Drain closes new Port ingress and retains admitted Notifications, Requests,
   Replies, and their causal finite work. An unanswered host Request may keep
@@ -249,9 +254,9 @@ remain deferred.
 
 ## Accepted and Implemented Contract: Request Timeouts
 
-[ADR-0011](adr/0011-request-timeouts.md) adds opt-in
-`Command::request_timeout`, `Command::request_timeout_with`, and
-`PortHandle::request_timeout`. Existing request forms remain unbounded.
+[ADR-0011](adr/0011-request-timeouts.md) adds opt-in request deadlines, now
+spelled `Command::request_to_timeout` and `PortHandle::request_to_timeout`
+(ADR-0016). `request_to` remains unbounded.
 
 - Component durations start at Command interpretation; host durations start at
   admission on first poll, including queued time. Controlled deadlines use
@@ -330,7 +335,7 @@ Both descriptors own text, provide `text` for exact UTF-8 and `line` for UTF-8
 followed by `\n`, produce `()`, and use `Infallible` as their Error type. The
 values contain no handles and perform no work when constructed.
 
-`LiveRuntimeBuilder::bind_stdio()` installs both Tokio-backed terminal Drivers.
+`RuntimeBuilder::bind_stdio()` installs both Tokio-backed terminal Drivers.
 Each Driver serializes its own Samara-issued print attempts within one live
 binding, writes the complete text, and flushes the selected stream. An
 operating-system I/O error is intentionally discarded rather than becoming an
@@ -379,7 +384,7 @@ failure is not followed by `Ended`. The initial descriptor has no line-length
 limit. Bounded or byte-oriented acquisition therefore requires another
 terminal descriptor; a Layer above `StdinLines` sees only complete lines.
 
-On Unix, `LiveRuntimeBuilder::bind_stdin()` discovers the sole declared
+On Unix, `RuntimeBuilder::bind_stdin()` discovers the sole declared
 capability whose terminal descriptor is `StdinLines` and binds process stdin
 to that exact capability. Zero or multiple matching declarations fail build.
 The capability may be direct or a built-in composition such as
@@ -419,7 +424,7 @@ terminal EffectDescriptor:
 - `HttpError` carries an `HttpErrorKind` distinguishing `Configuration` from
   `Transport`, plus explanatory text that controlled fixtures can construct.
 
-`LiveRuntimeBuilder::bind_http()` installs one Driver retaining one reusable
+`RuntimeBuilder::bind_http()` installs one Driver retaining one reusable
 reqwest client and connection pool. The Driver explicitly follows no redirects,
 performs no protocol retries, discovers no system proxy, and performs no
 automatic content decompression. It supplies no Samara request timeout. All
@@ -500,7 +505,7 @@ around values issued by one `ProgramBuilder`:
   descriptor or Layer stack.
 
 After `ProgramBuilder::build()` consumes the builder, the logical capability
-set is closed. `LiveRuntimeBuilder::build()` and
+set is closed. `RuntimeBuilder::build()` and
 `ControlledRuntimeBuilder::build()` synchronously require exactly one
 applicable terminal behavior for every declaration. Normal Drivers and
 controlled registrations are type-wide; the one-shot `mpsc` bridge uses an
@@ -520,6 +525,85 @@ Initial foreign Effect, Source, ComponentRef, and Port capabilities and foreign
 exact bindings fail profile build. A deliberately hidden foreign capability
 first reached after execution starts is a Component-conformance fault rejected
 before Driver or controlled behavior, not a supported form of dynamic assembly.
+
+## Accepted and Implemented Contract: Ports and Connectors
+
+[ADR-0014](adr/0014-jacks-and-plugs.md) and
+[ADR-0015](adr/0015-ports-connectors-and-the-message-type.md) name the two ways a Component is
+exposed and renames the consumer-owned one:
+
+- `Port<P>` (formerly `Port<P>`) is a consumer-owned, named, inert dependency
+  on a message type, created with `ProgramBuilder::port` and filled at assembly
+  with `connect`. `PortId`, `PortHandle`, and
+  `Runtime::port_handle` follow the rename; their semantics are those of
+  ADR-0006.
+- `Connector<M>` is a provider-owned, inert address: a `ComponentRef<C>` erased to
+  the Message type it accepts, obtained with `ComponentRef::connector` (a `From`
+  conversion) or `ComponentRef::accepting` (an explicit pure conversion). It
+  grants no delivery capability and its `Debug` output names `M`, not `C`.
+- `connect(&port, &connector)` takes a `Connector<M>` for a `Port<M>` and
+  nothing else (ADR-0015 amendment); a `ComponentRef` is connected through
+  `connector()` or `accepting(map)`. A Port binding is stored as the Port and a
+  `Connector<P::Message>`, so both forms share one boxed conversion.
+- A Connector from another `ProgramBuilder` fails `build()` as a foreign provider
+  under ADR-0008's existing rule.
+- `Command::send(&target, message)` takes any `Addressable`.
+  `Command::request_to(&target, constructor, map)` and `request_to_timeout`
+  address a request to an `Addressable`: `constructor: FnOnce(ReplyWith<R>) ->
+  T::Message` is a function the provider published, its `ReplyWith<R>`
+  parameter fixes the reply type, and the runtime mints the token and routes
+  the message exactly as for a Port request, including ADR-0011 deadlines.
+  Initial work addressed to a foreign Connector fails profile build under
+  ADR-0008.
+- `Connector::accepting(map)` returns a Connector of another Message type that converts
+  through `map` first; `map` must be pure.
+- A Connector request is inspected with `Command::into_request_to`, which
+  builds its message with an inert reply token (ADR-0016).
+
+## Accepted and Implemented Contract: One Sending API
+
+[ADR-0016](adr/0016-one-sending-api.md) removes the trait form of Port
+interaction and leaves one way for a Command to reach a Component:
+
+- `Addressable` is implemented for `Port<M>`, `Connector<M>`, and
+  `ComponentRef<C>`. `Command::send(&target, message)`,
+  `Command::request_to(&target, constructor, map)`, and
+  `Command::request_to_timeout(&target, constructor, timeout, map)` accept any
+  of them and deliver a value of the destination's message type.
+- A request is a message variant carrying `ReplyWith<R>`; `constructor:
+  FnOnce(ReplyWith<R>) -> M` fixes `R`, and `map: FnOnce(RequestOutcome<R>) ->
+  Message` is checked against it. The provider answers with
+  `Command::reply(reply_with, value)`.
+- A Port-addressed send resolves through the Port's binding at
+  interpretation and is traced as `TraceCommandKind::Send` with
+  `target_port` set and `target_component` empty. `TraceCommandKind::Notify`
+  no longer exists.
+- `Command::send_intents::<M>()` searches batches for sends of `M`.
+  `Command::into_request_to::<M>()` extracts a top-level request as a
+  `RequestIntent` whose `message` was built with an inert `ReplyWith` and whose
+  `reply(outcome)` runs the continuation. The inert token belongs to no
+  Program and is rejected as foreign if a reply is ever attempted through it.
+- Removed: `messages!`, `Notification`, `Request`, `RequestInvocation`,
+  `Command::notify`, `request`, `request_with`, `request_timeout`,
+  `request_timeout_with`, `PortHandle::notify`, `request`, `request_timeout`,
+  `Command::notification_intents`, `request_intents`.
+
+## Accepted and Implemented Contract: Assemblies
+
+[ADR-0013](adr/0013-component-kinds-assemblies-and-first-party-effects.md)
+as amended by [ADR-0018](adr/0018-assemblies-export-a-connector.md):
+
+- `Assembly` has `Config`, `Accepts`, `Exports`, and `Requires`, and
+  `install(&mut ProgramBuilder, Config) -> (Connector<Accepts>, Exports)`.
+  An Assembly declares Components and capabilities, never Ports or drivers.
+- `ProgramBuilder::install::<A>(config)` returns a `must_use`
+  `InstalledAssembly<A>` exposing `connector()` and `exports()`; the token
+  is `Addressable` with `Message = A::Accepts`.
+- `Runtime::builder(..).with_assembly(token).and_drivers(drivers)` binds
+  `A::Requires` position by position, or `.and_its_vendored_drivers()` when
+  `A: VendorsDrivers`; `ControlledRuntime::builder(..).with_assembly(token)`
+  controls every requirement. Either builder fails at `build()` when a
+  declared requirement is unbound, naming the descriptor.
 
 ## Deliberately Unfrozen Surfaces
 
@@ -585,7 +669,7 @@ Phase 2 is ready for human acceptance when:
 1. The root crate contains the candidate façade and the old PoC is absent from
    the active build.
 2. All three reference Components compile against `samara`.
-3. The executable Phase 2 tests and doctests pass, including the `ReplyTo`
+3. The executable Phase 2 tests and doctests pass, including the `ReplyWith`
    `#[must_use]` compile contract.
 4. Every V1-V12 requirement maps to named scenarios and a planned phase.
 5. Missing semantics and non-executable promises are listed rather than hidden

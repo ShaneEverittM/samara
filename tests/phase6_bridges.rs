@@ -38,7 +38,9 @@ enum StreamMessage {
     Observed,
 }
 
-struct StreamProbe {
+struct StreamProbe;
+
+struct StreamProbeConfig {
     stream: SourceCapability<StreamDescriptor<u64>>,
     descriptor: StreamDescriptor<u64>,
     observe: EffectCapability<ObserveStream>,
@@ -49,24 +51,29 @@ struct StreamModel {
 }
 
 impl Component for StreamProbe {
+    type Config = StreamProbeConfig;
     type Model = StreamModel;
     type Message = StreamMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(StreamModel { desired: true })
     }
 
-    fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        config: &Self::Config,
+        model: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         match message {
             StreamMessage::Event(SourceEvent::Item(value)) => Command::effect_with(
-                &self.observe,
+                &config.observe,
                 ObserveStream(StreamObservation::Item(value)),
                 |_| StreamMessage::Observed,
             ),
             StreamMessage::Event(SourceEvent::Ended) => {
                 model.desired = false;
                 Command::effect_with(
-                    &self.observe,
+                    &config.observe,
                     ObserveStream(StreamObservation::Ended),
                     |_| StreamMessage::Observed,
                 )
@@ -80,12 +87,12 @@ impl Component for StreamProbe {
         }
     }
 
-    fn subscriptions(&self, model: &Self::Model) -> Subscriptions<Self::Message> {
+    fn subscriptions(config: &Self::Config, model: &Self::Model) -> Subscriptions<Self::Message> {
         if model.desired {
             Subscriptions::one(Subscription::source_with(
-                &self.stream,
+                &config.stream,
                 SubscriptionId::new("stream"),
-                self.descriptor.clone(),
+                config.descriptor.clone(),
                 StreamMessage::Event,
             ))
         } else {
@@ -107,9 +114,9 @@ fn stream_program(
     let observe = program.effect::<ObserveStream>();
     let components = (0..count)
         .map(|index| {
-            program.component(
+            program.component::<StreamProbe>(
                 ComponentId::new(format!("stream-{index}")),
-                StreamProbe {
+                StreamProbeConfig {
                     stream: stream.clone(),
                     descriptor: descriptor.clone(),
                     observe: observe.clone(),
@@ -133,7 +140,7 @@ async fn phase6_mpsc_closure_ends_once() {
     drop(sender);
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
     let (program, _, stream) = stream_program(descriptor, 1);
-    let runtime = LiveRuntime::builder(program)
+    let runtime = Runtime::builder(program)
         .bind_mpsc(&stream, receiver)
         .bind_effect::<ObserveStream, _>(StreamObserver {
             observations: observed,
@@ -156,7 +163,7 @@ async fn phase6_mpsc_duplicate_or_reactivation_faults() {
     let (_sender, receiver) = tokio::sync::mpsc::channel::<u64>(1);
     let (observed, _observations) = tokio::sync::mpsc::unbounded_channel();
     let (program, components, stream) = stream_program(descriptor, 2);
-    let runtime = LiveRuntime::builder(program)
+    let runtime = Runtime::builder(program)
         .bind_mpsc(&stream, receiver)
         .bind_effect::<ObserveStream, _>(StreamObserver {
             observations: observed,
@@ -188,7 +195,7 @@ async fn phase6_mpsc_duplicate_or_reactivation_faults() {
     drop(sender);
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
     let (program, components, stream) = stream_program(descriptor, 1);
-    let runtime = LiveRuntime::builder(program)
+    let runtime = Runtime::builder(program)
         .bind_mpsc(&stream, receiver)
         .bind_effect::<ObserveStream, _>(StreamObserver {
             observations: observed,
@@ -256,21 +263,28 @@ enum TcpMessage {
     Observed,
 }
 
-struct TcpProbe {
+struct TcpProbe;
+
+struct TcpProbeConfig {
     tcp: TcpBytes,
     source: SourceCapability<TcpBytes>,
     observe: EffectCapability<ObserveTcp>,
 }
 
 impl Component for TcpProbe {
+    type Config = TcpProbeConfig;
     type Model = bool;
     type Message = TcpMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(true)
     }
 
-    fn update(&self, active: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        config: &Self::Config,
+        active: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         let observation = match message {
             TcpMessage::Event(SourceEvent::Item(bytes)) => TcpObservation::Bytes(bytes),
             TcpMessage::Event(SourceEvent::Failed(error)) => {
@@ -283,17 +297,17 @@ impl Component for TcpProbe {
             }
             TcpMessage::Observed => return Command::none(),
         };
-        Command::effect_with(&self.observe, ObserveTcp(observation), |_| {
+        Command::effect_with(&config.observe, ObserveTcp(observation), |_| {
             TcpMessage::Observed
         })
     }
 
-    fn subscriptions(&self, active: &Self::Model) -> Subscriptions<Self::Message> {
+    fn subscriptions(config: &Self::Config, active: &Self::Model) -> Subscriptions<Self::Message> {
         if *active {
             Subscriptions::one(Subscription::source_with(
-                &self.source,
+                &config.source,
                 SubscriptionId::new("tcp"),
-                self.tcp.clone(),
+                config.tcp.clone(),
                 TcpMessage::Event,
             ))
         } else {
@@ -306,9 +320,9 @@ fn tcp_program(endpoint: SocketAddr) -> (Program, ComponentRef<TcpProbe>) {
     let mut program = Program::builder();
     let source = program.source::<TcpBytes>();
     let observe = program.effect::<ObserveTcp>();
-    let probe = program.component(
+    let probe = program.component::<TcpProbe>(
         ComponentId::new("tcp-probe"),
-        TcpProbe {
+        TcpProbeConfig {
             tcp: TcpBytes::connect(endpoint),
             source,
             observe,
@@ -320,12 +334,12 @@ fn tcp_program(endpoint: SocketAddr) -> (Program, ComponentRef<TcpProbe>) {
 fn tcp_runtime(
     endpoint: SocketAddr,
 ) -> (
-    LiveRuntime,
+    Runtime,
     tokio::sync::mpsc::UnboundedReceiver<TcpObservation>,
 ) {
     let (program, _probe) = tcp_program(endpoint);
     let (observed, observations) = tokio::sync::mpsc::unbounded_channel();
-    let runtime = LiveRuntime::builder(program)
+    let runtime = Runtime::builder(program)
         .bind_tcp()
         .bind_effect::<ObserveTcp, _>(TcpObserver {
             observations: observed,

@@ -14,22 +14,29 @@ enum FaultMessage {
     Trigger,
 }
 
-struct FaultProbe {
+struct FaultProbe;
+
+struct FaultProbeConfig {
     effect: EffectCapability<DynamicallyReachedEffect>,
 }
 
 impl Component for FaultProbe {
+    type Config = FaultProbeConfig;
     type Model = ();
     type Message = FaultMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(())
     }
 
-    fn update(&self, (): &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        config: &Self::Config,
+        (): &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         match message {
             FaultMessage::Trigger => {
-                Command::effect_discarding_outcome(&self.effect, DynamicallyReachedEffect)
+                Command::effect_discarding_outcome(&config.effect, DynamicallyReachedEffect)
             }
         }
     }
@@ -39,12 +46,12 @@ impl Component for FaultProbe {
 fn live_build_rejects_later_reached_effect_without_driver() {
     let mut program = Program::builder();
     let effect = program.effect::<DynamicallyReachedEffect>();
-    let _probe = program.component(
+    let _probe = program.component::<FaultProbe>(
         ComponentId::new("host-lifecycle-fault"),
-        FaultProbe { effect },
+        FaultProbeConfig { effect },
     );
     let _trigger = FaultMessage::Trigger;
-    let error = LiveRuntime::builder(program.build().expect("valid program"))
+    let error = Runtime::builder(program.build().expect("valid program"))
         .build()
         .err()
         .expect("declared effect dependencies must be bound before spawn");
@@ -59,14 +66,19 @@ fn live_build_rejects_later_reached_effect_without_driver() {
 struct Idle;
 
 impl Component for Idle {
+    type Config = ();
     type Model = usize;
     type Message = ();
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(0)
     }
 
-    fn update(&self, count: &mut Self::Model, (): Self::Message) -> Command<Self::Message> {
+    fn update(
+        _config: &Self::Config,
+        count: &mut Self::Model,
+        (): Self::Message,
+    ) -> Command<Self::Message> {
         *count += 1;
         Command::none()
     }
@@ -86,8 +98,8 @@ async fn host_shutdown() -> Result<(), HostShutdownError> {
 async fn cancelled_run_forever_observation_preserves_owner_for_explicit_shutdown() {
     for mode in [Shutdown::Drain, Shutdown::Cancel] {
         let mut program = Program::builder();
-        let idle = program.component(ComponentId::new("host-lifecycle-idle"), Idle);
-        let runtime = LiveRuntime::builder(program.build().expect("valid program"))
+        let idle = program.component::<Idle>(ComponentId::new("host-lifecycle-idle"), ());
+        let runtime = Runtime::builder(program.build().expect("valid program"))
             .build()
             .expect("valid live runtime");
         let handle = runtime.handle(&idle).expect("live handle");
@@ -119,8 +131,8 @@ async fn cancelled_run_forever_observation_preserves_owner_for_explicit_shutdown
 async fn shutdown_requests_close_ingress_and_preserve_completed_result() {
     for mode in [Shutdown::Drain, Shutdown::Cancel] {
         let mut program = Program::builder();
-        let idle = program.component(ComponentId::new("shutdown-requests"), Idle);
-        let runtime = LiveRuntime::builder(program.build().expect("valid program"))
+        let idle = program.component::<Idle>(ComponentId::new("shutdown-requests"), ());
+        let runtime = Runtime::builder(program.build().expect("valid program"))
             .build()
             .expect("valid live runtime");
         let handle = runtime.handle(&idle).expect("live handle");
@@ -148,14 +160,15 @@ async fn shutdown_requests_close_ingress_and_preserve_completed_result() {
 struct RecurringTimer;
 
 impl Component for RecurringTimer {
+    type Config = ();
     type Model = ();
     type Message = ();
 
-    fn init(&self) -> Init<(), ()> {
+    fn init(_config: &Self::Config) -> Init<(), ()> {
         Init::new(()).with_command(Command::after(std::time::Duration::ZERO, ()))
     }
 
-    fn update(&self, (): &mut (), (): ()) -> Command<()> {
+    fn update(_config: &Self::Config, (): &mut (), (): ()) -> Command<()> {
         Command::after(std::time::Duration::from_millis(1), ())
     }
 }
@@ -163,8 +176,8 @@ impl Component for RecurringTimer {
 #[tokio::test]
 async fn shutdown_grace_period_escalates_recurring_timer_and_joins() {
     let mut program = Program::builder();
-    program.component(ComponentId::new("recurring-timer"), RecurringTimer);
-    let mut task = LiveRuntime::builder(program.build().expect("valid program"))
+    program.component::<RecurringTimer>(ComponentId::new("recurring-timer"), ());
+    let mut task = Runtime::builder(program.build().expect("valid program"))
         .build()
         .expect("valid runtime")
         .spawn();

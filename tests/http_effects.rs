@@ -58,25 +58,33 @@ enum HttpMessage {
     Observed,
 }
 
-struct HttpSequence {
+struct HttpSequence;
+
+struct HttpSequenceConfig {
     http: EffectCapability<HttpRequest>,
     observe: EffectCapability<ObserveHttp>,
     requests: Vec<HttpRequest>,
 }
 
 impl Component for HttpSequence {
+    type Config = HttpSequenceConfig;
     type Model = HttpModel;
     type Message = HttpMessage;
 
-    fn init(&self) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(HttpModel::default())
     }
 
-    fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message> {
+    fn update(
+        config: &Self::Config,
+        model: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message> {
         match message {
             HttpMessage::Start => Command::effect_with(
-                &self.http,
-                self.requests
+                &config.http,
+                config
+                    .requests
                     .first()
                     .expect("nonempty test sequence")
                     .clone(),
@@ -88,10 +96,10 @@ impl Component for HttpSequence {
                     EffectOutcome::Failed(error) => SeenHttp::Error(error),
                     EffectOutcome::Cancelled(_) => SeenHttp::Cancelled,
                 });
-                if let Some(request) = self.requests.get(model.seen.len()) {
-                    Command::effect_with(&self.http, request.clone(), HttpMessage::Finished)
+                if let Some(request) = config.requests.get(model.seen.len()) {
+                    Command::effect_with(&config.http, request.clone(), HttpMessage::Finished)
                 } else {
-                    Command::effect_with(&self.observe, ObserveHttp(model.seen.clone()), |_| {
+                    Command::effect_with(&config.observe, ObserveHttp(model.seen.clone()), |_| {
                         HttpMessage::Observed
                     })
                 }
@@ -127,9 +135,9 @@ fn http_program(requests: Vec<HttpRequest>) -> (Program, ComponentRef<HttpSequen
     let mut builder = Program::builder();
     let http = builder.effect::<HttpRequest>();
     let observe = builder.effect::<ObserveHttp>();
-    let probe = builder.component(
+    let probe = builder.component::<HttpSequence>(
         ComponentId::new("http-sequence"),
-        HttpSequence {
+        HttpSequenceConfig {
             http,
             observe,
             requests,
@@ -318,7 +326,7 @@ async fn live_http_preserves_raw_status_and_reuses_one_client_pool() {
     let second = HttpRequest::get(format!("http://{endpoint}/redirect"));
     let (program, probe) = http_program(vec![first, second]);
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
-    let runtime = LiveRuntime::builder(program)
+    let runtime = Runtime::builder(program)
         .bind_http()
         .bind_effect::<ObserveHttp, _>(HttpObserver {
             observations: observed,
@@ -402,7 +410,7 @@ async fn live_http_preserves_raw_status_and_reuses_one_client_pool() {
 async fn invalid_live_http_configuration_is_a_typed_effect_failure() {
     let (program, probe) = http_program(vec![HttpRequest::get("not a URL")]);
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
-    let runtime = LiveRuntime::builder(program)
+    let runtime = Runtime::builder(program)
         .bind_http()
         .bind_effect::<ObserveHttp, _>(HttpObserver {
             observations: observed,
@@ -438,7 +446,7 @@ async fn live_http_eof_is_a_typed_transport_failure() {
     let request = HttpRequest::get(format!("http://{endpoint}/closed"));
     let (program, probe) = http_program(vec![request]);
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
-    let runtime = LiveRuntime::builder(program)
+    let runtime = Runtime::builder(program)
         .bind_http()
         .bind_effect::<ObserveHttp, _>(HttpObserver {
             observations: observed,
@@ -484,7 +492,7 @@ impl EffectDriver<HttpRequest> for DuplicateHttpDriver {
 fn bind_http_participates_in_normal_duplicate_binding_validation() {
     let (program, _) = http_program(vec![HttpRequest::get("https://example.test")]);
     assert!(
-        LiveRuntime::builder(program)
+        Runtime::builder(program)
             .bind_http()
             .bind_effect::<HttpRequest, _>(DuplicateHttpDriver)
             .build()

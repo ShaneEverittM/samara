@@ -7,7 +7,7 @@
 //! changes the model, and returns a [`Command`] describing what to do next.
 //! [`Subscription`]s describe inputs the component wants to keep receiving.
 //!
-//! Use [`LiveRuntime`] to run the application with I/O. Use [`ControlledRuntime`]
+//! Use [`Runtime`] to run the application with I/O. Use [`ControlledRuntime`]
 //! to supply inputs and results yourself, and advance time without waiting.
 //! Both run the same component code.
 //!
@@ -20,14 +20,15 @@
 //! enum Message { Add(u64) }
 //!
 //! impl Component for Counter {
+//!     type Config = ();
 //!     type Model = u64;
 //!     type Message = Message;
 //!
-//!     fn init(&self) -> Init<u64, Message> {
+//!     fn init(_config: &Self::Config) -> Init<u64, Message> {
 //!         Init::new(0)
 //!     }
 //!
-//!     fn update(&self, count: &mut u64, message: Message) -> Command<Message> {
+//!     fn update(_config: &Self::Config, count: &mut u64, message: Message) -> Command<Message> {
 //!         match message {
 //!             Message::Add(amount) => *count += amount,
 //!         }
@@ -36,7 +37,7 @@
 //! }
 //!
 //! let mut builder = Program::builder();
-//! let counter = builder.component(ComponentId::new("counter"), Counter);
+//! let counter = builder.component::<Counter>(ComponentId::new("counter"), ());
 //! let mut runtime = ControlledRuntime::builder(builder.build()?).build()?;
 //! runtime.send(&counter, Message::Add(3))?;
 //! runtime.run_until_idle()?;
@@ -50,7 +51,7 @@
 //! - [`StdinLines`]: connect a component to input, with live and controlled examples.
 //! - [`Command`]: request work, send messages, and schedule timers.
 //! - [`HttpRequest`]: fetch a URL and handle its response.
-//! - [`ProgramBuilder::bind_port`]: connect components through a shared protocol.
+//! - [`ProgramBuilder::connect`]: connect components through a Port.
 //! - [`EffectDriver`] and [`SourceDriver`]: implement your own I/O.
 //! - [`RuntimeTask`]: shut down a running application and wait for cleanup.
 //!
@@ -75,9 +76,12 @@ use std::{
     time::Duration,
 };
 
+mod clock;
 mod component_kernel;
 mod controlled_runtime;
 mod declarative_work;
+#[cfg(feature = "fs")]
+mod fs;
 mod http_redirect;
 mod live_runtime;
 
@@ -93,6 +97,11 @@ use controlled_runtime::ControlledCore;
 /// assert!(status.is_success());
 /// assert_eq!(status.as_u16(), 200);
 /// ```
+pub use clock::{ReadSystemTime, SystemClockDriver};
+#[cfg(feature = "fs")]
+pub use fs::{
+    AppendToFile, FsDriver, FsError, FsErrorKind, FsOperation, ReadFile, RemoveFile, ReplaceFile,
+};
 pub use http::StatusCode;
 
 /// Common types and traits for writing components and building runtimes.
@@ -107,19 +116,25 @@ pub use http::StatusCode;
 /// to distinguish them from Rust's immediate I/O macros.
 pub mod prelude {
     pub use crate::{
-        BoxFuture, CancelReason, Command, Component, ComponentHandle, ComponentId, ComponentRef,
-        ControlledRuntime, Decoder, DriverStopped, EffectCapability, EffectDescriptor,
-        EffectDriver, EffectInvocation, EffectOutcome, EffectOutcomeKind, Framed, FramedError,
-        FramedLayer, HttpError, HttpErrorKind, HttpJsonError, HttpRequest, HttpResponse,
-        HttpResponseError, HttpStatusError, Init, LiveRuntime, LogicalTime, Notification,
-        PendingEffect, PendingWork, Port, PortHandle, PortId, PrintStderr, PrintStdout, Program,
-        ProgramBuildError, ProgramBuilder, Protocol, ReplyTo, Request, RequestError,
-        RequestInvocation, RequestOutcome, RequestOutcomeKind, RunReport, RuntimeError,
-        RuntimeTask, Shutdown, ShutdownReport, SourceCapability, SourceDescriptor, SourceDriver,
-        SourceEvent, SourceEventKind, SourceSink, StatusCode, StdinError, StdinErrorKind,
-        StdinLines, StreamDescriptor, Subscription, SubscriptionAction, SubscriptionId,
-        Subscriptions, TcpBytes, TcpError, TcpErrorKind, TraceCommandKind, TraceEvent, TraceId,
-        TraceRecord, protocol,
+        Addressable, Assembly, BoxFuture, CancelReason, Command, Component, ComponentHandle,
+        ComponentId, ComponentRef, Connector, ControlledRuntime, ControlledRuntimeBuilder, Decoder,
+        DriverStopped, Drivers, Effect, EffectCapability, EffectDescriptor, EffectDriver,
+        EffectInvocation, EffectOutcome, EffectOutcomeKind, Framed, FramedError, FramedLayer,
+        HttpError, HttpErrorKind, HttpJsonError, HttpRequest, HttpResponse, HttpResponseError,
+        HttpStatusError, Init, InstalledAssembly, LogicalTime, PendingEffect, PendingWork, Port,
+        PortHandle, PortId, PrintStderr, PrintStdout, Program, ProgramBuildError, ProgramBuilder,
+        ReadSystemTime, ReplyWith, RequestError, RequestIntent, RequestOutcome, RequestOutcomeKind,
+        Requirements, RunReport, Runtime, RuntimeBuilder, RuntimeError, RuntimeTask, Shutdown,
+        ShutdownReport, Source, SourceCapability, SourceDescriptor, SourceDriver, SourceEvent,
+        SourceEventKind, SourceSink, StatusCode, StdinError, StdinErrorKind, StdinLines,
+        StreamDescriptor, Subscription, SubscriptionAction, SubscriptionId, Subscriptions,
+        SystemClockDriver, TcpBytes, TcpError, TcpErrorKind, TraceCommandKind, TraceEvent, TraceId,
+        TraceRecord, VendorsDrivers, WithAssembly,
+    };
+    #[cfg(feature = "fs")]
+    pub use crate::{
+        AppendToFile, FsDriver, FsError, FsErrorKind, FsOperation, ReadFile, RemoveFile,
+        ReplaceFile,
     };
 }
 
@@ -127,7 +142,7 @@ pub mod prelude {
 ///
 /// Return it from `update`, or include it in a [`Command::batch`], to request the
 /// write. Construction does no I/O. Writing schedules no response message and
-/// ignores I/O errors. Bind output with [`LiveRuntimeBuilder::bind_stdio`].
+/// ignores I/O errors. Bind output with [`RuntimeBuilder::bind_stdio`].
 ///
 /// ```
 /// use samara::{Command, PrintStdout, Program};
@@ -156,7 +171,7 @@ macro_rules! print {
 ///
 /// Return it from `update`, or include it in a [`Command::batch`], to request the
 /// write. Construction does no I/O. Writing schedules no response message and
-/// ignores I/O errors. Bind output with [`LiveRuntimeBuilder::bind_stdio`].
+/// ignores I/O errors. Bind output with [`RuntimeBuilder::bind_stdio`].
 ///
 /// ```
 /// use samara::{Command, PrintStdout, Program};
@@ -185,7 +200,7 @@ macro_rules! println {
 ///
 /// Return it from `update`, or include it in a [`Command::batch`], to request the
 /// write. Construction does no I/O. Writing schedules no response message and
-/// ignores I/O errors. Bind output with [`LiveRuntimeBuilder::bind_stdio`].
+/// ignores I/O errors. Bind output with [`RuntimeBuilder::bind_stdio`].
 ///
 /// ```
 /// use samara::{Command, PrintStderr, Program};
@@ -214,7 +229,7 @@ macro_rules! eprint {
 ///
 /// Return it from `update`, or include it in a [`Command::batch`], to request the
 /// write. Construction does no I/O. Writing schedules no response message and
-/// ignores I/O errors. Bind output with [`LiveRuntimeBuilder::bind_stdio`].
+/// ignores I/O errors. Bind output with [`RuntimeBuilder::bind_stdio`].
 ///
 /// ```
 /// use samara::{Command, PrintStderr, Program};
@@ -269,9 +284,9 @@ impl ComponentId {
     }
 }
 
-/// The name of a protocol connection within a Program.
+/// The name of a Port within a Program.
 ///
-/// A port is identified by its protocol type and name. Use different names for
+/// A port is identified by its message type and name. Use different names for
 /// two providers of the same protocol, such as `"primary"` and `"fallback"`.
 ///
 /// ```
@@ -701,33 +716,36 @@ where
     }
 }
 
-/// A part of an application with its own state and messages.
+/// A kind of part of an application, with its own configuration, state, and messages.
 ///
-/// Put changing application state in `Model`. Keep configuration, capabilities,
-/// and ports on the component itself. Samara owns the model and calls `update`
-/// for each message, never overlapping updates to the same component.
+/// The type you implement `Component` on is only a name for the kind. Its
+/// immutable configuration, such as capabilities and ports, is a separate
+/// `Config` value supplied at registration. Its changing application state is
+/// the `Model`, which Samara owns. Samara calls `update` for each message, never
+/// overlapping updates to the same component.
 ///
-/// All three methods must be deterministic and free of I/O, blocking, locks, and
-/// clock reads. Return commands and subscriptions to request work.
+/// All three functions must be deterministic and free of I/O, blocking, locks,
+/// and clock reads. Return commands and subscriptions to request work.
 ///
 /// ```
 /// use samara::prelude::*;
 /// struct Counter;
 /// impl Component for Counter {
+///     type Config = ();
 ///     type Model = u64;
 ///     type Message = u64;
-///     fn init(&self) -> Init<u64, u64> { Init::new(0) }
-///     fn update(&self, count: &mut u64, amount: u64) -> Command<u64> {
+///     fn init(_: &()) -> Init<u64, u64> { Init::new(0) }
+///     fn update(_: &(), count: &mut u64, amount: u64) -> Command<u64> {
 ///         *count += amount;
 ///         Command::none()
 ///     }
 /// }
-/// let mut model = Counter.init().model;
-/// assert!(Counter.update(&mut model, 3).is_none());
+/// let mut model = Counter::init(&()).model;
+/// assert!(Counter::update(&(), &mut model, 3).is_none());
 /// assert_eq!(model, 3);
 /// ```
 ///
-/// See [`StdinLines`] for subscriptions and [`ProgramBuilder::bind_port`] for
+/// See [`StdinLines`] for subscriptions and [`ProgramBuilder::connect`] for
 /// communication between components.
 ///
 /// <details>
@@ -739,94 +757,52 @@ where
 /// struct OtherMessage;
 ///
 /// fn deliver_wrong_type<C: Component>(
-///     component: &C,
+///     config: &C::Config,
 ///     model: &mut C::Model,
 ///     message: OtherMessage,
 /// ) -> Command<C::Message> {
-///     component.update(model, message)
+///     C::update(config, model, message)
 /// }
 /// ```
 ///
 /// </details>
-pub trait Component: Send + 'static {
+pub trait Component: 'static {
+    /// This component's immutable configuration: capabilities, ports, and settings.
+    ///
+    /// Use `()` when there is none. Samara stores one value per registered
+    /// component and passes it to every function by shared reference.
+    type Config: Send + 'static;
     /// This component's mutable application state.
     type Model: Send + 'static;
     /// Messages this component handles in `update`.
     type Message: Send + 'static;
 
     /// Creates the starting model and optional startup work. Called when the component is registered.
-    fn init(&self) -> Init<Self::Model, Self::Message>;
+    fn init(config: &Self::Config) -> Init<Self::Model, Self::Message>;
 
     /// Handles one message, updates the model, and returns the next actions.
     ///
     /// Use [`Command::none`] when no work is needed. Do not perform I/O here.
-    fn update(&self, model: &mut Self::Model, message: Self::Message) -> Command<Self::Message>;
+    fn update(
+        config: &Self::Config,
+        model: &mut Self::Model,
+        message: Self::Message,
+    ) -> Command<Self::Message>;
 
     /// Returns the inputs this component wants for the current model.
     ///
     /// Called for the initial model and after each update. Samara starts new inputs,
     /// keeps unchanged ones, and stops those omitted from the returned set.
     /// The default returns no subscriptions. See [`Subscription`] for comparison rules.
-    fn subscriptions(&self, _model: &Self::Model) -> Subscriptions<Self::Message> {
+    fn subscriptions(_config: &Self::Config, _model: &Self::Model) -> Subscriptions<Self::Message> {
         Subscriptions::none()
     }
 }
 
-/// Defines the messages that can be sent through a [`Port`].
-///
-/// A protocol lets callers use a service without depending on its component's
-/// message type. The provider implements `From<P::Message>` for its own message
-/// type. Use [`protocol!`] to generate request and notification types, or define
-/// them yourself. See [`ProgramBuilder::bind_port`] for a complete example.
-pub trait Protocol: Send + Sync + 'static {
-    /// Messages accepted by a provider of this protocol.
-    type Message: Send + 'static;
-}
-
-/// A message sent through a [`Port`] without expecting a reply.
-///
-/// `into_message` must be a pure conversion. [`protocol!`] generates this
-/// implementation for entries without `-> Reply`.
-///
-/// ```
-/// use samara::prelude::*;
-/// protocol! { type Alerts => enum AlertMessage { Changed(String), } }
-/// let mut program = Program::builder();
-/// let alerts = program.port::<Alerts>(PortId::new("alerts"));
-/// let command: Command<()> = Command::notify(alerts, Changed("ready".into()));
-/// assert_eq!(command.notification_intents::<Changed>().len(), 1);
-/// ```
-pub trait Notification<P: Protocol>: Send + 'static {
-    /// Converts this notification to a protocol message.
-    fn into_message(self) -> P::Message;
-}
-
-/// A message sent through a [`Port`] that expects a reply of type `Reply`.
-///
-/// `into_message` packages the request with the reply token; it must not perform
-/// I/O. [`protocol!`] generates this implementation for entries with `-> Reply`.
-/// Use [`Command::request_with`] to receive the reply in your component.
-///
-/// ```
-/// use samara::prelude::*;
-/// protocol! { type Catalog => enum CatalogMessage { Lookup(String) -> Option<u64>, } }
-/// let mut program = Program::builder();
-/// let catalog = program.port::<Catalog>(PortId::new("catalog"));
-/// let command = Command::request_with(catalog, Lookup("widget".into()), |outcome| outcome);
-/// assert_eq!(command.request_intents::<Lookup>().len(), 1);
-/// ```
-pub trait Request<P: Protocol>: Send + 'static {
-    /// The value returned in response to this request.
-    type Reply: Send + 'static;
-
-    /// Packages this request and its reply token in a protocol message.
-    fn into_message(self, reply_to: ReplyTo<Self::Reply>) -> P::Message;
-}
-
 /// The reply or timeout delivered to a request's caller.
 ///
-/// Requests have no timeout unless you use [`Command::request_timeout`] or
-/// [`PortHandle::request_timeout`]. A timeout leaves the provider's work running
+/// Requests have no timeout unless you use [`Command::request_to_timeout`] or
+/// [`PortHandle::request_to_timeout`]. A timeout leaves the provider's work running
 /// and discards its later reply. Runtime cancellation does not send this value
 /// to a component. `Failed` and `Cancelled` are not produced by the built-in
 /// request implementation.
@@ -871,23 +847,23 @@ pub enum RequestError {
 /// the request: the caller keeps waiting until its timeout or runtime shutdown.
 /// An unanswered request without a timeout can keep [`Shutdown::Drain`] waiting.
 ///
-/// See [`ProgramBuilder::bind_port`] for a provider that returns a reply.
+/// See [`ProgramBuilder::connect`] for a provider that returns a reply.
 ///
 /// <details>
 /// <summary>Compile-time checks</summary>
 ///
 /// ```compile_fail
 /// #![deny(unused_must_use)]
-/// use samara::ReplyTo;
+/// use samara::ReplyWith;
 ///
-/// fn discard(reply_to: ReplyTo<()>) {
-///     reply_to;
+/// fn discard(reply_with: ReplyWith<()>) {
+///     reply_with;
 /// }
 /// ```
 ///
 /// </details>
-#[must_use = "a ReplyTo must be consumed by Command::reply"]
-pub struct ReplyTo<Reply> {
+#[must_use = "a ReplyWith must be consumed by Command::reply"]
+pub struct ReplyWith<Reply> {
     token: Arc<RequestToken>,
     marker: PhantomData<fn(Reply)>,
 }
@@ -910,6 +886,14 @@ impl RequestToken {
         })
     }
 
+    /// A token no runtime issued and none will honor: already expired and
+    /// belonging to no Program. Used to build messages for inspection.
+    fn inert() -> Arc<Self> {
+        let token = Self::new(0, Arc::new(()));
+        token.expire();
+        token
+    }
+
     fn expire(&self) {
         self.expired.store(true, Ordering::Relaxed);
     }
@@ -919,7 +903,7 @@ impl RequestToken {
     }
 }
 
-impl<Reply> ReplyTo<Reply> {
+impl<Reply> ReplyWith<Reply> {
     #[cfg(test)]
     fn sketch(correlation: u64) -> Self {
         Self::runtime(RequestToken::new(correlation, Arc::new(())))
@@ -933,322 +917,13 @@ impl<Reply> ReplyTo<Reply> {
     }
 }
 
-impl<Reply> fmt::Debug for ReplyTo<Reply> {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.debug_tuple("ReplyTo").field(&"<opaque>").finish()
-    }
-}
-
-/// A received request and the token used to answer it.
-///
-/// Read `request` and return [`Command::reply`] with `reply_to`.
-/// See [`ProgramBuilder::bind_port`] for a complete provider example.
-pub struct RequestInvocation<P, R>
-where
-    P: Protocol,
-    R: Request<P>,
-{
-    /// The request arguments.
-    pub request: R,
-    /// The token to pass to [`Command::reply`].
-    pub reply_to: ReplyTo<R::Reply>,
-    protocol: PhantomData<fn() -> P>,
-}
-
-impl<P, R> RequestInvocation<P, R>
-where
-    P: Protocol,
-    R: Request<P>,
-{
-    /// Packages a request and its reply token inside [`Request::into_message`].
-    pub fn new(request: R, reply_to: ReplyTo<R::Reply>) -> Self {
-        Self {
-            request,
-            reply_to,
-            protocol: PhantomData,
-        }
-    }
-}
-
-impl<P, R> fmt::Debug for RequestInvocation<P, R>
-where
-    P: Protocol,
-    R: Request<P> + fmt::Debug,
-{
+impl<Reply> fmt::Debug for ReplyWith<Reply> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("RequestInvocation")
-            .field("request", &self.request)
-            .field("reply_to", &self.reply_to)
+            .debug_tuple("ReplyWith")
+            .field(&"<opaque>")
             .finish()
     }
-}
-
-/// Defines a protocol and its request and notification types.
-///
-/// Entries with `-> Reply` generate a [`Request`]; other entries generate a
-/// [`Notification`]. Each entry is a unit type or has one tuple field. Use
-/// `-> ()` for a request whose reply has no data.
-///
-/// ```
-/// use samara::prelude::*;
-/// protocol! {
-///     pub type Health => enum HealthMessage {
-///         Changed(String),
-///         Disconnected,
-///         Read -> bool,
-///     }
-/// }
-/// let mut program = Program::builder();
-/// let health = program.port::<Health>(PortId::new("health"));
-/// let command = Command::request_with(health, Read, |outcome| outcome);
-/// assert_eq!(command.request_intents::<Read>().len(), 1);
-/// ```
-///
-/// The generated message enum carries a notification's field directly, or a
-/// [`RequestInvocation`] for a request. All generated types implement `Debug`.
-/// Per-operation attributes, generics, and multiple fields are not supported;
-/// implement [`Protocol`], [`Request`], and [`Notification`] yourself for those cases.
-#[macro_export]
-macro_rules! protocol {
-    (
-        $(#[$protocol_attr:meta])*
-        $visibility:vis type $protocol:ident => enum $message:ident {
-            $($entries:tt)*
-        }
-    ) => {
-        $crate::protocol! {
-            @parse
-            [$(#[$protocol_attr])*]
-            [$visibility]
-            [$protocol]
-            [$message]
-            []
-            []
-            []
-            $($entries)*
-        }
-    };
-
-    // Finishes the TT muncher after accumulating generated operation items,
-    // protocol-message variants, and trait implementations. Building the complete enum
-    // here avoids relying on nested macros to expand to individual variants.
-    (
-        @parse
-        [$(#[$protocol_attr:meta])*]
-        [$visibility:vis]
-        [$protocol:ident]
-        [$message:ident]
-        [$($operation_items:tt)*]
-        [$($message_variants:tt)*]
-        [$($implementations:tt)*]
-    ) => {
-        $(#[$protocol_attr])*
-        $visibility struct $protocol;
-
-        impl $crate::Protocol for $protocol {
-            type Message = $message;
-        }
-
-        $($operation_items)*
-
-        #[doc = concat!("Messages accepted by providers of `", stringify!($protocol), "`.")]
-        #[derive(Debug)]
-        $visibility enum $message {
-            $($message_variants)*
-        }
-
-        $($implementations)*
-    };
-
-    // A payload-carrying request generates a tuple operation type, while its
-    // protocol-message variant carries the operation plus correlation token.
-    (
-        @parse
-        [$($protocol_attr:tt)*]
-        [$visibility:vis]
-        [$protocol:ident]
-        [$message:ident]
-        [$($operation_items:tt)*]
-        [$($message_variants:tt)*]
-        [$($implementations:tt)*]
-        $operation:ident($payload:ty) -> $reply:ty,
-        $($remaining:tt)*
-    ) => {
-        $crate::protocol! {
-            @parse
-            [$($protocol_attr)*]
-            [$visibility]
-            [$protocol]
-            [$message]
-            [
-                $($operation_items)*
-                #[doc = concat!("Request arguments for `", stringify!($protocol), "`.")]
-                #[derive(Debug)]
-                $visibility struct $operation(
-                    #[doc = "Request payload."]
-                    $visibility $payload
-                );
-            ]
-            [
-                $($message_variants)*
-                #[doc = concat!("Request `", stringify!($operation), "`.")]
-                $operation($crate::RequestInvocation<$protocol, $operation>),
-            ]
-            [
-                $($implementations)*
-                impl $crate::Request<$protocol> for $operation {
-                    type Reply = $reply;
-
-                    fn into_message(
-                        self,
-                        reply_to: $crate::ReplyTo<Self::Reply>,
-                    ) -> $message {
-                        $message::$operation($crate::RequestInvocation::new(self, reply_to))
-                    }
-                }
-            ]
-            $($remaining)*
-        }
-    };
-
-    // A unit request still has a tuple protocol-message variant because
-    // `RequestInvocation`
-    // carries the runtime-created reply authority.
-    (
-        @parse
-        [$($protocol_attr:tt)*]
-        [$visibility:vis]
-        [$protocol:ident]
-        [$message:ident]
-        [$($operation_items:tt)*]
-        [$($message_variants:tt)*]
-        [$($implementations:tt)*]
-        $operation:ident -> $reply:ty,
-        $($remaining:tt)*
-    ) => {
-        $crate::protocol! {
-            @parse
-            [$($protocol_attr)*]
-            [$visibility]
-            [$protocol]
-            [$message]
-            [
-                $($operation_items)*
-                #[doc = concat!("Request without arguments for `", stringify!($protocol), "`.")]
-                #[derive(Debug)]
-                $visibility struct $operation;
-            ]
-            [
-                $($message_variants)*
-                #[doc = concat!("Request `", stringify!($operation), "`.")]
-                $operation($crate::RequestInvocation<$protocol, $operation>),
-            ]
-            [
-                $($implementations)*
-                impl $crate::Request<$protocol> for $operation {
-                    type Reply = $reply;
-
-                    fn into_message(
-                        self,
-                        reply_to: $crate::ReplyTo<Self::Reply>,
-                    ) -> $message {
-                        $message::$operation($crate::RequestInvocation::new(self, reply_to))
-                    }
-                }
-            ]
-            $($remaining)*
-        }
-    };
-
-    // A payload notification is flattened in the provider-facing enum: the
-    // generated operation is the sender-side value, not another wrapper layer.
-    (
-        @parse
-        [$($protocol_attr:tt)*]
-        [$visibility:vis]
-        [$protocol:ident]
-        [$message:ident]
-        [$($operation_items:tt)*]
-        [$($message_variants:tt)*]
-        [$($implementations:tt)*]
-        $operation:ident($payload:ty),
-        $($remaining:tt)*
-    ) => {
-        $crate::protocol! {
-            @parse
-            [$($protocol_attr)*]
-            [$visibility]
-            [$protocol]
-            [$message]
-            [
-                $($operation_items)*
-                #[doc = concat!("Notification arguments for `", stringify!($protocol), "`.")]
-                #[derive(Debug)]
-                $visibility struct $operation(
-                    #[doc = "Notification payload."]
-                    $visibility $payload
-                );
-            ]
-            [
-                $($message_variants)*
-                #[doc = concat!("Notification `", stringify!($operation), "`.")]
-                $operation($payload),
-            ]
-            [
-                $($implementations)*
-                impl $crate::Notification<$protocol> for $operation {
-                    fn into_message(self) -> $message {
-                        let $operation(payload) = self;
-                        $message::$operation(payload)
-                    }
-                }
-            ]
-            $($remaining)*
-        }
-    };
-
-    // A unit notification becomes a unit protocol-message variant.
-    (
-        @parse
-        [$($protocol_attr:tt)*]
-        [$visibility:vis]
-        [$protocol:ident]
-        [$message:ident]
-        [$($operation_items:tt)*]
-        [$($message_variants:tt)*]
-        [$($implementations:tt)*]
-        $operation:ident,
-        $($remaining:tt)*
-    ) => {
-        $crate::protocol! {
-            @parse
-            [$($protocol_attr)*]
-            [$visibility]
-            [$protocol]
-            [$message]
-            [
-                $($operation_items)*
-                #[doc = concat!("Notification without arguments for `", stringify!($protocol), "`.")]
-                #[derive(Debug)]
-                $visibility struct $operation;
-            ]
-            [
-                $($message_variants)*
-                #[doc = concat!("Notification `", stringify!($operation), "`.")]
-                $operation,
-            ]
-            [
-                $($implementations)*
-                impl $crate::Notification<$protocol> for $operation {
-                    fn into_message(self) -> $message {
-                        $message::$operation
-                    }
-                }
-            ]
-            $($remaining)*
-        }
-    };
 }
 
 trait ErasedEffectCommand<Message>: Send {
@@ -1353,108 +1028,82 @@ where
 }
 
 trait ErasedSendCommand: Send {
-    fn target(&self) -> &ComponentId;
-    fn target_program(&self) -> &Arc<()>;
-    fn message_type_id(&self) -> TypeId;
+    fn target(&self) -> MessageTarget<'_>;
     fn message_type_name(&self) -> &'static str;
+    fn message(&self) -> &dyn Any;
     fn into_message(self: Box<Self>) -> Box<dyn Any + Send>;
 }
 
-struct SendTo<C: Component> {
-    target: ComponentRef<C>,
-    message: C::Message,
+struct SendTo<M: Send + 'static> {
+    address: Address<M>,
+    message: M,
 }
 
-impl<C: Component> ErasedSendCommand for SendTo<C> {
-    fn target(&self) -> &ComponentId {
-        self.target.id()
-    }
-
-    fn target_program(&self) -> &Arc<()> {
-        &self.target.program
+impl<M: Send + 'static> ErasedSendCommand for SendTo<M> {
+    fn target(&self) -> MessageTarget<'_> {
+        self.address.target()
     }
 
     fn message_type_name(&self) -> &'static str {
-        std::any::type_name::<C::Message>()
+        self.address.message_type_name()
     }
 
-    fn message_type_id(&self) -> TypeId {
-        TypeId::of::<C::Message>()
-    }
-
-    fn into_message(self: Box<Self>) -> Box<dyn Any + Send> {
-        Box::new(self.message)
-    }
-}
-
-trait ErasedNotificationCommand: Send {
-    fn port(&self) -> &PortId;
-    fn port_program(&self) -> &Arc<()>;
-    fn notification(&self) -> &dyn Any;
-    fn notification_type_name(&self) -> &'static str;
-    fn protocol_type_id(&self) -> TypeId;
-    fn protocol_type_name(&self) -> &'static str;
-    fn into_message(self: Box<Self>) -> Box<dyn Any + Send>;
-}
-
-struct Notify<P, N>
-where
-    P: Protocol,
-    N: Notification<P>,
-{
-    port: Port<P>,
-    notification: N,
-}
-
-impl<P, N> ErasedNotificationCommand for Notify<P, N>
-where
-    P: Protocol,
-    N: Notification<P>,
-{
-    fn port(&self) -> &PortId {
-        self.port.id()
-    }
-
-    fn port_program(&self) -> &Arc<()> {
-        &self.port.program
-    }
-
-    fn notification(&self) -> &dyn Any {
-        &self.notification
-    }
-
-    fn notification_type_name(&self) -> &'static str {
-        std::any::type_name::<N>()
-    }
-
-    fn protocol_type_id(&self) -> TypeId {
-        TypeId::of::<P>()
-    }
-
-    fn protocol_type_name(&self) -> &'static str {
-        std::any::type_name::<P>()
+    fn message(&self) -> &dyn Any {
+        &self.message
     }
 
     fn into_message(self: Box<Self>) -> Box<dyn Any + Send> {
-        Box::new(self.notification.into_message())
+        let Self { address, message } = *self;
+        address.into_message(message)
     }
+}
+
+/// Where a send or request Command is addressed: a Port resolved through its
+/// binding at interpretation, or a Connector that already names the provider.
+pub(crate) enum MessageTarget<'a> {
+    Port {
+        id: &'a PortId,
+        program: &'a Arc<()>,
+        protocol: TypeId,
+    },
+    Connector {
+        id: &'a ComponentId,
+        program: &'a Arc<()>,
+        message_type: TypeId,
+        message_type_name: &'static str,
+    },
+}
+
+/// A target the runtime has validated, ready to address a message.
+pub(crate) enum MessageRoute {
+    Binding(usize),
+    Direct {
+        target: ComponentId,
+        message_type: TypeId,
+        message_type_name: &'static str,
+    },
 }
 
 trait ErasedRequestCommand<Message>: Send {
-    fn port(&self) -> &PortId;
-    fn port_program(&self) -> &Arc<()>;
-    fn request(&self) -> &dyn Any;
+    fn target(&self) -> MessageTarget<'_>;
+    /// The request value for a Port-addressed request; a Connector-addressed request
+    /// builds its message from the reply token and has none to inspect.
+    fn request(&self) -> Option<&dyn Any>;
     fn timeout(&self) -> Option<Duration>;
     fn request_type_name(&self) -> &'static str;
     fn reply_type_name(&self) -> &'static str;
     fn reply_type_id(&self) -> TypeId;
-    fn protocol_type_id(&self) -> TypeId;
-    fn protocol_type_name(&self) -> &'static str;
     fn mapper_type_name(&self) -> &'static str;
     fn into_parts(
         self: Box<Self>,
         token: Arc<RequestToken>,
     ) -> (Box<dyn Any + Send>, ErasedRequestMapper<Message>);
+    /// For an addressed request, the message type the sender spelled, before
+    /// any Connector conversion.
+    fn addressed_message_type(&self) -> Option<TypeId>;
+    /// Builds the message with an inert reply token for inspection in tests.
+    /// Only meaningful when `addressed_message_type` is `Some`.
+    fn into_inspection(self: Box<Self>) -> (Box<dyn Any + Send>, ErasedRequestMapper<Message>);
 }
 
 type ErasedRequestMapper<Message> =
@@ -1475,34 +1124,31 @@ fn typed_request_outcome<Reply: Send + 'static>(
     }
 }
 
-struct RequestCommand<P, R, Map>
-where
-    P: Protocol,
-    R: Request<P>,
-{
-    port: Port<P>,
-    request: R,
+/// A request addressed to a Port, Connector, or ComponentRef. The message is
+/// built from the reply token by a constructor the provider published, which
+/// is what fixes the reply type.
+struct AddressedRequest<M: Send + 'static, R, Build, Map> {
+    address: Address<M>,
+    build: Build,
     timeout: Option<Duration>,
     map: Map,
+    reply: PhantomData<fn(R)>,
 }
 
-impl<Message, P, R, Map> ErasedRequestCommand<Message> for RequestCommand<P, R, Map>
+impl<Message, M, R, Build, Map> ErasedRequestCommand<Message> for AddressedRequest<M, R, Build, Map>
 where
     Message: Send + 'static,
-    P: Protocol,
-    R: Request<P>,
-    Map: FnOnce(RequestOutcome<R::Reply>) -> Message + Send + 'static,
+    M: Send + 'static,
+    R: Send + 'static,
+    Build: FnOnce(ReplyWith<R>) -> M + Send + 'static,
+    Map: FnOnce(RequestOutcome<R>) -> Message + Send + 'static,
 {
-    fn port(&self) -> &PortId {
-        self.port.id()
+    fn target(&self) -> MessageTarget<'_> {
+        self.address.target()
     }
 
-    fn port_program(&self) -> &Arc<()> {
-        &self.port.program
-    }
-
-    fn request(&self) -> &dyn Any {
-        &self.request
+    fn request(&self) -> Option<&dyn Any> {
+        None
     }
 
     fn timeout(&self) -> Option<Duration> {
@@ -1510,23 +1156,15 @@ where
     }
 
     fn request_type_name(&self) -> &'static str {
-        std::any::type_name::<R>()
+        std::any::type_name::<M>()
     }
 
     fn reply_type_name(&self) -> &'static str {
-        std::any::type_name::<R::Reply>()
+        std::any::type_name::<R>()
     }
 
     fn reply_type_id(&self) -> TypeId {
-        TypeId::of::<R::Reply>()
-    }
-
-    fn protocol_type_id(&self) -> TypeId {
-        TypeId::of::<P>()
-    }
-
-    fn protocol_type_name(&self) -> &'static str {
-        std::any::type_name::<P>()
+        TypeId::of::<R>()
     }
 
     fn mapper_type_name(&self) -> &'static str {
@@ -1537,10 +1175,27 @@ where
         self: Box<Self>,
         token: Arc<RequestToken>,
     ) -> (Box<dyn Any + Send>, ErasedRequestMapper<Message>) {
-        let Self { request, map, .. } = *self;
-        let message = request.into_message(ReplyTo::runtime(token));
-        let mapper = Box::new(move |outcome| map(typed_request_outcome::<R::Reply>(outcome)));
-        (Box::new(message), mapper)
+        let Self {
+            address,
+            build,
+            map,
+            ..
+        } = *self;
+        let message = address.into_message(build(ReplyWith::runtime(token)));
+        let mapper = Box::new(move |outcome| map(typed_request_outcome::<R>(outcome)));
+        (message, mapper)
+    }
+
+    fn addressed_message_type(&self) -> Option<TypeId> {
+        Some(TypeId::of::<M>())
+    }
+
+    fn into_inspection(self: Box<Self>) -> (Box<dyn Any + Send>, ErasedRequestMapper<Message>) {
+        let Self { build, map, .. } = *self;
+        let message: Box<dyn Any + Send> =
+            Box::new(build(ReplyWith::runtime(RequestToken::inert())));
+        let mapper = Box::new(move |outcome| map(typed_request_outcome::<R>(outcome)));
+        (message, mapper)
     }
 }
 
@@ -1552,7 +1207,7 @@ trait ErasedReplyCommand: Send {
 }
 
 struct Reply<Reply> {
-    reply_to: ReplyTo<Reply>,
+    reply_with: ReplyWith<Reply>,
     reply: Reply,
 }
 
@@ -1626,6 +1281,41 @@ where
     }
 }
 
+/// A [`Command::request_to`] extracted for a unit test by [`Command::into_request_to`].
+///
+/// `message` is what the constructor built; its reply token is inert and cannot
+/// deliver a reply. [`Self::reply`] runs the command's continuation on an
+/// outcome you choose, without a runtime.
+pub struct RequestIntent<M, Message> {
+    /// The message the request constructor produced.
+    pub message: M,
+    mapper: ErasedRequestMapper<Message>,
+}
+
+impl<M, Message> RequestIntent<M, Message> {
+    /// Maps a reply outcome through the request's continuation.
+    ///
+    /// `R` must be the reply type the constructor's `ReplyWith<R>` named; a
+    /// mismatch panics, since a unit test has nothing else to do with it.
+    pub fn reply<R: Send + 'static>(self, outcome: RequestOutcome<R>) -> Message {
+        (self.mapper)(match outcome {
+            RequestOutcome::Replied(reply) => RequestOutcome::Replied(Box::new(reply)),
+            RequestOutcome::TimedOut => RequestOutcome::TimedOut,
+            RequestOutcome::Failed(error) => RequestOutcome::Failed(error),
+            RequestOutcome::Cancelled => RequestOutcome::Cancelled,
+        })
+    }
+}
+
+impl<M: fmt::Debug, Message> fmt::Debug for RequestIntent<M, Message> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RequestIntent")
+            .field("message", &self.message)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<ReplyValue> ErasedReplyCommand for Reply<ReplyValue>
 where
     ReplyValue: Send + 'static,
@@ -1643,7 +1333,7 @@ where
     }
 
     fn into_parts(self: Box<Self>) -> (Arc<RequestToken>, Box<dyn Any + Send>) {
-        (self.reply_to.token, Box::new(self.reply))
+        (self.reply_with.token, Box::new(self.reply))
     }
 }
 
@@ -1668,7 +1358,8 @@ where
 /// An effect's mapper converts its result to a message. Keep the mapper free of
 /// I/O and state changes; handle the message in `update`. Commands cannot be
 /// cloned or compared because they can own these mappers. Test their contents
-/// with methods such as [`Self::effect_intent`] and [`Self::request_intents`].
+/// with methods such as [`Self::effect_intent`], [`Self::send_intents`], and
+/// [`Self::into_request_to`].
 ///
 /// <details>
 /// <summary>Compile-time checks</summary>
@@ -1691,7 +1382,6 @@ enum CommandKind<Message> {
     None,
     Effect(Box<dyn ErasedEffectCommand<Message>>),
     Send(Box<dyn ErasedSendCommand>),
-    Notify(Box<dyn ErasedNotificationCommand>),
     Request(Box<dyn ErasedRequestCommand<Message>>),
     Reply(Box<dyn ErasedReplyCommand>),
     After { delay: Duration, message: Message },
@@ -1818,134 +1508,107 @@ impl<Message> Command<Message> {
         })))
     }
 
-    /// Queues a message for another component.
+    /// Queues a message for a [`Port`], a [`Connector`], or a [`ComponentRef`].
     ///
-    /// The recipient handles it after the current update returns. No delivery result
-    /// is sent back; a routing error faults the runtime. Use [`Self::notify`] or
-    /// [`Self::request`] to depend on a protocol instead of another component's type.
+    /// The target handles it after the current update returns. No delivery result
+    /// is sent back; a routing error faults the runtime. A Port in your own
+    /// vocabulary reaches whichever provider assembly connected; a Connector or
+    /// ComponentRef names its provider directly. See [`Addressable`].
     ///
     /// ```
-    /// use samara::{Command, Component, ComponentRef};
+    /// use samara::{Command, Component, ComponentRef, Connector, Port};
     /// fn forward<C: Component>(target: ComponentRef<C>, message: C::Message) -> Command<()> {
-    ///     Command::send(target, message)
+    ///     Command::send(&target, message)
+    /// }
+    /// fn through_port<M: Send + 'static>(port: Port<M>, message: M) -> Command<()> {
+    ///     Command::send(&port, message)
+    /// }
+    /// fn to_connector<M: Send + 'static>(target: Connector<M>, message: M) -> Command<()> {
+    ///     Command::send(&target, message)
     /// }
     /// ```
-    pub fn send<C>(target: ComponentRef<C>, message: C::Message) -> Self
+    pub fn send<T>(target: &T, message: T::Message) -> Self
     where
-        C: Component,
+        T: Addressable,
     {
-        Self(CommandKind::Send(Box::new(SendTo { target, message })))
-    }
-
-    /// Sends a notification to the component bound to a Port.
-    ///
-    /// The notification is converted with [`Notification::into_message`]. The command
-    /// schedules delivery; it does not call the provider while being constructed.
-    /// No reply or delivery result is sent back. See [`Notification`] for an example.
-    pub fn notify<P, N>(port: Port<P>, notification: N) -> Self
-    where
-        P: Protocol,
-        N: Notification<P>,
-    {
-        Self(CommandKind::Notify(Box::new(Notify { port, notification })))
-    }
-
-    /// Sends a request through a Port and converts the reply with `Message::from`.
-    ///
-    /// Requires `Message: From<RequestOutcome<R::Reply>>`. Use [`Self::request_with`]
-    /// for a closure, or [`Self::request_timeout`] to limit how long to wait.
-    pub fn request<P, R>(port: Port<P>, request: R) -> Self
-    where
-        Message: From<RequestOutcome<R::Reply>> + Send + 'static,
-        P: Protocol,
-        R: Request<P>,
-    {
-        Self::request_with(port, request, Message::from)
-    }
-
-    /// Sends a request through a Port and maps its reply to a message.
-    ///
-    /// The component continues handling other messages while waiting. `map` runs at
-    /// most once and must not perform I/O or mutate state. You can capture an ID to
-    /// associate the reply with application work.
-    ///
-    /// ```
-    /// use samara::prelude::*;
-    /// protocol! { type Catalog => enum CatalogMessage { Lookup(String) -> Option<u64>, } }
-    /// let mut program = Program::builder();
-    /// let catalog = program.port::<Catalog>(PortId::new("catalog"));
-    /// let command = Command::request_with(catalog, Lookup("widget".into()), |reply| (7, reply));
-    /// assert_eq!(command.request_intents::<Lookup>().len(), 1);
-    /// ```
-    ///
-    /// There is no timeout. An unanswered request can keep [`Shutdown::Drain`] waiting;
-    /// use [`Self::request_timeout_with`] to bound the wait.
-    pub fn request_with<P, R, Map>(port: Port<P>, request: R, map: Map) -> Self
-    where
-        Message: Send + 'static,
-        P: Protocol,
-        R: Request<P>,
-        Map: FnOnce(RequestOutcome<R::Reply>) -> Message + Send + 'static,
-    {
-        Self(CommandKind::Request(Box::new(RequestCommand {
-            port,
-            request,
-            timeout: None,
-            map,
+        Self(CommandKind::Send(Box::new(SendTo {
+            address: target.to_address(),
+            message,
         })))
     }
 
-    /// Sends a request with a timeout and converts its result with `Message::from`.
+    /// Sends a request to a [`Port`], [`Connector`], or [`ComponentRef`] and maps its reply to a message.
     ///
-    /// The timeout starts when Samara runs the command. A reply must be processed
-    /// before the deadline; a zero timeout always expires. On expiry, the caller gets
-    /// [`RequestOutcome::TimedOut`], the provider keeps running, and later replies are
-    /// ignored. A duration that overflows the clock faults the runtime.
-    ///
-    /// Live execution uses Tokio time; controlled tests advance time themselves.
-    /// See [`Self::request_timeout_with`] for a closure-based example.
-    pub fn request_timeout<P, R>(port: Port<P>, request: R, timeout: Duration) -> Self
-    where
-        Message: From<RequestOutcome<R::Reply>> + Send + 'static,
-        P: Protocol,
-        R: Request<P>,
-    {
-        Self::request_timeout_with(port, request, timeout, Message::from)
-    }
-
-    /// Sends a request with a timeout and maps its reply or timeout to a message.
-    ///
-    /// Uses the deadline rules of [`Self::request_timeout`]. Runtime cancellation
-    /// drops the mapper without sending a message.
+    /// `request` is a constructor that takes the reply token, such as
+    /// `TallyMessage::total` or `|reply_with| LedgerMessage::Total(reply_with)`; its
+    /// `ReplyWith<R>` parameter fixes the reply type, and `map` must accept
+    /// `RequestOutcome<R>`. The pairing of request and reply lives in the
+    /// constructor's signature, so no request trait is needed. Both functions
+    /// must be pure. There is no timeout; see [`Self::request_to_timeout`]. Inspect
+    /// the result in a unit test with [`Self::into_request_to`].
     ///
     /// ```
     /// use samara::prelude::*;
-    /// use std::time::Duration;
-    /// protocol! { type Health => enum HealthMessage { Check -> bool, } }
+    /// // A library's opaque message with a published request constructor.
+    /// pub struct TallyMessage(Inner);
+    /// enum Inner { Total(ReplyWith<u64>) }
+    /// impl TallyMessage { pub fn total(reply_with: ReplyWith<u64>) -> Self { Self(Inner::Total(reply_with)) } }
+    /// # struct Tally;
+    /// # impl Component for Tally {
+    /// #     type Config = (); type Model = u64; type Message = TallyMessage;
+    /// #     fn init(_: &()) -> Init<u64, TallyMessage> { Init::new(0) }
+    /// #     fn update(_: &(), total: &mut u64, TallyMessage(Inner::Total(reply_with)): TallyMessage) -> Command<TallyMessage> {
+    /// #         Command::reply(reply_with, *total)
+    /// #     }
+    /// # }
     /// let mut program = Program::builder();
-    /// let health = program.port::<Health>(PortId::new("health"));
-    /// let command = Command::request_timeout_with(
-    ///     health, Check, Duration::from_secs(2), |outcome| outcome,
-    /// );
-    /// assert_eq!(command.request_intents::<Check>().len(), 1);
+    /// let tally: Connector<TallyMessage> = program.component::<Tally>(ComponentId::new("tally"), ()).connector();
+    /// let command: Command<RequestOutcome<u64>> =
+    ///     Command::request_to(&tally, TallyMessage::total, |outcome| outcome);
+    /// # let _ = command;
     /// ```
-    pub fn request_timeout_with<P, R, Map>(
-        port: Port<P>,
-        request: R,
+    pub fn request_to<T, R, Build, Map>(target: &T, request: Build, map: Map) -> Self
+    where
+        Message: Send + 'static,
+        T: Addressable,
+        R: Send + 'static,
+        Build: FnOnce(ReplyWith<R>) -> T::Message + Send + 'static,
+        Map: FnOnce(RequestOutcome<R>) -> Message + Send + 'static,
+    {
+        Self(CommandKind::Request(Box::new(AddressedRequest {
+            address: target.to_address(),
+            build: request,
+            timeout: None,
+            map,
+            reply: PhantomData,
+        })))
+    }
+
+    /// Sends a request to a [`Port`], [`Connector`], or [`ComponentRef`] with a timeout.
+    ///
+    /// The deadline starts when Samara runs the command. A reply must be processed
+    /// before the deadline; a zero timeout always expires. On expiry, the caller gets
+    /// [`RequestOutcome::TimedOut`], the provider keeps running, and later replies are
+    /// ignored. Live execution uses Tokio time; controlled tests advance time themselves.
+    pub fn request_to_timeout<T, R, Build, Map>(
+        target: &T,
+        request: Build,
         timeout: Duration,
         map: Map,
     ) -> Self
     where
         Message: Send + 'static,
-        P: Protocol,
-        R: Request<P>,
-        Map: FnOnce(RequestOutcome<R::Reply>) -> Message + Send + 'static,
+        T: Addressable,
+        R: Send + 'static,
+        Build: FnOnce(ReplyWith<R>) -> T::Message + Send + 'static,
+        Map: FnOnce(RequestOutcome<R>) -> Message + Send + 'static,
     {
-        Self(CommandKind::Request(Box::new(RequestCommand {
-            port,
-            request,
+        Self(CommandKind::Request(Box::new(AddressedRequest {
+            address: target.to_address(),
+            build: request,
             timeout: Some(timeout),
             map,
+            reply: PhantomData,
         })))
     }
 
@@ -1953,12 +1616,12 @@ impl<Message> Command<Message> {
     ///
     /// The token is consumed, so the same request cannot be answered twice. Delivery
     /// happens after the provider's update returns. A reply after the caller's timeout
-    /// is ignored. See [`ProgramBuilder::bind_port`] for an example.
-    pub fn reply<ReplyValue>(reply_to: ReplyTo<ReplyValue>, reply: ReplyValue) -> Self
+    /// is ignored. See [`ProgramBuilder::connect`] for an example.
+    pub fn reply<ReplyValue>(reply_with: ReplyWith<ReplyValue>, reply: ReplyValue) -> Self
     where
         ReplyValue: Send + 'static,
     {
-        Self(CommandKind::Reply(Box::new(Reply { reply_to, reply })))
+        Self(CommandKind::Reply(Box::new(Reply { reply_with, reply })))
     }
 
     /// Schedules a message for this component after `delay`.
@@ -2023,7 +1686,6 @@ impl<Message> Command<Message> {
             }
             CommandKind::None
             | CommandKind::Send(_)
-            | CommandKind::Notify(_)
             | CommandKind::Request(_)
             | CommandKind::Reply(_)
             | CommandKind::After { .. } => {}
@@ -2083,67 +1745,86 @@ impl<Message> Command<Message> {
         }
     }
 
-    /// Returns notifications of type `N` with their destination Port IDs.
+    /// Returns the messages of type `M` this command sends, in declaration order.
     ///
-    /// Searches batches in declaration order without delivering anything. See
-    /// [`Notification`] for an example.
-    pub fn notification_intents<N: 'static>(&self) -> Vec<(&PortId, &N)> {
+    /// Searches batches without delivering anything. Messages sent to a Port,
+    /// a Connector, or a ComponentRef all count; `M` is the type the sender
+    /// spelled, before any binding or Connector conversion.
+    ///
+    /// ```
+    /// use samara::prelude::*;
+    /// #[derive(Debug, PartialEq)]
+    /// enum LedgerMessage { Add(u64) }
+    /// let mut program = Program::builder();
+    /// let ledger = program.port::<LedgerMessage>(PortId::new("ledger"));
+    /// let command: Command<()> = Command::batch([
+    ///     Command::send(&ledger, LedgerMessage::Add(2)),
+    ///     Command::send(&ledger, LedgerMessage::Add(3)),
+    /// ]);
+    /// assert_eq!(command.send_intents::<LedgerMessage>(), [&LedgerMessage::Add(2), &LedgerMessage::Add(3)]);
+    /// ```
+    pub fn send_intents<M: 'static>(&self) -> Vec<&M> {
         let mut intents = Vec::new();
-        self.collect_notification_intents(&mut intents);
+        self.collect_send_intents(&mut intents);
         intents
     }
 
-    fn collect_notification_intents<'a, N: 'static>(
-        &'a self,
-        intents: &mut Vec<(&'a PortId, &'a N)>,
-    ) {
+    fn collect_send_intents<'a, M: 'static>(&'a self, intents: &mut Vec<&'a M>) {
         match &self.0 {
-            CommandKind::Notify(command) => {
-                if let Some(notification) = command.notification().downcast_ref() {
-                    intents.push((command.port(), notification));
+            CommandKind::Send(command) => {
+                if let Some(message) = command.message().downcast_ref() {
+                    intents.push(message);
                 }
             }
             CommandKind::Batch(commands) => {
                 for command in commands {
-                    command.collect_notification_intents(intents);
+                    command.collect_send_intents(intents);
                 }
             }
             CommandKind::None
             | CommandKind::Effect(_)
-            | CommandKind::Send(_)
             | CommandKind::Request(_)
             | CommandKind::Reply(_)
             | CommandKind::After { .. } => {}
         }
     }
 
-    /// Returns requests of type `R` with their destination Port IDs.
+    /// Extracts a [`Self::request_to`] command for a unit test.
     ///
-    /// Searches batches in declaration order. See [`Self::request_with`] for an example.
-    pub fn request_intents<R: 'static>(&self) -> Vec<(&PortId, &R)> {
-        let mut intents = Vec::new();
-        self.collect_request_intents(&mut intents);
-        intents
-    }
-
-    fn collect_request_intents<'a, R: 'static>(&'a self, intents: &mut Vec<(&'a PortId, &'a R)>) {
-        match &self.0 {
-            CommandKind::Request(command) => {
-                if let Some(request) = command.request().downcast_ref() {
-                    intents.push((command.port(), request));
-                }
+    /// Returns the message the constructor built, with an inert reply token that
+    /// no runtime will honor, and a [`RequestIntent`] that maps a chosen
+    /// [`RequestOutcome`] through the command's continuation. Only a top-level
+    /// request addressed with message type `M` is extracted; anything else is
+    /// returned unchanged.
+    ///
+    /// ```
+    /// use samara::prelude::*;
+    /// enum LedgerMessage { Total(ReplyWith<u64>) }
+    /// enum ClerkMessage { Total(RequestOutcome<u64>) }
+    /// let mut program = Program::builder();
+    /// let ledger = program.port::<LedgerMessage>(PortId::new("ledger"));
+    /// let command = Command::request_to(&ledger, LedgerMessage::Total, ClerkMessage::Total);
+    /// let intent = command.into_request_to::<LedgerMessage>().ok().expect("a request to the ledger");
+    /// assert!(matches!(intent.message, LedgerMessage::Total(_)));
+    /// assert!(matches!(intent.reply(RequestOutcome::Replied(5u64)), ClerkMessage::Total(RequestOutcome::Replied(5))));
+    /// ```
+    pub fn into_request_to<M>(self) -> Result<RequestIntent<M, Message>, Self>
+    where
+        Message: Send + 'static,
+        M: Send + 'static,
+    {
+        match self.0 {
+            CommandKind::Request(command)
+                if command.addressed_message_type() == Some(TypeId::of::<M>()) =>
+            {
+                let (message, mapper) = command.into_inspection();
+                let message = match message.downcast::<M>() {
+                    Ok(message) => *message,
+                    Err(_) => unreachable!("the message type was checked before extraction"),
+                };
+                Ok(RequestIntent { message, mapper })
             }
-            CommandKind::Batch(commands) => {
-                for command in commands {
-                    command.collect_request_intents(intents);
-                }
-            }
-            CommandKind::None
-            | CommandKind::Effect(_)
-            | CommandKind::Send(_)
-            | CommandKind::Notify(_)
-            | CommandKind::Reply(_)
-            | CommandKind::After { .. } => {}
+            command => Err(Self(command)),
         }
     }
 
@@ -2171,7 +1852,6 @@ impl<Message> Command<Message> {
             CommandKind::None
             | CommandKind::Effect(_)
             | CommandKind::Send(_)
-            | CommandKind::Notify(_)
             | CommandKind::Request(_)
             | CommandKind::After { .. } => {}
         }
@@ -2186,7 +1866,6 @@ impl<Message> Command<Message> {
             CommandKind::Effect(command) => Some(command.intent_type_name()),
             CommandKind::None
             | CommandKind::Send(_)
-            | CommandKind::Notify(_)
             | CommandKind::Request(_)
             | CommandKind::Reply(_)
             | CommandKind::After { .. }
@@ -2510,25 +2189,28 @@ impl<Message> From<Vec<Subscription<Message>>> for Subscriptions<Message> {
 /// ```
 /// use samara::prelude::*;
 /// use std::convert::Infallible;
-/// struct Sum { input: SourceCapability<StreamDescriptor<u64>> }
+/// struct Sum;
+///
+/// struct SumConfig { input: SourceCapability<StreamDescriptor<u64>> }
 /// impl Component for Sum {
+///     type Config = SumConfig;
 ///     type Model = u64;
 ///     type Message = SourceEvent<u64, Infallible>;
-///     fn init(&self) -> Init<u64, Self::Message> { Init::new(0) }
-///     fn update(&self, sum: &mut u64, event: Self::Message) -> Command<Self::Message> {
+///     fn init(_config: &Self::Config) -> Init<u64, Self::Message> { Init::new(0) }
+///     fn update(_config: &Self::Config, sum: &mut u64, event: Self::Message) -> Command<Self::Message> {
 ///         if let SourceEvent::Item(value) = event { *sum += value; }
 ///         Command::none()
 ///     }
-///     fn subscriptions(&self, _: &u64) -> Subscriptions<Self::Message> {
+///     fn subscriptions(config: &Self::Config, _: &u64) -> Subscriptions<Self::Message> {
 ///         Subscriptions::one(Subscription::source(
-///             &self.input, SubscriptionId::new("values"), StreamDescriptor::named("numbers"),
+///             &config.input, SubscriptionId::new("values"), StreamDescriptor::named("numbers"),
 ///         ))
 ///     }
 /// }
 /// fn program() -> Result<(Program, ComponentRef<Sum>, SourceCapability<StreamDescriptor<u64>>), ProgramBuildError> {
 ///     let mut builder = Program::builder();
 ///     let input = builder.source::<StreamDescriptor<u64>>();
-///     let sum = builder.component(ComponentId::new("sum"), Sum { input: input.clone() });
+///     let sum = builder.component::<Sum>(ComponentId::new("sum"), SumConfig { input: input.clone() });
 ///     Ok((builder.build()?, sum, input))
 /// }
 /// let (program_under_test, sum, input) = program()?;
@@ -2543,7 +2225,7 @@ impl<Message> From<Vec<Subscription<Message>>> for Subscriptions<Message> {
 /// // In the host, bind a real receiver instead.
 /// let (program, _, input) = program()?;
 /// let (sender, receiver) = tokio::sync::mpsc::channel(16);
-/// let live = LiveRuntime::builder(program).bind_mpsc(&input, receiver).build()?;
+/// let live = Runtime::builder(program).bind_mpsc(&input, receiver).build()?;
 /// // Inside Tokio, call live.spawn() and sender.send(value).await.
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
@@ -2614,7 +2296,7 @@ impl<T: Send + 'static> StreamSourceDescriptor for StreamDescriptor<T> {
 /// EOF emits any remaining nonempty line, then [`SourceEvent::Ended`]. A read or
 /// UTF-8 error produces [`SourceEvent::Failed`] and stops reading. Lines have no
 /// size limit. Live input is available on Unix through
-/// `LiveRuntimeBuilder::bind_stdin`; tests can supply events on any platform.
+/// `RuntimeBuilder::bind_stdin`; tests can supply events on any platform.
 ///
 /// The following example declares the input, stores its capability on a component,
 /// returns a subscription, and runs that component under test control. It also
@@ -2623,17 +2305,20 @@ impl<T: Send + 'static> StreamSourceDescriptor for StreamDescriptor<T> {
 /// ```
 /// use samara::prelude::*;
 ///
-/// struct Reader { input: SourceCapability<StdinLines> }
+/// struct Reader;
+///
+/// struct ReaderConfig { input: SourceCapability<StdinLines> }
 /// struct Model { lines: Vec<String>, error: Option<StdinError>, open: bool }
 ///
 /// impl Component for Reader {
+///     type Config = ReaderConfig;
 ///     type Model = Model;
 ///     type Message = SourceEvent<String, StdinError>;
 ///
-///     fn init(&self) -> Init<Model, Self::Message> {
+///     fn init(_config: &Self::Config) -> Init<Model, Self::Message> {
 ///         Init::new(Model { lines: Vec::new(), error: None, open: true })
 ///     }
-///     fn update(&self, model: &mut Model, event: Self::Message) -> Command<Self::Message> {
+///     fn update(_config: &Self::Config, model: &mut Model, event: Self::Message) -> Command<Self::Message> {
 ///         match event {
 ///             SourceEvent::Item(line) => model.lines.push(line),
 ///             SourceEvent::Ended => model.open = false,
@@ -2644,10 +2329,10 @@ impl<T: Send + 'static> StreamSourceDescriptor for StreamDescriptor<T> {
 ///         }
 ///         Command::none()
 ///     }
-///     fn subscriptions(&self, model: &Model) -> Subscriptions<Self::Message> {
+///     fn subscriptions(config: &Self::Config, model: &Model) -> Subscriptions<Self::Message> {
 ///         if !model.open { return Subscriptions::none(); }
 ///         Subscriptions::one(Subscription::source(
-///             &self.input, SubscriptionId::new("input"), StdinLines::new(),
+///             &config.input, SubscriptionId::new("input"), StdinLines::new(),
 ///         ))
 ///     }
 /// }
@@ -2655,7 +2340,7 @@ impl<T: Send + 'static> StreamSourceDescriptor for StreamDescriptor<T> {
 /// fn program() -> Result<(Program, ComponentRef<Reader>), ProgramBuildError> {
 ///     let mut builder = Program::builder();
 ///     let input = builder.source::<StdinLines>();
-///     let reader = builder.component(ComponentId::new("reader"), Reader { input });
+///     let reader = builder.component::<Reader>(ComponentId::new("reader"), ReaderConfig { input });
 ///     Ok((builder.build()?, reader))
 /// }
 ///
@@ -2678,7 +2363,7 @@ impl<T: Send + 'static> StreamSourceDescriptor for StreamDescriptor<T> {
 /// #[cfg(unix)]
 /// {
 ///     let (program, _) = program()?;
-///     let live = LiveRuntime::builder(program).bind_stdin().build()?;
+///     let live = Runtime::builder(program).bind_stdin().build()?;
 ///     // Call live.spawn() inside Tokio to start reading; see RuntimeTask for shutdown.
 /// }
 /// # Ok::<(), Box<dyn std::error::Error>>(())
@@ -2771,7 +2456,7 @@ impl Error for StdinError {}
 /// Creating the request does not parse the URL or perform I/O. Use
 /// [`Self::on_response`] to choose how to handle the response, then return the
 /// resulting Command from your component. Live programs need
-/// [`LiveRuntimeBuilder::bind_http`]; controlled tests use
+/// [`RuntimeBuilder::bind_http`]; controlled tests use
 /// `control_effect::<HttpRequest>()`.
 ///
 /// ```
@@ -3436,7 +3121,7 @@ impl HttpJsonError {
 /// Text to write to standard output.
 ///
 /// Creating this value does not write anything. Submit it with a Command and
-/// bind output with [`LiveRuntimeBuilder::bind_stdio`]. The driver writes and
+/// bind output with [`RuntimeBuilder::bind_stdio`]. The driver writes and
 /// flushes the text but ignores I/O errors. Use [`println!`] for formatting.
 ///
 /// ```
@@ -3480,7 +3165,7 @@ impl EffectDescriptor for PrintStdout {
 /// Text to write to standard error.
 ///
 /// Creating this value does not write anything. Submit it with a Command and
-/// bind output with [`LiveRuntimeBuilder::bind_stdio`]. The driver writes and
+/// bind output with [`RuntimeBuilder::bind_stdio`]. The driver writes and
 /// flushes the text but ignores I/O errors. Use [`eprintln!`] for formatting.
 ///
 /// ```
@@ -3544,7 +3229,7 @@ impl EffectDescriptor for PrintStderr {
 /// ```
 ///
 /// Declare the capability with `program.source::<TcpBytes>()` and pass it into
-/// the component. Enable connections with [`LiveRuntimeBuilder::bind_tcp`].
+/// the component. Enable connections with [`RuntimeBuilder::bind_tcp`].
 /// Controlled tests use `control_source::<TcpBytes>()` and
 /// [`ControlledRuntime::emit_source`] to supply chunks, errors, or EOF.
 /// See [`StdinLines`] for the full source wiring pattern.
@@ -3999,36 +3684,39 @@ impl<S: SourceDescriptor> fmt::Debug for SourceCapability<S> {
     }
 }
 
-/// A named connection to a component that implements a [`Protocol`].
+/// A consumer-owned, named dependency on a message type `P`, filled at assembly.
 ///
-/// Create it with [`ProgramBuilder::port`] and select its provider with
-/// [`ProgramBuilder::bind_port`]. Components use it with [`Command::notify`] and
-/// [`Command::request`]. Code outside the program uses a [`PortHandle`] instead.
+/// The application declares the message enum in its own vocabulary, creates the
+/// Port with [`ProgramBuilder::port`], and connects a provider with
+/// [`ProgramBuilder::connect`]. Components use it with [`Command::send`] and
+/// [`Command::request_to`]. Code outside the program uses a [`PortHandle`] instead.
+/// The provider-owned counterpart, an address a Component hands out itself,
+/// is [`Connector`].
 ///
 /// ```
 /// use samara::prelude::*;
-/// protocol! { type Health => enum HealthMessage { Check -> bool, } }
+/// enum HealthMessage { Check(ReplyWith<bool>) }
 /// let mut program = Program::builder();
-/// let health = program.port::<Health>(PortId::new("primary"));
+/// let health = program.port::<HealthMessage>(PortId::new("primary"));
 /// assert_eq!(health.id(), &PortId::new("primary"));
 /// ```
 ///
-/// A port does not expose the provider's model. See [`ProgramBuilder::bind_port`]
+/// A port does not expose the provider's model. See [`ProgramBuilder::connect`]
 /// for a complete request/reply example.
-pub struct Port<P: Protocol> {
+pub struct Port<P: Send + 'static> {
     id: PortId,
     program: Arc<()>,
     marker: PhantomData<fn() -> P>,
 }
 
-impl<P: Protocol> Port<P> {
+impl<P: Send + 'static> Port<P> {
     /// Returns the port name.
     pub fn id(&self) -> &PortId {
         &self.id
     }
 }
 
-impl<P: Protocol> Clone for Port<P> {
+impl<P: Send + 'static> Clone for Port<P> {
     fn clone(&self) -> Self {
         Self {
             id: self.id.clone(),
@@ -4038,15 +3726,15 @@ impl<P: Protocol> Clone for Port<P> {
     }
 }
 
-impl<P: Protocol> PartialEq for Port<P> {
+impl<P: Send + 'static> PartialEq for Port<P> {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id
     }
 }
 
-impl<P: Protocol> Eq for Port<P> {}
+impl<P: Send + 'static> Eq for Port<P> {}
 
-impl<P: Protocol> fmt::Debug for Port<P> {
+impl<P: Send + 'static> fmt::Debug for Port<P> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.debug_tuple("Port").field(&self.id).finish()
     }
@@ -4055,11 +3743,11 @@ impl<P: Protocol> fmt::Debug for Port<P> {
 /// Identifies a registered component without giving access to its state.
 ///
 /// Returned by [`ProgramBuilder::component`]. Use it with [`Command::send`] for
-/// component-to-component delivery, [`LiveRuntime::handle`] for an external sender,
+/// component-to-component delivery, [`Runtime::handle`] for an external sender,
 /// or [`ControlledRuntime::state`] to inspect state in tests.
 ///
 /// See the [crate example](crate) for registration and controlled state inspection.
-/// Use a [`Port`] when a caller should depend on a protocol rather than the
+/// Use a [`Port`] when a caller should depend on a message type it owns rather than the
 /// component's complete message type.
 ///
 /// <details>
@@ -4106,9 +3794,250 @@ impl<C: Component> fmt::Debug for ComponentRef<C> {
     }
 }
 
+impl<C: Component> ComponentRef<C> {
+    /// Erases this address to a provider of `M`, converting with `From`.
+    ///
+    /// See [`Connector`] for why and [`Self::accepting`] for an explicit
+    /// conversion.
+    pub fn connector<M>(&self) -> Connector<M>
+    where
+        M: Send + 'static,
+        C::Message: From<M>,
+    {
+        self.accepting(C::Message::from)
+    }
+
+    /// Returns a connector that accepts `M` by converting it into this
+    /// Component's Message with `map`, normally the enum variant that wraps it.
+    ///
+    /// This is how a Component that wraps a Port's messages in a variant of its
+    /// own Message is connected to that Port:
+    /// `program.connect(&port, &recorder.accepting(RecorderMessage::Audit))`.
+    /// `map` must be pure. See [`Connector`] for the library case.
+    pub fn accepting<M, Map>(&self, map: Map) -> Connector<M>
+    where
+        M: Send + 'static,
+        Map: Fn(M) -> C::Message + Send + Sync + 'static,
+    {
+        Connector {
+            id: self.id.clone(),
+            program: self.program.clone(),
+            component_type: TypeId::of::<C>(),
+            message_type: TypeId::of::<C::Message>(),
+            message_type_name: std::any::type_name::<C::Message>(),
+            convert: Arc::new(move |message| Box::new(map(message)) as Box<dyn Any + Send>),
+        }
+    }
+}
+
+/// A provider address erased to the message type it accepts.
+///
+/// A `Connector<M>` is a [`ComponentRef`] that has forgotten which Component it
+/// points at and remembers only that the Component accepts `M`, together with
+/// the pure conversion from `M` into the Component's private Message. Like
+/// `ComponentRef` and [`Port`] it is inert logical wiring and grants no
+/// delivery capability; a Port is bound to it exactly as to a `ComponentRef`.
+///
+/// Its purpose is to let a reusable unit hand out a provider without naming
+/// its Component. An [`Assembly`] exports a `Connector<LibraryMessage>`; the
+/// application declares its own [`Port`] in its own message vocabulary and couples
+/// the two with [`ProgramBuilder::connect`] after [`Connector::accepting`], writing the conversion
+/// from its vocabulary to the library's at the binding site. The
+/// application's Components then depend only on the Port they own, and the
+/// library's vocabulary appears in exactly one place: the coupling.
+///
+/// ```
+/// use samara::prelude::*;
+///
+/// // A library's public vocabulary and private Component.
+/// pub enum JournalMessage { Note(String) }
+/// struct Recorder;
+/// struct RecorderMessage(JournalMessage);
+/// impl Component for Recorder {
+///     type Config = ();
+///     type Model = Vec<String>;
+///     type Message = RecorderMessage;
+///     fn init(_: &()) -> Init<Vec<String>, RecorderMessage> { Init::new(Vec::new()) }
+///     fn update(_: &(), notes: &mut Vec<String>, message: RecorderMessage) -> Command<RecorderMessage> {
+///         let RecorderMessage(JournalMessage::Note(note)) = message;
+///         notes.push(note);
+///         Command::none()
+///     }
+/// }
+///
+/// // The application's own Port, in its own vocabulary.
+/// pub enum AuditMessage { Changed(String) }
+///
+/// let mut program = Program::builder();
+/// let audit = program.port::<AuditMessage>(PortId::new("audit"));
+/// let recorder = program.component::<Recorder>(ComponentId::new("recorder"), ());
+/// let provider: Connector<JournalMessage> = recorder.accepting(RecorderMessage);
+/// program.connect(&audit, &provider.accepting(|message| match message {
+///     AuditMessage::Changed(what) => JournalMessage::Note(what),
+/// }));
+/// # let _ = program.build()?;
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+pub struct Connector<M> {
+    id: ComponentId,
+    program: Arc<()>,
+    component_type: TypeId,
+    message_type: TypeId,
+    message_type_name: &'static str,
+    convert: Arc<dyn Fn(M) -> Box<dyn Any + Send> + Send + Sync>,
+}
+
+impl<M: Send + 'static> Connector<M> {
+    /// Returns the provider Component's name.
+    pub fn id(&self) -> &ComponentId {
+        &self.id
+    }
+
+    /// Returns a connector that accepts `N` by converting it into `M` first.
+    ///
+    /// This is Elm 0.16's `Signal.forwardTo`: the holder of a library's
+    /// `Connector<LibraryMessage>` adapts it to its own vocabulary once, and its
+    /// Components then hold a `Connector<AppMessage>` and never name the library's
+    /// types, or it connects the adapted connector to one of its own Ports with
+    /// [`ProgramBuilder::connect`]. `map` must be pure.
+    pub fn accepting<N, Map>(&self, map: Map) -> Connector<N>
+    where
+        N: Send + 'static,
+        Map: Fn(N) -> M + Send + Sync + 'static,
+    {
+        let convert = self.convert.clone();
+        Connector {
+            id: self.id.clone(),
+            program: self.program.clone(),
+            component_type: self.component_type,
+            message_type: self.message_type,
+            message_type_name: self.message_type_name,
+            convert: Arc::new(move |message| convert(map(message))),
+        }
+    }
+}
+
+impl<M> Clone for Connector<M> {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id.clone(),
+            program: self.program.clone(),
+            component_type: self.component_type,
+            message_type: self.message_type,
+            message_type_name: self.message_type_name,
+            convert: self.convert.clone(),
+        }
+    }
+}
+
+impl<M> fmt::Debug for Connector<M> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Connector")
+            .field("id", &self.id)
+            .field("accepts", &std::any::type_name::<M>())
+            .finish()
+    }
+}
+
+/// Something a Command can be addressed to: a [`Port`], a [`Connector`], or a
+/// [`ComponentRef`].
+///
+/// [`Command::send`], [`Command::request_to`], and
+/// [`Command::request_to_timeout`] accept any of the three and deliver a value
+/// of `Message`. A Port resolves to its provider through the binding at
+/// interpretation; a Connector and a ComponentRef already name the provider.
+/// Applications do not implement it.
+pub trait Addressable {
+    /// The message type this destination accepts.
+    type Message: Send + 'static;
+
+    /// Erases this destination for a Command to carry.
+    fn to_address(&self) -> Address<Self::Message>;
+}
+
+impl<M: Send + 'static> Addressable for Port<M> {
+    type Message = M;
+
+    fn to_address(&self) -> Address<M> {
+        Address(AddressKind::Port(self.clone()))
+    }
+}
+
+impl<M: Send + 'static> Addressable for Connector<M> {
+    type Message = M;
+
+    fn to_address(&self) -> Address<M> {
+        Address(AddressKind::Connector(self.clone()))
+    }
+}
+
+impl<C: Component> Addressable for ComponentRef<C> {
+    type Message = C::Message;
+
+    fn to_address(&self) -> Address<C::Message> {
+        Address(AddressKind::Connector(self.accepting(|message| message)))
+    }
+}
+
+/// The erased destination of a Command, produced by [`Addressable::to_address`].
+///
+/// It has no public operations; Commands carry it and the runtime resolves it.
+pub struct Address<M: Send + 'static>(AddressKind<M>);
+
+enum AddressKind<M: Send + 'static> {
+    Port(Port<M>),
+    Connector(Connector<M>),
+}
+
+impl<M: Send + 'static> Address<M> {
+    fn target(&self) -> MessageTarget<'_> {
+        match &self.0 {
+            AddressKind::Port(port) => MessageTarget::Port {
+                id: port.id(),
+                program: &port.program,
+                protocol: TypeId::of::<M>(),
+            },
+            AddressKind::Connector(connector) => MessageTarget::Connector {
+                id: &connector.id,
+                program: &connector.program,
+                message_type: connector.message_type,
+                message_type_name: connector.message_type_name,
+            },
+        }
+    }
+
+    fn message_type_name(&self) -> &'static str {
+        match &self.0 {
+            AddressKind::Port(_) => std::any::type_name::<M>(),
+            AddressKind::Connector(connector) => connector.message_type_name,
+        }
+    }
+
+    /// Converts a message for delivery: a Port's message is converted later by
+    /// its binding, a Connector's by the Connector itself.
+    fn into_message(self, message: M) -> Box<dyn Any + Send> {
+        match self.0 {
+            AddressKind::Port(_) => Box::new(message),
+            AddressKind::Connector(connector) => (connector.convert)(message),
+        }
+    }
+}
+
+impl<M: Send + 'static> fmt::Debug for Address<M> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.0 {
+            AddressKind::Port(port) => formatter.debug_tuple("Address").field(port).finish(),
+            AddressKind::Connector(connector) => {
+                formatter.debug_tuple("Address").field(connector).finish()
+            }
+        }
+    }
+}
+
 /// Components and their connections, ready to run live or under test control.
 ///
-/// Build one with [`Program::builder`]. Pass it to [`LiveRuntime::builder`] or
+/// Build one with [`Program::builder`]. Pass it to [`Runtime::builder`] or
 /// [`ControlledRuntime::builder`] to supply I/O implementations or test controls.
 /// A Program is consumed by its runtime; use a function to build a fresh copy for
 /// each run. See the [crate example](crate) for component registration.
@@ -4171,6 +4100,13 @@ impl Program {
         self.source_requirements
             .iter()
             .find(|requirement| requirement.token.same_as(token))
+    }
+
+    #[cfg(feature = "fs")]
+    pub(crate) fn declares_effect_type<D: EffectDescriptor>(&self) -> bool {
+        self.effect_requirements
+            .iter()
+            .any(|requirement| requirement.descriptor_type == TypeId::of::<D>())
     }
 
     pub(crate) fn declares_effect(&self, token: &CapabilityToken, descriptor: TypeId) -> bool {
@@ -4255,48 +4191,64 @@ where
                     )))
                 }
             }
-            CommandKind::Send(send) => {
-                if program.declares_component_target(
-                    send.target_program(),
-                    send.target(),
-                    send.message_type_id(),
-                ) {
-                    Ok(())
-                } else {
-                    Err(RuntimeError::harness(format!(
-                        "Component {component:?} has an initial direct-send target {:?} from another Program or absent from this Program",
-                        send.target()
-                    )))
+            CommandKind::Send(send) => match send.target() {
+                MessageTarget::Port {
+                    id,
+                    program: port_program,
+                    protocol,
+                } => {
+                    if program.declares_port_target(port_program, id, protocol) {
+                        Ok(())
+                    } else {
+                        Err(RuntimeError::harness(format!(
+                            "Component {component:?} has an initial send Port {id:?} from another Program or absent from this Program"
+                        )))
+                    }
                 }
-            }
-            CommandKind::Notify(notification) => {
-                if program.declares_port_target(
-                    notification.port_program(),
-                    notification.port(),
-                    notification.protocol_type_id(),
-                ) {
-                    Ok(())
-                } else {
-                    Err(RuntimeError::harness(format!(
-                        "Component {component:?} has an initial notification Port {:?} from another Program or absent from this Program",
-                        notification.port()
-                    )))
+                MessageTarget::Connector {
+                    id,
+                    program: target_program,
+                    message_type,
+                    ..
+                } => {
+                    if program.declares_component_target(target_program, id, message_type) {
+                        Ok(())
+                    } else {
+                        Err(RuntimeError::harness(format!(
+                            "Component {component:?} has an initial direct-send target {id:?} from another Program or absent from this Program"
+                        )))
+                    }
                 }
-            }
-            CommandKind::Request(request) => {
-                if program.declares_port_target(
-                    request.port_program(),
-                    request.port(),
-                    request.protocol_type_id(),
-                ) {
-                    Ok(())
-                } else {
-                    Err(RuntimeError::harness(format!(
-                        "Component {component:?} has an initial request Port {:?} from another Program or absent from this Program",
-                        request.port()
-                    )))
+            },
+            CommandKind::Request(request) => match request.target() {
+                MessageTarget::Port {
+                    id,
+                    program: port_program,
+                    protocol,
+                } => {
+                    if program.declares_port_target(port_program, id, protocol) {
+                        Ok(())
+                    } else {
+                        Err(RuntimeError::harness(format!(
+                            "Component {component:?} has an initial request Port {id:?} from another Program or absent from this Program"
+                        )))
+                    }
                 }
-            }
+                MessageTarget::Connector {
+                    id,
+                    program: target_program,
+                    message_type,
+                    ..
+                } => {
+                    if program.declares_component_target(target_program, id, message_type) {
+                        Ok(())
+                    } else {
+                        Err(RuntimeError::harness(format!(
+                            "Component {component:?} has an initial request Connector target {id:?} from another Program or absent from this Program"
+                        )))
+                    }
+                }
+            },
             CommandKind::Batch(commands) => {
                 for command in commands {
                     validate_command(program, component, command)?;
@@ -4364,20 +4316,17 @@ pub(crate) trait ErasedPortBinding: Send {
     fn convert(&self, message: Box<dyn Any + Send>) -> Box<dyn Any + Send>;
 }
 
-struct PortBinding<P, C>
+struct PortBinding<P>
 where
-    P: Protocol,
-    C: Component,
+    P: Send + 'static,
 {
     port: Port<P>,
-    provider: ComponentRef<C>,
+    connector: Connector<P>,
 }
 
-impl<P, C> ErasedPortBinding for PortBinding<P, C>
+impl<P> ErasedPortBinding for PortBinding<P>
 where
-    P: Protocol,
-    C: Component,
-    C::Message: From<P::Message>,
+    P: Send + 'static,
 {
     fn protocol_type(&self) -> TypeId {
         TypeId::of::<P>()
@@ -4396,31 +4345,31 @@ where
     }
 
     fn provider_id(&self) -> &ComponentId {
-        self.provider.id()
+        &self.connector.id
     }
 
     fn provider_program(&self) -> &Arc<()> {
-        &self.provider.program
+        &self.connector.program
     }
 
     fn provider_component_type(&self) -> TypeId {
-        TypeId::of::<C>()
+        self.connector.component_type
     }
 
     fn provider_message_type(&self) -> TypeId {
-        TypeId::of::<C::Message>()
+        self.connector.message_type
     }
 
     fn provider_message_type_name(&self) -> &'static str {
-        std::any::type_name::<C::Message>()
+        self.connector.message_type_name
     }
 
     fn convert(&self, message: Box<dyn Any + Send>) -> Box<dyn Any + Send> {
-        let message = match message.downcast::<P::Message>() {
+        let message = match message.downcast::<P>() {
             Ok(message) => *message,
-            Err(_) => unreachable!("a Port binding couples one Protocol Message type"),
+            Err(_) => unreachable!("a Port binding couples one Port message type"),
         };
-        Box::new(C::Message::from(message))
+        (self.connector.convert)(message)
     }
 }
 
@@ -4430,11 +4379,10 @@ where
 /// later by the runtime builder. Cyclic port connections are allowed.
 ///
 /// ```
-/// use samara::{Program, PortId, Protocol, ProgramBuildError};
-/// struct Service;
-/// impl Protocol for Service { type Message = (); }
+/// use samara::{Program, PortId, ProgramBuildError};
+/// enum ServiceMessage {}
 /// let mut builder = Program::builder();
-/// let _service = builder.port::<Service>(PortId::new("service"));
+/// let _service = builder.port::<ServiceMessage>(PortId::new("service"));
 /// assert!(matches!(builder.build(), Err(ProgramBuildError::PortBindingCount { count: 0, .. })));
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -4442,16 +4390,16 @@ where
 pub enum ProgramBuildError {
     /// Two components have the same name.
     DuplicateComponentId(ComponentId),
-    /// A port name was declared twice for the same protocol.
+    /// A port name was declared twice for the same message type.
     DuplicatePort {
-        /// The protocol's Rust type name.
+        /// The Port message type's Rust type name.
         protocol_type: &'static str,
         /// The duplicated port name.
         port: PortId,
     },
     /// A port has no provider or more than one provider.
     PortBindingCount {
-        /// The protocol's Rust type name.
+        /// The Port message type's Rust type name.
         protocol_type: &'static str,
         /// The port name.
         port: PortId,
@@ -4460,7 +4408,7 @@ pub enum ProgramBuildError {
     },
     /// A port belongs to another builder.
     ForeignPort {
-        /// The protocol's Rust type name.
+        /// The Port message type's Rust type name.
         protocol_type: &'static str,
         /// The port name.
         port: PortId,
@@ -4523,7 +4471,7 @@ impl Error for ProgramBuildError {}
 /// come from this builder.
 ///
 /// See the [crate example](crate) for a component, [`StdinLines`] for input, and
-/// [`Self::bind_port`] for request/reply wiring.
+/// [`Self::connect`] for request/reply wiring.
 pub struct ProgramBuilder {
     program: Arc<()>,
     components: Vec<Box<dyn ErasedComponentKernel>>,
@@ -4553,7 +4501,7 @@ impl ProgramBuilder {
     /// use samara::prelude::*;
     /// let mut program = Program::builder();
     /// let http = program.effect::<HttpRequest>();
-    /// let runtime = LiveRuntime::builder(program.build()?).bind_http().build()?;
+    /// let runtime = Runtime::builder(program.build()?).bind_http().build()?;
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn effect<D>(&mut self) -> EffectCapability<D>
@@ -4597,14 +4545,15 @@ impl ProgramBuilder {
         }
     }
 
-    /// Registers a component and returns its address.
+    /// Registers a component of kind `C` with its configuration and returns its address.
     ///
-    /// Calls [`Component::init`] now and stores the starting model and command.
-    /// The command runs when the runtime starts. Component names must be unique;
-    /// registration order does not determine live execution order.
+    /// Name the kind explicitly: `program.component::<Counter>(id, ())`. Calls
+    /// [`Component::init`] now and stores the configuration, starting model, and
+    /// command. The command runs when the runtime starts. Component names must be
+    /// unique; registration order does not determine live execution order.
     ///
-    /// See the [crate example](crate) or [`Self::bind_port`].
-    pub fn component<C>(&mut self, id: ComponentId, component: C) -> ComponentRef<C>
+    /// See the [crate example](crate) or [`Self::connect`].
+    pub fn component<C>(&mut self, id: ComponentId, config: C::Config) -> ComponentRef<C>
     where
         C: Component,
     {
@@ -4614,18 +4563,18 @@ impl ProgramBuilder {
             marker: PhantomData,
         };
         self.components
-            .push(Box::new(ComponentKernel::new(id, component)));
+            .push(Box::new(ComponentKernel::<C>::new(id, config)));
 
         component_ref
     }
 
-    /// Declares a named connection to a provider of protocol `P`.
+    /// Declares a named Port carrying messages of type `P`.
     ///
-    /// Bind exactly one provider with [`Self::bind_port`]. Different names allow
-    /// several providers of the same protocol. See [`Port`] for construction.
+    /// Bind exactly one provider with [`Self::connect`]. Different names allow
+    /// several providers for the same message type. See [`Port`] for construction.
     pub fn port<P>(&mut self, id: PortId) -> Port<P>
     where
-        P: Protocol,
+        P: Send + 'static,
     {
         self.ports.push(PortDeclaration {
             protocol_type: TypeId::of::<P>(),
@@ -4640,62 +4589,74 @@ impl ProgramBuilder {
         }
     }
 
-    /// Connects a Port to the component that will handle its messages.
+    /// Connects a Port to the Connector that will handle its messages.
     ///
-    /// The provider's message type must implement `From<P::Message>`; using the
-    /// protocol message type directly also works. Both the port and provider must
-    /// belong to this builder. [`Self::build`] checks that every port has exactly one
-    /// provider. Cyclic connections are allowed.
+    /// The Connector must accept the Port's message type. A Component whose
+    /// Message is that type connects through [`ComponentRef::connector`]; one
+    /// that wraps the Port's messages in a variant, or a library Connector in
+    /// another vocabulary, is adapted first with `accepting`
+    /// ([`ComponentRef::accepting`], [`Connector::accepting`]). Both the port
+    /// and the connector must belong to this builder. [`Self::build`] checks
+    /// that every port has exactly one connector. Cyclic connections are
+    /// allowed.
     ///
     /// ```
     /// use samara::prelude::*;
-    /// protocol! { type Count => enum CountMessage { Read -> u64, } }
+    /// enum CountMessage { Read(ReplyWith<u64>) }
+    ///
+    /// enum CounterMessage {
+    ///     Count(CountMessage),
+    ///     Tick,
+    /// }
     ///
     /// struct Counter;
     /// impl Component for Counter {
+    ///     type Config = ();
     ///     type Model = u64;
-    ///     type Message = CountMessage;
-    ///     fn init(&self) -> Init<u64, CountMessage> { Init::new(42) }
-    ///     fn update(&self, count: &mut u64, message: CountMessage) -> Command<CountMessage> {
+    ///     type Message = CounterMessage;
+    ///     fn init(_: &()) -> Init<u64, CounterMessage> { Init::new(42) }
+    ///     fn update(_: &(), count: &mut u64, message: CounterMessage) -> Command<CounterMessage> {
     ///         match message {
-    ///             CountMessage::Read(call) => Command::reply(call.reply_to, *count),
+    ///             CounterMessage::Count(CountMessage::Read(reply_with)) => Command::reply(reply_with, *count),
+    ///             CounterMessage::Tick => { *count += 1; Command::none() }
     ///         }
     ///     }
     /// }
     ///
-    /// struct Client { counter: Port<Count> }
+    /// struct Client;
+    ///
+    /// struct ClientConfig { counter: Port<CountMessage> }
     /// impl Component for Client {
+    ///     type Config = ClientConfig;
     ///     type Model = Option<u64>;
     ///     type Message = RequestOutcome<u64>;
-    ///     fn init(&self) -> Init<Self::Model, Self::Message> {
-    ///         Init::default().with_command(Command::request(self.counter.clone(), Read))
+    ///     fn init(config: &Self::Config) -> Init<Self::Model, Self::Message> {
+    ///         Init::default().with_command(Command::request_to(&config.counter, CountMessage::Read, |outcome| outcome))
     ///     }
-    ///     fn update(&self, value: &mut Option<u64>, reply: Self::Message) -> Command<Self::Message> {
+    ///     fn update(_config: &Self::Config, value: &mut Option<u64>, reply: Self::Message) -> Command<Self::Message> {
     ///         if let RequestOutcome::Replied(count) = reply { *value = Some(count); }
     ///         Command::none()
     ///     }
     /// }
     ///
     /// let mut builder = Program::builder();
-    /// let port = builder.port::<Count>(PortId::new("counter"));
-    /// let counter = builder.component(ComponentId::new("counter"), Counter);
-    /// builder.bind_port(&port, &counter);
-    /// let client = builder.component(ComponentId::new("client"), Client { counter: port });
+    /// let port = builder.port::<CountMessage>(PortId::new("counter"));
+    /// let counter = builder.component::<Counter>(ComponentId::new("counter"), ());
+    /// builder.connect(&port, &counter.accepting(CounterMessage::Count));
+    /// let client = builder.component::<Client>(ComponentId::new("client"), ClientConfig { counter: port });
     /// let mut runtime = ControlledRuntime::builder(builder.build()?).build()?;
     /// runtime.run_until_idle()?;
     /// assert_eq!(*runtime.state(&client)?, Some(42));
     /// assert!(runtime.cancel()?.is_clean());
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub fn bind_port<P, C>(&mut self, port: &Port<P>, provider: &ComponentRef<C>)
+    pub fn connect<M>(&mut self, port: &Port<M>, connector: &Connector<M>)
     where
-        P: Protocol,
-        C: Component,
-        C::Message: From<P::Message>,
+        M: Send + 'static,
     {
         self.bindings.push(Box::new(PortBinding {
             port: port.clone(),
-            provider: provider.clone(),
+            connector: connector.clone(),
         }));
     }
 
@@ -4808,7 +4769,7 @@ impl ProgramBuilder {
 /// }
 /// let mut program = Program::builder();
 /// let network = program.effect::<CheckConnection>();
-/// let runtime = LiveRuntime::builder(program.build()?)
+/// let runtime = Runtime::builder(program.build()?)
 ///     .bind_effect::<CheckConnection, _>(Network).build()?;
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
@@ -4852,7 +4813,7 @@ pub trait EffectDriver<D: EffectDescriptor>: Send + Sync + 'static {
 /// }
 /// let mut program = Program::builder();
 /// let values = program.source::<Values>();
-/// let runtime = LiveRuntime::builder(program.build()?)
+/// let runtime = Runtime::builder(program.build()?)
 ///     .bind_source::<Values, _>(ValueSource).build()?;
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
@@ -5030,9 +4991,9 @@ impl Error for RuntimeError {}
 /// Connects a Program's effects and sources to their I/O implementations.
 ///
 /// Call `bind_*` methods, then [`Self::build`]. Building validates the bindings;
-/// [`LiveRuntime::spawn`] starts work. See [`LiveRuntime`] for running a program,
+/// [`Runtime::spawn`] starts work. See [`Runtime`] for running a program,
 /// [`StdinLines`] for input, and [`EffectDriver`] for a custom driver.
-pub struct LiveRuntimeBuilder {
+pub struct RuntimeBuilder {
     program: Program,
     bindings: live_runtime::LiveBindings,
 }
@@ -5046,10 +5007,11 @@ pub struct LiveRuntimeBuilder {
 /// use samara::prelude::*;
 /// struct Counter;
 /// impl Component for Counter {
+///     type Config = ();
 ///     type Model = u64;
 ///     type Message = u64;
-///     fn init(&self) -> Init<u64, u64> { Init::new(0) }
-///     fn update(&self, count: &mut u64, amount: u64) -> Command<u64> {
+///     fn init(_config: &Self::Config) -> Init<u64, u64> { Init::new(0) }
+///     fn update(_config: &Self::Config, count: &mut u64, amount: u64) -> Command<u64> {
 ///         *count += amount;
 ///         Command::none()
 ///     }
@@ -5057,8 +5019,8 @@ pub struct LiveRuntimeBuilder {
 /// let tokio = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
 /// tokio.block_on(async {
 ///     let mut builder = Program::builder();
-///     let counter = builder.component(ComponentId::new("counter"), Counter);
-///     let runtime = LiveRuntime::builder(builder.build()?).build()?;
+///     let counter = builder.component::<Counter>(ComponentId::new("counter"), ());
+///     let runtime = Runtime::builder(builder.build()?).build()?;
 ///     let sender = runtime.handle(&counter)?;
 ///     let task = runtime.spawn();
 ///     sender.send(3).await?;
@@ -5072,17 +5034,17 @@ pub struct LiveRuntimeBuilder {
 /// Updates to one component never overlap. Independent events can arrive in
 /// either order. Internal message queues have no size limit, so sustained overload
 /// can grow memory use. Cancellation and runtime errors may discard queued work.
-pub struct LiveRuntime {
+pub struct Runtime {
     program: Program,
     bindings: live_runtime::LiveBindings,
     scope: Arc<live_runtime::LiveScope>,
     receiver: tokio::sync::mpsc::UnboundedReceiver<live_runtime::LiveEvent>,
 }
 
-impl LiveRuntime {
-    /// Starts configuring I/O for a Program. See [`LiveRuntime`].
-    pub fn builder(program: Program) -> LiveRuntimeBuilder {
-        LiveRuntimeBuilder {
+impl Runtime {
+    /// Starts configuring I/O for a Program. See [`Runtime`].
+    pub fn builder(program: Program) -> RuntimeBuilder {
+        RuntimeBuilder {
             program,
             bindings: live_runtime::LiveBindings::new(),
         }
@@ -5091,7 +5053,7 @@ impl LiveRuntime {
     /// Creates a sender for code outside the Samara program.
     ///
     /// Returns an error if the component does not belong to this Program. Keep the
-    /// handle in host code; components send via Commands instead. See [`LiveRuntime`].
+    /// handle in host code; components send via Commands instead. See [`Runtime`].
     pub fn handle<C: Component>(
         &self,
         component: &ComponentRef<C>,
@@ -5111,12 +5073,15 @@ impl LiveRuntime {
         })
     }
 
-    /// Creates a protocol client for code outside the Samara program.
+    /// Creates a Port client for code outside the Samara program.
     ///
     /// The port must be declared and bound in this Program. Otherwise returns an
     /// error. Keep the handle in host code; components use [`Port`] and Commands.
     /// See [`PortHandle`] for an example.
-    pub fn port_handle<P: Protocol>(&self, port: &Port<P>) -> Result<PortHandle<P>, RuntimeError> {
+    pub fn port_handle<P: Send + 'static>(
+        &self,
+        port: &Port<P>,
+    ) -> Result<PortHandle<P>, RuntimeError> {
         if !Arc::ptr_eq(&port.program, &self.program.program)
             || !self.program.bindings.iter().any(|binding| {
                 binding.protocol_type() == TypeId::of::<P>()
@@ -5137,7 +5102,7 @@ impl LiveRuntime {
     /// Starts the program on the current Tokio runtime.
     ///
     /// Returns a [`RuntimeTask`] that owns the running work. Await its shutdown to
-    /// wait for resource cleanup. See [`LiveRuntime`] for a complete example.
+    /// wait for resource cleanup. See [`Runtime`] for a complete example.
     ///
     /// # Panics
     ///
@@ -5154,7 +5119,7 @@ impl LiveRuntime {
     }
 }
 
-impl LiveRuntimeBuilder {
+impl RuntimeBuilder {
     /// Connects a source capability to a Tokio receiver.
     ///
     /// Use a capability for [`StreamDescriptor`] or a [`Framed`] source wrapping one.
@@ -5232,7 +5197,7 @@ impl LiveRuntimeBuilder {
     /// use samara::prelude::*;
     /// let mut program = Program::builder();
     /// let http = program.effect::<HttpRequest>();
-    /// let runtime = LiveRuntime::builder(program.build()?).bind_http().build()?;
+    /// let runtime = Runtime::builder(program.build()?).bind_http().build()?;
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     ///
@@ -5257,11 +5222,59 @@ impl LiveRuntimeBuilder {
     /// use samara::prelude::*;
     /// let mut program = Program::builder();
     /// let output = program.effect::<PrintStdout>();
-    /// let runtime = LiveRuntime::builder(program.build()?).bind_stdio().build()?;
+    /// let runtime = Runtime::builder(program.build()?).bind_stdio().build()?;
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn bind_stdio(mut self) -> Self {
         live_runtime::bind_stdio(&mut self.bindings);
+        self
+    }
+
+    /// Enables [`ReadSystemTime`] effects answered by the operating system clock.
+    ///
+    /// ```
+    /// use samara::prelude::*;
+    /// let mut program = Program::builder();
+    /// let clock = program.effect::<ReadSystemTime>();
+    /// let runtime = Runtime::builder(program.build()?).bind_system_time().build()?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn bind_system_time(mut self) -> Self {
+        self.bindings
+            .bind_effect::<ReadSystemTime, _>(SystemClockDriver);
+        self
+    }
+
+    /// Enables [`AppendToFile`], [`ReplaceFile`], [`ReadFile`], and [`RemoveFile`]
+    /// effects, resolving every path under `root`. Requires the `fs` feature.
+    ///
+    /// Provisional. Paths that are absolute or contain `..` fail with
+    /// [`FsErrorKind::OutsideRoot`]. The root is created lazily by the first write.
+    /// Only the effects the Program declares are bound, so a Program that reads
+    /// nothing does not need a [`ReadFile`] binding.
+    ///
+    /// ```
+    /// use samara::prelude::*;
+    /// let mut program = Program::builder();
+    /// let journal = program.effect::<AppendToFile>();
+    /// let runtime = Runtime::builder(program.build()?).bind_fs("./data").build()?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    #[cfg(feature = "fs")]
+    pub fn bind_fs(mut self, root: impl Into<std::path::PathBuf>) -> Self {
+        let driver = FsDriver::new(root);
+        if self.program.declares_effect_type::<AppendToFile>() {
+            self.bindings.bind_effect::<AppendToFile, _>(driver.clone());
+        }
+        if self.program.declares_effect_type::<ReplaceFile>() {
+            self.bindings.bind_effect::<ReplaceFile, _>(driver.clone());
+        }
+        if self.program.declares_effect_type::<ReadFile>() {
+            self.bindings.bind_effect::<ReadFile, _>(driver.clone());
+        }
+        if self.program.declares_effect_type::<RemoveFile>() {
+            self.bindings.bind_effect::<RemoveFile, _>(driver);
+        }
         self
     }
 
@@ -5270,15 +5283,15 @@ impl LiveRuntimeBuilder {
     /// Every declared effect and source needs one matching implementation, even if
     /// unused at startup. Missing, duplicate, conflicting, or foreign bindings return
     /// an error, as do foreign capabilities in startup commands and subscriptions.
-    /// Call [`LiveRuntime::spawn`] to begin work.
-    pub fn build(mut self) -> Result<LiveRuntime, RuntimeError> {
+    /// Call [`Runtime::spawn`] to begin work.
+    pub fn build(mut self) -> Result<Runtime, RuntimeError> {
         self.bindings.validate(&self.program)?;
         for component in &self.program.components {
             component.validate_initial_capabilities(&self.program)?;
         }
         let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
         let scope = Arc::new(live_runtime::LiveScope::new(sender));
-        Ok(LiveRuntime {
+        Ok(Runtime {
             program: self.program,
             bindings: self.bindings,
             scope,
@@ -5289,9 +5302,9 @@ impl LiveRuntimeBuilder {
 
 /// Sends messages to a component from surrounding async code.
 ///
-/// Create it with [`LiveRuntime::handle`] before spawning the runtime. Clones
+/// Create it with [`Runtime::handle`] before spawning the runtime. Clones
 /// send to the same component. The handle does not expose its model and should
-/// not be stored in a component. See [`LiveRuntime`] for a working example.
+/// not be stored in a component. See [`Runtime`] for a working example.
 ///
 /// <details>
 /// <summary>Compile-time checks</summary>
@@ -5323,7 +5336,7 @@ impl<C: Component> ComponentHandle<C> {
     /// Queues a message for this component.
     ///
     /// Success means the message was accepted, not that `update` has run. Returns an
-    /// error after shutdown begins or the runtime fails. See [`LiveRuntime`].
+    /// error after shutdown begins or the runtime fails. See [`Runtime`].
     pub async fn send(&self, message: C::Message) -> Result<(), RuntimeError> {
         self.scope.accept_ingress(live_runtime::LiveEvent::ingress(
             live_runtime::LiveIngress {
@@ -5336,36 +5349,37 @@ impl<C: Component> ComponentHandle<C> {
     }
 }
 
-/// Calls a protocol from async code outside a Samara program.
+/// Reaches a Port from async code outside a Samara program.
 ///
-/// Create it with [`LiveRuntime::port_handle`] before spawning the runtime.
-/// Clones use the same port. Notifications and requests still go through the
+/// Create it with [`Runtime::port_handle`] before spawning the runtime.
+/// Clones use the same port. Sends and requests still go through the
 /// provider's `update` method; the handle does not expose its model.
 ///
 /// ```
 /// use samara::prelude::*;
-/// protocol! { type Count => enum CountMessage { Read -> u64, } }
+/// enum CountMessage { Read(ReplyWith<u64>) }
 /// struct Counter;
 /// impl Component for Counter {
+///     type Config = ();
 ///     type Model = u64;
 ///     type Message = CountMessage;
-///     fn init(&self) -> Init<u64, CountMessage> { Init::new(42) }
-///     fn update(&self, count: &mut u64, message: CountMessage) -> Command<CountMessage> {
+///     fn init(_config: &Self::Config) -> Init<u64, CountMessage> { Init::new(42) }
+///     fn update(_config: &Self::Config, count: &mut u64, message: CountMessage) -> Command<CountMessage> {
 ///         match message {
-///             CountMessage::Read(call) => Command::reply(call.reply_to, *count),
+///             CountMessage::Read(reply_with) => Command::reply(reply_with, *count),
 ///         }
 ///     }
 /// }
 /// let tokio = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
 /// tokio.block_on(async {
 ///     let mut builder = Program::builder();
-///     let count = builder.port::<Count>(PortId::new("count"));
-///     let counter = builder.component(ComponentId::new("counter"), Counter);
-///     builder.bind_port(&count, &counter);
-///     let runtime = LiveRuntime::builder(builder.build()?).build()?;
+///     let count = builder.port::<CountMessage>(PortId::new("count"));
+///     let counter = builder.component::<Counter>(ComponentId::new("counter"), ());
+///     builder.connect(&count, &counter.connector());
+///     let runtime = Runtime::builder(builder.build()?).build()?;
 ///     let client = runtime.port_handle(&count)?;
 ///     let task = runtime.spawn();
-///     assert_eq!(client.request(Read).await?, 42);
+///     assert_eq!(client.request_to(CountMessage::Read).await?, 42);
 ///     assert!(task.shutdown(Shutdown::Drain).await?.is_clean());
 ///     Ok::<(), Box<dyn std::error::Error>>(())
 /// })?;
@@ -5378,50 +5392,38 @@ impl<C: Component> ComponentHandle<C> {
 /// <summary>Compile-time checks</summary>
 ///
 /// ```compile_fail
-/// use samara::{PortHandle, Protocol};
+/// use samara::PortHandle;
 ///
-/// fn mutate_provider<P: Protocol>(handle: &mut PortHandle<P>) {
+/// fn mutate_provider<P: Send + 'static>(handle: &mut PortHandle<P>) {
 ///     handle.model_mut();
 /// }
 /// ```
 ///
 /// ```compile_fail
-/// use samara::{Command, Notification, PortHandle, Protocol};
+/// use samara::{Command, PortHandle};
 ///
-/// struct ExampleProtocol;
-/// enum ExampleProtocolMessage { Notified }
-/// struct Notify;
+/// enum ExampleMessage { Notified }
 ///
-/// impl Protocol for ExampleProtocol {
-///     type Message = ExampleProtocolMessage;
-/// }
-///
-/// impl Notification<ExampleProtocol> for Notify {
-///     fn into_message(self) -> ExampleProtocolMessage {
-///         ExampleProtocolMessage::Notified
-///     }
-/// }
-///
-/// fn misuse(handle: PortHandle<ExampleProtocol>) -> Command<()> {
-///     Command::notify(handle, Notify)
+/// fn misuse(handle: PortHandle<ExampleMessage>) -> Command<()> {
+///     Command::send(&handle, ExampleMessage::Notified)
 /// }
 /// ```
 ///
 /// ```compile_fail
-/// use samara::{ControlledRuntime, Port, Protocol};
+/// use samara::{ControlledRuntime, Port};
 ///
-/// fn controlled_port_handle<P: Protocol>(runtime: &ControlledRuntime, port: &Port<P>) {
+/// fn controlled_port_handle<P: Send + 'static>(runtime: &ControlledRuntime, port: &Port<P>) {
 ///     let _ = runtime.port_handle(port);
 /// }
 /// ```
 ///
 /// </details>
-pub struct PortHandle<P: Protocol> {
+pub struct PortHandle<P: Send + 'static> {
     port: Port<P>,
     scope: Arc<live_runtime::LiveScope>,
 }
 
-impl<P: Protocol> Clone for PortHandle<P> {
+impl<P: Send + 'static> Clone for PortHandle<P> {
     fn clone(&self) -> Self {
         Self {
             port: self.port.clone(),
@@ -5430,7 +5432,7 @@ impl<P: Protocol> Clone for PortHandle<P> {
     }
 }
 
-impl<P: Protocol> fmt::Debug for PortHandle<P> {
+impl<P: Send + 'static> fmt::Debug for PortHandle<P> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_tuple("PortHandle")
@@ -5439,80 +5441,79 @@ impl<P: Protocol> fmt::Debug for PortHandle<P> {
     }
 }
 
-impl<P: Protocol> PortHandle<P> {
-    /// Queues a notification for the provider.
+impl<P: Send + 'static> PortHandle<P> {
+    /// Queues a message of the Port's type for the provider.
     ///
     /// Success means accepted for delivery, not handled by the provider. Returns an
     /// error if shutdown has begun or the runtime has failed.
     ///
     /// ```no_run
     /// use samara::prelude::*;
-    /// protocol! { type Events => enum EventMessage { Changed(String), } }
-    /// async fn notify(client: &PortHandle<Events>) -> Result<(), RuntimeError> {
-    ///     client.notify(Changed("ready".into())).await
+    /// enum EventMessage { Changed(String) }
+    /// async fn announce(client: &PortHandle<EventMessage>) -> Result<(), RuntimeError> {
+    ///     client.send(EventMessage::Changed("ready".into())).await
     /// }
     /// ```
-    pub async fn notify<N>(&self, notification: N) -> Result<(), RuntimeError>
-    where
-        N: Notification<P>,
-    {
+    pub async fn send(&self, message: P) -> Result<(), RuntimeError> {
         self.scope
-            .accept_ingress(live_runtime::LiveEvent::port_notification(
+            .accept_ingress(live_runtime::LiveEvent::port_send(
                 self.port.clone(),
-                notification,
+                message,
             ))
     }
 
-    /// Sends a request and waits for its reply without a timeout.
+    /// Sends a request built from its reply token and waits for the reply.
     ///
-    /// Dropping this future after sending stops waiting but does not cancel the
-    /// provider's work or release the pending request. An unanswered request can
-    /// keep Drain waiting. Runtime shutdown or failure before the reply returns
-    /// [`RuntimeError`]. See [`PortHandle`] for an example.
-    pub async fn request<R>(&self, request: R) -> Result<R::Reply, RuntimeError>
+    /// `request` is a constructor taking `ReplyWith<R>`, as for
+    /// [`Command::request_to`]; the awaited value is `R`. Dropping this future
+    /// after sending stops waiting but does not cancel the provider's work. An
+    /// unanswered request can keep Drain waiting; see
+    /// [`Self::request_to_timeout`].
+    ///
+    /// ```no_run
+    /// use samara::prelude::*;
+    /// enum LedgerMessage { Total(ReplyWith<u64>) }
+    /// async fn total(client: &PortHandle<LedgerMessage>) -> Result<u64, RuntimeError> {
+    ///     client.request_to(LedgerMessage::Total).await
+    /// }
+    /// ```
+    pub async fn request_to<R, Build>(&self, request: Build) -> Result<R, RuntimeError>
     where
-        R: Request<P>,
+        R: Send + 'static,
+        Build: FnOnce(ReplyWith<R>) -> P + Send + 'static,
     {
-        match self.request_inner(request, None).await? {
+        match self.request_to_inner(request, None).await? {
             RequestOutcome::Replied(reply) => Ok(reply),
             _ => unreachable!("unbounded host requests only complete with a reply"),
         }
     }
 
-    /// Sends a request and waits for its reply until `timeout` expires.
+    /// Sends a request built from its reply token with a timeout.
     ///
-    /// The clock starts when the future is first polled, including time waiting in
-    /// the runtime's queue. A reply processed at or after the deadline produces
-    /// [`RequestOutcome::TimedOut`]. Zero always times out. The provider keeps working;
-    /// later replies are ignored. Dropping this future does not remove the timeout.
-    /// Shutdown, runtime failure, or clock overflow returns [`RuntimeError`].
-    ///
-    /// ```no_run
-    /// use samara::prelude::*;
-    /// use std::time::Duration;
-    /// protocol! { type Health => enum HealthMessage { Check -> bool, } }
-    /// async fn check(client: &PortHandle<Health>) -> Result<RequestOutcome<bool>, RuntimeError> {
-    ///     client.request_timeout(Check, Duration::from_secs(2)).await
-    /// }
-    /// ```
-    pub async fn request_timeout<R>(
+    /// The deadline starts when Samara runs the command. A reply must be processed
+    /// before the deadline; a zero timeout always expires. On expiry, the caller gets
+    /// [`RequestOutcome::TimedOut`], the provider keeps running, and later replies are
+    /// ignored. Live execution uses Tokio time; controlled tests advance time themselves.
+    pub async fn request_to_timeout<R, Build>(
         &self,
-        request: R,
+        request: Build,
         timeout: Duration,
-    ) -> Result<RequestOutcome<R::Reply>, RuntimeError>
+    ) -> Result<RequestOutcome<R>, RuntimeError>
     where
-        R: Request<P>,
+        R: Send + 'static,
+        Build: FnOnce(ReplyWith<R>) -> P + Send + 'static,
     {
-        self.request_inner(request, Some(timeout)).await
+        self.request_to_inner(request, Some(timeout)).await
     }
 
-    async fn request_inner<R>(
+    async fn request_to_inner<R, Build>(
         &self,
-        request: R,
+        request: Build,
         timeout: Option<Duration>,
-    ) -> Result<RequestOutcome<R::Reply>, RuntimeError>
+    ) -> Result<RequestOutcome<R>, RuntimeError>
     where
-        R: Request<P>,
+        R: Send + 'static,
+        Build: FnOnce(ReplyWith<R>) -> P + Send + 'static,
     {
         let deadline = timeout
             .map(|timeout| {
@@ -5523,7 +5524,7 @@ impl<P: Protocol> PortHandle<P> {
             .transpose()?;
         let (completion, reply) = tokio::sync::oneshot::channel();
         self.scope
-            .accept_ingress(live_runtime::LiveEvent::port_request(
+            .accept_ingress(live_runtime::LiveEvent::port_request_to(
                 self.port.clone(),
                 request,
                 deadline,
@@ -5535,7 +5536,7 @@ impl<P: Protocol> PortHandle<P> {
 
 /// Owns a running Samara program and provides shutdown and error reporting.
 ///
-/// Returned by [`LiveRuntime::spawn`]. Await [`Self::shutdown`] to stop the program
+/// Returned by [`Runtime::spawn`]. Await [`Self::shutdown`] to stop the program
 /// and wait for cleanup. Use [`Self::run_forever`] to monitor it while waiting for
 /// an external shutdown signal.
 ///
@@ -5544,7 +5545,7 @@ impl<P: Protocol> PortHandle<P> {
 /// let tokio = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
 /// tokio.block_on(async {
 ///     let program = Program::builder().build()?;
-///     let task = LiveRuntime::builder(program).build()?.spawn();
+///     let task = Runtime::builder(program).build()?.spawn();
 ///     assert!(task.shutdown(Shutdown::Drain).await?.is_clean());
 ///     Ok::<(), Box<dyn std::error::Error>>(())
 /// })?;
@@ -5735,16 +5736,19 @@ pub struct ControlledRuntimeBuilder {
 ///
 /// ```
 /// use samara::prelude::*;
-/// struct Check { http: EffectCapability<HttpRequest> }
+/// struct Check;
+///
+/// struct CheckConfig { http: EffectCapability<HttpRequest> }
 /// impl Component for Check {
+///     type Config = CheckConfig;
 ///     type Model = Option<StatusCode>;
 ///     type Message = EffectOutcome<HttpResponse, HttpError>;
-///     fn init(&self) -> Init<Self::Model, Self::Message> {
+///     fn init(config: &Self::Config) -> Init<Self::Model, Self::Message> {
 ///         Init::default().with_command(Command::effect(
-///             &self.http, HttpRequest::get("https://example.test/health"),
+///             &config.http, HttpRequest::get("https://example.test/health"),
 ///         ))
 ///     }
-///     fn update(&self, status: &mut Self::Model, outcome: Self::Message) -> Command<Self::Message> {
+///     fn update(_config: &Self::Config, status: &mut Self::Model, outcome: Self::Message) -> Command<Self::Message> {
 ///         if let EffectOutcome::Succeeded(response) = outcome {
 ///             *status = Some(response.status());
 ///         }
@@ -5753,7 +5757,7 @@ pub struct ControlledRuntimeBuilder {
 /// }
 /// let mut builder = Program::builder();
 /// let http = builder.effect::<HttpRequest>();
-/// let check = builder.component(ComponentId::new("check"), Check { http });
+/// let check = builder.component::<Check>(ComponentId::new("check"), CheckConfig { http });
 /// let mut runtime = ControlledRuntime::builder(builder.build()?)
 ///     .control_effect::<HttpRequest>().build()?;
 /// runtime.run_until_idle()?;
@@ -5911,18 +5915,19 @@ impl ControlledRuntime {
     /// use std::time::Duration;
     /// struct Timer;
     /// impl Component for Timer {
+    ///     type Config = ();
     ///     type Model = bool;
     ///     type Message = ();
-    ///     fn init(&self) -> Init<bool, ()> {
+    ///     fn init(_config: &Self::Config) -> Init<bool, ()> {
     ///         Init::new(false).with_command(Command::after(Duration::from_secs(2), ()))
     ///     }
-    ///     fn update(&self, fired: &mut bool, _: ()) -> Command<()> {
+    ///     fn update(_config: &Self::Config, fired: &mut bool, _: ()) -> Command<()> {
     ///         *fired = true;
     ///         Command::none()
     ///     }
     /// }
     /// let mut builder = Program::builder();
-    /// let timer = builder.component(ComponentId::new("timer"), Timer);
+    /// let timer = builder.component::<Timer>(ComponentId::new("timer"), ());
     /// let mut runtime = ControlledRuntime::builder(builder.build()?).build()?;
     /// runtime.advance(Duration::from_secs(1))?;
     /// assert!(!*runtime.state(&timer)?);
@@ -6029,6 +6034,491 @@ impl ControlledRuntimeBuilder {
         Ok(ControlledRuntime {
             core: ControlledCore::new(self.program, self.bindings),
         })
+    }
+}
+
+/// A reusable slice of Program assembly, installed into an enclosing Program.
+///
+/// An Assembly declares its own Components and capabilities into a
+/// [`ProgramBuilder`], hands back a [`Connector`] accepting [`Self::Accepts`]
+/// as its address, plus whatever else callers may use as [`Self::Exports`]
+/// (often nothing), and lists the world boundaries it needs as
+/// [`Self::Requires`]. It never declares a Port: the host cuts and names its
+/// own Ports and connects the Assembly's Connector to them, or holds the
+/// Connector directly. It is subordinate to the Program, not to another
+/// Component: the Components it installs are ordinary peers.
+/// Application-owned Components do not need to implement it.
+///
+/// Drivers never bind inside [`Self::install`]; assembly is shared by live and
+/// controlled execution. [`ProgramBuilder::install`] returns an [`InstalledAssembly`]
+/// token holding the exports. A live host passes it to
+/// [`RuntimeBuilder::with_assembly`] and supplies drivers with
+/// [`WithAssembly::and_drivers`]; a controlled test passes it to
+/// [`ControlledRuntimeBuilder::with_assembly`] and is done, because controlled
+/// bindings carry no information beyond the descriptor type.
+///
+/// ```
+/// use samara::prelude::*;
+///
+/// struct Ping;
+/// impl EffectDescriptor for Ping {
+///     type Output = ();
+///     type Error = std::convert::Infallible;
+/// }
+///
+/// pub enum BeaconMessage { Tick }
+///
+/// struct Pinger;
+/// struct PingerConfig {
+///     ping: EffectCapability<Ping>,
+/// }
+/// impl Component for Pinger {
+///     type Config = PingerConfig;
+///     type Model = u32;
+///     type Message = BeaconMessage;
+///     fn init(_: &PingerConfig) -> Init<u32, BeaconMessage> { Init::new(0) }
+///     fn update(config: &PingerConfig, ticks: &mut u32, _: BeaconMessage) -> Command<BeaconMessage> {
+///         *ticks += 1;
+///         Command::effect_discarding_outcome(&config.ping, Ping)
+///     }
+/// }
+///
+/// impl Assembly for Pinger {
+///     type Config = ();
+///     type Accepts = BeaconMessage;
+///     type Exports = ();
+///     type Requires = Effect<Ping>;
+///     fn install(program: &mut ProgramBuilder, _: ()) -> (Connector<BeaconMessage>, ()) {
+///         let ping = program.effect::<Ping>();
+///         let pinger = program.component::<Pinger>(ComponentId::new("pinger"), PingerConfig { ping });
+///         (pinger.connector(), ())
+///     }
+/// }
+///
+/// struct NoopPing;
+/// impl EffectDriver<Ping> for NoopPing {
+///     fn execute(&self, _: Ping) -> BoxFuture<Result<(), std::convert::Infallible>> {
+///         Box::pin(async { Ok(()) })
+///     }
+/// }
+///
+/// fn assemble() -> Result<(Program, InstalledAssembly<Pinger>), ProgramBuildError> {
+///     let mut program = Program::builder();
+///     let pinger = program.install::<Pinger>(());
+///     // The host names its own Port and connects the Assembly to it.
+///     let beacon = program.port::<BeaconMessage>(PortId::new("beacon"));
+///     program.connect(&beacon, pinger.connector());
+///     Ok((program.build()?, pinger))
+/// }
+///
+/// let (program, pinger) = assemble()?;
+/// let live = Runtime::builder(program)
+///     .with_assembly(pinger)
+///     .and_drivers(NoopPing)
+///     .build()?;
+/// let (program, pinger) = assemble()?;
+/// let controlled = ControlledRuntime::builder(program)
+///     .with_assembly(pinger)
+///     .build()?;
+/// # drop((live, controlled));
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+///
+/// <details>
+/// <summary>Compile-time checks</summary>
+///
+/// A driver must implement the requirement at its position. Supplying a driver
+/// for a different effect does not compile:
+///
+/// ```compile_fail
+/// use samara::prelude::*;
+/// struct Ping;
+/// impl EffectDescriptor for Ping { type Output = (); type Error = std::convert::Infallible; }
+/// struct Pong;
+/// impl EffectDescriptor for Pong { type Output = (); type Error = std::convert::Infallible; }
+/// struct NoopPong;
+/// impl EffectDriver<Pong> for NoopPong {
+///     fn execute(&self, _: Pong) -> BoxFuture<Result<(), std::convert::Infallible>> {
+///         Box::pin(async { Ok(()) })
+///     }
+/// }
+/// struct Nop;
+/// impl Component for Nop {
+///     type Config = (); type Model = (); type Message = ();
+///     fn init(_: &()) -> Init<(), ()> { Init::new(()) }
+///     fn update(_: &(), _: &mut (), _: ()) -> Command<()> { Command::none() }
+/// }
+/// struct A;
+/// impl Assembly for A {
+///     type Config = ();
+///     type Accepts = ();
+///     type Exports = ();
+///     type Requires = Effect<Ping>;
+///     fn install(program: &mut ProgramBuilder, _: ()) -> (Connector<()>, ()) {
+///         program.effect::<Ping>();
+///         (program.component::<Nop>(ComponentId::new("nop"), ()).connector(), ())
+///     }
+/// }
+/// let mut program = Program::builder();
+/// let a = program.install::<A>(());
+/// let _ = Runtime::builder(program.build().unwrap())
+///     .with_assembly(a)
+///     .and_drivers(NoopPong);
+/// ```
+///
+/// A live chain that forgets the drivers has no builder to finish:
+///
+/// ```compile_fail
+/// use samara::prelude::*;
+/// struct Nop;
+/// impl Component for Nop {
+///     type Config = (); type Model = (); type Message = ();
+///     fn init(_: &()) -> Init<(), ()> { Init::new(()) }
+///     fn update(_: &(), _: &mut (), _: ()) -> Command<()> { Command::none() }
+/// }
+/// struct A;
+/// impl Assembly for A {
+///     type Config = ();
+///     type Accepts = ();
+///     type Exports = ();
+///     type Requires = ();
+///     fn install(program: &mut ProgramBuilder, _: ()) -> (Connector<()>, ()) {
+///         (program.component::<Nop>(ComponentId::new("nop"), ()).connector(), ())
+///     }
+/// }
+/// let mut program = Program::builder();
+/// let a = program.install::<A>(());
+/// let _ = Runtime::builder(program.build().unwrap())
+///     .with_assembly(a)
+///     .build();
+/// ```
+///
+/// </details>
+pub trait Assembly {
+    /// What the caller supplies at assembly, such as paths or instance identity.
+    type Config;
+    /// The message type the Assembly's [`Connector`] accepts: its public
+    /// vocabulary. For a library this is usually an opaque type whose
+    /// constructor functions are the API; an Assembly nobody sends to still
+    /// names its facade Component's Message here.
+    type Accepts: Send + 'static;
+    /// Anything else the caller may use after installation, such as a
+    /// `ComponentRef` for controlled tests. Often `()`.
+    type Exports;
+    /// The world boundaries the host must drive: one [`Effect`] or [`Source`]
+    /// marker, or a tuple of them (nesting allowed), or `()` for none.
+    type Requires: Requirements;
+
+    /// Declares this Assembly's Components and capabilities and returns its
+    /// Connector and other exports.
+    ///
+    /// Prefer [`ProgramBuilder::install`] at call sites. Bind no drivers and
+    /// declare no Ports here; Ports belong to the host.
+    fn install(
+        program: &mut ProgramBuilder,
+        config: Self::Config,
+    ) -> (Connector<Self::Accepts>, Self::Exports);
+}
+
+/// Names a required effect in [`Assembly::Requires`].
+///
+/// Live, the matching position in [`WithAssembly::and_drivers`] takes any
+/// [`EffectDriver<D>`]. Controlled, the effect is taken over by the harness.
+pub struct Effect<D: EffectDescriptor>(PhantomData<fn() -> D>);
+
+/// Names a required source in [`Assembly::Requires`].
+///
+/// Live, the matching position in [`WithAssembly::and_drivers`] takes any
+/// [`SourceDriver<S>`]. Controlled, events come from the harness.
+pub struct Source<S: SourceDescriptor>(PhantomData<fn() -> S>);
+
+/// A requirement list: an [`Effect`], a [`Source`], `()`, or a tuple of lists.
+///
+/// Implemented by the crate for tuples up to eight elements. The only operation
+/// is registering every element with a controlled builder, which is what
+/// [`ControlledRuntimeBuilder::with_assembly`] does.
+pub trait Requirements {
+    /// Takes control of every requirement in the list.
+    fn control(runtime: ControlledRuntimeBuilder) -> ControlledRuntimeBuilder;
+}
+
+impl<D: EffectDescriptor> Requirements for Effect<D> {
+    fn control(runtime: ControlledRuntimeBuilder) -> ControlledRuntimeBuilder {
+        runtime.control_effect::<D>()
+    }
+}
+
+impl<S: SourceDescriptor> Requirements for Source<S> {
+    fn control(runtime: ControlledRuntimeBuilder) -> ControlledRuntimeBuilder {
+        runtime.control_source::<S>()
+    }
+}
+
+impl Requirements for () {
+    fn control(runtime: ControlledRuntimeBuilder) -> ControlledRuntimeBuilder {
+        runtime
+    }
+}
+
+/// Live drivers satisfying a [`Requirements`] list, position by position.
+///
+/// Any [`EffectDriver<D>`] satisfies `Effect<D>`, any [`SourceDriver<S>`]
+/// satisfies `Source<S>`, `()` satisfies `()`, and a tuple satisfies a tuple of
+/// the same length when each element satisfies the element at its position.
+/// Implemented by the crate; applications do not implement it.
+pub trait Drivers<Requires: Requirements> {
+    /// Binds every driver into the live builder in list order.
+    fn bind(self, runtime: RuntimeBuilder) -> RuntimeBuilder;
+}
+
+impl<D: EffectDescriptor, T: EffectDriver<D>> Drivers<Effect<D>> for T {
+    fn bind(self, runtime: RuntimeBuilder) -> RuntimeBuilder {
+        runtime.bind_effect::<D, T>(self)
+    }
+}
+
+impl<S: SourceDescriptor, T: SourceDriver<S>> Drivers<Source<S>> for T {
+    fn bind(self, runtime: RuntimeBuilder) -> RuntimeBuilder {
+        runtime.bind_source::<S, T>(self)
+    }
+}
+
+impl Drivers<()> for () {
+    fn bind(self, runtime: RuntimeBuilder) -> RuntimeBuilder {
+        runtime
+    }
+}
+
+macro_rules! requirement_tuples {
+    ($(($($requirement:ident $driver:ident),+))+) => {$(
+        impl<$($requirement: Requirements),+> Requirements for ($($requirement,)+) {
+            fn control(runtime: ControlledRuntimeBuilder) -> ControlledRuntimeBuilder {
+                $(let runtime = $requirement::control(runtime);)+
+                runtime
+            }
+        }
+
+        impl<$($requirement: Requirements, $driver: Drivers<$requirement>),+> Drivers<($($requirement,)+)>
+            for ($($driver,)+)
+        {
+            #[allow(non_snake_case)]
+            fn bind(self, runtime: RuntimeBuilder) -> RuntimeBuilder {
+                let ($($driver,)+) = self;
+                $(let runtime = $driver.bind(runtime);)+
+                runtime
+            }
+        }
+    )+};
+}
+
+requirement_tuples! {
+    (R1 T1)
+    (R1 T1, R2 T2)
+    (R1 T1, R2 T2, R3 T3)
+    (R1 T1, R2 T2, R3 T3, R4 T4)
+    (R1 T1, R2 T2, R3 T3, R4 T4, R5 T5)
+    (R1 T1, R2 T2, R3 T3, R4 T4, R5 T5, R6 T6)
+    (R1 T1, R2 T2, R3 T3, R4 T4, R5 T5, R6 T6, R7 T7)
+    (R1 T1, R2 T2, R3 T3, R4 T4, R5 T5, R6 T6, R7 T7, R8 T8)
+}
+
+impl<D: EffectDescriptor> EffectDriver<D> for Box<dyn EffectDriver<D>> {
+    fn execute(&self, descriptor: D) -> BoxFuture<Result<D::Output, D::Error>> {
+        (**self).execute(descriptor)
+    }
+}
+
+impl<D: SourceDescriptor> SourceDriver<D> for Box<dyn SourceDriver<D>> {
+    fn run(&self, descriptor: D, sink: SourceSink<D>) -> BoxFuture<()> {
+        (**self).run(descriptor, sink)
+    }
+}
+
+/// A live builder waiting for an installed Assembly's drivers.
+///
+/// Returned by [`RuntimeBuilder::with_assembly`]. Nothing else can be
+/// called until [`Self::and_drivers`] supplies them, so a chain that forgets
+/// the drivers does not compile.
+#[must_use = "call `and_drivers` to supply the Assembly's drivers and recover the builder"]
+pub struct WithAssembly<S: Assembly> {
+    builder: RuntimeBuilder,
+    marker: PhantomData<fn() -> S>,
+}
+
+impl<S: Assembly> WithAssembly<S> {
+    /// Binds drivers for every entry in [`Assembly::Requires`], in order, and
+    /// returns the builder.
+    ///
+    /// Pass one driver for a single requirement or a tuple matching the
+    /// requirement tuple. A driver that implements several effects is passed
+    /// once per position; cloning is fine.
+    pub fn and_drivers(self, drivers: impl Drivers<S::Requires>) -> RuntimeBuilder {
+        drivers.bind(self.builder)
+    }
+
+    /// Binds the drivers the Assembly vendors through [`VendorsDrivers`] and
+    /// returns the builder.
+    pub fn and_its_vendored_drivers(self) -> RuntimeBuilder
+    where
+        S: VendorsDrivers,
+    {
+        self.and_drivers(S::drivers())
+    }
+}
+
+/// A [`Assembly`] that vendors live drivers for its own requirements.
+///
+/// Optional. Implement it when an Assembly has a sensible default way to meet
+/// [`Assembly::Requires`], such as a first-party filesystem driver rooted at
+/// the working directory. Hosts call [`WithAssembly::and_its_vendored_drivers`] or
+/// pass `S::drivers()` to [`WithAssembly::and_drivers`]; hosts with their own
+/// drivers ignore it. A library will usually gate this impl behind a feature so
+/// consumers bringing their own drivers do not pay for the vendored ones.
+///
+/// ```
+/// use samara::prelude::*;
+///
+/// struct Ping;
+/// impl EffectDescriptor for Ping {
+///     type Output = ();
+///     type Error = std::convert::Infallible;
+/// }
+/// struct NoopPing;
+/// impl EffectDriver<Ping> for NoopPing {
+///     fn execute(&self, _: Ping) -> BoxFuture<Result<(), std::convert::Infallible>> {
+///         Box::pin(async { Ok(()) })
+///     }
+/// }
+///
+/// struct Nop;
+/// impl Component for Nop {
+///     type Config = (); type Model = (); type Message = ();
+///     fn init(_: &()) -> Init<(), ()> { Init::new(()) }
+///     fn update(_: &(), _: &mut (), _: ()) -> Command<()> { Command::none() }
+/// }
+/// struct Pinger;
+/// impl Assembly for Pinger {
+///     type Config = ();
+///     type Accepts = ();
+///     type Exports = ();
+///     type Requires = Effect<Ping>;
+///     fn install(program: &mut ProgramBuilder, _: ()) -> (Connector<()>, ()) {
+///         let _ping = program.effect::<Ping>();
+///         (program.component::<Nop>(ComponentId::new("pinger"), ()).connector(), ())
+///     }
+/// }
+/// impl VendorsDrivers for Pinger {
+///     type Drivers = NoopPing;
+///     fn drivers() -> NoopPing { NoopPing }
+/// }
+///
+/// let mut program = Program::builder();
+/// let pinger = program.install::<Pinger>(());
+/// let runtime = Runtime::builder(program.build()?)
+///     .with_assembly(pinger)
+///     .and_its_vendored_drivers()
+///     .build()?;
+/// # drop(runtime);
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+pub trait VendorsDrivers: Assembly {
+    /// The concrete drivers, satisfying [`Assembly::Requires`] position by position.
+    type Drivers: Drivers<Self::Requires>;
+
+    /// Constructs the vendored drivers.
+    fn drivers() -> Self::Drivers;
+}
+
+impl RuntimeBuilder {
+    /// Starts binding an installed [`Assembly`]'s drivers.
+    ///
+    /// Takes the [`InstalledAssembly`] token from [`ProgramBuilder::install`] and returns
+    /// a step that holds this builder until [`WithAssembly::and_drivers`]
+    /// supplies them. See [`Assembly`] for a complete example.
+    pub fn with_assembly<S: Assembly>(self, installed: InstalledAssembly<S>) -> WithAssembly<S> {
+        drop(installed);
+        WithAssembly {
+            builder: self,
+            marker: PhantomData,
+        }
+    }
+}
+
+impl ControlledRuntimeBuilder {
+    /// Takes control of every effect and source in an installed [`Assembly`]'s
+    /// [`Assembly::Requires`].
+    ///
+    /// Controlled bindings carry no information beyond the descriptor type, so
+    /// no drivers are supplied. See [`Assembly`] for a complete example.
+    pub fn with_assembly<S: Assembly>(self, installed: InstalledAssembly<S>) -> Self {
+        drop(installed);
+        S::Requires::control(self)
+    }
+}
+
+/// Proof that a Program installed Assembly `S`, carrying its Connector and exports.
+///
+/// [`ProgramBuilder::install`] returns it. Read the Assembly's address through
+/// [`Self::connector`] and anything else through [`Self::exports`] while
+/// assembling, then pass the token to `with_assembly` on the live or
+/// controlled builder. The token is itself [`Addressable`], so a Command can
+/// be sent to it directly. It cannot be created any other way, so drivers are
+/// only ever bound for an Assembly that is actually in the Program.
+///
+/// The `must_use` lint warns when the token is discarded outright. It cannot warn
+/// when the token is kept for its exports and never bound; the live and controlled
+/// builders still catch that at `build()` with the descriptor type named.
+#[must_use = "pass this token to `with_assembly` on the live or controlled builder"]
+pub struct InstalledAssembly<S: Assembly> {
+    connector: Connector<S::Accepts>,
+    exports: S::Exports,
+    marker: PhantomData<fn() -> S>,
+}
+
+impl<S: Assembly> InstalledAssembly<S> {
+    /// The Assembly's address: a [`Connector`] accepting [`Assembly::Accepts`].
+    ///
+    /// Connect it to a Port the host names, or clone it into a Config and
+    /// address it directly.
+    pub fn connector(&self) -> &Connector<S::Accepts> {
+        &self.connector
+    }
+
+    /// Whatever else the Assembly exported, such as a `ComponentRef` for tests.
+    pub fn exports(&self) -> &S::Exports {
+        &self.exports
+    }
+}
+
+impl<S: Assembly> Addressable for InstalledAssembly<S> {
+    type Message = S::Accepts;
+
+    fn to_address(&self) -> Address<S::Accepts> {
+        self.connector.to_address()
+    }
+}
+
+impl<S: Assembly> fmt::Debug for InstalledAssembly<S> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("InstalledAssembly")
+            .field("assembly", &std::any::type_name::<S>())
+            .finish_non_exhaustive()
+    }
+}
+
+impl ProgramBuilder {
+    /// Installs an [`Assembly`] and returns the [`InstalledAssembly`] token holding its Connector and exports.
+    ///
+    /// Bind its drivers later with `with_assembly` on the live or controlled
+    /// builder. See [`Assembly`] for a complete example.
+    pub fn install<S: Assembly>(&mut self, config: S::Config) -> InstalledAssembly<S> {
+        let (connector, exports) = S::install(self, config);
+        InstalledAssembly {
+            connector,
+            exports,
+            marker: PhantomData,
+        }
     }
 }
 
@@ -6142,8 +6632,6 @@ pub enum TraceCommandKind {
     Effect,
     /// A message was sent to another component.
     Send,
-    /// A notification was sent through a port.
-    Notify,
     /// A request was sent through a port.
     Request,
     /// A provider replied to a request.
@@ -6323,111 +6811,6 @@ pub enum TraceEvent {
 }
 
 #[cfg(test)]
-mod protocol_macro_tests {
-    use super::*;
-
-    #[derive(Debug, PartialEq, Eq)]
-    struct Snapshot(u8);
-
-    protocol! {
-        type MacroProtocol => enum MacroProtocolMessage {
-            SnapshotRequest -> Snapshot,
-            Observation(u8),
-            Refresh,
-            Lookup(u16) -> Snapshot,
-        }
-    }
-
-    protocol! {
-        type UnitReplyProtocol => enum UnitReplyProtocolMessage {
-            Reset -> (),
-        }
-    }
-
-    #[test]
-    fn generated_payload_notification_is_flattened() {
-        fn assert_notification<N>()
-        where
-            N: Notification<MacroProtocol>,
-        {
-        }
-
-        assert_notification::<Observation>();
-        let message = <Observation as Notification<MacroProtocol>>::into_message(Observation(7));
-
-        match message {
-            MacroProtocolMessage::Observation(observed) => assert_eq!(observed, 7),
-            _ => panic!("notification became a different operation"),
-        }
-    }
-
-    #[test]
-    fn generated_unit_notification_is_flattened() {
-        let message = <Refresh as Notification<MacroProtocol>>::into_message(Refresh);
-
-        assert!(matches!(message, MacroProtocolMessage::Refresh));
-    }
-
-    #[test]
-    fn generated_unit_request_preserves_typed_reply_association() {
-        fn assert_reply_type<R>()
-        where
-            R: Request<MacroProtocol, Reply = Snapshot>,
-        {
-        }
-
-        assert_reply_type::<SnapshotRequest>();
-        let message = <SnapshotRequest as Request<MacroProtocol>>::into_message(
-            SnapshotRequest,
-            ReplyTo::<Snapshot>::sketch(41),
-        );
-
-        match message {
-            MacroProtocolMessage::SnapshotRequest(invocation) => {
-                let SnapshotRequest = invocation.request;
-                assert_eq!(invocation.reply_to.token.correlation, 41);
-                let _: ReplyTo<Snapshot> = invocation.reply_to;
-            }
-            _ => panic!("request became a different operation"),
-        }
-    }
-
-    #[test]
-    fn generated_payload_request_preserves_its_operation_value() {
-        fn assert_reply_type<R>()
-        where
-            R: Request<MacroProtocol, Reply = Snapshot>,
-        {
-        }
-
-        assert_reply_type::<Lookup>();
-        let message = <Lookup as Request<MacroProtocol>>::into_message(
-            Lookup(17),
-            ReplyTo::<Snapshot>::sketch(42),
-        );
-
-        match message {
-            MacroProtocolMessage::Lookup(invocation) => {
-                assert_eq!(invocation.request.0, 17);
-                assert_eq!(invocation.reply_to.token.correlation, 42);
-            }
-            _ => panic!("request became a different operation"),
-        }
-    }
-
-    #[test]
-    fn explicit_unit_reply_is_still_a_request() {
-        fn assert_unit_reply<R>()
-        where
-            R: Request<UnitReplyProtocol, Reply = ()>,
-        {
-        }
-
-        assert_unit_reply::<Reset>();
-    }
-}
-
-#[cfg(test)]
 mod source_plan_tests {
     use std::convert::Infallible;
 
@@ -6504,24 +6887,29 @@ mod request_authority_tests {
     struct Replier;
 
     impl Component for Replier {
+        type Config = ();
         type Model = ();
-        type Message = ReplyTo<u64>;
+        type Message = ReplyWith<u64>;
 
-        fn init(&self) -> Init<(), Self::Message> {
+        fn init(_config: &Self::Config) -> Init<(), Self::Message> {
             Init::default()
         }
 
-        fn update(&self, _: &mut (), reply_to: Self::Message) -> Command<Self::Message> {
-            Command::reply(reply_to, 7)
+        fn update(
+            _config: &Self::Config,
+            _: &mut (),
+            reply_with: Self::Message,
+        ) -> Command<Self::Message> {
+            Command::reply(reply_with, 7)
         }
     }
 
-    fn fixture() -> (Program, ComponentRef<Replier>, ReplyTo<u64>) {
+    fn fixture() -> (Program, ComponentRef<Replier>, ReplyWith<u64>) {
         let mut builder = Program::builder();
-        let replier = builder.component(ComponentId::new("replier"), Replier);
+        let replier = builder.component::<Replier>(ComponentId::new("replier"), ());
         let token = RequestToken::new(0, Arc::new(()));
         token.expire();
-        (builder.build().unwrap(), replier, ReplyTo::runtime(token))
+        (builder.build().unwrap(), replier, ReplyWith::runtime(token))
     }
 
     #[test]
@@ -6538,7 +6926,7 @@ mod request_authority_tests {
     #[tokio::test]
     async fn live_foreign_expired_reply_still_faults() {
         let (program, replier, foreign) = fixture();
-        let runtime = LiveRuntime::builder(program).build().unwrap();
+        let runtime = Runtime::builder(program).build().unwrap();
         let handle = runtime.handle(&replier).unwrap();
         let task = runtime.spawn();
         handle.send(foreign).await.unwrap();
