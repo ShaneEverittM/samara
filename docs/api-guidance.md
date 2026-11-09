@@ -772,11 +772,13 @@ that defense-in-depth fault does not add a dynamic dependency to the Program.
 ### How Does a Library Declare What It Needs?
 
 The unit of reuse is an Assembly, not a Component. A library ships a type
-implementing `Assembly`; its `install` declares one or more Components, their
-Ports, and their Effect and Source capabilities into the caller's
-`ProgramBuilder`, and returns only what the caller may use, normally the Port.
-The Component types, their `ComponentId`s, and their capabilities stay private
-as a consequence: nothing in the public surface needs them.
+implementing `Assembly`; its `install` declares one or more Components and
+their Effect and Source capabilities into the caller's `ProgramBuilder` and
+returns the Assembly's address, a `Connector` accepting `Assembly::Accepts`,
+plus any other `Exports`, often none. It declares no Ports: the host names
+its own and connects the Connector to them, or holds the Connector directly
+(ADR-0018). The Component types, their `ComponentId`s, and their capabilities
+stay private as a consequence: nothing in the public surface needs them.
 
 "What it needs" is two questions at two scales, and the API keeps them apart:
 
@@ -788,7 +790,7 @@ as a consequence: nothing in the public surface needs them.
 `install` binds no Drivers. Assembly is shared by live and controlled
 execution, binding is an execution-profile decision, and controlled execution
 must never run a live Driver. `ProgramBuilder::install` returns an
-`InstalledAssembly<A>` token holding the exports. A live host writes
+`InstalledAssembly<A>` token holding the Connector and exports. A live host writes
 `with_assembly(installed).and_drivers(drivers)`, where `drivers` is any
 `EffectDriver` or `SourceDriver` for a single requirement or a tuple matching
 the requirement tuple position by position; no boxing and no bindings struct.
@@ -811,10 +813,12 @@ Implement `Assembly` on a public marker struct, not on a Component.
 Component forces its `Config`, `Model`, and `Message` public too; a marker
 costs one line and names nothing else.
 
-An Assembly's `Exports` is normally a Port when the Assembly is part of your
-own application and a `Connector<M>` when it is a library: the Connector lets the
-application keep its own message enum and couple to the library's vocabulary with
-`accepting` at the `connect` site. See
+An Assembly's address is always a `Connector<Accepts>`, whether the Assembly
+is part of your own application or a library: the host either cuts a Port in
+its own vocabulary and connects the Connector to it, adapting with
+`accepting` when the vocabularies differ, or holds the Connector in a Config
+and addresses it directly. `Exports` is for anything else, such as a
+`ComponentRef` a controlled test needs, and is `()` otherwise. See
 [How Does a Component Expose Itself?](#how-does-a-component-expose-itself).
 
 Controlled execution delivers messages and inspects state by `ComponentRef<C>`,

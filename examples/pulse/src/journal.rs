@@ -1,7 +1,5 @@
 use samara::prelude::*;
 
-const JOURNAL: &str = "pulse/journal";
-
 /// Where the recorder appends, relative to the root the host binds.
 pub const JOURNAL_FILE: &str = "pulse.journal";
 
@@ -64,25 +62,23 @@ impl Component for Recorder {
 // A marker is the Assembly, so `Recorder`, its Model, and its
 // Message stay private. Implementing it on the Component would make all three
 // public, because `Component`'s associated types are part of its interface.
-/// The Assembly's public name; the Port it exports is typed by `JournalMessage`.
+/// The Assembly's public name; its Connector accepts `JournalMessage`.
 pub struct Journal;
 
 impl Assembly for Journal {
     type Config = ();
-    type Exports = Port<JournalMessage>;
+    type Accepts = JournalMessage;
+    type Exports = ();
     type Requires = (Effect<AppendToFile>, Effect<ReadSystemTime>);
 
-    fn install(program: &mut ProgramBuilder, _: Self::Config) -> Port<JournalMessage> {
+    fn install(program: &mut ProgramBuilder, _: Self::Config) -> (Connector<JournalMessage>, ()) {
         let append = program.effect::<AppendToFile>();
         let clock = program.effect::<ReadSystemTime>();
-        let journal = program.port::<JournalMessage>(PortId::new(JOURNAL));
         let recorder = program.component::<Recorder>(
             ComponentId::new("journal"),
             RecorderConfig { append, clock },
         );
-        program.connect(&journal, &recorder.accepting(Message::Journal));
-
-        journal
+        (recorder.accepting(Message::Journal), ())
     }
 }
 

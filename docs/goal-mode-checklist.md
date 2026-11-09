@@ -30,6 +30,7 @@ Governing documents:
 - [ADR-0014: Jacks and Plugs](adr/0014-jacks-and-plugs.md)
 - [ADR-0015: Ports, Connectors, and the Message Type](adr/0015-ports-connectors-and-the-message-type.md)
 - [ADR-0016: One Sending API](adr/0016-one-sending-api.md)
+- [ADR-0018: Assemblies Export a Connector](adr/0018-assemblies-export-a-connector.md)
 - [Architecture Test Strategy](testing/architecture-test-strategy.md)
 - [v0 Acceptance Matrix](testing/v0-acceptance-matrix.md)
 

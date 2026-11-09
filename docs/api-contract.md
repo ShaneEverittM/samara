@@ -588,6 +588,23 @@ interaction and leaves one way for a Command to reach a Component:
   `request_timeout_with`, `PortHandle::notify`, `request`, `request_timeout`,
   `Command::notification_intents`, `request_intents`.
 
+## Accepted and Implemented Contract: Assemblies
+
+[ADR-0013](adr/0013-component-kinds-assemblies-and-first-party-effects.md)
+as amended by [ADR-0018](adr/0018-assemblies-export-a-connector.md):
+
+- `Assembly` has `Config`, `Accepts`, `Exports`, and `Requires`, and
+  `install(&mut ProgramBuilder, Config) -> (Connector<Accepts>, Exports)`.
+  An Assembly declares Components and capabilities, never Ports or drivers.
+- `ProgramBuilder::install::<A>(config)` returns a `must_use`
+  `InstalledAssembly<A>` exposing `connector()` and `exports()`; the token
+  is `Addressable` with `Message = A::Accepts`.
+- `Runtime::builder(..).with_assembly(token).and_drivers(drivers)` binds
+  `A::Requires` position by position, or `.and_its_vendored_drivers()` when
+  `A: VendorsDrivers`; `ControlledRuntime::builder(..).with_assembly(token)`
+  controls every requirement. Either builder fails at `build()` when a
+  declared requirement is unbound, naming the descriptor.
+
 ## Deliberately Unfrozen Surfaces
 
 The following decisions remain explicit gates or deferrals rather than

@@ -32,12 +32,19 @@ profile builders then validate every declared terminal requirement before
 execution (ADR-0008).
 
 **Assembly** — A reusable slice of Program assembly: a type whose `install`
-declares its own Components, Ports, and capabilities into an enclosing
-`ProgramBuilder`, exports what callers may use (normally a Port), and lists
-the world boundaries the host must drive as `Requires`. The unit of reuse in
-Samara is an Assembly, not a Component. It leaves no trace at runtime: the
-Components it installs are ordinary peers reached through Ports. Not a
-*SubComponent*: Samara has no parent-child `update` nesting.
+declares its own Components and capabilities into an enclosing
+`ProgramBuilder`, hands back a `Connector` accepting `Accepts` as its
+address plus any other `Exports`, and lists the world boundaries the host
+must drive as `Requires`. It declares no Ports; the host names its own and
+connects the Connector to them (ADR-0018). The unit of reuse in Samara is an
+Assembly, not a Component. It leaves no trace at runtime: the Components it
+installs are ordinary peers. Not a *SubComponent*: Samara has no
+parent-child `update` nesting.
+
+**Accepts (of an Assembly)** — The message type the Assembly's Connector
+accepts, named from the host's side: the Assembly's public vocabulary. For a
+library it is usually an opaque type whose constructor functions are the
+API; an Assembly nobody sends to still names its facade Component's Message.
 
 **Requires (of an Assembly)** — The type-level list of `Effect<D>` and
 `Source<S>` markers naming what an Assembly needs driven. The live builder's
@@ -569,6 +576,7 @@ to hold.
 | Jack, `JackId`, `JackHandle`, `plug_in`, Plug, `Pluggable` | Port, `PortId`, `PortHandle`, `connect`, Connector | ADR-0014's names, replaced the same day by ADR-0015 with domain-neutral words. `bind_port` was the pre-0014 spelling of `connect`. |
 | `Connectable`, `connect_with`, `connector_with`, `to_connector` | `connect(&port, &connector)`, `ComponentRef::connector`, `accepting` | A Port takes a Connector and nothing else (ADR-0015 amendment, November 8, 2026); the conversion lives on the Connector side, under one verb. |
 | Recipient, Address | Connector | Working names while the provider-owned address was designed; *Connector* pairs with *Port* and names the thing held rather than a role. |
+| An Assembly exporting a `Port` | `Assembly::Accepts` and `InstalledAssembly::connector` | Removed November 9, 2026 (ADR-0018). Assemblies declare no Ports; the host names its own and connects the Assembly's Connector. |
 | `Installed<A>` | `InstalledAssembly<A>` | Renamed November 8, 2026 so `with_assembly(installed_assembly)` reads as a sentence; the token keeps the `must_use` nudge and `.exports()`. |
 | `LiveRuntime`, `LiveRuntimeBuilder` | `Runtime`, `RuntimeBuilder` | Renamed November 9, 2026: the live profile is the one every application names, so it carries no qualifier; *live execution* remains the glossary term for the profile, and `ControlledRuntime` keeps its adjective. |
 | `messages!`, `Notification<M>`, `Request<M>`, `RequestInvocation`, `Command::notify`, `request`, `request_with`, `request_timeout`, `request_timeout_with`, `TraceCommandKind::Notify` | `Command::send`, `Command::request_to`, `request_to_timeout`; a request variant carrying `ReplyWith<R>`; `TraceCommandKind::Send` with `target_port` | Removed November 8, 2026 (ADR-0016). The trait form and the constructor form gave the same guarantee twice; the message type is the protocol. |

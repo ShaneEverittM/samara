@@ -1,6 +1,8 @@
 # ADR-0013: Component Kinds, Assemblies, and Provisional First-Party Effects
 
-- Status: Accepted
+- Status: Accepted; the `Assembly` trait is amended by
+  [ADR-0018](0018-assemblies-export-a-connector.md), which adds `Accepts` and
+  makes `install` return the Assembly's Connector alongside its exports.
 - Date: November 8, 2026
 - Deciders: Samara maintainers
 - Scope: The `Component` trait signature, the reuse unit (`Assembly`), Port

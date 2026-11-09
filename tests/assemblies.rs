@@ -96,32 +96,29 @@ impl Component for Recorder {
     }
 }
 
-struct RecorderConfig {
-    port: &'static str,
-}
-
-/// Controlled execution has no Port-level ingress, so the test needs the
-/// `ComponentRef` as well as the Port. Live hosts only use the Port.
+/// Controlled execution has no Port-level ingress, so the test keeps the
+/// `ComponentRef` in `Exports`. Live hosts only use the Connector.
 struct RecorderExports {
-    ledger: Port<LedgerMessage>,
     recorder: ComponentRef<Recorder>,
 }
 
 impl Assembly for Recorder {
-    type Config = RecorderConfig;
+    type Config = ();
+    type Accepts = LedgerMessage;
     type Exports = RecorderExports;
     type Requires = (Effect<Stamp>, Source<Pulses>);
 
-    fn install(program: &mut ProgramBuilder, config: RecorderConfig) -> RecorderExports {
+    fn install(program: &mut ProgramBuilder, _: ()) -> (Connector<LedgerMessage>, RecorderExports) {
         let stamp = program.effect::<Stamp>();
         let pulses = program.source::<Pulses>();
-        let ledger = program.port::<LedgerMessage>(PortId::new(config.port));
         let recorder = program.component::<Recorder>(
             ComponentId::new("recorder"),
             RecorderCapabilities { stamp, pulses },
         );
-        program.connect(&ledger, &recorder.accepting(RecorderMessage::Ledger));
-        RecorderExports { ledger, recorder }
+        (
+            recorder.accepting(RecorderMessage::Ledger),
+            RecorderExports { recorder },
+        )
     }
 }
 
@@ -156,23 +153,33 @@ impl VendorsDrivers for Recorder {
     }
 }
 
-fn assemble() -> (Program, InstalledAssembly<Recorder>) {
+/// The host names its own Port and connects the Assembly's Connector to it.
+fn assemble() -> (Program, InstalledAssembly<Recorder>, Port<LedgerMessage>) {
     let mut program = Program::builder();
-    let recorder = program.install::<Recorder>(RecorderConfig { port: "ledger" });
-    (program.build().expect("program assembles"), recorder)
+    let recorder = program.install::<Recorder>(());
+    let ledger = program.port::<LedgerMessage>(PortId::new("ledger"));
+    program.connect(&ledger, recorder.connector());
+    (
+        program.build().expect("program assembles"),
+        recorder,
+        ledger,
+    )
 }
 
 #[test]
-fn install_returns_a_token_carrying_the_assembly_exports() {
-    let (_program, recorder) = assemble();
-    assert_eq!(recorder.exports().ledger.id(), &PortId::new("ledger"));
+fn install_returns_a_token_carrying_the_connector_and_exports() {
+    let (_program, recorder, _) = assemble();
+    assert_eq!(recorder.connector().id(), &ComponentId::new("recorder"));
+    assert_eq!(
+        recorder.exports().recorder.id(),
+        &ComponentId::new("recorder")
+    );
     assert!(format!("{recorder:?}").contains("Recorder"));
 }
 
 #[tokio::test]
 async fn live_builder_binds_every_requirement_through_with_assembly() {
-    let (program, recorder) = assemble();
-    let ledger = recorder.exports().ledger.clone();
+    let (program, recorder, ledger) = assemble();
     let stamp = CountingStamp::default();
     let runtime = Runtime::builder(program)
         .with_assembly(recorder)
@@ -202,7 +209,7 @@ async fn live_builder_binds_every_requirement_through_with_assembly() {
 
 #[test]
 fn live_builder_accepts_the_drivers_a_assembly_vendors() {
-    let (program, recorder) = assemble();
+    let (program, recorder, _) = assemble();
     Runtime::builder(program)
         .with_assembly(recorder)
         .and_its_vendored_drivers()
@@ -212,7 +219,7 @@ fn live_builder_accepts_the_drivers_a_assembly_vendors() {
 
 #[test]
 fn live_build_fails_when_assembly_drivers_are_not_bound() {
-    let (program, _) = assemble();
+    let (program, _, _) = assemble();
     let error = Runtime::builder(program)
         .build()
         .err()
@@ -222,7 +229,7 @@ fn live_build_fails_when_assembly_drivers_are_not_bound() {
 
 #[test]
 fn controlled_builder_registers_every_requirement_through_with_assembly() {
-    let (program, installed) = assemble();
+    let (program, installed, _) = assemble();
     let recorder = installed.exports().recorder.clone();
     let mut runtime = ControlledRuntime::builder(program)
         .with_assembly(installed)
@@ -247,7 +254,7 @@ fn controlled_builder_registers_every_requirement_through_with_assembly() {
 
 #[test]
 fn controlled_build_fails_when_assembly_drivers_are_not_controlled() {
-    let (program, _) = assemble();
+    let (program, _, _) = assemble();
     let error = ControlledRuntime::builder(program)
         .build()
         .err()

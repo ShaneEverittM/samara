@@ -61,13 +61,13 @@ mod journal_lib {
 
     impl Assembly for Journal {
         type Config = ();
-        type Exports = Connector<JournalMessage>;
+        type Accepts = JournalMessage;
+        type Exports = ();
         type Requires = ();
 
-        fn install(program: &mut ProgramBuilder, _: ()) -> Connector<JournalMessage> {
-            program
-                .component::<Recorder>(ComponentId::new("journal"), ())
-                .accepting(RecorderMessage::Journal)
+        fn install(program: &mut ProgramBuilder, _: ()) -> (Connector<JournalMessage>, ()) {
+            let recorder = program.component::<Recorder>(ComponentId::new("journal"), ());
+            (recorder.accepting(RecorderMessage::Journal), ())
         }
     }
 }
@@ -166,7 +166,7 @@ fn assemble() -> (Program, InstalledAssembly<Journal>, ComponentRef<Monitor>) {
     let mut program = Program::builder();
     let audit = program.port::<AuditMessage>(PortId::new("audit"));
     let journal = program.install::<Journal>(());
-    program.connect(&audit, &journal.exports().accepting(couple));
+    program.connect(&audit, &journal.connector().accepting(couple));
     let monitor =
         program.component::<Monitor>(ComponentId::new("monitor"), MonitorConfig { audit });
     (
@@ -204,7 +204,7 @@ fn an_application_port_reaches_a_library_connector_through_one_coupling() {
 fn connectors_are_inert_addresses_that_remember_only_what_they_accept() {
     let mut program = Program::builder();
     let journal = program.install::<Journal>(());
-    let connector: &Connector<JournalMessage> = journal.exports();
+    let connector: &Connector<JournalMessage> = journal.connector();
     assert_eq!(connector.id(), &ComponentId::new("journal"));
     let shown = format!("{connector:?}");
     assert!(shown.contains("JournalMessage"), "{shown}");
@@ -226,7 +226,7 @@ fn a_connector_from_another_program_is_rejected_at_build() {
 
     let mut program = Program::builder();
     let audit = program.port::<AuditMessage>(PortId::new("audit"));
-    program.connect(&audit, &foreign.exports().accepting(couple));
+    program.connect(&audit, &foreign.connector().accepting(couple));
     assert!(
         program.build().is_err(),
         "a foreign connector is not a provider here"
@@ -309,13 +309,13 @@ mod tally_lib {
 
     impl Assembly for Tally {
         type Config = ();
-        type Exports = Connector<TallyMessage>;
+        type Accepts = TallyMessage;
+        type Exports = ();
         type Requires = ();
 
-        fn install(program: &mut ProgramBuilder, _: ()) -> Connector<TallyMessage> {
-            program
-                .component::<Counter>(ComponentId::new("tally"), ())
-                .connector()
+        fn install(program: &mut ProgramBuilder, _: ()) -> (Connector<TallyMessage>, ()) {
+            let counter = program.component::<Counter>(ComponentId::new("tally"), ());
+            (counter.connector(), ())
         }
     }
 }
@@ -389,7 +389,7 @@ fn assemble_tally(
     let teller = program.component::<Teller>(
         ComponentId::new("teller"),
         TellerConfig {
-            tally: tally.exports().clone(),
+            tally: tally.connector().clone(),
             patience,
         },
     );
@@ -513,7 +513,7 @@ fn a_connector_is_adapted_to_the_holders_vocabulary_once_with_accepting() {
     let mut program = Program::builder();
     let journal = program.install::<Journal>(());
     // Elm 0.16's `Signal.forwardTo`: the library's connector, speaking our language.
-    let audit: Connector<AuditMessage> = journal.exports().accepting(couple);
+    let audit: Connector<AuditMessage> = journal.connector().accepting(couple);
     let shown = format!("{audit:?}");
     assert!(
         shown.contains("AuditMessage") && !shown.contains("JournalMessage"),
@@ -569,7 +569,7 @@ fn an_initial_request_to_a_foreign_connector_fails_both_profile_builds() {
         let mut other = Program::builder();
         let foreign = other.install::<Tally>(());
         let mut program = Program::builder();
-        program.component::<EagerTeller>(ComponentId::new("eager"), foreign.exports().clone());
+        program.component::<EagerTeller>(ComponentId::new("eager"), foreign.connector().clone());
         program
             .build()
             .expect("the hidden connector is ordinary Rust until a profile reads initial work")
@@ -596,7 +596,7 @@ fn a_connector_request_is_inspectable_without_a_runtime() {
     let mut program = Program::builder();
     let tally = program.install::<Tally>(());
     let command: Command<TellerMessage> =
-        Command::request_to(tally.exports(), TallyMessage::total, TellerMessage::Total);
+        Command::request_to(tally.connector(), TallyMessage::total, TellerMessage::Total);
     // The message is built with an inert reply token; the continuation runs on
     // an outcome the test chooses. The library's private `Inner` stays private,
     // so the test can only observe what the constructor exposes.

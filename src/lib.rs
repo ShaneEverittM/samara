@@ -6039,12 +6039,15 @@ impl ControlledRuntimeBuilder {
 
 /// A reusable slice of Program assembly, installed into an enclosing Program.
 ///
-/// An Assembly declares its own Components, Ports, and capabilities into a
-/// [`ProgramBuilder`], exports what callers may use (normally a [`Port`]), and
-/// lists the world boundaries it needs as [`Self::Requires`]. It is subordinate
-/// to the Program, not to another Component: the Components it installs are
-/// ordinary peers reached through Ports. Application-owned Components do not
-/// need to implement it.
+/// An Assembly declares its own Components and capabilities into a
+/// [`ProgramBuilder`], hands back a [`Connector`] accepting [`Self::Accepts`]
+/// as its address, plus whatever else callers may use as [`Self::Exports`]
+/// (often nothing), and lists the world boundaries it needs as
+/// [`Self::Requires`]. It never declares a Port: the host cuts and names its
+/// own Ports and connects the Assembly's Connector to them, or holds the
+/// Connector directly. It is subordinate to the Program, not to another
+/// Component: the Components it installs are ordinary peers.
+/// Application-owned Components do not need to implement it.
 ///
 /// Drivers never bind inside [`Self::install`]; assembly is shared by live and
 /// controlled execution. [`ProgramBuilder::install`] returns an [`InstalledAssembly`]
@@ -6082,14 +6085,13 @@ impl ControlledRuntimeBuilder {
 ///
 /// impl Assembly for Pinger {
 ///     type Config = ();
-///     type Exports = Port<BeaconMessage>;
+///     type Accepts = BeaconMessage;
+///     type Exports = ();
 ///     type Requires = Effect<Ping>;
-///     fn install(program: &mut ProgramBuilder, _: ()) -> Port<BeaconMessage> {
+///     fn install(program: &mut ProgramBuilder, _: ()) -> (Connector<BeaconMessage>, ()) {
 ///         let ping = program.effect::<Ping>();
-///         let beacon = program.port::<BeaconMessage>(PortId::new("beacon"));
 ///         let pinger = program.component::<Pinger>(ComponentId::new("pinger"), PingerConfig { ping });
-///         program.connect(&beacon, &pinger.connector());
-///         beacon
+///         (pinger.connector(), ())
 ///     }
 /// }
 ///
@@ -6103,7 +6105,9 @@ impl ControlledRuntimeBuilder {
 /// fn assemble() -> Result<(Program, InstalledAssembly<Pinger>), ProgramBuildError> {
 ///     let mut program = Program::builder();
 ///     let pinger = program.install::<Pinger>(());
-///     let _beacon: Port<BeaconMessage> = pinger.exports().clone();
+///     // The host names its own Port and connects the Assembly to it.
+///     let beacon = program.port::<BeaconMessage>(PortId::new("beacon"));
+///     program.connect(&beacon, pinger.connector());
 ///     Ok((program.build()?, pinger))
 /// }
 ///
@@ -6138,12 +6142,22 @@ impl ControlledRuntimeBuilder {
 ///         Box::pin(async { Ok(()) })
 ///     }
 /// }
+/// struct Nop;
+/// impl Component for Nop {
+///     type Config = (); type Model = (); type Message = ();
+///     fn init(_: &()) -> Init<(), ()> { Init::new(()) }
+///     fn update(_: &(), _: &mut (), _: ()) -> Command<()> { Command::none() }
+/// }
 /// struct A;
 /// impl Assembly for A {
 ///     type Config = ();
+///     type Accepts = ();
 ///     type Exports = ();
 ///     type Requires = Effect<Ping>;
-///     fn install(program: &mut ProgramBuilder, _: ()) { program.effect::<Ping>(); }
+///     fn install(program: &mut ProgramBuilder, _: ()) -> (Connector<()>, ()) {
+///         program.effect::<Ping>();
+///         (program.component::<Nop>(ComponentId::new("nop"), ()).connector(), ())
+///     }
 /// }
 /// let mut program = Program::builder();
 /// let a = program.install::<A>(());
@@ -6156,12 +6170,21 @@ impl ControlledRuntimeBuilder {
 ///
 /// ```compile_fail
 /// use samara::prelude::*;
+/// struct Nop;
+/// impl Component for Nop {
+///     type Config = (); type Model = (); type Message = ();
+///     fn init(_: &()) -> Init<(), ()> { Init::new(()) }
+///     fn update(_: &(), _: &mut (), _: ()) -> Command<()> { Command::none() }
+/// }
 /// struct A;
 /// impl Assembly for A {
 ///     type Config = ();
+///     type Accepts = ();
 ///     type Exports = ();
 ///     type Requires = ();
-///     fn install(_: &mut ProgramBuilder, _: ()) {}
+///     fn install(program: &mut ProgramBuilder, _: ()) -> (Connector<()>, ()) {
+///         (program.component::<Nop>(ComponentId::new("nop"), ()).connector(), ())
+///     }
 /// }
 /// let mut program = Program::builder();
 /// let a = program.install::<A>(());
@@ -6174,16 +6197,27 @@ impl ControlledRuntimeBuilder {
 pub trait Assembly {
     /// What the caller supplies at assembly, such as paths or instance identity.
     type Config;
-    /// What the caller may use after installation, normally a [`Port`].
+    /// The message type the Assembly's [`Connector`] accepts: its public
+    /// vocabulary. For a library this is usually an opaque type whose
+    /// constructor functions are the API; an Assembly nobody sends to still
+    /// names its facade Component's Message here.
+    type Accepts: Send + 'static;
+    /// Anything else the caller may use after installation, such as a
+    /// `ComponentRef` for controlled tests. Often `()`.
     type Exports;
     /// The world boundaries the host must drive: one [`Effect`] or [`Source`]
     /// marker, or a tuple of them (nesting allowed), or `()` for none.
     type Requires: Requirements;
 
-    /// Declares this Assembly's Components, Ports, and capabilities.
+    /// Declares this Assembly's Components and capabilities and returns its
+    /// Connector and other exports.
     ///
-    /// Prefer [`ProgramBuilder::install`] at call sites. Bind no drivers here.
-    fn install(program: &mut ProgramBuilder, config: Self::Config) -> Self::Exports;
+    /// Prefer [`ProgramBuilder::install`] at call sites. Bind no drivers and
+    /// declare no Ports here; Ports belong to the host.
+    fn install(
+        program: &mut ProgramBuilder,
+        config: Self::Config,
+    ) -> (Connector<Self::Accepts>, Self::Exports);
 }
 
 /// Names a required effect in [`Assembly::Requires`].
@@ -6356,13 +6390,21 @@ impl<S: Assembly> WithAssembly<S> {
 ///     }
 /// }
 ///
+/// struct Nop;
+/// impl Component for Nop {
+///     type Config = (); type Model = (); type Message = ();
+///     fn init(_: &()) -> Init<(), ()> { Init::new(()) }
+///     fn update(_: &(), _: &mut (), _: ()) -> Command<()> { Command::none() }
+/// }
 /// struct Pinger;
 /// impl Assembly for Pinger {
 ///     type Config = ();
+///     type Accepts = ();
 ///     type Exports = ();
 ///     type Requires = Effect<Ping>;
-///     fn install(program: &mut ProgramBuilder, _: ()) {
+///     fn install(program: &mut ProgramBuilder, _: ()) -> (Connector<()>, ()) {
 ///         let _ping = program.effect::<Ping>();
+///         (program.component::<Nop>(ComponentId::new("pinger"), ()).connector(), ())
 ///     }
 /// }
 /// impl VendorsDrivers for Pinger {
@@ -6414,27 +6456,45 @@ impl ControlledRuntimeBuilder {
     }
 }
 
-/// Proof that a Program installed Assembly `S`, carrying its exports.
+/// Proof that a Program installed Assembly `S`, carrying its Connector and exports.
 ///
-/// [`ProgramBuilder::install`] returns it. Read the exports through
-/// [`Self::exports`] while assembling, then pass the token to
-/// `with_assembly` on the live or controlled builder. The token cannot be
-/// created any other way, so drivers are only ever bound for an Assembly that
-/// is actually in the Program.
+/// [`ProgramBuilder::install`] returns it. Read the Assembly's address through
+/// [`Self::connector`] and anything else through [`Self::exports`] while
+/// assembling, then pass the token to `with_assembly` on the live or
+/// controlled builder. The token is itself [`Addressable`], so a Command can
+/// be sent to it directly. It cannot be created any other way, so drivers are
+/// only ever bound for an Assembly that is actually in the Program.
 ///
 /// The `must_use` lint warns when the token is discarded outright. It cannot warn
 /// when the token is kept for its exports and never bound; the live and controlled
 /// builders still catch that at `build()` with the descriptor type named.
 #[must_use = "pass this token to `with_assembly` on the live or controlled builder"]
 pub struct InstalledAssembly<S: Assembly> {
+    connector: Connector<S::Accepts>,
     exports: S::Exports,
     marker: PhantomData<fn() -> S>,
 }
 
 impl<S: Assembly> InstalledAssembly<S> {
-    /// What the Assembly exported, normally a [`Port`] to clone and wire against.
+    /// The Assembly's address: a [`Connector`] accepting [`Assembly::Accepts`].
+    ///
+    /// Connect it to a Port the host names, or clone it into a Config and
+    /// address it directly.
+    pub fn connector(&self) -> &Connector<S::Accepts> {
+        &self.connector
+    }
+
+    /// Whatever else the Assembly exported, such as a `ComponentRef` for tests.
     pub fn exports(&self) -> &S::Exports {
         &self.exports
+    }
+}
+
+impl<S: Assembly> Addressable for InstalledAssembly<S> {
+    type Message = S::Accepts;
+
+    fn to_address(&self) -> Address<S::Accepts> {
+        self.connector.to_address()
     }
 }
 
@@ -6448,13 +6508,15 @@ impl<S: Assembly> fmt::Debug for InstalledAssembly<S> {
 }
 
 impl ProgramBuilder {
-    /// Installs a [`Assembly`] and returns the [`InstalledAssembly`] token holding its exports.
+    /// Installs an [`Assembly`] and returns the [`InstalledAssembly`] token holding its Connector and exports.
     ///
     /// Bind its drivers later with `with_assembly` on the live or controlled
     /// builder. See [`Assembly`] for a complete example.
     pub fn install<S: Assembly>(&mut self, config: S::Config) -> InstalledAssembly<S> {
+        let (connector, exports) = S::install(self, config);
         InstalledAssembly {
-            exports: S::install(self, config),
+            connector,
+            exports,
             marker: PhantomData,
         }
     }

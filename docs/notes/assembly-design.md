@@ -57,9 +57,11 @@ not use; Components are peers connected by Ports.
 
 The authoritative description is the `Assembly` rustdoc in `src/lib.rs`,
 with its full example and two compile-fail cases, and `tests/assemblies.rs`.
-In one paragraph: `Assembly` has `Config`, `Exports`, and `Requires`, and
-an `install` associated function that declares into a `ProgramBuilder`;
-`ProgramBuilder::install` returns a `must_use` `InstalledAssembly<A>` token carrying
+In one paragraph: `Assembly` has `Config`, `Accepts`, `Exports`, and
+`Requires`, and an `install` associated function that declares into a
+`ProgramBuilder` and returns the Assembly's `Connector<Accepts>` plus its
+other exports (ADR-0018); `ProgramBuilder::install` returns a `must_use`
+`InstalledAssembly<A>` token carrying
 the exports. The live builder's `with_assembly(token)` returns a
 `WithAssembly` step whose only method, `and_drivers`, takes any value
 implementing `Drivers<Requires>` (a single driver or a tuple matching the
@@ -130,14 +132,16 @@ pulse journal (`examples/pulse/src/journal.rs`) is the worked example: one
   offers through `must_use`. Decided November 7, 2026: not an end state to
   work toward.
 - **Identity scoping.** `Config` is where a scope or instance id would go.
-  Whether the runtime should help, for example by prefixing `PortId` and
-  `ComponentId` under an Assembly scope, is open.
-- **Exports beyond a Port.** Partly settled November 8, 2026 (ADR-0014): a
-  library Assembly exports a `Connector<M>` rather than a Port of its own message type,
-  so the application keeps its own vocabulary and couples with `accepting` at the `connect` site.
-  The url checker's tests also wanted a private `ComponentRef` retained;
-  whether `Exports` should carry test-only handles, or whether that is what
-  the isolated Component runtime follow-up is for, is still open.
+  Since ADR-0018 Assemblies declare no Ports, so only `ComponentId` can
+  collide across two installs of one Assembly; whether the runtime should
+  help, for example by prefixing `ComponentId` under an Assembly scope, is
+  open.
+- **Exports beyond a Port.** Settled November 9, 2026 (ADR-0018): every
+  Assembly returns a `Connector<Accepts>` as its address, and `Exports` is
+  for anything else. The url checker's tests wanted a private `ComponentRef`
+  retained; that is what `Exports` now carries in `tests/assemblies.rs`,
+  with the leak it implies noted below. Whether an isolated Component
+  runtime makes that unnecessary is still open.
 - **Named positions.** `Requires` is positional. Past five or six entries a
   host's `and_drivers((a, b, c, d, e, f))` stops reading well, which is also
   a signal that the Assembly is too large. A `Requires`-level grouping that
@@ -168,9 +172,9 @@ pulse journal (`examples/pulse/src/journal.rs`) is the worked example: one
   `Signal.forwardTo` in Elm 0.16 is `Connector::accepting`.
 - **Controlled execution has no Port-level ingress.** `ControlledRuntime`
   delivers messages by `ComponentRef<C>` only, and inspects state the same way,
-  so an Assembly that exports just a Port cannot be driven or observed in a
-  controlled test from outside its module. `tests/assemblies.rs` exports the
-  `ComponentRef` alongside the Port, which works there only because the whole
+  so an Assembly that exports only its Connector cannot be observed in a
+  controlled test from outside its module. `tests/assemblies.rs` carries the
+  `ComponentRef` in `Exports`, which works there only because the whole
   test is one module. For a real Assembly the stopgap fails: `ComponentRef<C>`
   in `Exports` makes `C` public, which is the same `Model`/`Message` leak as
   implementing `Assembly` on the Component. Until there is a Port-keyed

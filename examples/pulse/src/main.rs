@@ -6,7 +6,8 @@ async fn main() -> anyhow::Result<()> {
     let mut builder = Program::builder();
 
     let journal = builder.install::<Journal>(());
-    // Monitor will be assembled here against `journal.exports()`.
+    // Monitor will be assembled here against `journal.connector()`, through a
+    // Port this host names or by holding the Connector directly.
 
     let program = builder.build()?;
 
