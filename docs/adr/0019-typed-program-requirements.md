@@ -48,6 +48,22 @@ First-party implementations are ordinary tuple values: `HttpDriver`,
 `StdoutDriver`, `StderrDriver`, `SystemClockDriver`, `FsDriver`,
 `DrivenSource<TcpDriver>`, `MpscReceiver`, and Unix `StdinDriver`.
 
+An Assembly may implement `VendorsDrivers` with a separate `DriverConfig`
+associated type. `drivers(config: Self::DriverConfig) -> Self::Drivers`
+consumes live binding settings and returns the tuple supplied to `with_drivers`.
+Use `DriverConfig = ()` when there are no settings. This config is independent
+of `Assembly::Config`, is never installed in the Program, and is unnecessary
+for controlled execution. A host may construct different driver tuples for
+the same logical Program without changing its Components or descriptors.
+
+For the Journal example, `JournalConfig.file` is the user-supplied relative
+filename forwarded into the Recorder's immutable config. `JournalConfig::default()`
+selects `JOURNAL_FILE`. The host supplies `FsDriver::new(root)` and
+`SystemClockDriver` directly in `main`; the root is not part of logical
+application wiring. Journal needs no vendored-driver wrapper for these
+standard implementations. This does not change filesystem path validation or
+make configuration imply any file I/O.
+
 The requirement machinery is sealed: application implementations cannot
 declare one type shape while omitting its capabilities or binding work.
 Source requirements preserve both application descriptor and terminal type.
@@ -80,6 +96,8 @@ event ordering or component ownership of a world resource.
   validation. Type metadata does not prove value identity or transition purity.
 - Capability declarations never drift from the typed inventory: the same
   sealed operation constructs both the inventory and the returned values.
+- Driver settings affect only the vendored live implementations; supplying
+  them does not alter the Program's capability requirements or start work.
 - Dropping a registration builder adds no Component. Dropping an unbound
   runtime builder starts no work. Failed assembly should discard its enclosing
   ProgramBuilder, as installation may already have registered child Components.
@@ -96,8 +114,14 @@ Additional compile-fail contracts reject incremental live binding and direct
 trait binding. Duplicate and conflicting driver tuples remain integration
 tests; internal registry tests retain foreign exact-capability defenses.
 
-The `pulse` example includes its in-progress host wiring. It compiles but
-retains unfinished behavior, so it is not application-level acceptance evidence.
+The `pulse` example's append slice verifies separate filename and root
+configuration. A Transition emits one `AppendToFile::line` containing
+`name: from -> to`; its success, failure, or cancellation returns as a Message
+and is retained as the Model's most recently completed append outcome. This
+slice adds no retry or append-ordering policy. Controlled tests inspect the
+configured filename, and live tests verify that it resolves beneath the
+configured root. Recent-history requests remain unfinished, so `pulse` is not
+acceptance evidence for a complete application.
 
 ## Tradeoffs and rollback
 

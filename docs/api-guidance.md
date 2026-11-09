@@ -795,9 +795,15 @@ incomplete runtime setup has no `build` method. Exact stream positions retain
 their capability identities; controlled execution constructs no live Driver.
 
 Assemblies may implement `VendorsDrivers` to supply a concrete tuple through
-`A::drivers()`. The host can use that tuple at a matching position in the
-Program's driver tuple. Libraries normally feature-gate this implementation;
+`A::drivers(driver_config)`. `VendorsDrivers::DriverConfig` contains live
+implementation settings, such as a filesystem root; `Assembly::Config` contains
+logical settings, such as a relative filename. These are separate types, and
+the Program does not retain driver config. Use `DriverConfig = ()` for vendors
+without settings. The host can use the returned tuple at a matching position
+in the Program's driver tuple. Libraries normally feature-gate this implementation;
 the Assembly and its requirement shape remain available without live drivers.
+Assemblies that only need standard Drivers can omit `VendorsDrivers`; their
+hosts supply constructors such as `FsDriver::new(root)` directly in the tuple.
 
 Implement `Assembly` on a public marker struct, not on a Component.
 `Component`'s associated types are part of its public interface, so a public

@@ -1,10 +1,26 @@
+use std::path::PathBuf;
+
 use samara::prelude::*;
 
-/// Where the recorder appends, relative to the root the host binds.
+/// Default filename, relative to the root the host supplies to the Driver.
 pub const JOURNAL_FILE: &str = "pulse.journal";
 
-/// The journal's public vocabulary, carried by the `Port<JournalMessage>` the
-/// Assembly exports.
+/// Logical Journal settings shared by live and controlled execution.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JournalConfig {
+    /// User-supplied filename relative to the Driver's root.
+    pub file: PathBuf,
+}
+
+impl Default for JournalConfig {
+    fn default() -> Self {
+        Self {
+            file: JOURNAL_FILE.into(),
+        }
+    }
+}
+
+/// The journal's public vocabulary, accepted by the Assembly's Connector.
 #[derive(Debug)]
 pub enum JournalMessage {
     /// Records one confirmed transition.
@@ -20,19 +36,24 @@ pub enum JournalMessage {
     },
 }
 
-/// Applies the hold policy and records confirmed transitions.
+/// Records confirmed transitions through the declared filesystem capability.
 struct Recorder;
 
 enum Message {
     Journal(JournalMessage),
+    Appended(EffectOutcome<(), FsError>),
 }
 
-enum Model {
-    Idle,
+#[derive(Default)]
+struct Model {
+    /// The most recently completed append; pending work does not overwrite it.
+    last_append: Option<EffectOutcome<(), FsError>>,
 }
 
-/// The capabilities one Recorder is wired with.
-struct RecorderConfig;
+/// Immutable logical settings forwarded from the Assembly.
+struct RecorderConfig {
+    file: PathBuf,
+}
 
 impl Component for Recorder {
     type Requires = (Effect<AppendToFile>, Effect<ReadSystemTime>);
@@ -41,23 +62,28 @@ impl Component for Recorder {
     type Message = Message;
 
     fn init(_: &RecorderConfig, _: &Capabilities<Self::Requires>) -> Init<Model, Message> {
-        Init::new(Model::Idle)
+        Init::new(Model::default())
     }
 
     fn update(
-        _: &RecorderConfig,
-        (append, clock): &Capabilities<Self::Requires>,
+        config: &RecorderConfig,
+        (append, _clock): &Capabilities<Self::Requires>,
         model: &mut Model,
         message: Message,
     ) -> Command<Message> {
         match message {
-            Message::Journal(journal) => match (model, journal) {
-                (Model::Idle, JournalMessage::Transition { name, from, to }) => {
-                    let _ = (&append, &clock, name, from, to);
-                    todo!()
-                }
-                (Model::Idle, JournalMessage::Recent { .. }) => todo!(),
-            },
+            Message::Journal(JournalMessage::Transition { name, from, to }) => {
+                Command::effect_with(
+                    append,
+                    AppendToFile::line(config.file.clone(), format!("{name}: {from} -> {to}")),
+                    Message::Appended,
+                )
+            }
+            Message::Journal(JournalMessage::Recent { .. }) => todo!(),
+            Message::Appended(outcome) => {
+                model.last_append = Some(outcome);
+                Command::none()
+            }
         }
     }
 }
@@ -69,31 +95,26 @@ impl Component for Recorder {
 pub struct Journal;
 
 impl Assembly for Journal {
-    type Config = ();
+    type Config = JournalConfig;
     type Accepts = JournalMessage;
     type Exports = ();
     type Requires = (Effect<AppendToFile>, Effect<ReadSystemTime>);
 
     fn install<R: Requirements>(
         program: &mut ProgramBuilder<R>,
-        _: (),
+        config: Self::Config,
         capabilities: Capabilities<Self::Requires>,
     ) -> Result<(Connector<JournalMessage>, ()), ProgramBuildError> {
         let recorder = program
-            .component::<Recorder>(ComponentId::new("journal"), RecorderConfig)
+            .component::<Recorder>(
+                ComponentId::new("journal"),
+                RecorderConfig { file: config.file },
+            )
             .with_capabilities(capabilities)
             .finish()?;
         Ok((recorder.accepting(Message::Journal), ()))
     }
 }
 
-/// The drivers `pulse` vendors for the journal: the crate's filesystem driver
-/// rooted at the working directory, and the system clock. Hosts may pass any
-/// other pair that drives the same two effects to `with_drivers` instead.
-impl VendorsDrivers for Journal {
-    type Drivers = (FsDriver, SystemClockDriver);
-
-    fn drivers() -> Self::Drivers {
-        (FsDriver::new("."), SystemClockDriver)
-    }
-}
+#[cfg(test)]
+mod tests;

@@ -1,12 +1,12 @@
 use samara::{
-    Assembly, Capabilities, Command, Component, ComponentId, Connector, Effect, Init, PrintStdout,
-    Program, RequestOutcome, Runtime, Shutdown, Source, SourceEvent, StdinDriver, StdinLines,
-    StdoutDriver, Subscription, SubscriptionId, Subscriptions, VendorsDrivers,
+    Assembly, Capabilities, Command, Component, ComponentId, Connector, Effect, FsDriver, Init,
+    PrintStdout, Program, RequestOutcome, Runtime, Shutdown, Source, SourceEvent, StdinDriver,
+    StdinLines, StdoutDriver, Subscription, SubscriptionId, Subscriptions, SystemClockDriver,
 };
 
 // This is a "library assembly", that is a subsection of a Program (discussed later)
 // designed to be embedded in another program.
-use pulse::journal::{Journal, JournalMessage};
+use pulse::journal::{Journal, JournalConfig, JournalMessage};
 
 // This is the component of our application>
 struct Monitor;
@@ -73,7 +73,7 @@ impl Component for Monitor {
         _model: &Self::Model,
     ) -> Subscriptions<Self::Message> {
         Subscriptions::one(Subscription::source_with(
-            &stdin,
+            stdin,
             SubscriptionId::new("input"),
             StdinLines::new(),
             |event| match event {
@@ -100,7 +100,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Re-use the library assembly...
     let journal = builder
-        .install::<Journal>(())
+        .install::<Journal>(JournalConfig::default())
         // ...failing to compile if you don't give it its declared capabilities.
         .with_capabilities(journal_caps)
         .finish()?;
@@ -123,7 +123,10 @@ async fn main() -> anyhow::Result<()> {
     // Create a runtime for our program...
     let runtime = Runtime::builder(program)
         // ...and install the drivers that actually supply the behavior to the capabilities.
-        .with_drivers((Journal::drivers(), (StdinDriver, StdoutDriver::new())))
+        .with_drivers((
+            (FsDriver::new("./data"), SystemClockDriver),
+            (StdinDriver, StdoutDriver::new()),
+        ))
         .build()?;
 
     // Run it!

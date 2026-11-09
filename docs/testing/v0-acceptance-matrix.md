@@ -153,10 +153,16 @@ The following evidence must pass before the Phase 2 audit:
   `ProgramBuilder::install(...).with_capabilities(...).finish()` returns the
   Assembly's Connector and exports. The host names its own Port and connects
   the Connector to it. `with_drivers` supplies the Program's complete driver
-  tuple, optionally using `A::drivers()`, and `control_all()` controls its
+  tuple, optionally using `A::drivers(driver_config)`, and `control_all()` controls its
   requirements. `RuntimeSetup` compile-fail cases reject missing or incorrect
   tuples. `RuntimeBuilder` and `Drivers` compile-fail cases reject incremental
   or direct trait binding after the tuple is supplied.
+  Vendored-driver coverage verifies that caller-supplied driver settings reach
+  live execution while the Assembly's logical config and controlled setup stay
+  independent of those settings.
+- `examples/pulse/src/journal/tests.rs` verifies Journal's default and
+  caller-supplied filenames, typed append outcomes, and live root configuration.
+  These checks cover the append slice; Recent-history requests remain unfinished.
 - `tests/connectors.rs` validates `Connector` (ADR-0014, ADR-0015): a library
   Assembly exports a `Connector<M>` of its public message type while its Component
   stays private to its module, the application connects it to a Port of its

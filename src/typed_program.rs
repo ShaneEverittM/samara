@@ -484,8 +484,12 @@ impl<R: Requirements, A: Assembly>
 }
 /// Optional default live implementations for a library Assembly.
 pub trait VendorsDrivers: Assembly {
+    /// Live implementation settings, independent of [`Assembly::Config`].
+    /// Use `()` when the vendored Drivers have no settings.
+    type DriverConfig;
     /// The tuple matching the Assembly's requirements.
     type Drivers: Drivers<Self::Requires>;
-    /// Constructs those implementations for use in a Program's driver tuple.
-    fn drivers() -> Self::Drivers;
+    /// Consumes live settings to construct a Program's matching driver tuple.
+    /// Controlled execution does not need these settings or implementations.
+    fn drivers(config: Self::DriverConfig) -> Self::Drivers;
 }

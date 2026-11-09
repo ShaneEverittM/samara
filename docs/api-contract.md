@@ -608,7 +608,9 @@ as amended by [ADR-0018](adr/0018-assemblies-export-a-connector.md) and
   `Runtime::builder(program).with_drivers(drivers).build()?`; controlled setup
   uses `ControlledRuntime::builder(program).control_all().build()?`.
   Incomplete binding stages have no `build` method (the empty requirement shape
-  may build directly). `VendorsDrivers::drivers()` can supply a matching tuple.
+  may build directly). `VendorsDrivers::drivers(driver_config)` can supply a
+  matching tuple. Its `DriverConfig` associated type is separate from the
+  Assembly's logical `Config`; controlled execution requires no driver config.
 - `with_drivers` is the sole public live binding operation. The completed
   `RuntimeBuilder` exposes no incremental binding methods, and the sealed
   `Drivers<R>` marker exposes no binding operation. Validation remains inside

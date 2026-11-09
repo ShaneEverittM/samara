@@ -149,10 +149,14 @@ impl SourceDriver<Pulses> for SilentPulses {
 }
 
 impl VendorsDrivers for Recorder {
+    type DriverConfig = Arc<AtomicUsize>;
     type Drivers = (CountingStamp, DrivenSource<SilentPulses>);
 
-    fn drivers() -> Self::Drivers {
-        (CountingStamp::default(), DrivenSource::new(SilentPulses))
+    fn drivers(executions: Self::DriverConfig) -> Self::Drivers {
+        (
+            CountingStamp { executions },
+            DrivenSource::new(SilentPulses),
+        )
     }
 }
 
@@ -217,13 +221,22 @@ async fn live_builder_binds_every_requirement_through_with_assembly() {
     assert_eq!(stamp.executions.load(Ordering::SeqCst), 1);
 }
 
-#[test]
-fn live_builder_accepts_the_drivers_a_assembly_vendors() {
-    let (program, _recorder, _) = assemble();
-    Runtime::builder(program)
-        .with_drivers(Recorder::drivers())
+#[tokio::test]
+async fn live_builder_accepts_the_drivers_a_assembly_vendors() {
+    let (program, _recorder, ledger) = assemble();
+    let executions = Arc::new(AtomicUsize::new(7));
+    let runtime = Runtime::builder(program)
+        .with_drivers(Recorder::drivers(executions.clone()))
         .build()
         .expect("vendored drivers satisfy the requirements");
+    let client = runtime.port_handle(&ledger).unwrap();
+    let task = runtime.spawn();
+    client
+        .send(LedgerMessage::Record("configured".into()))
+        .await
+        .unwrap();
+    assert!(task.shutdown(Shutdown::Drain).await.unwrap().is_clean());
+    assert_eq!(executions.load(Ordering::SeqCst), 8);
 }
 
 // Missing-binding coverage moved to RuntimeSetup compile-fail contracts (ADR-0019).

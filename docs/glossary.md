@@ -54,8 +54,9 @@ Assemblies use `Requires` to describe the capability values they receive.
 controlled setup's `control_all()` derives every control (ADR-0019).
 
 **VendorsDrivers** — An optional trait an Assembly implements to supply concrete
-live Drivers for its `Requires` through `drivers()`. The caller incorporates
-that tuple into the Program's `with_drivers` tuple. A library normally
+live Drivers for its `Requires` through `drivers(driver_config)`. Its
+`DriverConfig` contains live binding settings independently of `Assembly::Config`.
+The caller incorporates that tuple into the Program's `with_drivers` tuple. A library normally
 feature-gates the implementation.
 
 **Program boundary** — The scope within which Samara's guarantees apply. Code
