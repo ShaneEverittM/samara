@@ -229,6 +229,8 @@ wrong tuples fail compilation; both profiles retain value-level validation.
 For a type-wide source Driver, use `DrivenSource::new(driver)`. The wrapper
 keeps source Driver selection distinct from exact receiver binding under Rust's
 trait coherence rules. Built-in source Layers execute in both profiles.
+`with_drivers` is the only public live binding operation; its returned builder
+validates the completed bindings with `build()`.
 
 The closed set does not mean Samara reflects over Component fields or predicts
 every message edge. Deliberately hiding a foreign capability remains a user
@@ -416,8 +418,8 @@ Concrete inert types should not use `Source`, which is reserved for the running
 realization. `StreamDescriptor<T>` uses the otherwise optional `Descriptor`
 suffix because plain `Stream` could be mistaken for that running realization.
 It names the logical stream independently of how the world realizes it;
-adapter-specific assembly methods such as `bind_mpsc(&capability, receiver)`
-name the Tokio mechanism and exact logical boundary. The capability may be
+`MpscReceiver::new(receiver)` in the runtime's `with_drivers` tuple names the
+Tokio mechanism and selects the exact capability at its position. The capability may be
 `SourceCapability<StreamDescriptor<T>>` or a built-in composition whose
 terminal descriptor is `StreamDescriptor<T>`; callers declare and thread only
 the application-visible composed capability.
@@ -447,9 +449,8 @@ apply downstream policy only after a complete line has been acquired.
 
 Process stdin is one concrete resource, not an implementation that can realize
 arbitrarily many independent descriptors. Unix live assembly therefore uses
-`bind_stdin()` to discover the sole declared capability whose terminal
-descriptor is `StdinLines` and bind it exactly. Zero or multiple matching
-declarations fail live build. The capability may expose `StdinLines` directly or
+`StdinDriver` in the `with_drivers` tuple to select an exact capability whose
+terminal descriptor is `StdinLines`. The capability may expose `StdinLines` directly or
 place built-in Layers such as `Framed<StdinLines, D>` above it. A second
 binding fails assembly, and concurrent realization faults instead of racing,
 load-balancing, or broadcasting lines. First-party bindings in separate
@@ -819,11 +820,11 @@ Application-level controlled tests reach the Assembly through the Components
 that use its Port. A Port-level controlled ingress would let callers test an
 Assembly they do not own and is tracked in the follow-ups.
 
-The gap between `install` and `and_drivers` is deliberate. A Program is
+The gap between `install` and `with_drivers` is deliberate. A Program is
 profile-neutral and one assembly serves both builders, so binding cannot live
-in `install` without merging the two. The `InstalledAssembly` token and the
-`WithAssembly` step are the typed bridge across that gap. See the
-[Assembly design note](notes/assembly-design.md).
+in `install` without merging the two. `Program<R>` carries the complete
+requirements across that gap; `InstalledAssembly` holds the Connector and
+exports. See [ADR-0019](adr/0019-typed-program-requirements.md).
 
 ## Live and controlled execution
 

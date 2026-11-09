@@ -12,6 +12,11 @@
 > `EffectCapability<HttpRequest>` when this pipeline lowers into a Command.
 > The raw HTTP boundary and pure response semantics below are unchanged.
 
+> Runtime construction amendment (November 9, 2026):
+> [ADR-0019](0019-typed-program-requirements.md) replaces `bind_http()` with
+> `HttpDriver::new()` in the Program's `with_drivers` tuple. Binding examples
+> below retain the historical API; the HTTP behavior is unchanged.
+
 ## Context
 
 The first real-application experiment had to define a private EffectDescriptor,

@@ -149,17 +149,14 @@ The following evidence must pass before the Phase 2 audit:
   profile builds, and `PortHandle::send`, `request_to`, and
   `request_to_timeout` live.
 - `tests/assemblies.rs` validates `Assembly`, `Requires`, `Drivers`,
-  `VendorsDrivers`, and `InstalledAssembly` (ADR-0013, ADR-0018):
-  `ProgramBuilder::install` returns a token carrying the Assembly's Connector
-  and exports, the host names its own Port and connects the Connector to it,
-  `with_assembly(token).and_drivers(..)`
-  binds a driver tuple position by position on the live builder,
-  `and_its_vendored_drivers()` binds what the Assembly vendors,
-  `with_assembly(token)` controls every requirement on the controlled
-  builder, and either builder fails synchronously when the requirements are
-  not met. The `Assembly` rustdoc compile-fail cases show that a driver for
-  the wrong effect cannot be passed and that a chain which skips
-  `and_drivers` has no builder to finish.
+  `VendorsDrivers`, and `InstalledAssembly` (ADR-0013, ADR-0018, ADR-0019):
+  `ProgramBuilder::install(...).with_capabilities(...).finish()` returns the
+  Assembly's Connector and exports. The host names its own Port and connects
+  the Connector to it. `with_drivers` supplies the Program's complete driver
+  tuple, optionally using `A::drivers()`, and `control_all()` controls its
+  requirements. `RuntimeSetup` compile-fail cases reject missing or incorrect
+  tuples. `RuntimeBuilder` and `Drivers` compile-fail cases reject incremental
+  or direct trait binding after the tuple is supplied.
 - `tests/connectors.rs` validates `Connector` (ADR-0014, ADR-0015): a library
   Assembly exports a `Connector<M>` of its public message type while its Component
   stays private to its module, the application connects it to a Port of its
@@ -177,8 +174,8 @@ The following evidence must pass before the Phase 2 audit:
   the filesystem effects as ordinary controlled boundaries asserted by
   relative path, a live append, read, replace, remove walk under a bound root
   with no temp files left behind, `OutsideRoot` rejection before any I/O, and
-  that `bind_fs` binds only declared effects and participates in duplicate
-  validation.
+  that a filesystem driver tuple matches the declared effects and rejects
+  duplicate type-wide bindings.
 - Rustdoc compile-fail cases validate that an arbitrary value cannot be passed
   as an EffectDescriptor, an async closure cannot replace a synchronous message
   mapper, raw descriptors cannot bypass Program-issued Effect/Source
@@ -360,7 +357,7 @@ Pressure and first-party bridges:
 - `live_http_preserves_raw_status_and_reuses_one_client_pool`
 - `invalid_live_http_configuration_is_a_typed_effect_failure`
 - `live_http_eof_is_a_typed_transport_failure`
-- `bind_http_participates_in_normal_duplicate_binding_validation`
+- `http_driver_tuple_rejects_duplicate_bindings`
 - `http_response_pipeline_preserves_the_owned_raw_request_boundary`
 - `controlled_http_pipeline_intercepts_raw_request_and_decodes_2xx_json`
 - `json_without_status_policy_decodes_a_non_success_response`

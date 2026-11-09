@@ -335,7 +335,8 @@ Both descriptors own text, provide `text` for exact UTF-8 and `line` for UTF-8
 followed by `\n`, produce `()`, and use `Infallible` as their Error type. The
 values contain no handles and perform no work when constructed.
 
-`RuntimeBuilder::bind_stdio()` installs both Tokio-backed terminal Drivers.
+`with_drivers` accepts `StdoutDriver::new()` and `StderrDriver::new()` at
+the corresponding declared effect positions.
 Each Driver serializes its own Samara-issued print attempts within one live
 binding, writes the complete text, and flushes the selected stream. An
 operating-system I/O error is intentionally discarded rather than becoming an
@@ -384,9 +385,9 @@ failure is not followed by `Ended`. The initial descriptor has no line-length
 limit. Bounded or byte-oriented acquisition therefore requires another
 terminal descriptor; a Layer above `StdinLines` sees only complete lines.
 
-On Unix, `RuntimeBuilder::bind_stdin()` discovers the sole declared
-capability whose terminal descriptor is `StdinLines` and binds process stdin
-to that exact capability. Zero or multiple matching declarations fail build.
+On Unix, `StdinDriver` in the `with_drivers` tuple binds process stdin to the
+exact capability at its position. That position must declare a source whose
+terminal descriptor is `StdinLines`.
 The capability may be direct or a built-in composition such as
 `SourceCapability<Framed<StdinLines, D>>`. A live runtime may contain only one
 such binding, even for distinct capability values, and a second concurrent
@@ -424,8 +425,8 @@ terminal EffectDescriptor:
 - `HttpError` carries an `HttpErrorKind` distinguishing `Configuration` from
   `Transport`, plus explanatory text that controlled fixtures can construct.
 
-`RuntimeBuilder::bind_http()` installs one Driver retaining one reusable
-reqwest client and connection pool. The Driver explicitly follows no redirects,
+`HttpDriver::new()` in the `with_drivers` tuple supplies one reusable reqwest
+client and connection pool. The Driver explicitly follows no redirects,
 performs no protocol retries, discovers no system proxy, and performs no
 automatic content decompression. It supplies no Samara request timeout. All
 HTTP statuses—including 3xx, 4xx, and 5xx—produce a successful `HttpResponse`;
@@ -511,12 +512,12 @@ The requirement shape fixes the capability inventory at builder creation.
 `ControlledRuntimeBuilder::build()` synchronously require exactly one
 applicable terminal behavior for every declaration. Normal Drivers and
 controlled registrations are type-wide; the one-shot `mpsc` bridge uses an
-exact Source capability through `bind_mpsc(&capability, receiver)` and
-`control_stream(&capability)`. Controlled `emit_stream` and `close_stream`
+exact Source capability selected by the `MpscReceiver::new(receiver)` tuple
+position. `control_all()` retains that identity. Controlled `emit_stream` and `close_stream`
 operations select that same exact capability. These exact APIs also accept a
 composed capability such as `SourceCapability<Framed<StreamDescriptor<T>, D>>`;
 raw items and ending enter at the terminal stream and traverse the declared
-Layers. ADR-0009's Unix `bind_stdin()` is another exact live
+Layers. Unix `StdinDriver` is another exact live
 binding, but it is unique across the process-input descriptor type rather than
 one of several independently bindable receivers.
 
@@ -608,6 +609,10 @@ as amended by [ADR-0018](adr/0018-assemblies-export-a-connector.md) and
   uses `ControlledRuntime::builder(program).control_all().build()?`.
   Incomplete binding stages have no `build` method (the empty requirement shape
   may build directly). `VendorsDrivers::drivers()` can supply a matching tuple.
+- `with_drivers` is the sole public live binding operation. The completed
+  `RuntimeBuilder` exposes no incremental binding methods, and the sealed
+  `Drivers<R>` marker exposes no binding operation. Validation remains inside
+  the runtime's private registry.
 - `DrivenSource::new(driver)` selects a type-wide terminal source implementation;
   `MpscReceiver::new(receiver)` binds the exact capability at that position;
   `StdinDriver` selects the process reader for its position. Controlled stream

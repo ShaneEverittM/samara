@@ -661,25 +661,7 @@ async fn run_forever_surfaces_dynamic_foreign_capability_before_live_driver() {
 }
 
 #[test]
-fn exact_stream_binding_rejects_a_foreign_capability_during_build() {
-    let (_foreign, (declared_0,)) =
-        samara::Program::builder::<(samara::Source<StreamDescriptor<u64>>,)>();
-    let foreign_stream = declared_0;
-
-    let (owner, (declared_0,)) =
-        samara::Program::builder::<(samara::Source<StreamDescriptor<u64>>,)>();
-    let _owner_stream = declared_0;
-    let program = owner.build().expect("valid owner Program");
-    let (_sender, receiver) = tokio::sync::mpsc::channel(1);
-
-    let error = Runtime::builder(program)
-        .with_drivers((samara::MpscReceiver::new(tokio::sync::mpsc::channel(1).1),))
-        .bind_mpsc(&foreign_stream, receiver)
-        .build()
-        .err()
-        .expect("an exact binding cannot import a foreign capability");
-    assert!(error.to_string().contains("another Program"));
-
+fn controlled_exact_stream_binding_rejects_a_foreign_capability_during_build() {
     let (_foreign, (declared_0,)) =
         samara::Program::builder::<(samara::Source<StreamDescriptor<u64>>,)>();
     let foreign_stream = declared_0;

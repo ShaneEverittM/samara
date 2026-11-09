@@ -321,7 +321,7 @@ async fn bound_driver_rejects_paths_outside_the_root_without_touching_disk() {
 }
 
 #[test]
-fn bind_fs_binds_only_declared_effects_and_participates_in_duplicate_validation() {
+fn fs_driver_tuple_binds_declared_effects_and_rejects_duplicates() {
     let (builder, (declared_0,)) = samara::Program::builder::<(samara::Effect<AppendToFile>,)>();
     let _append = declared_0;
     let program = builder.build().expect("append-only program");
@@ -333,17 +333,10 @@ fn bind_fs_binds_only_declared_effects_and_participates_in_duplicate_validation(
         "a program that only appends needs no Read, Replace, or Remove binding"
     );
 
-    let (program, _) = walker_program();
+    let (program, _) = Program::builder::<(samara::Effect<ReadFile>, samara::Effect<ReadFile>)>();
     assert!(
-        Runtime::builder(program)
-            .with_drivers((
-                FsDriver::new("ignored"),
-                FsDriver::new("ignored"),
-                FsDriver::new("ignored"),
-                FsDriver::new("ignored"),
-                Reporter(tokio::sync::mpsc::unbounded_channel().0)
-            ))
-            .bind_effect::<ReadFile, _>(FsDriver::new("elsewhere"))
+        Runtime::builder(program.build().unwrap())
+            .with_drivers((FsDriver::new("ignored"), FsDriver::new("elsewhere"),))
             .build()
             .is_err(),
         "a second ReadFile binding is a duplicate"

@@ -2,8 +2,12 @@
 use super::*;
 
 mod private {
+    use super::{Capabilities, Requirements, live_runtime::LiveBindings};
+
     pub trait Requirement {}
-    pub trait Driver<R> {}
+    pub(crate) trait Driver<R: Requirements> {
+        fn bind(self, capabilities: &Capabilities<R>, bindings: &mut LiveBindings);
+    }
     pub struct Key;
 }
 
@@ -136,14 +140,25 @@ impl Requirements for () {
 ///
 /// A source driver handles the terminal descriptor beneath its declared Layers.
 /// Use `MpscReceiver` for an exact channel resource and `StdinDriver` for stdin.
-pub trait Drivers<R: Requirements>: private::Driver<R> {
-    #[doc(hidden)]
-    fn bind(self, capabilities: &Capabilities<R>, runtime: RuntimeBuilder) -> RuntimeBuilder;
-}
-impl<D: EffectDescriptor, T: EffectDriver<D>> private::Driver<Effect<D>> for T {}
-impl<D: EffectDescriptor, T: EffectDriver<D>> Drivers<Effect<D>> for T {
-    fn bind(self, _: &EffectCapability<D>, runtime: RuntimeBuilder) -> RuntimeBuilder {
-        runtime.bind_effect::<D, T>(self)
+/// Binding is private; supply values through [`RuntimeSetup::with_drivers`].
+/// This trait is sealed. Implement [`EffectDriver`] or [`SourceDriver`] for
+/// application-defined Drivers.
+///
+/// ```compile_fail
+/// use samara::*;
+/// fn bypass(builder: RuntimeBuilder, capability: &EffectCapability<ReadSystemTime>) {
+///     <SystemClockDriver as Drivers<Effect<ReadSystemTime>>>::bind(
+///         SystemClockDriver, capability, builder,
+///     );
+/// }
+/// ```
+#[allow(private_bounds)] // Sealed marker; registry access stays inside the crate.
+pub trait Drivers<R: Requirements>: private::Driver<R> {}
+impl<R: Requirements, T: private::Driver<R>> Drivers<R> for T {}
+
+impl<D: EffectDescriptor, T: EffectDriver<D>> private::Driver<Effect<D>> for T {
+    fn bind(self, _: &EffectCapability<D>, bindings: &mut live_runtime::LiveBindings) {
+        bindings.bind_effect::<D, T>(self);
     }
 }
 /// A type-wide terminal source Driver used in a requirement tuple.
@@ -157,17 +172,12 @@ impl<T> DrivenSource<T> {
 impl<S: SourceDescriptor, T: SourceDriver<S::Terminal>> private::Driver<Source<S>>
     for DrivenSource<T>
 {
-}
-impl<S: SourceDescriptor, T: SourceDriver<S::Terminal>> Drivers<Source<S>> for DrivenSource<T> {
-    fn bind(self, _: &SourceCapability<S>, runtime: RuntimeBuilder) -> RuntimeBuilder {
-        runtime.bind_source::<S::Terminal, T>(self.0)
+    fn bind(self, _: &SourceCapability<S>, bindings: &mut live_runtime::LiveBindings) {
+        bindings.bind_source::<S::Terminal, T>(self.0);
     }
 }
-impl private::Driver<()> for () {}
-impl Drivers<()> for () {
-    fn bind(self, _: &(), runtime: RuntimeBuilder) -> RuntimeBuilder {
-        runtime
-    }
+impl private::Driver<()> for () {
+    fn bind(self, _: &(), _: &mut live_runtime::LiveBindings) {}
 }
 macro_rules! tuples {
     ($(($($r:ident $d:ident $i:tt),+))+) => {$(
@@ -184,10 +194,9 @@ macro_rules! tuples {
                 $(let runtime = $r::control(&caps.$i, runtime, private::Key);)+ runtime
             }
         }
-        impl<$($r: Requirements, $d: Drivers<$r>),+> private::Driver<($($r,)+)> for ($($d,)+) {}
-        impl<$($r: Requirements, $d: Drivers<$r>),+> Drivers<($($r,)+)> for ($($d,)+) {
-            fn bind(self, caps: &Capabilities<($($r,)+)>, runtime: RuntimeBuilder) -> RuntimeBuilder {
-                $(let runtime = self.$i.bind(&caps.$i, runtime);)+ runtime
+        impl<$($r: Requirements, $d: Drivers<$r>),+> private::Driver<($($r,)+)> for ($($d,)+) {
+            fn bind(self, caps: &Capabilities<($($r,)+)>, bindings: &mut live_runtime::LiveBindings) {
+                $(private::Driver::bind(self.$i, &caps.$i, bindings);)+
             }
         }
     )+};
@@ -211,23 +220,27 @@ impl<T> MpscReceiver<T> {
         Self(receiver)
     }
 }
-impl<S: StreamSourceDescriptor> private::Driver<Source<S>> for MpscReceiver<S::StreamItem> {}
-impl<S: StreamSourceDescriptor> Drivers<Source<S>> for MpscReceiver<S::StreamItem> {
-    fn bind(self, cap: &SourceCapability<S>, runtime: RuntimeBuilder) -> RuntimeBuilder {
-        runtime.bind_mpsc(cap, self.0)
+impl<S: StreamSourceDescriptor> private::Driver<Source<S>> for MpscReceiver<S::StreamItem> {
+    fn bind(self, cap: &SourceCapability<S>, bindings: &mut live_runtime::LiveBindings) {
+        bindings.bind_mpsc(cap, self.0);
     }
 }
 
 /// Binds the corresponding standard-input capability to the process stdin reader.
+///
+/// Supply this value at a `Source<StdinLines>` position, or a composed source
+/// with that terminal descriptor, in [`RuntimeSetup::with_drivers`]. Multiple
+/// process-input bindings or a competing type-wide Driver fail runtime build.
+/// Only one active subscription may read stdin across all runtimes. A competing
+/// reader faults the runtime; application code must not read stdin concurrently.
+/// Removing the subscription or shutting down interrupts and joins the reader.
+/// A later subscription resumes at stdin's current position.
 #[cfg(unix)]
 pub struct StdinDriver;
 #[cfg(unix)]
-impl<S: SourceDescriptor<Terminal = StdinLines>> private::Driver<Source<S>> for StdinDriver {}
-#[cfg(unix)]
-impl<S: SourceDescriptor<Terminal = StdinLines>> Drivers<Source<S>> for StdinDriver {
-    fn bind(self, cap: &SourceCapability<S>, mut runtime: RuntimeBuilder) -> RuntimeBuilder {
-        runtime.bindings.bind_stdin_capability(cap);
-        runtime
+impl<S: SourceDescriptor<Terminal = StdinLines>> private::Driver<Source<S>> for StdinDriver {
+    fn bind(self, cap: &SourceCapability<S>, bindings: &mut live_runtime::LiveBindings) {
+        bindings.bind_stdin_capability(cap);
     }
 }
 
@@ -262,8 +275,9 @@ pub struct RuntimeSetup<R: Requirements> {
 }
 impl<R: Requirements> RuntimeSetup<R> {
     /// Supplies every declared boundary and enables final value-level validation.
-    pub fn with_drivers(self, drivers: impl Drivers<R>) -> RuntimeBuilder {
-        drivers.bind(&self.capabilities, self.builder)
+    pub fn with_drivers(mut self, drivers: impl Drivers<R>) -> RuntimeBuilder {
+        private::Driver::bind(drivers, &self.capabilities, &mut self.builder.bindings);
+        self.builder
     }
 }
 impl RuntimeSetup<()> {

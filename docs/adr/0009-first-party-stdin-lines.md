@@ -6,6 +6,12 @@
 - Scope: First-party interactive standard-input ingress for live and controlled execution
 - Amended: September 24, 2026 — discover the stdin capability during live build
 
+> Runtime construction amendment (November 9, 2026):
+> [ADR-0019](0019-typed-program-requirements.md) replaces capability discovery
+> through `bind_stdin()` with `StdinDriver` at an exact `with_drivers` tuple
+> position. The process lease, reader lifecycle and event semantics below remain.
+> Binding examples below retain the historical API.
+
 ## Context
 
 The first real application example needs an ongoing stream of terminal

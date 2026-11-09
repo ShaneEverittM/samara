@@ -300,9 +300,9 @@ impl Error for FsError {}
 ///
 /// Every path in a descriptor is joined to the root. Absolute paths and paths
 /// containing `..` fail with [`FsErrorKind::OutsideRoot`] before any I/O. The
-/// root itself is not created until the first write needs it. Bind all four
-/// effects at once with [`RuntimeBuilder::bind_fs`](crate::RuntimeBuilder::bind_fs),
-/// or pass it in `and_drivers` where an Assembly's `Requires` lists these effects.
+/// root itself is not created until the first write needs it. Supply one clone
+/// at each declared filesystem-effect position in
+/// [`RuntimeSetup::with_drivers`](crate::RuntimeSetup::with_drivers).
 #[derive(Clone, Debug)]
 pub struct FsDriver {
     root: Arc<Path>,

@@ -508,17 +508,12 @@ impl EffectDriver<HttpRequest> for DuplicateHttpDriver {
 }
 
 #[test]
-fn bind_http_participates_in_normal_duplicate_binding_validation() {
-    let (program, _) = http_program(vec![HttpRequest::get("https://example.test")]);
+fn http_driver_tuple_rejects_duplicate_bindings() {
+    let (program, _) =
+        Program::builder::<(samara::Effect<HttpRequest>, samara::Effect<HttpRequest>)>();
     assert!(
-        Runtime::builder(program)
-            .with_drivers((
-                samara::HttpDriver::new(),
-                HttpObserver {
-                    observations: tokio::sync::mpsc::unbounded_channel().0
-                },
-            ))
-            .bind_effect::<HttpRequest, _>(DuplicateHttpDriver)
+        Runtime::builder(program.build().unwrap())
+            .with_drivers((samara::HttpDriver::new(), DuplicateHttpDriver))
             .build()
             .is_err()
     );

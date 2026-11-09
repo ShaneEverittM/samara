@@ -8,6 +8,12 @@
 - Scope: The `Component` trait signature, the reuse unit (`Assembly`), Port
   binding conversion, and first-party clock and filesystem effects
 
+> Runtime construction amendment (November 9, 2026):
+> [ADR-0019](0019-typed-program-requirements.md) supplies capabilities separately
+> from Config and replaces incremental binding with `with_drivers` tuples.
+> `SystemClockDriver` and `FsDriver` remain the first-party implementations;
+> binding examples below retain the historical API.
+
 ## Context
 
 Three pressures from the `examples/pulse` developer-experience trial met in

@@ -246,15 +246,6 @@ fn live_stdin_binding_accepts_a_composed_capability() {
 #[cfg(unix)]
 #[test]
 fn live_stdin_rejects_duplicate_or_competing_process_bindings() {
-    let (program, _probe, _stdin) = stdin_program();
-    assert!(
-        Runtime::builder(program)
-            .with_drivers((samara::StdinDriver,))
-            .bind_stdin()
-            .build()
-            .is_err()
-    );
-
     let (builder, (declared_0, declared_1)) =
         samara::Program::builder::<(samara::Source<StdinLines>, samara::Source<StdinLines>)>();
     let _first = declared_0;
@@ -293,16 +284,12 @@ fn live_stdin_rejects_a_conflicting_type_wide_driver_in_either_order() {
     }
 
     for stdin_first in [false, true] {
-        let (program, _, _) = stdin_program();
-        let builder = Runtime::builder(program);
+        let (program, _) = Program::builder::<(Source<StdinLines>, Source<StdinLines>)>();
+        let builder = Runtime::builder(program.build().unwrap());
         let builder = if stdin_first {
-            builder
-                .with_drivers((StdinDriver,))
-                .bind_source::<StdinLines, _>(UnusedStdinDriver)
+            builder.with_drivers((StdinDriver, DrivenSource::new(UnusedStdinDriver)))
         } else {
-            builder
-                .with_drivers((DrivenSource::new(UnusedStdinDriver),))
-                .bind_stdin()
+            builder.with_drivers((DrivenSource::new(UnusedStdinDriver), StdinDriver))
         };
         assert!(builder.build().is_err());
     }

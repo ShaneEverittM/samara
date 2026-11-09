@@ -773,9 +773,22 @@ async fn run_stdin_reader(
 }
 
 /// Terminal Tokio TCP source Driver.
+///
+/// Supply `DrivenSource::new(TcpDriver)` through
+/// [`RuntimeSetup::with_drivers`](crate::RuntimeSetup::with_drivers).
+/// Each input connects once to its configured IP address and port. No DNS,
+/// retry, or reconnect is performed; see [`TcpBytes`] for the descriptor.
 pub struct TokioTcpDriver;
 
 /// Terminal HTTP Driver with a shared connection pool.
+///
+/// Supply [`HttpDriver::new`](Self::new) through
+/// [`RuntimeSetup::with_drivers`](crate::RuntimeSetup::with_drivers).
+/// Each effect makes one request and buffers the response, returning every
+/// HTTP status. The Driver performs no retries, redirects, proxy discovery,
+/// or decompression, and imposes no request timeout or body-size limit.
+/// It supplies `Accept: */*` when no Accept header is present. Use
+/// [`HttpResponsePipeline`](crate::HttpResponsePipeline) for response policy.
 pub struct TokioHttpDriver {
     client: Result<reqwest::Client, HttpError>,
 }
@@ -836,6 +849,12 @@ impl EffectDriver<HttpRequest> for TokioHttpDriver {
 }
 
 /// Serialized standard-output Driver.
+///
+/// Supply this Driver through
+/// [`RuntimeSetup::with_drivers`](crate::RuntimeSetup::with_drivers).
+/// Each effect attempts to write all text and flush stdout, ignoring I/O errors.
+/// Writes through this binding do not interleave. Independent commands, other
+/// bindings, and direct process writes have no ordering guarantee.
 pub struct TokioPrintStdoutDriver {
     output: Arc<tokio::sync::Mutex<tokio::io::Stdout>>,
 }
@@ -858,6 +877,12 @@ impl EffectDriver<PrintStdout> for TokioPrintStdoutDriver {
 }
 
 /// Serialized standard-error Driver.
+///
+/// Supply this Driver through
+/// [`RuntimeSetup::with_drivers`](crate::RuntimeSetup::with_drivers).
+/// Each effect attempts to write all text and flush stderr, ignoring I/O errors.
+/// Writes through this binding do not interleave. Independent commands, other
+/// bindings, and direct process writes have no ordering guarantee.
 pub struct TokioPrintStderrDriver {
     output: Arc<tokio::sync::Mutex<tokio::io::Stderr>>,
 }
@@ -946,8 +971,6 @@ impl SourceDriver<TcpBytes> for TokioTcpDriver {
 pub(crate) struct LiveBindings {
     effects: Vec<Arc<dyn ErasedEffectBinding>>,
     sources: Vec<Arc<dyn ErasedSourceBinding>>,
-    #[cfg(unix)]
-    stdin_requests: u8,
 }
 
 impl LiveBindings {
@@ -955,8 +978,6 @@ impl LiveBindings {
         Self {
             effects: Vec::new(),
             sources: Vec::new(),
-            #[cfg(unix)]
-            stdin_requests: 0,
         }
     }
 
@@ -1006,55 +1027,7 @@ impl LiveBindings {
         }));
     }
 
-    #[cfg(unix)]
-    pub(crate) fn bind_stdin(&mut self) {
-        self.stdin_requests = self.stdin_requests.saturating_add(1);
-    }
-
-    #[cfg(unix)]
-    fn resolve_stdin(&mut self, program: &Program) -> Result<(), RuntimeError> {
-        match self.stdin_requests {
-            0 => return Ok(()),
-            1 => {}
-            _ => return Err(RuntimeError::harness("duplicate live stdin binding")),
-        }
-        let mut candidates = program
-            .source_requirements
-            .iter()
-            .filter(|requirement| requirement.terminal_type == TypeId::of::<StdinLines>());
-        let capability = candidates.next().ok_or_else(|| {
-            RuntimeError::harness("bind_stdin() has no declared stdin capability")
-        })?;
-        if candidates.next().is_some() {
-            return Err(RuntimeError::harness(
-                "bind_stdin() has multiple declared stdin capabilities; expected exactly one",
-            ));
-        }
-        self.sources.push(Arc::new(StdinBinding {
-            capability: capability.token.clone(),
-            active: process_stdin_lease(),
-        }));
-        self.stdin_requests = 0;
-        Ok(())
-    }
-
-    pub(crate) fn bind_tcp(&mut self) {
-        self.bind_source::<TcpBytes, _>(TokioTcpDriver);
-    }
-
-    pub(crate) fn bind_http(&mut self) {
-        self.bind_effect::<HttpRequest, _>(TokioHttpDriver::new());
-    }
-
-    pub(crate) fn bind_stdio(&mut self) {
-        self.bind_effect::<PrintStdout, _>(TokioPrintStdoutDriver::new());
-        self.bind_effect::<PrintStderr, _>(TokioPrintStderrDriver::new());
-    }
-
     pub(crate) fn validate(&mut self, program: &Program) -> Result<(), RuntimeError> {
-        #[cfg(unix)]
-        self.resolve_stdin(program)?;
-
         let mut effect_types = HashSet::new();
         for binding in &self.effects {
             if !effect_types.insert(binding.descriptor_type()) {
@@ -2934,38 +2907,6 @@ impl LiveCore {
     }
 }
 
-/// Creates a first-party exact one-shot mpsc binding.
-pub(crate) fn bind_mpsc<S>(
-    bindings: &mut LiveBindings,
-    capability: &SourceCapability<S>,
-    receiver: mpsc::Receiver<S::StreamItem>,
-) where
-    S: StreamSourceDescriptor,
-{
-    bindings.bind_mpsc(capability, receiver);
-}
-
-/// Requests the first-party stdin binding, resolved during live build.
-#[cfg(unix)]
-pub(crate) fn bind_stdin(bindings: &mut LiveBindings) {
-    bindings.bind_stdin();
-}
-
-/// Registers the first-party Tokio TCP terminal Driver.
-pub(crate) fn bind_tcp(bindings: &mut LiveBindings) {
-    bindings.bind_tcp();
-}
-
-/// Registers the first-party pooled HTTP terminal Driver.
-pub(crate) fn bind_http(bindings: &mut LiveBindings) {
-    bindings.bind_http();
-}
-
-/// Registers the first-party Tokio standard-output terminal Drivers.
-pub(crate) fn bind_stdio(bindings: &mut LiveBindings) {
-    bindings.bind_stdio();
-}
-
 /// Proves the first-party descriptor's item type without exposing machinery.
 fn _tcp_item_is_bytes(_: SourceEvent<Bytes, TcpError>) {}
 
@@ -3011,6 +2952,19 @@ mod tests {
         Component, Decoder, EffectDescriptor, Framed, FramedError, Init, Subscription,
         Subscriptions,
     };
+
+    #[test]
+    fn exact_stream_binding_rejects_a_foreign_capability_during_build() {
+        let (_, (foreign,)) = Program::builder::<(crate::Source<StreamDescriptor<u64>>,)>();
+        let (owner, _) = Program::builder::<(crate::Source<StreamDescriptor<u64>>,)>();
+        let mut runtime = crate::Runtime::builder(owner.build().unwrap())
+            .with_drivers((crate::MpscReceiver::new(mpsc::channel(1).1),));
+        // Exercise the registry's defense directly: public tuples select their
+        // exact capability from the owning Program and cannot import a foreign one.
+        runtime.bindings.bind_mpsc(&foreign, mpsc::channel(1).1);
+        let error = runtime.build().err().expect("foreign capability rejected");
+        assert!(error.to_string().contains("another Program"));
+    }
 
     #[derive(Debug)]
     struct CutoffIntent;

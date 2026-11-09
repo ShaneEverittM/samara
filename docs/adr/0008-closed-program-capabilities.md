@@ -9,6 +9,11 @@
   allowance for a legitimately declared Effect or Source binding to be
   discovered missing only after execution starts
 
+> Runtime construction amendment (November 9, 2026):
+> [ADR-0019](0019-typed-program-requirements.md) declares capabilities through
+> `Program::builder::<R>()` and supplies all live Drivers through `with_drivers`.
+> The incremental declaration and binding examples below retain the historical API.
+
 ## Context
 
 Samara already requires Program-issued `ComponentRef<C>` and `Port<P>` values

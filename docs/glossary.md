@@ -159,8 +159,8 @@ the decode error. Cancellation is not a variant.
 UTF-8 lines from process stdin (ADR-0009), with line-ending stripping and one
 final unterminated Item at EOF. `StdinError` is a typed `Read` or
 `InvalidUtf8` failure that ends the Source without `Ended`. The descriptor is
-platform-neutral; `bind_stdin` is the Unix-only exact live binding of the sole
-declared stdin capability, one per runtime, sharing one process-wide lease.
+platform-neutral; `StdinDriver` selects the exact capability at its
+`with_drivers` tuple position on Unix, one per runtime, sharing one process-wide lease.
 
 **Error** — Typed data explaining why an operation could not complete, such as
 `TcpError` or `RequestError`. Payload types use the `Error` noun.
@@ -292,8 +292,8 @@ Concrete descriptor types must not use `Source` to mean an inert declaration,
 because `Source` is reserved for the runtime-scoped realization.
 `StreamDescriptor<T>` uses the otherwise optional `Descriptor` suffix to avoid
 confusion with a running stream. It names logical event production independently
-of the live adapter; `bind_mpsc(&capability, receiver)` names one concrete Tokio
-realization for one exact SourceCapability whose terminal descriptor is
+of the live adapter; `MpscReceiver::new(receiver)` in `with_drivers` names one
+concrete Tokio realization for the exact SourceCapability at that position, whose terminal descriptor is
 `StreamDescriptor<T>`. That capability may itself describe a built-in composed
 Source, in which case stream items still traverse its Layers.
 
@@ -303,7 +303,7 @@ duplicate activation or reactivation after consumption or cancellation faults
 explicitly rather than implying a recreated receiver.
 
 `StdinLines` directly names the intrinsic line-oriented intent, so it needs no
-`Descriptor` suffix. Unix `bind_stdin()` names the unique live
+`Descriptor` suffix. Unix `StdinDriver` names the unique live
 process resource. It removes CRLF or LF framing, preserves empty lines, emits a
 final unterminated line before clean EOF, and reports read or UTF-8 failure as
 typed Source Error data. Private readiness, cancellation, and reader-thread

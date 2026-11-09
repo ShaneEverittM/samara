@@ -1305,8 +1305,9 @@ impl EffectDriver<InitialEffect> for NoopInitialDriver {
 
 #[tokio::test]
 async fn phase6_knowable_live_binding_errors_fail_build() {
-    let (mut program, (declared_0,)) =
-        samara::Program::builder::<(samara::Effect<InitialEffect>,)>();
+    let (mut program, (declared_0, _duplicate)) =
+        samara::Program::builder::<(samara::Effect<InitialEffect>, samara::Effect<InitialEffect>)>(
+        );
     let effect = declared_0;
     let _ = program
         .component::<InitialEffectComponent>(
@@ -1317,14 +1318,16 @@ async fn phase6_knowable_live_binding_errors_fail_build() {
         .expect("component registration");
     assert!(
         Runtime::builder(program.build().expect("valid program"))
-            .with_drivers((NoopInitialDriver,))
-            .bind_effect::<InitialEffect, _>(NoopInitialDriver)
+            .with_drivers((NoopInitialDriver, NoopInitialDriver))
             .build()
             .is_err()
     );
 
-    let (mut program, (declared_0, declared_1)) =
-        samara::Program::builder::<(samara::Source<ScriptedSource>, samara::Effect<Observe>)>();
+    let (mut program, (declared_0, declared_1, _duplicate)) = samara::Program::builder::<(
+        samara::Source<ScriptedSource>,
+        samara::Effect<Observe>,
+        samara::Source<ScriptedSource>,
+    )>();
     let source = declared_0;
     let observe = declared_1;
     let _ = program
@@ -1354,8 +1357,8 @@ async fn phase6_knowable_live_binding_errors_fail_build() {
                 ObservationDriver {
                     observations: observed,
                 },
+                samara::DrivenSource::new(binding()),
             ))
-            .bind_source::<ScriptedSource, _>(binding())
             .build()
             .is_err()
     );

@@ -221,18 +221,19 @@ impl EffectDriver<PrintStdout> for DuplicateStdoutDriver {
 }
 
 #[test]
-fn bind_stdio_participates_in_normal_duplicate_binding_validation() {
-    let (program, _) = output_program(false);
+fn stdio_driver_tuple_rejects_duplicate_bindings() {
+    let (program, _) = Program::builder::<(
+        samara::Effect<PrintStdout>,
+        samara::Effect<PrintStderr>,
+        samara::Effect<PrintStdout>,
+    )>();
     assert!(
-        Runtime::builder(program)
+        Runtime::builder(program.build().unwrap())
             .with_drivers((
                 samara::StdoutDriver::new(),
                 samara::StderrDriver::new(),
-                OutputObserver {
-                    observations: tokio::sync::mpsc::unbounded_channel().0
-                },
+                DuplicateStdoutDriver,
             ))
-            .bind_effect::<PrintStdout, _>(DuplicateStdoutDriver)
             .build()
             .is_err()
     );

@@ -2,7 +2,7 @@
 
 - Status: Accepted for implementation trial.
 - Date: November 9, 2026
-- Amends: ADR-0008, ADR-0013, and ADR-0018.
+- Amends: ADR-0005, ADR-0008, ADR-0009, ADR-0013, and ADR-0018.
 
 ## Decision
 
@@ -38,6 +38,15 @@ behavior for all declared boundaries and makes `build` available. Neither
 profile executes work while assembling. The completed runtimes erase `R`.
 No per-Component or per-Assembly installation token must be transported to a
 runtime builder.
+
+`with_drivers` is the only public operation that supplies live Drivers. The
+returned `RuntimeBuilder` only validates and builds the runtime; it exposes no
+incremental `bind_*` methods. `Drivers<R>` is a sealed marker whose binding
+implementation is private, so its trait cannot bypass this phase boundary.
+The internal registry retains duplicate, conflict and provenance validation.
+First-party implementations are ordinary tuple values: `HttpDriver`,
+`StdoutDriver`, `StderrDriver`, `SystemClockDriver`, `FsDriver`,
+`DrivenSource<TcpDriver>`, `MpscReceiver`, and Unix `StdinDriver`.
 
 The requirement machinery is sealed: application implementations cannot
 declare one type shape while omitting its capabilities or binding work.
@@ -83,6 +92,9 @@ source identities, and Assembly forwarding. `tests/closed_program_capabilities.r
 retains composed-source and exact-stream execution evidence. Rustdoc compile-fail
 contracts cover incomplete registration/binding and incorrect tuples. Existing
 runtime, source, time and shutdown acceptance suites remain required.
+Additional compile-fail contracts reject incremental live binding and direct
+trait binding. Duplicate and conflicting driver tuples remain integration
+tests; internal registry tests retain foreign exact-capability defenses.
 
 The `pulse` example includes its in-progress host wiring. It compiles but
 retains unfinished behavior, so it is not application-level acceptance evidence.
