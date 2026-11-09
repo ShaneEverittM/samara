@@ -37,7 +37,7 @@ intent.
 
 A **Samara program** is a closed, declared collection of Components and the capabilities
 through which they may communicate or interact with the world. `ProgramBuilder` issues
-Component references, Jacks, Effect capabilities, and Source capabilities during
+Component references, Ports, Effect capabilities, and Source capabilities during
 assembly. Those inert values are threaded into immutable Component configuration; after
 the Program is built, execution cannot add another dependency.
 
@@ -61,7 +61,7 @@ code elsewhere in the process.
 
 That surrounding host may await a typed result from a live ingress API, but the result
 does not grant access to Component state. Any host decision that should change Samara
-application state must re-enter through the program's typed Message or Protocol boundary.
+application state must re-enter through the program's typed Message or Port boundary.
 
 This boundary makes incremental adoption possible without diluting the meaning of a
 conforming Samara program.
@@ -95,7 +95,7 @@ equivalent to producing a new model value.
 
 The Rust type and `impl Component` form the Component implementation. A particular
 immutable value of that type is its Component configuration and may contain logical
-wiring such as Jacks, EffectCapabilities, SourceCapabilities, and declarative descriptor
+wiring such as Ports, EffectCapabilities, SourceCapabilities, and declarative descriptor
 configuration. Receiving `&self` signals observational
 immutability; because Rust permits interior mutability, conformance still requires that
 behaviorally relevant mutable state belong in the Model.
@@ -511,7 +511,7 @@ This vision deliberately does not promise:
 - Deterministic ordering of independent events during live execution.
 - Proof that arbitrary Rust Components, closures, Layers, Drivers, or controlled-world
   code conforms.
-- Dynamically adding Components, Jacks, Effect capabilities, or Source capabilities to a
+- Dynamically adding Components, Ports, Effect capabilities, or Source capabilities to a
   running Program.
 - Transparent distribution of Components across processes.
 - A mature bounded-pressure, overload, retry, or operational shutdown policy beyond the

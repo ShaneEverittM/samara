@@ -39,12 +39,6 @@ impl Component for Empty {
     }
 }
 
-struct AssemblyProtocol;
-
-impl Protocol for AssemblyProtocol {
-    type Message = ();
-}
-
 #[test]
 fn phase5_program_build_rejects_duplicate_component_id() {
     let mut builder = Program::builder();
@@ -55,25 +49,25 @@ fn phase5_program_build_rejects_duplicate_component_id() {
 }
 
 #[test]
-fn phase5_program_build_rejects_duplicate_protocol_and_jack_id() {
+fn phase5_program_build_rejects_duplicate_protocol_and_port_id() {
     let mut builder = Program::builder();
-    let _ = builder.jack::<AssemblyProtocol>(JackId::new("service"));
-    let _ = builder.jack::<AssemblyProtocol>(JackId::new("service"));
+    let _ = builder.port::<()>(PortId::new("service"));
+    let _ = builder.port::<()>(PortId::new("service"));
 
     assert!(builder.build().is_err());
 }
 
 #[test]
-fn phase5_program_build_requires_exactly_one_binding_per_jack() {
+fn phase5_program_build_requires_exactly_one_binding_per_port() {
     let mut unbound = Program::builder();
-    let _ = unbound.jack::<AssemblyProtocol>(JackId::new("service"));
+    let _ = unbound.port::<()>(PortId::new("service"));
     assert!(unbound.build().is_err());
 
     let mut duplicate = Program::builder();
-    let jack = duplicate.jack::<AssemblyProtocol>(JackId::new("service"));
+    let port = duplicate.port::<()>(PortId::new("service"));
     let provider = duplicate.component::<Empty>(ComponentId::new("provider"), ());
-    duplicate.plug_in(&jack, &provider);
-    duplicate.plug_in(&jack, &provider);
+    duplicate.connect(&port, &provider);
+    duplicate.connect(&port, &provider);
     assert!(duplicate.build().is_err());
 }
 
@@ -83,33 +77,22 @@ fn phase5_program_build_rejects_provider_from_another_builder() {
     let provider = provider_builder.component::<Empty>(ComponentId::new("provider"), ());
 
     let mut consumer_builder = Program::builder();
-    let jack = consumer_builder.jack::<AssemblyProtocol>(JackId::new("service"));
-    consumer_builder.plug_in(&jack, &provider);
+    let port = consumer_builder.port::<()>(PortId::new("service"));
+    consumer_builder.connect(&port, &provider);
 
     assert!(consumer_builder.build().is_err());
-}
-
-struct LeftProtocol;
-struct RightProtocol;
-
-impl Protocol for LeftProtocol {
-    type Message = ();
-}
-
-impl Protocol for RightProtocol {
-    type Message = ();
 }
 
 struct Left;
 
 struct LeftConfig {
-    _right: Jack<RightProtocol>,
+    _right: Port<()>,
 }
 
 struct Right;
 
 struct RightConfig {
-    _left: Jack<LeftProtocol>,
+    _left: Port<()>,
 }
 
 impl Component for Left {
@@ -149,24 +132,24 @@ impl Component for Right {
 }
 
 #[test]
-fn phase5_program_build_allows_jack_cycles() {
+fn phase5_program_build_allows_port_cycles() {
     let mut builder = Program::builder();
-    let left_jack = builder.jack::<LeftProtocol>(JackId::new("left"));
-    let right_jack = builder.jack::<RightProtocol>(JackId::new("right"));
+    let left_port = builder.port::<()>(PortId::new("left"));
+    let right_port = builder.port::<()>(PortId::new("right"));
     let left = builder.component::<Left>(
         ComponentId::new("left"),
         LeftConfig {
-            _right: right_jack.clone(),
+            _right: right_port.clone(),
         },
     );
     let right = builder.component::<Right>(
         ComponentId::new("right"),
         RightConfig {
-            _left: left_jack.clone(),
+            _left: left_port.clone(),
         },
     );
-    builder.plug_in(&left_jack, &left);
-    builder.plug_in(&right_jack, &right);
+    builder.connect(&left_port, &left);
+    builder.connect(&right_port, &right);
 
     assert!(builder.build().is_ok());
 }
@@ -1188,7 +1171,7 @@ enum OwnershipMessage {
 struct OwnershipComponent;
 
 struct OwnershipComponentConfig {
-    jack: Jack<EchoProtocol>,
+    port: Port<EchoProtocolMessage>,
     effect: EffectCapability<ProbeEffect>,
     input: SourceCapability<StreamDescriptor<u64>>,
 }
@@ -1213,7 +1196,7 @@ impl Component for OwnershipComponent {
         match message {
             OwnershipMessage::Kick => Command::batch([
                 Command::effect_with(&config.effect, ProbeEffect(1), OwnershipMessage::Effect),
-                Command::request_with(config.jack.clone(), Echo(1), OwnershipMessage::Request),
+                Command::request_with(config.port.clone(), Echo(1), OwnershipMessage::Request),
             ]),
             OwnershipMessage::Effect(outcome) => {
                 let _ = outcome;
@@ -1243,18 +1226,18 @@ impl Component for OwnershipComponent {
 
 fn ownership_runtime() -> (ControlledRuntime, ComponentRef<OwnershipComponent>) {
     let mut builder = Program::builder();
-    let jack = builder.jack::<EchoProtocol>(JackId::new("echo"));
+    let port = builder.port::<EchoProtocolMessage>(PortId::new("echo"));
     let provider = builder.component::<EchoProvider>(
         ComponentId::new("provider"),
         EchoProviderConfig { reply: false },
     );
-    builder.plug_in(&jack, &provider);
+    builder.connect(&port, &provider);
     let effect = builder.effect::<ProbeEffect>();
     let input = builder.source::<StreamDescriptor<u64>>();
     let component = builder.component::<OwnershipComponent>(
         ComponentId::new("owner"),
         OwnershipComponentConfig {
-            jack,
+            port,
             effect,
             input: input.clone(),
         },
@@ -1387,21 +1370,15 @@ fn v10_reading_controlled_trace_after_drive_has_no_feedback_path() {
 
 // Successful and unanswered typed Requests --------------------------------
 
-struct EchoProtocol;
-
 #[derive(Debug)]
 enum EchoProtocolMessage {
-    Echo(RequestInvocation<EchoProtocol, Echo>),
-}
-
-impl Protocol for EchoProtocol {
-    type Message = EchoProtocolMessage;
+    Echo(RequestInvocation<EchoProtocolMessage, Echo>),
 }
 
 #[derive(Debug)]
 struct Echo(u64);
 
-impl Request<EchoProtocol> for Echo {
+impl Request<EchoProtocolMessage> for Echo {
     type Reply = u64;
 
     fn into_message(self, reply_to: ReplyTo<Self::Reply>) -> EchoProtocolMessage {
@@ -1465,7 +1442,7 @@ struct EchoRequesterModel(Vec<(usize, u64)>);
 struct EchoRequester;
 
 struct EchoRequesterConfig {
-    jack: Jack<EchoProtocol>,
+    port: Port<EchoProtocolMessage>,
     requests: usize,
 }
 
@@ -1485,7 +1462,7 @@ impl Component for EchoRequester {
     ) -> Command<Self::Message> {
         match message {
             EchoRequesterMessage::Start => Command::batch((0..config.requests).map(|slot| {
-                Command::request_with(config.jack.clone(), Echo(7), move |outcome| {
+                Command::request_with(config.port.clone(), Echo(7), move |outcome| {
                     EchoRequesterMessage::Replied { slot, outcome }
                 })
             })),
@@ -1503,13 +1480,13 @@ impl Component for EchoRequester {
 
 fn echo_program(reply: bool, requests: usize) -> (Program, ComponentRef<EchoRequester>) {
     let mut builder = Program::builder();
-    let jack = builder.jack::<EchoProtocol>(JackId::new("echo"));
+    let port = builder.port::<EchoProtocolMessage>(PortId::new("echo"));
     let provider = builder
         .component::<EchoProvider>(ComponentId::new("provider"), EchoProviderConfig { reply });
-    builder.plug_in(&jack, &provider);
+    builder.connect(&port, &provider);
     let requester = builder.component::<EchoRequester>(
         ComponentId::new("requester"),
-        EchoRequesterConfig { jack, requests },
+        EchoRequesterConfig { port, requests },
     );
     (builder.build().unwrap(), requester)
 }

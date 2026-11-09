@@ -17,18 +17,12 @@ use std::{
 
 use samara::prelude::*;
 
-struct KernelProtocol;
-
 enum KernelProtocolMessage {
     Add(u64),
 }
 
 enum ProviderMessage {
     Protocol(KernelProtocolMessage),
-}
-
-impl Protocol for KernelProtocol {
-    type Message = KernelProtocolMessage;
 }
 
 impl From<KernelProtocolMessage> for ProviderMessage {
@@ -158,7 +152,6 @@ fn v1_update_has_no_runtime_capability() {
 fn v2_protocol_message_remains_distinct_from_provider_message() {
     fn assert_provider_conversion<Message: From<KernelProtocolMessage>>() {}
 
-    let _protocol = KernelProtocol;
     assert_provider_conversion::<ProviderMessage>();
     assert_ne!(
         TypeId::of::<KernelProtocolMessage>(),

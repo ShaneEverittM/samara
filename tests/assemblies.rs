@@ -23,8 +23,8 @@ impl SourceDescriptor for Pulses {
     type Error = Infallible;
 }
 
-protocol! {
-    pub type Ledger => enum LedgerMessage {
+messages! {
+    pub enum LedgerMessage {
         Record(String),
         Count -> usize,
     }
@@ -97,13 +97,13 @@ impl Component for Recorder {
 }
 
 struct RecorderConfig {
-    jack: &'static str,
+    port: &'static str,
 }
 
-/// Controlled execution has no Jack-level ingress, so the test needs the
-/// `ComponentRef` as well as the Jack. Live hosts only use the Jack.
+/// Controlled execution has no Port-level ingress, so the test needs the
+/// `ComponentRef` as well as the Port. Live hosts only use the Port.
 struct RecorderExports {
-    ledger: Jack<Ledger>,
+    ledger: Port<LedgerMessage>,
     recorder: ComponentRef<Recorder>,
 }
 
@@ -115,12 +115,12 @@ impl Assembly for Recorder {
     fn install(program: &mut ProgramBuilder, config: RecorderConfig) -> RecorderExports {
         let stamp = program.effect::<Stamp>();
         let pulses = program.source::<Pulses>();
-        let ledger = program.jack::<Ledger>(JackId::new(config.jack));
+        let ledger = program.port::<LedgerMessage>(PortId::new(config.port));
         let recorder = program.component::<Recorder>(
             ComponentId::new("recorder"),
             RecorderCapabilities { stamp, pulses },
         );
-        program.plug_in(&ledger, &recorder);
+        program.connect(&ledger, &recorder);
         RecorderExports { ledger, recorder }
     }
 }
@@ -158,14 +158,14 @@ impl VendorsDrivers for Recorder {
 
 fn assemble() -> (Program, Installed<Recorder>) {
     let mut program = Program::builder();
-    let recorder = program.install::<Recorder>(RecorderConfig { jack: "ledger" });
+    let recorder = program.install::<Recorder>(RecorderConfig { port: "ledger" });
     (program.build().expect("program assembles"), recorder)
 }
 
 #[test]
 fn install_returns_a_token_carrying_the_assembly_exports() {
     let (_program, recorder) = assemble();
-    assert_eq!(recorder.exports().ledger.id(), &JackId::new("ledger"));
+    assert_eq!(recorder.exports().ledger.id(), &PortId::new("ledger"));
     assert!(format!("{recorder:?}").contains("Recorder"));
 }
 
@@ -179,7 +179,7 @@ async fn live_builder_binds_every_requirement_through_with_assembly() {
         .and_drivers((stamp.clone(), SilentPulses))
         .build()
         .expect("every requirement is bound");
-    let client = runtime.jack_handle(&ledger).expect("ledger handle");
+    let client = runtime.port_handle(&ledger).expect("ledger handle");
     let task = runtime.spawn();
 
     client

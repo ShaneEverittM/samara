@@ -1,6 +1,9 @@
 # ADR-0014: Jacks and Plugs
 
-- Status: Accepted
+- Status: Accepted; superseded in part by
+  [ADR-0015](0015-ports-connectors-and-the-message-type.md), which renames
+  Jack and Plug to Port and Connector and removes the `Protocol` trait. The
+  Plug semantics decided here continue under the name Connector.
 - Date: November 8, 2026
 - Deciders: Samara maintainers
 - Scope: The two ways a Component is exposed to others; the rename of `Port`

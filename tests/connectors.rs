@@ -1,6 +1,6 @@
-//! Acceptance evidence for `Plug` and `Pluggable`: a library Assembly
-//! exports an erased provider instead of a Jack of its own protocol, the
-//! application declares the Jack in its own vocabulary, and the coupling
+//! Acceptance evidence for `Connector` and `Connectable`: a library Assembly
+//! exports an erased provider instead of a Port of its own protocol, the
+//! application declares the Port in its own vocabulary, and the coupling
 //! between the two is written once, at the binding site. The library's
 //! Component never becomes nameable outside its module.
 
@@ -11,8 +11,8 @@ use samara::prelude::*;
 mod journal_lib {
     use samara::prelude::*;
 
-    protocol! {
-        pub type Journal => enum JournalMessage {
+    messages! {
+        pub enum JournalMessage {
             Transition { name: String, from: String, to: String },
             Recent(usize) -> Vec<String>,
         }
@@ -52,25 +52,28 @@ mod journal_lib {
         }
     }
 
+    /// The Assembly's public name; it was the protocol marker before the message type became the Port's parameter.
+    pub struct Journal;
+
     impl Assembly for Journal {
         type Config = ();
-        type Exports = Plug<JournalMessage>;
+        type Exports = Connector<JournalMessage>;
         type Requires = ();
 
-        fn install(program: &mut ProgramBuilder, _: ()) -> Plug<JournalMessage> {
+        fn install(program: &mut ProgramBuilder, _: ()) -> Connector<JournalMessage> {
             program
                 .component::<Recorder>(ComponentId::new("journal"), ())
-                .plug_with(RecorderMessage::Journal)
+                .connector_with(RecorderMessage::Journal)
         }
     }
 }
 
 use journal_lib::{Journal, JournalMessage, Recent};
 
-// The application's own vocabulary. Its Components depend on this Jack and
+// The application's own vocabulary. Its Components depend on this Port and
 // never name `JournalMessage`.
-protocol! {
-    pub type Audit => enum AuditMessage {
+messages! {
+    pub enum AuditMessage {
         Changed { what: String, from: String, to: String },
         Tail(usize) -> Vec<String>,
     }
@@ -79,7 +82,7 @@ protocol! {
 struct Monitor;
 
 struct MonitorConfig {
-    audit: Jack<Audit>,
+    audit: Port<AuditMessage>,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -153,9 +156,9 @@ fn couple(message: AuditMessage) -> JournalMessage {
 
 fn assemble() -> (Program, Installed<Journal>, ComponentRef<Monitor>) {
     let mut program = Program::builder();
-    let audit = program.jack::<Audit>(JackId::new("audit"));
+    let audit = program.port::<AuditMessage>(PortId::new("audit"));
     let journal = program.install::<Journal>(());
-    program.plug_in_with(&audit, journal.exports(), couple);
+    program.connect_with(&audit, journal.exports(), couple);
     let monitor =
         program.component::<Monitor>(ComponentId::new("monitor"), MonitorConfig { audit });
     (
@@ -166,7 +169,7 @@ fn assemble() -> (Program, Installed<Journal>, ComponentRef<Monitor>) {
 }
 
 #[test]
-fn an_application_jack_reaches_a_library_plug_through_one_coupling() {
+fn an_application_port_reaches_a_library_connector_through_one_coupling() {
     let (program, journal, monitor) = assemble();
     let mut runtime = ControlledRuntime::builder(program)
         .with_assembly(journal)
@@ -190,45 +193,45 @@ fn an_application_jack_reaches_a_library_plug_through_one_coupling() {
 }
 
 #[test]
-fn plugs_are_inert_addresses_that_remember_only_what_they_accept() {
+fn connectors_are_inert_addresses_that_remember_only_what_they_accept() {
     let mut program = Program::builder();
     let journal = program.install::<Journal>(());
-    let plug: &Plug<JournalMessage> = journal.exports();
-    assert_eq!(plug.id(), &ComponentId::new("journal"));
-    let shown = format!("{plug:?}");
+    let connector: &Connector<JournalMessage> = journal.exports();
+    assert_eq!(connector.id(), &ComponentId::new("journal"));
+    let shown = format!("{connector:?}");
     assert!(shown.contains("JournalMessage"), "{shown}");
     assert!(!shown.contains("Recorder"), "{shown}");
 
-    // A ComponentRef erases to a plug of its own message type through
-    // `Pluggable`, and `plug_in` accepts either form.
-    let audit = program.jack::<Audit>(JackId::new("audit"));
+    // A ComponentRef erases to a connector of its own message type through
+    // `Connectable`, and `connect` accepts either form.
+    let audit = program.port::<AuditMessage>(PortId::new("audit"));
     let monitor =
         program.component::<Monitor>(ComponentId::new("monitor"), MonitorConfig { audit });
-    let same: Plug<MonitorMessage> = monitor.to_plug();
+    let same: Connector<MonitorMessage> = monitor.to_connector();
     assert_eq!(same.id(), monitor.id());
 }
 
 #[test]
-fn a_plug_from_another_program_is_rejected_at_build() {
+fn a_connector_from_another_program_is_rejected_at_build() {
     let mut other = Program::builder();
     let foreign = other.install::<Journal>(());
 
     let mut program = Program::builder();
-    let audit = program.jack::<Audit>(JackId::new("audit"));
-    program.plug_in_with(&audit, foreign.exports(), couple);
+    let audit = program.port::<AuditMessage>(PortId::new("audit"));
+    program.connect_with(&audit, foreign.exports(), couple);
     assert!(
         program.build().is_err(),
-        "a foreign plug is not a provider here"
+        "a foreign connector is not a provider here"
     );
 }
 
 // ---------------------------------------------------------------------------
-// A Plug as a first-class address: send and request with no Jack and no
-// Protocol, the way an Elm module exposes an opaque `Msg` with constructors.
+// A Connector as a first-class address: send and request with no Port and no
+// message macro, the way an Elm module exposes an opaque `Msg` with constructors.
 // ---------------------------------------------------------------------------
 
 /// Stands in for a crate written the Elm way: an opaque message type whose
-/// public surface is its constructor functions. No `protocol!`, no Jack.
+/// public surface is its constructor functions. No `messages!`, no Port.
 mod tally_lib {
     use samara::prelude::*;
 
@@ -298,13 +301,13 @@ mod tally_lib {
 
     impl Assembly for Tally {
         type Config = ();
-        type Exports = Plug<TallyMessage>;
+        type Exports = Connector<TallyMessage>;
         type Requires = ();
 
-        fn install(program: &mut ProgramBuilder, _: ()) -> Plug<TallyMessage> {
+        fn install(program: &mut ProgramBuilder, _: ()) -> Connector<TallyMessage> {
             program
                 .component::<Counter>(ComponentId::new("tally"), ())
-                .to_plug()
+                .to_connector()
         }
     }
 }
@@ -315,7 +318,7 @@ use tally_lib::{Tally, TallyMessage};
 struct Teller;
 
 struct TellerConfig {
-    tally: Plug<TallyMessage>,
+    tally: Connector<TallyMessage>,
     /// `None` asks for the total; `Some` parks a request with that timeout.
     patience: Option<Duration>,
 }
@@ -384,7 +387,7 @@ fn assemble_tally(patience: Option<Duration>) -> (Program, Installed<Tally>, Com
 }
 
 #[test]
-fn a_component_sends_and_requests_through_a_plug_with_no_jack_or_protocol() {
+fn a_component_sends_and_requests_through_a_connector_with_no_port_or_protocol() {
     let (program, tally, teller) = assemble_tally(None);
     let mut runtime = ControlledRuntime::builder(program)
         .with_assembly(tally)
@@ -419,7 +422,7 @@ fn a_component_sends_and_requests_through_a_plug_with_no_jack_or_protocol() {
         &request.event,
         TraceEvent::CommandEmitted {
             target_component: Some(target),
-            target_jack: None,
+            target_port: None,
             ..
         } if target == &ComponentId::new("tally")
     ));
@@ -427,7 +430,7 @@ fn a_component_sends_and_requests_through_a_plug_with_no_jack_or_protocol() {
 }
 
 #[test]
-fn a_plug_request_times_out_exactly_like_a_jack_request() {
+fn a_connector_request_times_out_exactly_like_a_port_request() {
     let patience = Duration::from_secs(1);
     let (program, tally, teller) = assemble_tally(Some(patience));
     let mut runtime = ControlledRuntime::builder(program)
@@ -449,11 +452,11 @@ fn a_plug_request_times_out_exactly_like_a_jack_request() {
     assert!(runtime.cancel().expect("clean close").is_clean());
 }
 
-/// Holds an adapted plug in its own vocabulary and never names the library's.
+/// Holds an adapted connector in its own vocabulary and never names the library's.
 struct DirectMonitor;
 
 struct DirectMonitorConfig {
-    audit: Plug<AuditMessage>,
+    audit: Connector<AuditMessage>,
 }
 
 impl Component for DirectMonitor {
@@ -496,11 +499,11 @@ impl Component for DirectMonitor {
 }
 
 #[test]
-fn a_plug_is_adapted_to_the_holders_vocabulary_once_with_accepting() {
+fn a_connector_is_adapted_to_the_holders_vocabulary_once_with_accepting() {
     let mut program = Program::builder();
     let journal = program.install::<Journal>(());
-    // Elm 0.16's `Signal.forwardTo`: the library's plug, speaking our language.
-    let audit: Plug<AuditMessage> = journal.exports().accepting(couple);
+    // Elm 0.16's `Signal.forwardTo`: the library's connector, speaking our language.
+    let audit: Connector<AuditMessage> = journal.exports().accepting(couple);
     let shown = format!("{audit:?}");
     assert!(
         shown.contains("AuditMessage") && !shown.contains("JournalMessage"),
@@ -529,15 +532,15 @@ fn a_plug_is_adapted_to_the_holders_vocabulary_once_with_accepting() {
     assert!(runtime.cancel().expect("clean close").is_clean());
 }
 
-/// Issues a request to whatever plug it is given before anything runs.
+/// Issues a request to whatever connector it is given before anything runs.
 struct EagerTeller;
 
 impl Component for EagerTeller {
-    type Config = Plug<TallyMessage>;
+    type Config = Connector<TallyMessage>;
     type Model = ();
     type Message = TellerMessage;
 
-    fn init(tally: &Plug<TallyMessage>) -> Init<(), TellerMessage> {
+    fn init(tally: &Connector<TallyMessage>) -> Init<(), TellerMessage> {
         Init::new(()).with_command(Command::request_to(
             tally.clone(),
             TallyMessage::total,
@@ -545,13 +548,13 @@ impl Component for EagerTeller {
         ))
     }
 
-    fn update(_: &Plug<TallyMessage>, _: &mut (), _: TellerMessage) -> Command<TellerMessage> {
+    fn update(_: &Connector<TallyMessage>, _: &mut (), _: TellerMessage) -> Command<TellerMessage> {
         Command::none()
     }
 }
 
 #[test]
-fn an_initial_request_to_a_foreign_plug_fails_both_profile_builds() {
+fn an_initial_request_to_a_foreign_connector_fails_both_profile_builds() {
     fn program() -> Program {
         let mut other = Program::builder();
         let foreign = other.install::<Tally>(());
@@ -559,19 +562,19 @@ fn an_initial_request_to_a_foreign_plug_fails_both_profile_builds() {
         program.component::<EagerTeller>(ComponentId::new("eager"), foreign.exports().clone());
         program
             .build()
-            .expect("the hidden plug is ordinary Rust until a profile reads initial work")
+            .expect("the hidden connector is ordinary Rust until a profile reads initial work")
     }
 
     let live = LiveRuntime::builder(program())
         .build()
         .err()
-        .expect("initial foreign plug must fail live build");
+        .expect("initial foreign connector must fail live build");
     assert!(live.to_string().contains("another Program"), "{live}");
 
     let controlled = ControlledRuntime::builder(program())
         .build()
         .err()
-        .expect("initial foreign plug must fail controlled build");
+        .expect("initial foreign connector must fail controlled build");
     assert!(
         controlled.to_string().contains("another Program"),
         "{controlled}"
@@ -579,7 +582,7 @@ fn an_initial_request_to_a_foreign_plug_fails_both_profile_builds() {
 }
 
 #[test]
-fn request_intents_only_see_jack_requests() {
+fn request_intents_only_see_port_requests() {
     let mut program = Program::builder();
     let tally = program.install::<Tally>(());
     let command: Command<TellerMessage> = Command::request_to(
@@ -587,7 +590,7 @@ fn request_intents_only_see_jack_requests() {
         TallyMessage::total,
         TellerMessage::Total,
     );
-    // A Plug request has no request value until the runtime mints its token;
+    // A Connector request has no request value until the runtime mints its token;
     // it is observed through controlled execution instead.
     assert!(command.request_intents::<()>().is_empty());
     assert!(command.request_intents::<TallyMessage>().is_empty());

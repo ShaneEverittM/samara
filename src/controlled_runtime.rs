@@ -14,8 +14,8 @@ use std::{
 use crate::declarative_work::SubscriptionChange;
 use crate::{
     CapabilityToken, Command, CommandKind, Component, ComponentId, ComponentRef, EffectDescriptor,
-    EffectOutcome, EffectOutcomeKind, ErasedRequestMapper, ErasedSourceEvent, JackId, LogicalTime,
-    PendingEffect, PendingWork, Program, RequestOutcome, RequestOutcomeKind, RequestRoute,
+    EffectOutcome, EffectOutcomeKind, ErasedRequestMapper, ErasedSourceEvent, LogicalTime,
+    PendingEffect, PendingWork, PortId, Program, RequestOutcome, RequestOutcomeKind, RequestRoute,
     RequestTarget, RequestToken, RunReport, RuntimeError, ShutdownReport, SourceCapability,
     SourceDescriptor, SourceEvent, SourcePlan, StreamDescriptor, StreamSourceDescriptor,
     Subscription, SubscriptionAction, SubscriptionId, TraceCommandKind, TraceEvent, TraceId,
@@ -505,11 +505,11 @@ impl ControlledCore {
         })
     }
 
-    fn binding_index(&self, protocol: TypeId, jack: &JackId) -> Option<usize> {
+    fn binding_index(&self, protocol: TypeId, port: &PortId) -> Option<usize> {
         self.program
             .bindings
             .iter()
-            .position(|binding| binding.protocol_type() == protocol && binding.jack_id() == jack)
+            .position(|binding| binding.protocol_type() == protocol && binding.port_id() == port)
     }
 
     fn source_index(
@@ -675,7 +675,7 @@ impl ControlledCore {
         kind: TraceCommandKind,
         detail_type: &'static str,
         target_component: Option<ComponentId>,
-        target_jack: Option<JackId>,
+        target_port: Option<PortId>,
     ) -> TraceId {
         self.push_child(
             cause,
@@ -684,7 +684,7 @@ impl ControlledCore {
                 kind,
                 detail_type,
                 target_component,
-                target_jack,
+                target_port,
             },
         )
     }
@@ -788,7 +788,7 @@ impl ControlledCore {
                     );
                 }
                 CommandKind::Notify(command) => {
-                    let jack = command.jack().clone();
+                    let port = command.port().clone();
                     let protocol = command.protocol_type_id();
                     let detail_type = command.notification_type_name();
                     let work = self.command_trace(
@@ -797,22 +797,22 @@ impl ControlledCore {
                         TraceCommandKind::Notify,
                         detail_type,
                         None,
-                        Some(jack.clone()),
+                        Some(port.clone()),
                     );
-                    if !Arc::ptr_eq(command.jack_program(), &self.program.program) {
+                    if !Arc::ptr_eq(command.port_program(), &self.program.program) {
                         return Err(self.set_fault(
                             component.clone(),
                             None,
                             work,
-                            "notification Jack belongs to another Program",
+                            "notification Port belongs to another Program",
                         ));
                     }
-                    let Some(binding_index) = self.binding_index(protocol, &jack) else {
+                    let Some(binding_index) = self.binding_index(protocol, &port) else {
                         return Err(self.set_fault(
                             component.clone(),
                             None,
                             work,
-                            "notification Jack has no runtime binding",
+                            "notification Port has no runtime binding",
                         ));
                     };
                     let protocol_message = command.into_message();
@@ -843,39 +843,39 @@ impl ControlledCore {
                     let reply_type = command.reply_type_id();
                     let reply_type_name = command.reply_type_name();
                     let (work, route) = match command.target() {
-                        RequestTarget::Jack {
+                        RequestTarget::Port {
                             id,
                             program,
                             protocol,
                         } => {
-                            let jack = id.clone();
+                            let port = id.clone();
                             let work = self.command_trace(
                                 cause,
                                 component,
                                 TraceCommandKind::Request,
                                 request_type,
                                 None,
-                                Some(jack.clone()),
+                                Some(port.clone()),
                             );
                             if !Arc::ptr_eq(program, &self.program.program) {
                                 return Err(self.set_fault(
                                     component.clone(),
                                     None,
                                     work,
-                                    "request Jack belongs to another Program",
+                                    "request Port belongs to another Program",
                                 ));
                             }
-                            let Some(binding_index) = self.binding_index(protocol, &jack) else {
+                            let Some(binding_index) = self.binding_index(protocol, &port) else {
                                 return Err(self.set_fault(
                                     component.clone(),
                                     None,
                                     work,
-                                    "request Jack has no runtime binding",
+                                    "request Port has no runtime binding",
                                 ));
                             };
                             (work, RequestRoute::Binding(binding_index))
                         }
-                        RequestTarget::Plug {
+                        RequestTarget::Connector {
                             id,
                             program,
                             message_type,
@@ -898,7 +898,7 @@ impl ControlledCore {
                                     None,
                                     work,
                                     format!(
-                                        "request Plug target {target:?} is absent from the Program"
+                                        "request Connector target {target:?} is absent from the Program"
                                     ),
                                 ));
                             }

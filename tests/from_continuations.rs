@@ -188,19 +188,13 @@ fn http_pipeline_default_uses_from_and_into_command_with_is_explicit() {
     ));
 }
 
-struct EchoProtocol;
-
 enum EchoProtocolMessage {
-    Echo(RequestInvocation<EchoProtocol, Echo>),
-}
-
-impl Protocol for EchoProtocol {
-    type Message = EchoProtocolMessage;
+    Echo(RequestInvocation<EchoProtocolMessage, Echo>),
 }
 
 struct Echo(u64);
 
-impl Request<EchoProtocol> for Echo {
+impl Request<EchoProtocolMessage> for Echo {
     type Reply = u64;
 
     fn into_message(self, reply_to: ReplyTo<Self::Reply>) -> EchoProtocolMessage {
@@ -264,7 +258,7 @@ impl From<RequestOutcome<u64>> for RequesterMessage {
 struct Requester;
 
 struct RequesterConfig {
-    echo: Jack<EchoProtocol>,
+    echo: Port<EchoProtocolMessage>,
 }
 
 impl Component for Requester {
@@ -304,9 +298,9 @@ impl Component for Requester {
 #[test]
 fn request_default_uses_from_and_request_with_preserves_context() {
     let mut builder = Program::builder();
-    let echo = builder.jack::<EchoProtocol>(JackId::new("echo"));
+    let echo = builder.port::<EchoProtocolMessage>(PortId::new("echo"));
     let provider = builder.component::<EchoProvider>(ComponentId::new("provider"), ());
-    builder.plug_in(&echo, &provider);
+    builder.connect(&echo, &provider);
     let requester = builder.component::<Requester>(
         ComponentId::new("requester"),
         RequesterConfig { echo: echo.clone() },

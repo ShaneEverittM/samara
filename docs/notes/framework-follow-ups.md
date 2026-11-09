@@ -105,7 +105,7 @@ not accepted API decisions or a review of the unfinished application.
   source events, and effect outcomes, not just individual update calls. Reuse
   the runtime's transition and command machinery so isolated tests preserve
   execution semantics. Define how capabilities are supplied and how external
-  effects, sources, and jacks are explicitly controlled or stubbed.
+  effects, sources, and ports are explicitly controlled or stubbed.
   LiveRuntime and ControlledRuntime both accept a Program without sharing a
   runtime interface; preserve that flexibility and let ComponentRuntime expose
   APIs suited to isolated tests. Prioritize this over per-Component transition
@@ -155,16 +155,16 @@ a journal Component; exploratory proposals, not accepted API decisions.
   (ADR-0013); design, rejected alternatives, and remaining open items are in
   the [Assembly design note](assembly-design.md). Still open from it:
   identity scoping through `Config`, named `Requires` positions, and a
-  Jack-level controlled ingress so an Assembly can be tested from outside its
+  Port-level controlled ingress so an Assembly can be tested from outside its
   module.
 
-- [x] **Plugs as first-class addresses.** Landed November 8, 2026
-  (ADR-0014): `Command::send` over any `Pluggable`, `Command::request_to` and
-  `request_to_timeout` minting the `ReplyTo` against a Plug from a published
-  constructor function, and `Plug::accepting`, Elm 0.16's `forwardTo`. A
+- [x] **Connectors as first-class addresses.** Landed November 8, 2026
+  (ADR-0014): `Command::send` over any `Connectable`, `Command::request_to` and
+  `request_to_timeout` minting the `ReplyTo` against a Connector from a published
+  constructor function, and `Connector::accepting`, Elm 0.16's `forwardTo`. A
   library written the Elm way, an opaque Message with constructor functions,
-  now needs no `protocol!` and no Jack; `tests/plugs.rs` has one. Still open:
-  there is no intent inspector for a Plug request, because its message does
+  now needs no `messages!` and no Port; `tests/connectors.rs` has one. Still open:
+  there is no intent inspector for a Connector request, because its message does
   not exist until the token is minted; controlled execution observes it.
 
 - [ ] **No small-scale composition: `Command::map` and `Subscriptions::map`
@@ -172,7 +172,7 @@ a journal Component; exploratory proposals, not accepted API decisions.
   a `Subscriptions<Child>` into a `Subscriptions<Parent>`; the existing `map_*`
   methods are test inspectors. Without Elm's `Cmd.map` and `Sub.map`, every
   reusable piece of stateful logic, however small, must become a Component
-  with a Jack, a `From` impl, and a protocol. The pulse journal raised it:
+  with a Port, a `From` impl, and a message enum. The pulse journal raised it:
   on the merits it is roughly 60/40 an Assembly over an embedded
   sub-reducer, but the question could not be decided because only one shape
   exists. Both maps are implementable from what Commands already carry.

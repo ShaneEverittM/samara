@@ -2,7 +2,7 @@
 //!
 //! The example has two Components: `Counter` owns a count, while `Quota` owns
 //! the authority to approve changes to it. An increment therefore crosses a
-//! named Jack as a correlated request before it can become state. Successful
+//! named Port as a correlated request before it can become state. Successful
 //! increments also produce a typed persistence effect, and a logical stream
 //! (`mpsc`-backed in live execution) plus a timer demonstrate the two
 //! subscription/command lifecycles.
@@ -34,17 +34,11 @@ const QUOTA: &str = "counter/quota";
 /// The protocol is separate from `QuotaMessage`, so consumers depend on the
 /// service contract rather than the provider Component's complete private
 /// Message API.
-struct QuotaProtocol;
-
-impl Protocol for QuotaProtocol {
-    type Message = QuotaProtocolMessage;
-}
-
 #[derive(Debug)]
-/// Values that program assembly can route through a `QuotaProtocol` Jack.
+/// Values that program assembly can route through a `QuotaProtocol` Port.
 enum QuotaProtocolMessage {
     /// A typed request together with the inert token needed to return its reply.
-    Reserve(RequestInvocation<QuotaProtocol, Reserve>),
+    Reserve(RequestInvocation<QuotaProtocolMessage, Reserve>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -64,7 +58,7 @@ enum Reservation {
     Denied { requested: u64, remaining: u64 },
 }
 
-impl Request<QuotaProtocol> for Reserve {
+impl Request<QuotaProtocolMessage> for Reserve {
     type Reply = Reservation;
 
     fn into_message(self, reply_to: ReplyTo<Self::Reply>) -> QuotaProtocolMessage {
@@ -84,7 +78,7 @@ struct QuotaModel {
 #[derive(Debug)]
 /// Quota's private message vocabulary.
 enum QuotaMessage {
-    /// A provider-neutral protocol value routed here by program assembly.
+    /// A provider-neutral Port message routed here by program assembly.
     Protocol(QuotaProtocolMessage),
 }
 
@@ -211,7 +205,7 @@ struct CounterConfig {
     persistence: EffectCapability<PersistCount>,
 
     /// Named dependency on any provider of the quota protocol.
-    quota: Jack<QuotaProtocol>,
+    quota: Port<QuotaProtocolMessage>,
 }
 
 impl Component for Counter {
@@ -325,7 +319,7 @@ impl EffectDriver<PersistCount> for LivePersistence {
 
 /// Addresses retained by the application boundary after program assembly.
 ///
-/// Component-to-Component dependencies use Jacks above; these references are
+/// Component-to-Component dependencies use Ports above; these references are
 /// for deliberate direct interaction and state observation at the runtime edge.
 struct AppRefs {
     /// Address used to send to and inspect the Counter.
@@ -344,22 +338,22 @@ fn program(increments: StreamDescriptor<u64>) -> (Program, AppRefs) {
     let increment_source = program.source::<StreamDescriptor<u64>>();
     let persistence = program.effect::<PersistCount>();
 
-    // A named Jack is immutable dependency wiring. Naming allows another Quota
+    // A named Port is immutable dependency wiring. Naming allows another Quota
     // protocol instance to coexist without a global “one provider per type” rule.
-    let quota_jack = program.jack(JackId::new(QUOTA));
+    let quota_port = program.port(PortId::new(QUOTA));
     let quota = program.component::<Quota>(ComponentId::new("quota"), QuotaConfig { initial: 100 });
 
     // Assembly chooses the concrete provider. `QuotaMessage` declares its
-    // canonical Protocol conversion through `From`; Counter never needs to
+    // canonical Port-message conversion through `From`; Counter never needs to
     // know that private Message vocabulary.
-    program.plug_in(&quota_jack, &quota);
+    program.connect(&quota_port, &quota);
     let counter = program.component::<Counter>(
         ComponentId::new("counter"),
         CounterConfig {
             increment_source: increment_source.clone(),
             increments: increments.clone(),
             persistence,
-            quota: quota_jack,
+            quota: quota_port,
         },
     );
 
@@ -470,7 +464,7 @@ mod tests {
     }
 
     /// Runs the unchanged Components and Program through real Tokio scheduling,
-    /// Jacks, a first-party channel bridge, a terminal Effect Driver, and
+    /// Ports, a first-party channel bridge, a terminal Effect Driver, and
     /// structured cancellation.
     #[tokio::test]
     async fn live_reference_program_runs_end_to_end() -> Result<(), RuntimeError> {
@@ -489,7 +483,7 @@ mod tests {
         let mut program = Program::builder();
         let increment_source = program.source::<StreamDescriptor<u64>>();
         let persistence = program.effect::<PersistCount>();
-        let quota = program.jack(JackId::new(QUOTA));
+        let quota = program.port(PortId::new(QUOTA));
         let component = CounterConfig {
             increment_source,
             increments: increments.clone(),
@@ -504,7 +498,7 @@ mod tests {
         assert_eq!(model.count, 0);
         let requests = command.request_intents::<Reserve>();
         assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].0, &JackId::new(QUOTA));
+        assert_eq!(requests[0].0, &PortId::new(QUOTA));
         assert_eq!(requests[0].1, &Reserve { amount: 3 });
 
         // Supplying the message shape produced by the continuation exercises

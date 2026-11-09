@@ -16,7 +16,7 @@ Sections, each a set of questions:
 - [State and purity](#state-and-purity)
 - [Effects, Layers, and Drivers](#effects-layers-and-drivers)
 - [Sources and Subscriptions](#sources-and-subscriptions)
-- [Jacks, notifications, and requests](#jacks-notifications-and-requests)
+- [Ports, notifications, and requests](#ports-notifications-and-requests)
 - [Program assembly](#program-assembly)
 - [Live and controlled execution](#live-and-controlled-execution)
 - [Open ends](#open-ends)
@@ -109,7 +109,7 @@ should become a Component.
 
 
 The `Model` contains mutable behavioral state. `Component::Config` holds
-immutable logical configuration and wiring, such as Jacks, EffectCapabilities,
+immutable logical configuration and wiring, such as Ports, EffectCapabilities,
 SourceCapabilities, and SourceDescriptors. Component functions receive it as
 `&Config`; after registration, the configuration is observationally
 immutable. The type implementing `Component` is only a name for the kind and
@@ -514,66 +514,66 @@ cancellation. It does not retry, reconnect, frame, or interpret domain data.
 Those choices belong in Layers or Component logic where they remain visible
 and controllable.
 
-## Jacks, notifications, and requests
+## Ports, notifications, and requests
 
 ### How Does a Component Expose Itself?
 
 Two ways, distinguished by who owns the message type.
 
-A **Jack** is consumer-owned. The application declares a Protocol in its own
-vocabulary, cuts a named `Jack<P>` for it, and at assembly plugs a provider
-in. Its Components hold only the Jack. This is the tool for abstracting a part
-of *your own* application: the provider can be replaced, wrapped, or
-controlled in a test without the consumer changing, and the Protocol is the
-seam.
+A **Port** is consumer-owned. The application declares a message enum in its
+own vocabulary, cuts a named `Port<M>` for it, and at assembly connects a
+provider. Its Components hold only the Port. This is the tool for abstracting
+a part of *your own* application: the provider can be replaced, wrapped, or
+controlled in a test without the consumer changing, and the message enum is
+the seam.
 
-A **Plug** is provider-owned. A Component publishes where it lives and what it
-accepts as a `Plug<M>`, an erased `ComponentRef` typed by the Message it
+A **Connector** is provider-owned. A Component publishes where it lives and what it
+accepts as a `Connector<M>`, an erased `ComponentRef` typed by the Message it
 accepts rather than by the Component kind. This is the tool for exposing a
-Component across a dependency boundary: a library Assembly exports a Plug, the
-application plugs it into one of its own Jacks with `plug_in_with`, and the
+Component across a dependency boundary: a library Assembly exports a Connector, the
+application connects it to one of its own Ports with `connect_with`, and the
 coupling between the two vocabularies is written once at that site. The
 dependency points the right way, from application to library, and the
 library's Component kind never becomes nameable outside its crate.
 
-A Plug is also an address in its own right. A Component may hold a `Plug<M>`
+A Connector is also an address in its own right. A Component may hold a `Connector<M>`
 in its `Config` and reach it with `Command::send`, or with
-`Command::request_to(plug, Constructor, map)` where `Constructor` is a
+`Command::request_to(connector, Constructor, map)` where `Constructor` is a
 function the provider published that takes a `ReplyTo<R>`; the reply type is
-fixed by that parameter and checked against `map`. `Plug::accepting` adapts
-a library's Plug to the holder's vocabulary once, so the holder's Components
-never name the library's types even without a Jack.
+fixed by that parameter and checked against `map`. `Connector::accepting` adapts
+a library's Connector to the holder's vocabulary once, so the holder's Components
+never name the library's types even without a Port.
 
 Elm has no private messages; it gets both the public API and the hiding from
 one mechanism, exporting `Msg` as an opaque type and publishing constructor
 functions for the callable subset. A Rust library can do the same with a
 public newtype over a private enum as its `Component::Message`, public
-constructor functions including ones that take a `ReplyTo`, and a Plug of it,
-needing no `protocol!` at all. `protocol!` remains the monolith's tool: it
+constructor functions including ones that take a `ReplyTo`, and a Connector of it,
+needing no `messages!` at all. `messages!` remains the monolith's tool: it
 types request and reply pairs as a trait on the request, which Elm never
 needed because its queries were function calls on a shared Model and its
 asynchronous replies were typed by the `expect` argument, which is what
 `request_to` does.
 
-### Why Are Jacks the Normal Component Dependency Boundary?
+### Why Are Ports the Normal Component Dependency Boundary?
 
 
-A Jack exposes a provider-neutral typed protocol rather than another
-Component's private message enum. Program assembly binds that protocol to a
+A Port exposes a provider-neutral message enum the consumer owns rather than
+another Component's private one. Program assembly binds that enum to a
 concrete provider, allowing consumers to remain unchanged when the provider is
 replaced, wrapped, or controlled in a test.
 
-Jack binding follows the same paired convention as effects and sources.
-`plug_in` uses the provider Message's `From<Protocol::Message>` and states
-only which exact named Jack reaches which provider, which also makes
-acceptance of a Protocol visible on the provider Message type itself.
-`plug_in_with` takes the conversion explicitly, normally the enum variant
-that wraps the protocol message, for providers that would otherwise write a
-`From` impl whose body is that one variant. Both bind one Jack to one
+Port binding follows the same paired convention as effects and sources.
+`connect` uses the provider Message's `From<M>` for a `Port<M>` and states
+only which exact named Port reaches which provider, which also makes
+acceptance of a Port message type visible on the provider Message type itself.
+`connect_with` takes the conversion explicitly, normally the enum variant
+that wraps the Port message, for providers that would otherwise write a
+`From` impl whose body is that one variant. Both bind one Port to one
 provider; the conversion must be pure either way.
 
-Jacks are named rather than globally selected by protocol type. Two dependencies
-may implement the same protocol while representing distinct roles, such as a
+Ports are named rather than globally selected by message type. Two dependencies
+may carry the same message type while representing distinct roles, such as a
 primary and fallback service.
 
 ### When Is a Direct Component Reference Appropriate?
@@ -581,25 +581,25 @@ primary and fallback service.
 
 A typed Component reference is a useful lower-level option when tight coupling
 to the target's complete message API is deliberate. Reusable application
-boundaries should prefer Jacks so private provider messages do not become a
-transitive dependency of every consumer. Across a crate boundary, a `Plug<M>`
+boundaries should prefer Ports so private provider messages do not become a
+transitive dependency of every consumer. Across a crate boundary, a `Connector<M>`
 exported by the target's Assembly gives the same direct delivery without
 naming the Component kind.
 
 ### Why Are Notification and Request APIs Symmetric?
 
 
-The two Jack interaction forms should teach each other. `Command::notify` accepts a
+The two Port interaction forms should teach each other. `Command::notify` accepts a
 value implementing `Notification<P>` and requests one-way delivery through a
-`Jack<P>`. `Command::request` accepts a value implementing `Request<P>`, whose
+`Port<P>`. `Command::request` accepts a value implementing `Request<P>`, whose
 associated Reply type defines the successful result, and uses the requester's
 canonical `From<RequestOutcome<...>>` conversion. `Command::request_with`
 accepts an explicit continuation instead.
 
-At the live host boundary, `JackHandle::notify` accepts the same Notification
-value and `JackHandle::request` accepts the same Request value. The successful
+At the live host boundary, `PortHandle::notify` accepts the same Notification
+value and `PortHandle::request` accepts the same Request value. The successful
 host Request result is the associated Reply directly because ordinary Tokio host
-code can await; that convenience does not change the provider's Protocol Message
+code can await; that convenience does not change the provider's Port message
 or `ReplyTo` path.
 
 This naming states the relevant intent in the same vocabulary at both layers:
@@ -672,9 +672,9 @@ waiter with `RuntimeError` without manufacturing a Component outcome.
 ### How Do I Bound a Request's Lifetime?
 
 
-Use `Command::request_timeout(jack, request, duration)` for the canonical
+Use `Command::request_timeout(port, request, duration)` for the canonical
 `From<RequestOutcome<Reply>>` conversion, or
-`Command::request_timeout_with(jack, request, duration, mapper)` to capture
+`Command::request_timeout_with(port, request, duration, mapper)` to capture
 application context. The runtime starts the duration when interpreting the
 Command, using logical time in controlled execution and Tokio time live.
 
@@ -683,7 +683,7 @@ one `TimedOut` Message releases the request obligation. Zero always times out.
 Late Replies are discarded. The deadline is removed on either outcome, so a
 successful request does not leave a timer holding Drain open.
 
-Hosts use `jack_handle.request_timeout(request, duration).await`, returning
+Hosts use `port_handle.request_timeout(request, duration).await`, returning
 `Result<RequestOutcome<Reply>, RuntimeError>`. This duration includes time
 queued after admission on first poll. Dropping the waiter leaves the request
 and deadline owned by the runtime. Wrapping an unbounded `request` in
@@ -707,11 +707,11 @@ runtime-visible failures other than timeout and cancellation; the exact outcome
 and error variants remain subject to the lifecycle policy.
 
 Surrounding Tokio code is outside the Component transition boundary, so
-ADR-0006 deliberately gives `JackHandle::request` an awaitable
+ADR-0006 deliberately gives `PortHandle::request` an awaitable
 `Result<R::Reply, RuntimeError>`. This is not an escape hatch for Components:
-`JackHandle` is live-only, cannot access Model state, and must not be placed in a
+`PortHandle` is live-only, cannot access Model state, and must not be placed in a
 Component or passed to `update`. If the host wants a Reply to affect application
-state, it must submit another admitted Component Message or Protocol operation.
+state, it must submit another admitted Component Message or Port operation.
 
 Dropping an unpolled host request future admits nothing. Dropping it after
 admission relinquishes only the host task's interest in the result; it does not
@@ -719,21 +719,21 @@ cancel the runtime-owned Request or let Drain forget it. That cancellation-safe
 ownership rule avoids silently inventing provider-visible cancellation and
 late-Reply policy.
 
-### Why Is `JackHandle` Distinct From `Jack`?
+### Why Is `PortHandle` Distinct From `Port`?
 
 
-`Jack<P>` is immutable logical wiring shared by live and controlled Programs. It
+`Port<P>` is immutable logical wiring shared by live and controlled Programs. It
 contains no live capability and is safe to retain in Component configuration.
-`JackHandle<P>` belongs to one assembled LiveRuntime and lets surrounding Tokio
+`PortHandle<P>` belongs to one assembled LiveRuntime and lets surrounding Tokio
 code cross that runtime's external admission boundary. Keeping the types
 separate makes that live capability visible in APIs and review. Rust cannot
 forbid a Component author from placing an arbitrary `Send` field in its
-configuration, so keeping JackHandle out of Components remains a conformance
+configuration, so keeping PortHandle out of Components remains a conformance
 rule as well as a type-level design signal.
 
-`LiveRuntime::jack_handle` validates the supplied Jack against the exact built
+`LiveRuntime::port_handle` validates the supplied Port against the exact built
 Program and binding before spawn. The handle still does not reveal the selected
-provider; Notifications and Requests follow the ordinary Protocol conversion,
+provider; Notifications and Requests follow the ordinary Port-message conversion,
 binding, Message delivery, and provider transition path. ControlledRuntime does
 not mimic this live host handle. Controlled tests continue to drive explicit
 deterministic inputs and inspect the same downstream Program behavior.
@@ -744,14 +744,14 @@ deterministic inputs and inspect the same downstream Program behavior.
 
 
 `ProgramBuilder::build()` can reject facts that assembly directly owns:
-duplicate Component identities, duplicate `(Protocol type, JackId)`
-declarations, Jacks not bound exactly once, and providers registered in a
+duplicate Component identities, duplicate `(message type, PortId)`
+declarations, Ports not bound exactly once, and providers registered in a
 different builder. Failing there gives both profiles the same valid logical
 Program before runtime startup. It also closes the set of Program-issued
-Component, Jack, Effect, and Source capabilities.
+Component, Port, Effect, and Source capabilities.
 
 It cannot inspect arbitrary fields inside Component configuration or predict
-behavior-dependent `Command::send` edges. Jack cycles are therefore legal and
+behavior-dependent `Command::send` edges. Port cycles are therefore legal and
 not detected. The Program has a closed capability inventory without claiming
 an introspected static graph of every possible edge.
 
@@ -759,7 +759,7 @@ The live and controlled profile builders perform the second validation stage.
 They check every Effect and Source capability declaration against the selected
 terminal Drivers or controlled behaviors before execution. Missing, duplicate,
 ambiguous, foreign, and type-incompatible bindings fail synchronously. A
-foreign ComponentRef, Jack, or boundary capability visible in initial work is
+foreign ComponentRef, Port, or boundary capability visible in initial work is
 rejected during profile build. If deliberately hidden until a later Message,
 it is diagnosed before the target operation or terminal behavior executes;
 that defense-in-depth fault does not add a dynamic dependency to the Program.
@@ -768,8 +768,8 @@ that defense-in-depth fault does not add a dynamic dependency to the Program.
 
 The unit of reuse is an Assembly, not a Component. A library ships a type
 implementing `Assembly`; its `install` declares one or more Components, their
-Jacks, and their Effect and Source capabilities into the caller's
-`ProgramBuilder`, and returns only what the caller may use, normally the Jack.
+Ports, and their Effect and Source capabilities into the caller's
+`ProgramBuilder`, and returns only what the caller may use, normally the Port.
 The Component types, their `ComponentId`s, and their capabilities stay private
 as a consequence: nothing in the public surface needs them.
 
@@ -777,7 +777,7 @@ as a consequence: nothing in the public surface needs them.
 
 | Scale | Who asks | Declared as | Answered by |
 | --- | --- | --- | --- |
-| Wiring | A Component, of its assembler | `Component::Config`: the capability tokens, Jacks, and settings one instance is built with | `install`, which issues the tokens and registers the Component |
+| Wiring | A Component, of its assembler | `Component::Config`: the capability tokens, Ports, and settings one instance is built with | `install`, which issues the tokens and registers the Component |
 | World boundaries | An Assembly, of its host | `Assembly::Requires`: a type-level list of `Effect<D>` and `Source<S>` markers | The host, which drives each entry live or lets the harness take it controlled |
 
 `install` binds no Drivers. Assembly is shared by live and controlled
@@ -801,23 +801,23 @@ concrete tuple satisfying `Requires` and constructs it; hosts call
 that impl so consumers bringing their own Drivers do not pay for the vendored
 ones; the Assembly, its exports, and its `Requires` stay unconditional.
 
-Implement `Assembly` on a marker or on the protocol type, not on a Component.
+Implement `Assembly` on a public marker struct, not on a Component.
 `Component`'s associated types are part of its public interface, so a public
-Component forces its `Config`, `Model`, and `Message` public too; the protocol
-type is already the public name callers hold.
+Component forces its `Config`, `Model`, and `Message` public too; a marker
+costs one line and names nothing else.
 
-An Assembly's `Exports` is normally a Jack when the Assembly is part of your
-own application and a `Plug<M>` when it is a library: the Plug lets the
-application keep its own Protocol and couple to the library's vocabulary at
-`plug_in_with`. See
+An Assembly's `Exports` is normally a Port when the Assembly is part of your
+own application and a `Connector<M>` when it is a library: the Connector lets the
+application keep its own message enum and couple to the library's vocabulary at
+`connect_with`. See
 [How Does a Component Expose Itself?](#how-does-a-component-expose-itself).
 
 Controlled execution delivers messages and inspects state by `ComponentRef<C>`,
-not by Jack, and exporting a `ComponentRef<C>` makes `C` public with the same
+not by Port, and exporting a `ComponentRef<C>` makes `C` public with the same
 leak. So an Assembly's isolated controlled tests live inside its module, where
 its private types are reachable, exactly as the url checker's tests do.
 Application-level controlled tests reach the Assembly through the Components
-that use its Jack. A Jack-level controlled ingress would let callers test an
+that use its Port. A Port-level controlled ingress would let callers test an
 Assembly they do not own and is tracked in the follow-ups.
 
 The gap between `install` and `and_drivers` is deliberate. A Program is
@@ -839,10 +839,10 @@ decisions and terminal world-facing bindings differ. Convenience APIs must
 preserve that shared path rather than creating a second testing-only
 application model.
 
-Live host capabilities such as ComponentHandle and JackHandle are profile
-boundaries, not part of the Program stored in Component configuration. JackHandle
+Live host capabilities such as ComponentHandle and PortHandle are profile
+boundaries, not part of the Program stored in Component configuration. PortHandle
 therefore need not have a ControlledRuntime twin, but work admitted through it
-must enter the same Jack binding, Protocol Message, RequestInvocation, and
+must enter the same Port binding, Port message, RequestInvocation, and
 provider transition used by the shared Program.
 
 ### What Does Successful Live Ingress Mean?
@@ -850,14 +850,14 @@ provider transition used by the shared Program.
 
 Under ADR-0004, a successful `ComponentHandle::send` means the Message has
 crossed the admission boundary and is owned for runtime-managed delivery.
-ADR-0006 gives `JackHandle` the same cutoff. A successful notify means accepted,
+ADR-0006 gives `PortHandle` the same cutoff. A successful notify means accepted,
 not transition completion. A request future attempts admission when first
 polled; once it is waiting for a Reply, the Request is runtime-owned even if the
 host drops the waiter. An operation racing shutdown or a runtime fault is either
 accepted under the applicable closure policy or rejected explicitly; there is
 no ambiguous successful-but-never-admitted result.
 
-Drain retains admitted Jack work and may wait forever for a Reply. Cancel or
+Drain retains admitted Port work and may wait forever for a Reply. Cancel or
 clean scope closure wakes a pending host waiter with `RuntimeError` without
 creating a RequestOutcome. A runtime fault instead preserves and returns that
 scope fault. These are host diagnostics, not Component Messages or newly

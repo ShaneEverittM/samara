@@ -28,6 +28,7 @@ Governing documents:
 - [ADR-0009: First-Party Standard-Input Line Source](adr/0009-first-party-stdin-lines.md)
 - [ADR-0013: Component Kinds, Assemblies, and Provisional First-Party Effects](adr/0013-component-kinds-assemblies-and-first-party-effects.md)
 - [ADR-0014: Jacks and Plugs](adr/0014-jacks-and-plugs.md)
+- [ADR-0015: Ports, Connectors, and the Message Type](adr/0015-ports-connectors-and-the-message-type.md)
 - [Architecture Test Strategy](testing/architecture-test-strategy.md)
 - [v0 Acceptance Matrix](testing/v0-acceptance-matrix.md)
 
@@ -153,12 +154,12 @@ at runtime, recorded so 0.2 and 0.3 start from a list rather than a profile:
 - `Assembly::Requires` is a positional tuple; a named-field form was deferred
   (ADR-0013).
 - Every effect carries a boxed outcome mapper.
-- Every Jack binding carries a boxed conversion, including `plug_in`'s
+- Every Port binding carries a boxed conversion, including `connect`'s
   `From` (one allocation at assembly, one indirect call per delivered
   message).
-- `Command::send` erases its target into a `Plug` so one constructor serves
-  `ComponentRef` and `Plug` targets: one `Arc` allocation per send Command
-  when the target is a `ComponentRef`, none beyond the clone when a `Plug`
+- `Command::send` erases its target into a `Connector` so one constructor serves
+  `ComponentRef` and `Connector` targets: one `Arc` allocation per send Command
+  when the target is a `ComponentRef`, none beyond the clone when a `Connector`
   is held in `Config` (ADR-0014).
 - Internal delivery is unbounded (ADR-0004).
 

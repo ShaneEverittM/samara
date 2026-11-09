@@ -9,8 +9,8 @@ use std::{
 
 use samara::prelude::*;
 
-protocol! {
-    type HostProtocol => enum HostProtocolMessage {
+messages! {
+    enum HostProtocolMessage {
         Set(u64),
         RecordIngress(u64),
         Read -> u64,
@@ -26,7 +26,7 @@ struct CountedSet {
     conversions: Arc<AtomicUsize>,
 }
 
-impl Notification<HostProtocol> for CountedSet {
+impl Notification<HostProtocolMessage> for CountedSet {
     fn into_message(self) -> HostProtocolMessage {
         self.conversions.fetch_add(1, Ordering::SeqCst);
         HostProtocolMessage::Set(self.value)
@@ -35,7 +35,7 @@ impl Notification<HostProtocol> for CountedSet {
 
 struct PanickingRequest;
 
-impl Request<HostProtocol> for PanickingRequest {
+impl Request<HostProtocolMessage> for PanickingRequest {
     type Reply = ();
 
     fn into_message(self, _reply_to: ReplyTo<Self::Reply>) -> HostProtocolMessage {
@@ -45,26 +45,20 @@ impl Request<HostProtocol> for PanickingRequest {
 
 struct PanickingNotification;
 
-impl Notification<HostProtocol> for PanickingNotification {
+impl Notification<HostProtocolMessage> for PanickingNotification {
     fn into_message(self) -> HostProtocolMessage {
         panic!("notification conversion panic")
     }
 }
 
-struct BindingProtocol;
-
 enum BindingProtocolMessage {
     Notification,
-    Request(RequestInvocation<BindingProtocol, BindingRequest>),
-}
-
-impl Protocol for BindingProtocol {
-    type Message = BindingProtocolMessage;
+    Request(RequestInvocation<BindingProtocolMessage, BindingRequest>),
 }
 
 struct BindingNotification;
 
-impl Notification<BindingProtocol> for BindingNotification {
+impl Notification<BindingProtocolMessage> for BindingNotification {
     fn into_message(self) -> BindingProtocolMessage {
         BindingProtocolMessage::Notification
     }
@@ -72,7 +66,7 @@ impl Notification<BindingProtocol> for BindingNotification {
 
 struct BindingRequest;
 
-impl Request<BindingProtocol> for BindingRequest {
+impl Request<BindingProtocolMessage> for BindingRequest {
     type Reply = ();
 
     fn into_message(self, reply_to: ReplyTo<Self::Reply>) -> BindingProtocolMessage {
@@ -286,9 +280,9 @@ impl EffectDriver<RequestObserved> for ObservationDriver {
     }
 }
 
-fn program() -> (Program, Jack<HostProtocol>) {
+fn program() -> (Program, Port<HostProtocolMessage>) {
     let mut builder = Program::builder();
-    let jack = builder.jack(JackId::new("host"));
+    let port = builder.port(PortId::new("host"));
     let ingress_observed = builder.effect::<IngressObserved>();
     let request_observed = builder.effect::<RequestObserved>();
     let await_release = builder.effect::<AwaitRelease>();
@@ -300,17 +294,17 @@ fn program() -> (Program, Jack<HostProtocol>) {
             await_release,
         },
     );
-    builder.plug_in(&jack, &provider);
-    (builder.build().expect("valid Program"), jack)
+    builder.connect(&port, &provider);
+    (builder.build().expect("valid Program"), port)
 }
 
-fn panicking_binding_program() -> (Program, Jack<BindingProtocol>) {
+fn panicking_binding_program() -> (Program, Port<BindingProtocolMessage>) {
     let mut builder = Program::builder();
-    let jack = builder.jack(JackId::new("panicking-binding"));
+    let port = builder.port(PortId::new("panicking-binding"));
     let provider = builder
         .component::<PanickingBindingProvider>(ComponentId::new("panicking-binding-provider"), ());
-    builder.plug_in(&jack, &provider);
-    (builder.build().expect("valid binding Program"), jack)
+    builder.connect(&port, &provider);
+    (builder.build().expect("valid binding Program"), port)
 }
 
 fn runtime_with_observer(
@@ -345,24 +339,24 @@ fn runtime_with_default_effects(program: Program) -> LiveRuntime {
 }
 
 #[test]
-fn live_jack_handle_rejects_a_jack_from_another_program() {
+fn live_port_handle_rejects_a_port_from_another_program() {
     let (program, _) = program();
     let runtime = runtime_with_default_effects(program);
 
     let mut foreign_builder = Program::builder();
-    let foreign_jack = foreign_builder.jack::<HostProtocol>(JackId::new("host"));
+    let foreign_port = foreign_builder.port::<HostProtocolMessage>(PortId::new("host"));
 
     let error = runtime
-        .jack_handle(&foreign_jack)
-        .expect_err("a foreign Jack cannot become a live capability");
+        .port_handle(&foreign_port)
+        .expect_err("a foreign Port cannot become a live capability");
     assert!(error.to_string().contains("not part of this Program"));
 }
 
 #[tokio::test]
-async fn live_jack_handle_notifies_and_returns_typed_request_replies() -> Result<(), RuntimeError> {
-    let (program, jack) = program();
+async fn live_port_handle_notifies_and_returns_typed_request_replies() -> Result<(), RuntimeError> {
+    let (program, port) = program();
     let runtime = runtime_with_default_effects(program);
-    let host = runtime.jack_handle(&jack)?;
+    let host = runtime.port_handle(&port)?;
     let task = runtime.spawn();
 
     let notifications = host.clone();
@@ -385,9 +379,9 @@ async fn live_jack_handle_notifies_and_returns_typed_request_replies() -> Result
 }
 
 #[tokio::test]
-async fn cloned_jack_handles_deliver_each_notification_exactly_once() -> Result<(), RuntimeError> {
+async fn cloned_port_handles_deliver_each_notification_exactly_once() -> Result<(), RuntimeError> {
     let mut builder = Program::builder();
-    let jack = builder.jack::<HostProtocol>(JackId::new("cloned-host"));
+    let port = builder.port::<HostProtocolMessage>(PortId::new("cloned-host"));
     let ingress_observed = builder.effect::<IngressObserved>();
     let request_observed = builder.effect::<RequestObserved>();
     let await_release = builder.effect::<AwaitRelease>();
@@ -399,7 +393,7 @@ async fn cloned_jack_handles_deliver_each_notification_exactly_once() -> Result<
             await_release,
         },
     );
-    builder.plug_in(&jack, &provider);
+    builder.connect(&port, &provider);
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
     let (request_observed, _request_observations) = tokio::sync::mpsc::unbounded_channel();
     let runtime = LiveRuntime::builder(builder.build().expect("valid cloned-handle Program"))
@@ -409,7 +403,7 @@ async fn cloned_jack_handles_deliver_each_notification_exactly_once() -> Result<
         })
         .bind_effect::<AwaitRelease, _>(ImmediateReleaseDriver)
         .build()?;
-    let host = runtime.jack_handle(&jack)?;
+    let host = runtime.port_handle(&port)?;
     let task = runtime.spawn();
     let count = 32_u64;
     let mut sends = tokio::task::JoinSet::new();
@@ -434,9 +428,9 @@ async fn cloned_jack_handles_deliver_each_notification_exactly_once() -> Result<
 
 #[tokio::test]
 async fn concurrent_external_requests_keep_their_own_typed_reply() -> Result<(), RuntimeError> {
-    let (program, jack) = program();
+    let (program, port) = program();
     let (runtime, _observations) = runtime_with_observer(program);
-    let host = runtime.jack_handle(&jack)?;
+    let host = runtime.port_handle(&port)?;
     let task = runtime.spawn();
 
     // The second request replies first; a FIFO-only implementation would swap
@@ -451,9 +445,9 @@ async fn concurrent_external_requests_keep_their_own_typed_reply() -> Result<(),
 
 #[tokio::test]
 async fn drain_preserves_an_admitted_external_request() -> Result<(), RuntimeError> {
-    let (program, jack) = program();
+    let (program, port) = program();
     let (runtime, mut observations) = runtime_with_observer(program);
-    let host = runtime.jack_handle(&jack)?;
+    let host = runtime.port_handle(&port)?;
     let task = runtime.spawn();
 
     let request = tokio::spawn(async move { host.request(Delayed(73)).await });
@@ -471,9 +465,9 @@ async fn drain_preserves_an_admitted_external_request() -> Result<(), RuntimeErr
 #[tokio::test]
 async fn cancel_wakes_an_external_request_waiter_without_inventing_a_reply()
 -> Result<(), RuntimeError> {
-    let (program, jack) = program();
+    let (program, port) = program();
     let (runtime, mut observations) = runtime_with_observer(program);
-    let host = runtime.jack_handle(&jack)?;
+    let host = runtime.port_handle(&port)?;
     let task = runtime.spawn();
 
     let request = tokio::spawn(async move { host.request(Never).await });
@@ -493,9 +487,9 @@ async fn cancel_wakes_an_external_request_waiter_without_inventing_a_reply()
 
 #[tokio::test]
 async fn dropping_an_unpolled_request_admits_no_runtime_work() -> Result<(), RuntimeError> {
-    let (program, jack) = program();
+    let (program, port) = program();
     let runtime = runtime_with_default_effects(program);
-    let host = runtime.jack_handle(&jack)?;
+    let host = runtime.port_handle(&port)?;
     let task = runtime.spawn();
 
     let request = host.request(Never);
@@ -511,7 +505,7 @@ async fn dropping_an_unpolled_request_admits_no_runtime_work() -> Result<(), Run
 #[tokio::test]
 async fn dropping_the_waiter_does_not_cancel_runtime_owned_request_work() -> Result<(), RuntimeError>
 {
-    let (program, jack) = program();
+    let (program, port) = program();
     let (started, request_started) = tokio::sync::oneshot::channel();
     let (release, request_release) = tokio::sync::oneshot::channel();
     let (request_observed, _request_observations) = tokio::sync::mpsc::unbounded_channel();
@@ -528,7 +522,7 @@ async fn dropping_the_waiter_does_not_cancel_runtime_owned_request_work() -> Res
             observed: ingress_observed,
         })
         .build()?;
-    let host = runtime.jack_handle(&jack)?;
+    let host = runtime.port_handle(&port)?;
     let task = runtime.spawn();
 
     let request = tokio::spawn(async move { host.request(Held(5)).await });
@@ -555,9 +549,9 @@ async fn dropping_the_waiter_does_not_cancel_runtime_owned_request_work() -> Res
 
 #[tokio::test]
 async fn dropping_the_runtime_owner_wakes_an_external_request_waiter() -> Result<(), RuntimeError> {
-    let (program, jack) = program();
+    let (program, port) = program();
     let (runtime, mut observations) = runtime_with_observer(program);
-    let host = runtime.jack_handle(&jack)?;
+    let host = runtime.port_handle(&port)?;
     let task = runtime.spawn();
 
     let request = tokio::spawn(async move { host.request(Never).await });
@@ -577,9 +571,9 @@ async fn dropping_the_runtime_owner_wakes_an_external_request_waiter() -> Result
 }
 
 #[tokio::test]
-async fn component_and_jack_ingress_share_one_shutdown_cutoff() -> Result<(), RuntimeError> {
+async fn component_and_port_ingress_share_one_shutdown_cutoff() -> Result<(), RuntimeError> {
     let mut builder = Program::builder();
-    let jack = builder.jack::<HostProtocol>(JackId::new("race-host"));
+    let port = builder.port::<HostProtocolMessage>(PortId::new("race-host"));
     let ingress_observed = builder.effect::<IngressObserved>();
     let request_observed = builder.effect::<RequestObserved>();
     let await_release = builder.effect::<AwaitRelease>();
@@ -591,7 +585,7 @@ async fn component_and_jack_ingress_share_one_shutdown_cutoff() -> Result<(), Ru
             await_release,
         },
     );
-    builder.plug_in(&jack, &provider);
+    builder.connect(&port, &provider);
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
     let (request_observed, _request_observations) = tokio::sync::mpsc::unbounded_channel();
     let runtime = LiveRuntime::builder(builder.build().expect("valid race Program"))
@@ -602,7 +596,7 @@ async fn component_and_jack_ingress_share_one_shutdown_cutoff() -> Result<(), Ru
         .bind_effect::<AwaitRelease, _>(ImmediateReleaseDriver)
         .build()?;
     let component = runtime.handle(&provider)?;
-    let protocol = runtime.jack_handle(&jack)?;
+    let protocol = runtime.port_handle(&port)?;
     let task = runtime.spawn();
     let barrier = Arc::new(tokio::sync::Barrier::new(3));
 
@@ -615,7 +609,7 @@ async fn component_and_jack_ingress_share_one_shutdown_cutoff() -> Result<(), Ru
                 .await
         })
     };
-    let jack_ingress = {
+    let port_ingress = {
         let barrier = barrier.clone();
         tokio::spawn(async move {
             barrier.wait().await;
@@ -628,7 +622,7 @@ async fn component_and_jack_ingress_share_one_shutdown_cutoff() -> Result<(), Ru
     });
 
     let component_result = component_ingress.await.expect("Component ingress task");
-    let jack_result = jack_ingress.await.expect("Jack ingress task");
+    let port_result = port_ingress.await.expect("Port ingress task");
     assert!(
         shutdown.await.expect("shutdown task")?.is_clean(),
         "the forced race must still close cleanly"
@@ -638,7 +632,7 @@ async fn component_and_jack_ingress_share_one_shutdown_cutoff() -> Result<(), Ru
     if component_result.is_ok() {
         expected.push(1);
     }
-    if jack_result.is_ok() {
+    if port_result.is_ok() {
         expected.push(2);
     }
     let mut actual = Vec::new();
@@ -653,9 +647,9 @@ async fn component_and_jack_ingress_share_one_shutdown_cutoff() -> Result<(), Ru
 
 #[tokio::test]
 async fn a_runtime_fault_is_returned_to_the_external_request_waiter() -> Result<(), RuntimeError> {
-    let (program, jack) = program();
+    let (program, port) = program();
     let runtime = runtime_with_default_effects(program);
-    let host = runtime.jack_handle(&jack)?;
+    let host = runtime.port_handle(&port)?;
     let task = runtime.spawn();
 
     let request_error = host
@@ -666,7 +660,7 @@ async fn a_runtime_fault_is_returned_to_the_external_request_waiter() -> Result<
     let later_error = host
         .notify(Set(1))
         .await
-        .expect_err("later Jack ingress observes the stored fault");
+        .expect_err("later Port ingress observes the stored fault");
     assert_eq!(request_error.to_string(), later_error.to_string());
 
     let shutdown_error = task
@@ -679,9 +673,9 @@ async fn a_runtime_fault_is_returned_to_the_external_request_waiter() -> Result<
 
 #[tokio::test]
 async fn request_conversion_panics_are_contained_as_runtime_faults() -> Result<(), RuntimeError> {
-    let (program, jack) = program();
+    let (program, port) = program();
     let runtime = runtime_with_default_effects(program);
-    let host = runtime.jack_handle(&jack)?;
+    let host = runtime.port_handle(&port)?;
     let task = runtime.spawn();
 
     let request_error = host
@@ -705,9 +699,9 @@ async fn request_conversion_panics_are_contained_as_runtime_faults() -> Result<(
 #[tokio::test]
 async fn notification_conversion_panics_are_contained_as_runtime_faults() -> Result<(), RuntimeError>
 {
-    let (program, jack) = program();
+    let (program, port) = program();
     let runtime = runtime_with_default_effects(program);
-    let host = runtime.jack_handle(&jack)?;
+    let host = runtime.port_handle(&port)?;
     let task = runtime.spawn();
 
     host.notify(PanickingNotification).await?;
@@ -725,9 +719,9 @@ async fn notification_conversion_panics_are_contained_as_runtime_faults() -> Res
 
 #[tokio::test]
 async fn notification_binding_panics_are_contained_as_runtime_faults() -> Result<(), RuntimeError> {
-    let (program, jack) = panicking_binding_program();
+    let (program, port) = panicking_binding_program();
     let runtime = LiveRuntime::builder(program).build()?;
-    let host = runtime.jack_handle(&jack)?;
+    let host = runtime.port_handle(&port)?;
     let task = runtime.spawn();
 
     host.notify(BindingNotification).await?;
@@ -745,9 +739,9 @@ async fn notification_binding_panics_are_contained_as_runtime_faults() -> Result
 
 #[tokio::test]
 async fn request_binding_panics_are_contained_as_runtime_faults() -> Result<(), RuntimeError> {
-    let (program, jack) = panicking_binding_program();
+    let (program, port) = panicking_binding_program();
     let runtime = LiveRuntime::builder(program).build()?;
-    let host = runtime.jack_handle(&jack)?;
+    let host = runtime.port_handle(&port)?;
     let task = runtime.spawn();
 
     let request_error = host

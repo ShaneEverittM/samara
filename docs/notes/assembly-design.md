@@ -15,8 +15,8 @@ recorded there.
 ## Problem
 
 A library-style Component such as the pulse journal is assembled by an
-`install` function that declares its Component, Jack, and capabilities into an
-enclosing `ProgramBuilder` and exports only the Jack. That keeps the Component,
+`install` function that declares its Component, Port, and capabilities into an
+enclosing `ProgramBuilder` and exports only the Port. That keeps the Component,
 its identities, and its capabilities private, and it is the working answer to
 the composable-Programs follow-up. It leaves one gap: the module declared
 effect capabilities, so somebody must bind a Driver for each one, and the
@@ -32,7 +32,7 @@ and controlled tests never construct a Driver.
 
 ## Vocabulary
 
-- **Assembly:** a reusable assembly unit that contributes Components, Jacks,
+- **Assembly:** a reusable assembly unit that contributes Components, Ports,
   and binding requirements to an enclosing Program. It is subordinate to the
   Program, not to another Component. An Assembly is usually one Component but
   may install several cooperating ones. The term replaces the descriptive
@@ -51,7 +51,7 @@ and controlled tests never construct a Driver.
 
 The name `SubComponent` was considered and rejected. It reads as a child inside
 a parent Component's `update`, which is the nested-component model Samara does
-not use; Components are peers connected by Jacks.
+not use; Components are peers connected by Ports.
 
 ## Shape
 
@@ -65,7 +65,7 @@ the exports. The live builder's `with_assembly(token)` returns a
 implementing `Drivers<Requires>` (a single driver or a tuple matching the
 requirement tuple) and returns the builder. The controlled builder's
 `with_assembly(token)` controls every requirement and returns the builder
-directly. Implement `Assembly` on the protocol type, not the Component. The
+directly. Implement `Assembly` on a public marker, not the Component. The
 pulse journal (`examples/pulse/src/journal.rs`) is the worked example: one
 `type Requires` line and a four-line `VendorsDrivers` impl.
 
@@ -100,8 +100,8 @@ pulse journal (`examples/pulse/src/journal.rs`) is the worked example: one
   | Caller pattern | Warning |
   |---|---|
   | `program.install::<Journal>(());` as a statement | `unused_must_use` |
-  | `let (jack, token) = ...` with `token` never touched | `unused_variables` only |
-  | `let (jack, _) = ...` | none |
+  | `let (port, token) = ...` with `token` never touched | `unused_variables` only |
+  | `let (port, _) = ...` | none |
   | `let installed = ...; installed.exports();` and no `with_assembly` | none |
   | `let _ = ...` | none |
 
@@ -130,11 +130,11 @@ pulse journal (`examples/pulse/src/journal.rs`) is the worked example: one
   offers through `must_use`. Decided November 7, 2026: not an end state to
   work toward.
 - **Identity scoping.** `Config` is where a scope or instance id would go.
-  Whether the runtime should help, for example by prefixing `JackId` and
+  Whether the runtime should help, for example by prefixing `PortId` and
   `ComponentId` under an Assembly scope, is open.
-- **Exports beyond a Jack.** Partly settled November 8, 2026 (ADR-0014): a
-  library Assembly exports a `Plug<M>` rather than a Jack of its own Protocol,
-  so the application keeps its own vocabulary and couples at `plug_in_with`.
+- **Exports beyond a Port.** Partly settled November 8, 2026 (ADR-0014): a
+  library Assembly exports a `Connector<M>` rather than a Port of its own message type,
+  so the application keeps its own vocabulary and couples at `connect_with`.
   The url checker's tests also wanted a private `ComponentRef` retained;
   whether `Exports` should carry test-only handles, or whether that is what
   the isolated Component runtime follow-up is for, is still open.
@@ -149,37 +149,38 @@ pulse journal (`examples/pulse/src/journal.rs`) is the worked example: one
 
 ## What implementation taught
 
-- **Implement `Assembly` on the protocol type, not the Component.** The
+- **Implement `Assembly` on a marker, not the Component.** The
   first pulse wiring implemented `Assembly` on the Component (then named
   `FsJournal`, since renamed `Recorder` because the filesystem lives in the
   Driver), which made it a public name and failed to compile: `Component`'s associated
   `Model` and `Message` are part of its interface, so they would have to be
-  public too. Implementing on `Journal`, the protocol type callers already
-  hold, keeps the Component and its types private. The rustdoc example still
+  public too. Implementing on `Journal`, a public marker (at the time the
+  protocol type, which ADR-0015 removed), keeps the Component and its types
+  private. The rustdoc example still
   shows the Component form because its types are all local to the example.
-- **A library Protocol points the dependency the wrong way.** When the
-  Assembly exported `Jack<Journal>`, every application Component that used it
-  held the library's Protocol: adding a dependency meant implementing the
-  library's trait inside the application. Exporting a `Plug<JournalMessage>`
-  instead lets the application declare its own `Audit` Protocol and write the
-  coupling once; `tests/plugs.rs` is the evidence. Elm's model is the same: a
+- **A library-owned Port points the dependency the wrong way.** When the
+  Assembly exported `Port<Journal>`, every application Component that used it
+  held the library's message type: adding a dependency meant implementing the
+  library's conversion inside the application. Exporting a `Connector<JournalMessage>`
+  instead lets the application declare its own `AuditMessage` and write the
+  coupling once; `tests/connectors.rs` is the evidence. Elm's model is the same: a
   module exports its `Msg` opaquely with constructor functions, and
-  `Signal.forwardTo` in Elm 0.16 is `Plug::accepting`.
-- **Controlled execution has no Jack-level ingress.** `ControlledRuntime`
+  `Signal.forwardTo` in Elm 0.16 is `Connector::accepting`.
+- **Controlled execution has no Port-level ingress.** `ControlledRuntime`
   delivers messages by `ComponentRef<C>` only, and inspects state the same way,
-  so an Assembly that exports just a Jack cannot be driven or observed in a
+  so an Assembly that exports just a Port cannot be driven or observed in a
   controlled test from outside its module. `tests/assemblies.rs` exports the
-  `ComponentRef` alongside the Jack, which works there only because the whole
+  `ComponentRef` alongside the Port, which works there only because the whole
   test is one module. For a real Assembly the stopgap fails: `ComponentRef<C>`
   in `Exports` makes `C` public, which is the same `Model`/`Message` leak as
-  implementing `Assembly` on the Component. Until there is a Jack-keyed
+  implementing `Assembly` on the Component. Until there is a Port-keyed
   controlled ingress, an Assembly's isolated controlled tests live inside its
   module, where private types are reachable, as the url checker's do. ADR-0006
-  made `JackHandle` live-only and named the preconditions for a controlled
+  made `PortHandle` live-only and named the preconditions for a controlled
   equivalent: deterministic scheduling, which controlled execution already has,
   and an explicit reply-observation model, such as a `PendingReply` token
   resolved after `run_until_idle` rather than an awaited future. That is an
-  ADR extending 0003 and 0006, since host Jack ingress becomes a traced root
+  ADR extending 0003 and 0006, since host Port ingress becomes a traced root
   event in controlled execution.
 
 - **The drivers struct was pure derivation.** Its `Bindings` impl called

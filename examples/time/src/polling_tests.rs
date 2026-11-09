@@ -43,7 +43,7 @@ fn http_fixture() -> HttpTimeServerConfig {
 
 struct TimeReader;
 
-struct TimeReaderConfig(Jack<TimeServerProtocol>);
+struct TimeReaderConfig(Port<TimeServerProtocolMessage>);
 
 enum ReadMessage {
     Read,
@@ -89,14 +89,14 @@ fn controlled_http_fixture() -> (
     let mut builder = Program::builder();
     let http = builder.effect::<HttpRequest>();
     let stderr = builder.effect::<PrintStderr>();
-    let jack = builder.jack(JackId::new(TIME_SERVER_JACK));
+    let port = builder.port(PortId::new(TIME_SERVER_PORT));
     let server = builder.component::<HttpTimeServer>(
         ComponentId::new("time-server"),
         HttpTimeServerConfig { http, stderr },
     );
-    builder.plug_in(&jack, &server);
+    builder.connect(&port, &server);
     let reader =
-        builder.component::<TimeReader>(ComponentId::new("reader"), TimeReaderConfig(jack));
+        builder.component::<TimeReader>(ComponentId::new("reader"), TimeReaderConfig(port));
     let runtime = ControlledRuntime::builder(builder.build().unwrap())
         .control_effect::<HttpRequest>()
         .control_effect::<PrintStderr>()

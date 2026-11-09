@@ -11,7 +11,7 @@ substitute for the behavioral contracts in the vision and ADRs.
 The concepts below are canonical unless marked historical. Accepted API slices
 and the Phase 5 controlled-execution contract follow these spellings. Accepted
 ADR-0004 uses them for the active initial live-runtime contract.
-ADR-0008 closes Program assembly around Program-issued Component, Protocol,
+ADR-0008 closes Program assembly around Program-issued Component, Port,
 Effect, and Source capabilities.
 `api-contract.md` records which slice is frozen for each
 implementation phase and which policy-bearing surfaces remain provisional.
@@ -19,24 +19,24 @@ implementation phase and which policy-bearing surfaces remain provisional.
 ## Program and State
 
 **Samara program** — A closed declared collection of Components and the
-Component, Protocol, Effect, and Source capabilities they may use. It contains
+Component, Port, Effect, and Source capabilities they may use. It contains
 logical application structure, not live Tokio resources. Execution can issue
 new occurrences and Model-derived descriptor values but cannot add another
 dependency after build.
 
 **Program assembly** — The construction of a Samara program: Component
-registration, issuance of ComponentRefs, Jacks, and Effect and Source
-capabilities, Jack binding, and profile selection. `ProgramBuilder::build()`
+registration, issuance of ComponentRefs, Ports, and Effect and Source
+capabilities, Port binding, and profile selection. `ProgramBuilder::build()`
 rejects logical assembly errors and closes the capability inventory; the
 profile builders then validate every declared terminal requirement before
 execution (ADR-0008).
 
 **Assembly** — A reusable slice of Program assembly: a type whose `install`
-declares its own Components, Jacks, and capabilities into an enclosing
-`ProgramBuilder`, exports what callers may use (normally a Jack), and lists
+declares its own Components, Ports, and capabilities into an enclosing
+`ProgramBuilder`, exports what callers may use (normally a Port), and lists
 the world boundaries the host must drive as `Requires`. The unit of reuse in
 Samara is an Assembly, not a Component. It leaves no trace at runtime: the
-Components it installs are ordinary peers reached through Jacks. Not a
+Components it installs are ordinary peers reached through Ports. Not a
 *SubComponent*: Samara has no parent-child `update` nesting.
 
 **Requires (of an Assembly)** — The type-level list of `Effect<D>` and
@@ -71,7 +71,7 @@ and `component::<C>(..)` name the kind.
 
 **Component configuration / `Component::Config`** — The immutable value a
 kind is registered with. It holds logical wiring and declarative
-configuration, such as Jacks, EffectCapabilities, SourceCapabilities, and
+configuration, such as Ports, EffectCapabilities, SourceCapabilities, and
 SourceDescriptors, and is passed to every Component function by shared
 reference, signaling that it is observationally read-only during execution.
 Because Rust permits interior mutability, preserving that property is also a
@@ -308,62 +308,61 @@ labels, not additional Samara runtime concepts.
 
 ## Component Interaction
 
-**Protocol** — A provider-neutral typed vocabulary exposed through a Jack
-rather than through a provider Component's private Message type. Qualify
-network formats as *wire protocols* to avoid ambiguity.
+**Port message type** — The consumer-owned message enum a `Port<M>` carries:
+the complete, provider-neutral vocabulary of one dependency, with one-way
+Notification variants and RequestInvocation variants for requests.
+`messages!` generates one together with its `Notification<M>` and
+`Request<M>` impls; it can also be written by hand. Name the enum for what it
+contains, such as `HealthMessage`; directional names such as `HealthInbound`
+are avoided. The word *protocol* is reserved for wire protocols.
 
-**Protocol message / `Protocol::Message`** — The complete provider-neutral
-typed vocabulary carried through a Protocol's Jacks. It includes one-way
-Notification variants and dynamic RequestInvocation variants. Concrete enum
-names should make the association explicit, such as `HealthProtocolMessage`;
-directional names such as `HealthInbound` are avoided.
+**Port** — A consumer-owned, named, inert Program-issued dependency on a
+message type: `Port<M>` is a hole the consuming application cuts in its own
+vocabulary and fills at assembly by connecting a provider. A Port contains no
+provider reference, channel, runtime handle, or lookup capability. It remains
+distinct from the live-only `PortHandle` obtained from an assembled runtime.
+This is the hexagonal *port*; Elm uses the same word for JavaScript interop,
+which Samara does not have.
 
-**Jack** — A consumer-owned, named, inert Program-issued dependency on a
-Protocol: a hole the consuming application cuts in its own vocabulary and
-fills at assembly by plugging a provider in. A Jack contains no provider
-reference, channel, runtime handle, or lookup capability. It remains distinct
-from the live-only `JackHandle` obtained from an assembled runtime. The
-hexagonal term for the same thing is *port*; Samara avoids that word because
-Elm uses it for JavaScript interop.
-
-**Plug** — A provider-owned, inert address: a `ComponentRef` erased to the
-Message type it accepts, `Plug<M>`, together with the pure conversion from `M`
-into the Component's private Message. A Component or Assembly hands out a Plug
-to expose itself without naming its Component kind; the holder plugs it into
-one of its own Jacks with `plug_in_with`, writing the coupling between the two
+**Connector** — A provider-owned, inert address: a `ComponentRef` erased to the
+Message type it accepts, `Connector<M>`, together with the pure conversion from `M`
+into the Component's private Message. A Component or Assembly hands out a Connector
+to expose itself without naming its Component kind; the holder connects it to
+one of its own Ports with `connect_with`, writing the coupling between the two
 vocabularies once at that site, or holds it directly and addresses it with
 `Command::send` and `Command::request_to`, whose request is a constructor
-function the provider published taking `ReplyTo<R>`. `Plug::accepting`
-adapts a Plug to the holder's vocabulary. Like `ComponentRef` and `Jack`, a
-Plug grants no delivery capability.
+function the provider published taking `ReplyTo<R>`. `Connector::accepting`
+adapts a Connector to the holder's vocabulary. Like `ComponentRef` and `Port`, a
+Connector grants no delivery capability.
 
-**Pluggable** — The trait of things a Jack can be bound to: `ComponentRef<C>`
-and `Plug<M>`. `plug_in` and `plug_in_with` accept either. Applications do
+**Connectable** — The trait of things a Port can be bound to: `ComponentRef<C>`
+and `Connector<M>`. `connect` and `connect_with` accept either. Applications do
 not implement it.
 
-**Provider** — The concrete Component selected during program assembly to
-receive Protocol Messages sent through a Jack.
+**Provider** — The Component that receives what is sent through a Port or to
+a Connector: selected at program assembly for a Port, named by the Connector
+otherwise.
 
-**Requester** — The origin of a Request through a Jack. A Component requester
+**Requester** — The origin of a Request through a Port. A Component requester
 owns a Message continuation and any domain correlation. A live host requester
-awaits its Reply through `JackHandle`. In both cases the runtime owns transport
+awaits its Reply through `PortHandle`. In both cases the runtime owns transport
 correlation.
 
-**Jack binding** — The assembly-time mapping from one exact named Jack to a
-Pluggable provider and its Message vocabulary. `plug_in` uses the provider
-Message's `From<Protocol::Message>`; `plug_in_with` takes the pure conversion
+**Port binding** — The assembly-time mapping from one exact named Port to a
+Connectable provider and its Message vocabulary. `connect` uses the provider
+Message's `From<M>` for a `Port<M>`; `connect_with` takes the pure conversion
 explicitly, normally the wrapping enum variant for a `ComponentRef` or the
-coupling between vocabularies for a `Plug`. Multiple named Jacks of the same
-Protocol may still be bound independently.
+coupling between vocabularies for a `Connector`. Multiple named Ports of the
+same message type may still be bound independently.
 
-**Notification** — A one-way Protocol value implementing `Notification<P>`,
-sent through `Command::notify` or a live `JackHandle`. The sender gets no
+**Notification** — A one-way value implementing `Notification<M>` for a Port message type `M`,
+sent through `Command::notify` or a live `PortHandle`. The sender gets no
 correlated outcome.
 
-**Request** — A Protocol value implementing `Request<P>` with an associated
+**Request** — A value implementing `Request<M>` for a Port message type `M`, with an associated
 `Reply` type. A Component issues it through `Command::request` and receives
 the typed RequestOutcome later as an ordinary Message; it never awaits inside
-`update`. A live host may issue the same value through `JackHandle::request`
+`update`. A live host may issue the same value through `PortHandle::request`
 and await the Reply directly.
 
 **RequestInvocation** — One dynamic Request occurrence delivered to the
@@ -408,9 +407,9 @@ Component's complete Message API is deliberate.
 available only at the program boundary and never inside Components.
 Successful `send` means accepted for delivery, not transition completion.
 
-**`JackHandle`** — A cloneable live external-ingress capability for one bound
-`Jack<P>`, admitting Notifications and typed Requests through the normal
-Protocol binding without exposing the provider. A host Request awaits its
+**`PortHandle`** — A cloneable live external-ingress capability for one bound
+`Port<P>`, admitting Notifications and typed Requests through the normal
+Port binding without exposing the provider. A host Request awaits its
 Reply directly; closure or fault wakes it with `RuntimeError`. Live-only; it
 has no ControlledRuntime counterpart (ADR-0006).
 
@@ -470,7 +469,7 @@ delivery or work contract rather than inferred from runtime topology.
 event. Samara explicitly does not promise this for independent live events.
 
 **Admission** — The point at which live boundary input becomes runtime-owned
-work, through `ComponentHandle::send`, `SourceSink`, or a `JackHandle`
+work, through `ComponentHandle::send`, `SourceSink`, or a `PortHandle`
 operation. A call racing shutdown is accepted or rejected explicitly; accepted
 work is not silently dropped for capacity (ADR-0004, ADR-0006).
 
@@ -536,22 +535,22 @@ to hold.
 | --- | --- |
 | Command and EffectDescriptor | A Command is the broader finite-work envelope; an EffectDescriptor is one typed world-facing intent it may contain. |
 | EffectCapability and EffectDescriptor | The capability declares one closed Program dependency; each descriptor carries one concrete finite intent. |
-| EffectCapability or SourceCapability and a live Handle | Descriptor capabilities are inert Component wiring that only authorizes declarative work; ComponentHandle and JackHandle cross live external ingress. |
+| EffectCapability or SourceCapability and a live Handle | Descriptor capabilities are inert Component wiring that only authorizes declarative work; ComponentHandle and PortHandle cross live external ingress. |
 | EffectOutcome and SourceEvent | An EffectOutcome terminates one invocation; a SourceEvent is one of zero or more occurrences from ongoing work. |
 | SourceCapability, SourceDescriptor, Subscription, SourcePlan, and Source | A SourceCapability declares one closed Program dependency, a SourceDescriptor describes concrete ongoing production, a Subscription adds desire, identity, and mapping, a SourcePlan lowers that desire to ordered Layers and a terminal descriptor, and a Source is the runtime-scoped realization. |
 | Layer and Driver | A Layer composes declarations inside the program boundary; a Driver terminates a descriptor into the selected live world. |
 | Adapter and a code abstraction | Adapter is the conceptual category; Layer and Driver are the code-level roles Samara currently names. |
-| Component Message and Protocol Message | A Component Message is private transition input; a Protocol Message is the provider-neutral vocabulary crossing a Jack. |
+| Component Message and Port message | A Component Message is private transition input; a Port message is a value of the provider-neutral vocabulary crossing a Port. A library written the Elm way makes one opaque type serve as both. |
 | Request and RequestInvocation | A Request is the typed operation/value; a RequestInvocation is one dynamic occurrence carrying Request and `ReplyTo`. |
-| Jack and provider | A Jack is an inert dependency; the provider is the Component selected during assembly. |
-| Notification and Request | `Notification<P>` is one-way input issued by `Command::notify` or live `JackHandle::notify`; `Request<P>` has an associated Reply and is issued by `Command::request` with a canonical continuation, `Command::request_with` with an explicit one, or live `JackHandle::request` with a direct host waiter. |
+| Port and provider | A Port is an inert dependency; the provider is the Component selected during assembly. |
+| Notification and Request | `Notification<P>` is one-way input issued by `Command::notify` or live `PortHandle::notify`; `Request<P>` has an associated Reply and is issued by `Command::request` with a canonical continuation, `Command::request_with` with an explicit one, or live `PortHandle::request` with a direct host waiter. |
 | Protocol and wire protocol | A Samara Protocol is a typed Component boundary; a wire protocol defines external data exchange. |
 | Message and event | Boundary events and outcomes are mapped into Component Messages; trace events remain out of band. |
 | Per-Component serialization and ordering | Non-overlapping transitions do not create a global order or imply unspecified FIFO behavior. |
 | Controlled execution and simulation | Controlled execution names the semantic profile; simulation is one workload that uses it. |
 | Domain and transport correlation | Applications own meaning; the runtime owns delivery bookkeeping. |
 | `ComponentRef` and `ComponentHandle` | A reference is inert logical wiring; a handle is a live private-Message ingress capability. |
-| `Jack` and `JackHandle` | A Jack is inert provider-neutral logical wiring shared by runtime profiles; a JackHandle is a live-only external-ingress capability for that exact binding. |
+| `Port` and `PortHandle` | A Port is inert provider-neutral logical wiring shared by runtime profiles; a PortHandle is a live-only external-ingress capability for that exact binding. |
 
 ## Historical or Avoided Vocabulary
 
@@ -559,7 +558,7 @@ to hold.
 | --- | --- | --- |
 | Actor | Component | Use *Component* for Samara's topology-neutral application unit. Actor language survives in older PoC documents. |
 | Component value, Component implementation | Component kind, Component configuration | The implementing type is a name; the configuration is the value it is registered with. |
-| `Msg` | Message / `Component::Message` | Use *Component Message* when it must be distinguished from a Protocol Message. |
+| `Msg` | Message / `Component::Message` | Use *Component Message* when it must be distinguished from a Port message. |
 | `Cmd` | Command | Use the full word in type and method names. |
 | Effect value / Effect intent | EffectDescriptor | Use *effect* generically for the interaction, not as a second ambiguous type noun. |
 | `EffectEvent` | EffectOutcome | An accepted EffectOutcome is terminal and occurs once; whole-scope abort may close ownership without one, while repeatable occurrences are SourceEvents. |
@@ -568,12 +567,13 @@ to hold.
 | Source meaning a descriptor | SourceDescriptor | Reserve *Source* for the runtime-scoped ongoing realization. |
 | `MpscSource<T>`, `MpscInput<T>` | `StreamDescriptor<T>` | Name the inert logical stream independently of its live adapter; reserve Source for its runtime realization. |
 | `Incoming<P, R>` | `RequestInvocation<P, R>` | Name the dynamic Request occurrence, not merely its direction. |
-| `Protocol::Inbound`, `HealthInbound` | `Protocol::Message`, `HealthProtocolMessage` | Name what the enum contains and associate concrete names with their Protocol. |
-| `ActorRef`, `Addr`, `PortRef`, `RuntimeRef` | `ComponentRef`, `Plug`, `ComponentHandle`, `Jack`, or `JackHandle` | Choose the term that distinguishes kind-typed logical address, Message-typed logical address, live private-Message ingress, inert Protocol dependency, or live Protocol ingress. |
-| Port, `PortId`, `PortHandle`, `bind_port` | Jack, `JackId`, `JackHandle`, `plug_in` | Renamed November 8, 2026 (ADR-0014). *Port* was vague once a provider-owned address existed beside it, and collides with Elm's JavaScript-interop ports. ADRs 0001 to 0012 keep the old word. |
-| Recipient, Address | Plug | Working names while the provider-owned address was designed; *Plug* pairs with *Jack* and names the thing held rather than a role. |
-| `ask` | `request` | Use `Command::request` for command-now, Message-later Component request/reply and `JackHandle::request` for the deliberately awaitable live host boundary. |
-| `tell` | `notify` or `send` | Use *notify* for provider-neutral one-way Protocol interaction through `Command` or `JackHandle`, and *send* for deliberate direct delivery to a Component Message API. |
+| Protocol, `Protocol::Message`, `protocol!`, `HealthProtocolMessage` | Port message type, `messages!`, `HealthMessage` | Removed November 8, 2026 (ADR-0015). The marker type named one associated type and nothing else; a Port is typed by the message type it carries. ADRs 0006 to 0014 keep the old word. |
+| `Protocol::Inbound`, `HealthInbound` | `HealthMessage` | Name what the enum contains, not its direction. |
+| `ActorRef`, `Addr`, `PortRef`, `RuntimeRef` | `ComponentRef`, `Connector`, `ComponentHandle`, `Port`, or `PortHandle` | Choose the term that distinguishes kind-typed logical address, Message-typed logical address, live private-Message ingress, inert consumer-owned dependency, or live Port ingress. |
+| Jack, `JackId`, `JackHandle`, `plug_in`, Plug, `Pluggable` | Port, `PortId`, `PortHandle`, `connect`, Connector, `Connectable` | ADR-0014's names, replaced the same day by ADR-0015 with domain-neutral words. `bind_port` was the pre-0014 spelling of `connect`. |
+| Recipient, Address | Connector | Working names while the provider-owned address was designed; *Connector* pairs with *Port* and names the thing held rather than a role. |
+| `ask` | `request` | Use `Command::request` for command-now, Message-later Component request/reply and `PortHandle::request` for the deliberately awaitable live host boundary. |
+| `tell` | `notify` or `send` | Use *notify* for one-way delivery through a Port by `Command` or `PortHandle`, and *send* for direct delivery to a `ComponentRef` or `Connector`. |
 | `ReplyToken` | `ReplyTo` | `ReplyTo` is the current provisional spelling; do not canonize both. |
 | Simulated execution | Controlled execution | Use *controlled* for the semantic profile; use *simulation* for the workload or product use case. |
 | Mailbox loop | Runtime topology | A mailbox or event loop may be an implementation technique, not the definition of a Component. |

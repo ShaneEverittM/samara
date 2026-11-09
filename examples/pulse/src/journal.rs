@@ -5,8 +5,8 @@ const JOURNAL: &str = "pulse/journal";
 /// Where the recorder appends, relative to the root the host binds.
 pub const JOURNAL_FILE: &str = "pulse.journal";
 
-protocol! {
-    pub type Journal => enum ProtocolMessage {
+messages! {
+    pub enum ProtocolMessage {
         Transition { name: String, from: String, to: String },
         Recent(usize) -> Vec<String>,
     }
@@ -51,23 +51,26 @@ impl Component for Recorder {
     }
 }
 
-// The protocol type is the Assembly, so `Recorder`, its Model, and its
+// A marker is the Assembly, so `Recorder`, its Model, and its
 // Message stay private. Implementing it on the Component would make all three
 // public, because `Component`'s associated types are part of its interface.
+/// The Assembly's public name; it was the protocol marker before the message type became the Port's parameter.
+pub struct Journal;
+
 impl Assembly for Journal {
     type Config = ();
-    type Exports = Jack<Journal>;
+    type Exports = Port<ProtocolMessage>;
     type Requires = (Effect<AppendToFile>, Effect<ReadSystemTime>);
 
-    fn install(program: &mut ProgramBuilder, _: Self::Config) -> Jack<Journal> {
+    fn install(program: &mut ProgramBuilder, _: Self::Config) -> Port<ProtocolMessage> {
         let append = program.effect::<AppendToFile>();
         let clock = program.effect::<ReadSystemTime>();
-        let journal = program.jack::<Journal>(JackId::new(JOURNAL));
+        let journal = program.port::<ProtocolMessage>(PortId::new(JOURNAL));
         let recorder = program.component::<Recorder>(
             ComponentId::new("journal"),
             RecorderConfig { append, clock },
         );
-        program.plug_in_with(&journal, &recorder, Message::Protocol);
+        program.connect_with(&journal, &recorder, Message::Protocol);
 
         journal
     }

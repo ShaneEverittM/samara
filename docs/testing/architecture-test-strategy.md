@@ -111,8 +111,8 @@ Evidence: `src/component_kernel.rs`
   expression or a `Command` triggers its `#[must_use]` diagnostic under
   `#![deny(unused_must_use)]`, without claiming that the lint proves eventual
   consumption.
-- Compile-contract checks must keep `JackHandle` and `ComponentHandle`
-  distinct from inert `Jack` and `ComponentRef`, expose no Model access, and
+- Compile-contract checks must keep `PortHandle` and `ComponentHandle`
+  distinct from inert `Port` and `ComponentRef`, expose no Model access, and
   prove a handle cannot substitute in Command or ControlledRuntime APIs.
   Because Rust cannot reject arbitrary fields in a `Send` Component
   configuration, keeping live handles out of Components also remains an
@@ -122,7 +122,7 @@ Evidence: `src/component_kernel.rs`
   --doc` runs it and the matrix can cite it by item name.
 
 Evidence: `src/lib.rs` (`Component`, `Command`, `ReplyTo`,
-`EffectCapability`, `SourceCapability`, `ComponentHandle`, `JackHandle`,
+`EffectCapability`, `SourceCapability`, `ComponentHandle`, `PortHandle`,
 `Assembly`).
 
 ### Integration tests assert across public boundaries
@@ -143,7 +143,7 @@ Evidence: `src/lib.rs` (`Component`, `Command`, `ReplyTo`,
 
 Evidence: `tests/phase6_live_runtime.rs`
 (`v5_live_and_controlled_boundaries_map_equivalent_observations`),
-`tests/http_response_pipeline.rs`, `tests/external_jack_ingress.rs`,
+`tests/http_response_pipeline.rs`, `tests/external_port_ingress.rs`,
 `tests/stdin_source.rs`.
 
 ### Work accounting and shutdown
