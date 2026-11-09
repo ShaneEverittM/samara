@@ -38,7 +38,9 @@ enum StreamMessage {
     Observed,
 }
 
-struct StreamProbe {
+struct StreamProbe;
+
+struct StreamProbeConfig {
     stream: SourceCapability<StreamDescriptor<u64>>,
     descriptor: StreamDescriptor<u64>,
     observe: EffectCapability<ObserveStream>,
@@ -49,7 +51,7 @@ struct StreamModel {
 }
 
 impl Component for StreamProbe {
-    type Config = Self;
+    type Config = StreamProbeConfig;
     type Model = StreamModel;
     type Message = StreamMessage;
 
@@ -114,7 +116,7 @@ fn stream_program(
         .map(|index| {
             program.component::<StreamProbe>(
                 ComponentId::new(format!("stream-{index}")),
-                StreamProbe {
+                StreamProbeConfig {
                     stream: stream.clone(),
                     descriptor: descriptor.clone(),
                     observe: observe.clone(),
@@ -261,14 +263,16 @@ enum TcpMessage {
     Observed,
 }
 
-struct TcpProbe {
+struct TcpProbe;
+
+struct TcpProbeConfig {
     tcp: TcpBytes,
     source: SourceCapability<TcpBytes>,
     observe: EffectCapability<ObserveTcp>,
 }
 
 impl Component for TcpProbe {
-    type Config = Self;
+    type Config = TcpProbeConfig;
     type Model = bool;
     type Message = TcpMessage;
 
@@ -318,7 +322,7 @@ fn tcp_program(endpoint: SocketAddr) -> (Program, ComponentRef<TcpProbe>) {
     let observe = program.effect::<ObserveTcp>();
     let probe = program.component::<TcpProbe>(
         ComponentId::new("tcp-probe"),
-        TcpProbe {
+        TcpProbeConfig {
             tcp: TcpBytes::connect(endpoint),
             source,
             observe,

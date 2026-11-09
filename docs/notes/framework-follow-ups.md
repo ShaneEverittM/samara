@@ -31,21 +31,24 @@ Teaching principles for the future guide live in [User Guide Notes](user-guide-n
 - **Optional integrations:** Feature-gate or split HTTP/JSON/TLS and platform
   integrations so consumers can use the runtime without unrelated dependencies.
 - **Owned-Model transition signature:** The time example's enum Model works
-  with `update(&self, &mut Model, Message)` without cloning the Model or
+  with `update(&Config, &mut Model, Message)` without cloning the Model or
   replacing it with a temporary default, because the cached timestamp is Copy.
   Moving non-Copy payloads between Model variants would put more pressure on
   this borrowed API. Evaluate that in a suitable example before proposing an
   owned-Model transition signature; changing the kernel signature in
-  [the API contract](../api-contract.md) needs an ADR.
+  [the API contract](../api-contract.md) needs an ADR. Making the Model the
+  implementing type (`Model = Self`) was considered on November 8, 2026 and
+  declined for the borrowed signature (ADR-0013); it is the natural spelling
+  of the owned one, so the two decisions go together.
 - **Descriptor declaration shorthand:** A derive or small macro for
   declaring a descriptor's Output and Error types, and less boilerplate for
   explanatory error wrappers, should wait for evidence from another real custom
   Effect. The time example conflated ordinary Rust error-modeling ceremony with
   Samara-specific ceremony: `thiserror` makes an intentional domain error
   compact, and `EffectDescriptor::Error` only requires `Send + 'static`, so a
-  custom wrapper is not required merely to satisfy Samara. The pulse journal's
-  hand-rolled `AppendLineToFile` is the next data point. Any shorthand must
-  keep the descriptor, output, error, and live/controlled boundary visible.
+  custom wrapper is not required merely to satisfy Samara. The crate's `fs`
+  descriptors and `FsError` are the next data point. Any shorthand must keep
+  the descriptor, output, error, and live/controlled boundary visible.
 
 - **Deferred API areas, recorded so they are not forgotten:** a blessed escape
   hatch and how it advertises weakened guarantees; named capability bundles and
@@ -118,7 +121,11 @@ not accepted API decisions or a review of the unfinished application.
 Open items from designing `examples/pulse`, a multi-target uptime monitor with
 a journal Component; exploratory proposals, not accepted API decisions.
 
-- [ ] **Time access beyond delayed delivery:** Logical time currently reaches
+- [x] **Time access beyond delayed delivery:** The provider-effect shape
+  landed November 8, 2026 as `ReadSystemTime` with `SystemClockDriver`
+  (ADR-0013); controlled tests complete it with any instant. The subscription
+  shape and the logical-clock-backed controlled driver below remain open.
+  Original statement: Logical time currently reaches
   Components only through `Command::after`. That covers scheduling but not
   observation: a Component cannot learn the current time to stamp a journal
   entry, compute an age, or compare against a deadline without reading the wall
@@ -141,13 +148,15 @@ a journal Component; exploratory proposals, not accepted API decisions.
   execution must supply, so write an ADR and matching live and controlled tests
   before implementation.
 
-- [x] **Library assembly via `install`.** Landed November 7, 2026 as the
-  `Assembly` trait, profile-generic `Drivers`, and
-  `with_assembly(..).and_drivers(..)` on both builders; design, rejected
-  alternatives, and remaining open items are in the
-  [Assembly design note](assembly-design.md). Still open from it: identity
-  scoping through `Config`, and a Port-level controlled ingress so a
-  Assembly can be tested from outside its module.
+- [x] **Library assembly via `install`.** Landed November 7, 2026 and
+  redesigned November 8 as the `Assembly` trait with a type-level `Requires`
+  list, `with_assembly(..).and_drivers(..)` on the live builder and
+  `with_assembly(..)` alone on the controlled one, and `VendorsDrivers`
+  (ADR-0013); design, rejected alternatives, and remaining open items are in
+  the [Assembly design note](assembly-design.md). Still open from it:
+  identity scoping through `Config`, named `Requires` positions, and a
+  Port-level controlled ingress so an Assembly can be tested from outside its
+  module.
 
 - [ ] **No small-scale composition: `Command::map` and `Subscriptions::map`
   are missing.** Nothing lifts a `Command<Child>` into a `Command<Parent>` or
@@ -168,8 +177,9 @@ a journal Component; exploratory proposals, not accepted API decisions.
   for runtime-named files, the five file uses the capability model forces us
   to name, the dispatch-order ADR prerequisite for ordered sinks, lifecycle
   under Drain and Cancel, and sessions as a separate concept are all worked
-  through in the [filesystem design note](filesystem-design.md). The pulse
-  journal's hand-rolled `AppendLineToFile` is the stopgap and the evidence.
+  through in the [filesystem design note](filesystem-design.md). A provisional
+  `fs` module landed November 8, 2026 (ADR-0013); the ordering ADR and the
+  handle questions remain the open design work.
 
 ## Component Completion and Supervision — Open Design Questions
 

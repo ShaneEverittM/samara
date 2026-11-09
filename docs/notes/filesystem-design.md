@@ -1,10 +1,16 @@
 # Exploratory Design: Filesystem Capabilities
 
-Status: seed, November 7, 2026. Nothing here is an accepted API. This note
-collects the questions a first-party filesystem integration must answer and
-the positions reached so far, so the design can be worked through in one
-place. Raw material came from `examples/pulse`, whose journal appends lines
-through a hand-rolled `AppendLineToFile` effect; see the
+Status: seed, November 7, 2026; a provisional implementation landed
+November 8, 2026 behind the `fs` feature
+([ADR-0013](../adr/0013-component-kinds-assemblies-and-first-party-effects.md)):
+`AppendToFile`, `ReplaceFile`, `ReadFile`, `RemoveFile`, one `FsError`,
+`FsDriver::new(root)`, and `bind_fs(root)`. The implementation took positions
+on some open questions below without closing them: replace does fsync the
+file but not the directory; removing a missing file is `NotFound`, not
+success; the root is created lazily by the first write; no ordering is
+promised and handles are not modelled. The remaining questions are still the
+design work. Raw material came from `examples/pulse`, whose journal now
+appends through the first-party effect; see the
 [filesystem follow-up](framework-follow-ups.md) for the running summary.
 
 ## Governing principle
@@ -164,13 +170,16 @@ than designing it three times. Nothing in this note needs it.
   outcomes alone, which is the cost the ordered sink would remove.
 - Whether a controlled test ever wants to see the path, which decides whether
   roots are visible to controlled execution.
-- Whether `GetTime` and `AppendLineToFile` want to migrate to the crate at the
-  same time, since both are hand-rolled stand-ins for first-party effects.
+- ~~Whether `GetTime` and `AppendLineToFile` want to migrate to the crate at
+  the same time.~~ They did, November 8, 2026, as `ReadSystemTime` and
+  `AppendToFile`.
 
 ## Acceptance evidence to require
 
 - An ADR for the ordering promise with live and controlled tests.
 - Build-time tests for Owned handle holder counts and for unbound roots.
-- A controlled test that asserts a journal's appends by intent, with no path.
+- A controlled test that asserts appends by intent, with no path:
+  `tests/fs_effects.rs` does this with a relative path only.
 - The pulse journal migrated onto the first-party module with no change to its
-  controlled tests except the descriptor name.
+  controlled tests except the descriptor name: migrated; its controlled tests
+  do not exist yet, so this is unproven.

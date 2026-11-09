@@ -14,12 +14,14 @@ enum FaultMessage {
     Trigger,
 }
 
-struct FaultProbe {
+struct FaultProbe;
+
+struct FaultProbeConfig {
     effect: EffectCapability<DynamicallyReachedEffect>,
 }
 
 impl Component for FaultProbe {
-    type Config = Self;
+    type Config = FaultProbeConfig;
     type Model = ();
     type Message = FaultMessage;
 
@@ -46,7 +48,7 @@ fn live_build_rejects_later_reached_effect_without_driver() {
     let effect = program.effect::<DynamicallyReachedEffect>();
     let _probe = program.component::<FaultProbe>(
         ComponentId::new("host-lifecycle-fault"),
-        FaultProbe { effect },
+        FaultProbeConfig { effect },
     );
     let _trigger = FaultMessage::Trigger;
     let error = LiveRuntime::builder(program.build().expect("valid program"))
@@ -64,7 +66,7 @@ fn live_build_rejects_later_reached_effect_without_driver() {
 struct Idle;
 
 impl Component for Idle {
-    type Config = Self;
+    type Config = ();
     type Model = usize;
     type Message = ();
 
@@ -96,7 +98,7 @@ async fn host_shutdown() -> Result<(), HostShutdownError> {
 async fn cancelled_run_forever_observation_preserves_owner_for_explicit_shutdown() {
     for mode in [Shutdown::Drain, Shutdown::Cancel] {
         let mut program = Program::builder();
-        let idle = program.component::<Idle>(ComponentId::new("host-lifecycle-idle"), Idle);
+        let idle = program.component::<Idle>(ComponentId::new("host-lifecycle-idle"), ());
         let runtime = LiveRuntime::builder(program.build().expect("valid program"))
             .build()
             .expect("valid live runtime");
@@ -129,7 +131,7 @@ async fn cancelled_run_forever_observation_preserves_owner_for_explicit_shutdown
 async fn shutdown_requests_close_ingress_and_preserve_completed_result() {
     for mode in [Shutdown::Drain, Shutdown::Cancel] {
         let mut program = Program::builder();
-        let idle = program.component::<Idle>(ComponentId::new("shutdown-requests"), Idle);
+        let idle = program.component::<Idle>(ComponentId::new("shutdown-requests"), ());
         let runtime = LiveRuntime::builder(program.build().expect("valid program"))
             .build()
             .expect("valid live runtime");
@@ -158,7 +160,7 @@ async fn shutdown_requests_close_ingress_and_preserve_completed_result() {
 struct RecurringTimer;
 
 impl Component for RecurringTimer {
-    type Config = Self;
+    type Config = ();
     type Model = ();
     type Message = ();
 
@@ -174,7 +176,7 @@ impl Component for RecurringTimer {
 #[tokio::test]
 async fn shutdown_grace_period_escalates_recurring_timer_and_joins() {
     let mut program = Program::builder();
-    program.component::<RecurringTimer>(ComponentId::new("recurring-timer"), RecurringTimer);
+    program.component::<RecurringTimer>(ComponentId::new("recurring-timer"), ());
     let mut task = LiveRuntime::builder(program.build().expect("valid program"))
         .build()
         .expect("valid runtime")

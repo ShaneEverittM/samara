@@ -24,12 +24,14 @@ enum EffectMessage {
     Finished(u64),
 }
 
-struct EffectComponent {
+struct EffectComponent;
+
+struct EffectComponentConfig {
     effect: EffectCapability<LateEffect>,
 }
 
 impl Component for EffectComponent {
-    type Config = Self;
+    type Config = EffectComponentConfig;
     type Model = Option<u64>;
     type Message = EffectMessage;
 
@@ -62,7 +64,7 @@ fn effect_program() -> (Program, ComponentRef<EffectComponent>) {
     let mut program = Program::builder();
     let effect = program.effect::<LateEffect>();
     let component = program
-        .component::<EffectComponent>(ComponentId::new("effect"), EffectComponent { effect });
+        .component::<EffectComponent>(ComponentId::new("effect"), EffectComponentConfig { effect });
     (program.build().expect("valid closed Program"), component)
 }
 
@@ -97,13 +99,15 @@ enum SourceMessage {
     Event(SourceEvent<u64, Infallible>),
 }
 
-struct SourceComponent {
+struct SourceComponent;
+
+struct SourceComponentConfig {
     source: SourceCapability<LateSource>,
     initially_enabled: bool,
 }
 
 impl Component for SourceComponent {
-    type Config = Self;
+    type Config = SourceComponentConfig;
     type Model = bool;
     type Message = SourceMessage;
 
@@ -142,7 +146,7 @@ fn source_program() -> (Program, ComponentRef<SourceComponent>) {
     let source = program.source::<LateSource>();
     let component = program.component::<SourceComponent>(
         ComponentId::new("source"),
-        SourceComponent {
+        SourceComponentConfig {
             source,
             initially_enabled: false,
         },
@@ -194,7 +198,7 @@ fn foreign_source_program(initially_enabled: bool) -> (Program, ComponentRef<Sou
     let _owner_source = owner.source::<LateSource>();
     let component = owner.component::<SourceComponent>(
         ComponentId::new("foreign-source"),
-        SourceComponent {
+        SourceComponentConfig {
             source: foreign_source,
             initially_enabled,
         },
@@ -323,12 +327,14 @@ async fn declared_effect_runs_in_live_execution() -> Result<(), RuntimeError> {
     Ok(())
 }
 
-struct InitialEffectComponent {
+struct InitialEffectComponent;
+
+struct InitialEffectComponentConfig {
     effect: EffectCapability<LateEffect>,
 }
 
 impl Component for InitialEffectComponent {
-    type Config = Self;
+    type Config = InitialEffectComponentConfig;
     type Model = ();
     type Message = ();
 
@@ -356,7 +362,7 @@ fn initial_foreign_effect_program() -> Program {
     let _owner_effect = owner.effect::<LateEffect>();
     owner.component::<InitialEffectComponent>(
         ComponentId::new("initial-foreign-effect"),
-        InitialEffectComponent {
+        InitialEffectComponentConfig {
             effect: foreign_effect,
         },
     );
@@ -387,7 +393,7 @@ fn initially_visible_foreign_effect_capability_is_rejected_during_profile_build(
 struct UnitComponent;
 
 impl Component for UnitComponent {
-    type Config = Self;
+    type Config = ();
     type Model = ();
     type Message = ();
 
@@ -404,12 +410,14 @@ impl Component for UnitComponent {
     }
 }
 
-struct InitialForeignSend {
+struct InitialForeignSend;
+
+struct InitialForeignSendConfig {
     target: ComponentRef<UnitComponent>,
 }
 
 impl Component for InitialForeignSend {
-    type Config = Self;
+    type Config = InitialForeignSendConfig;
     type Model = ();
     type Message = ();
 
@@ -428,13 +436,12 @@ impl Component for InitialForeignSend {
 
 fn initial_foreign_send_program() -> Program {
     let mut foreign = Program::builder();
-    let target =
-        foreign.component::<UnitComponent>(ComponentId::new("foreign-target"), UnitComponent);
+    let target = foreign.component::<UnitComponent>(ComponentId::new("foreign-target"), ());
 
     let mut owner = Program::builder();
     owner.component::<InitialForeignSend>(
         ComponentId::new("initial-foreign-send"),
-        InitialForeignSend { target },
+        InitialForeignSendConfig { target },
     );
     owner.build().expect("valid owner Program")
 }
@@ -446,12 +453,14 @@ protocol! {
     }
 }
 
-struct InitialForeignNotification {
+struct InitialForeignNotification;
+
+struct InitialForeignNotificationConfig {
     port: Port<ForeignProtocol>,
 }
 
 impl Component for InitialForeignNotification {
-    type Config = Self;
+    type Config = InitialForeignNotificationConfig;
     type Model = ();
     type Message = ();
 
@@ -468,12 +477,14 @@ impl Component for InitialForeignNotification {
     }
 }
 
-struct InitialForeignRequest {
+struct InitialForeignRequest;
+
+struct InitialForeignRequestConfig {
     port: Port<ForeignProtocol>,
 }
 
 impl Component for InitialForeignRequest {
-    type Config = Self;
+    type Config = InitialForeignRequestConfig;
     type Model = ();
     type Message = ();
 
@@ -497,12 +508,12 @@ fn initial_foreign_port_program(request: bool) -> Program {
     if request {
         owner.component::<InitialForeignRequest>(
             ComponentId::new("initial-foreign-request"),
-            InitialForeignRequest { port },
+            InitialForeignRequestConfig { port },
         );
     } else {
         owner.component::<InitialForeignNotification>(
             ComponentId::new("initial-foreign-notification"),
-            InitialForeignNotification { port },
+            InitialForeignNotificationConfig { port },
         );
     }
     owner.build().expect("valid owner Program")
@@ -544,7 +555,7 @@ fn dynamically_used_foreign_effect_capability_is_rejected_before_controlled_beha
     let _owner_requirement = owner.effect::<LateEffect>();
     let component = owner.component::<EffectComponent>(
         ComponentId::new("foreign-effect"),
-        EffectComponent {
+        EffectComponentConfig {
             effect: foreign_effect,
         },
     );
@@ -573,7 +584,7 @@ async fn run_forever_surfaces_dynamic_foreign_capability_before_live_driver() {
     let _owner_requirement = owner.effect::<LateEffect>();
     let component = owner.component::<EffectComponent>(
         ComponentId::new("foreign-live-effect"),
-        EffectComponent {
+        EffectComponentConfig {
             effect: foreign_effect,
         },
     );
@@ -709,7 +720,9 @@ impl EffectDriver<RecordDualStream> for RecordDualStreamDriver {
     }
 }
 
-struct DualStreamComponent {
+struct DualStreamComponent;
+
+struct DualStreamComponentConfig {
     first: SourceCapability<StreamDescriptor<u64>>,
     second: SourceCapability<StreamDescriptor<u64>>,
     descriptor: StreamDescriptor<u64>,
@@ -717,7 +730,7 @@ struct DualStreamComponent {
 }
 
 impl Component for DualStreamComponent {
-    type Config = Self;
+    type Config = DualStreamComponentConfig;
     type Model = (u64, u64);
     type Message = DualStreamMessage;
 
@@ -795,7 +808,7 @@ fn exact_stream_input_is_disambiguated_by_capability_not_equal_descriptor()
     let second = program.source::<StreamDescriptor<u64>>();
     let component = program.component::<DualStreamComponent>(
         ComponentId::new("dual-stream"),
-        DualStreamComponent {
+        DualStreamComponentConfig {
             first: first.clone(),
             second: second.clone(),
             descriptor: StreamDescriptor::named("same-descriptor"),
@@ -823,7 +836,7 @@ async fn live_exact_streams_with_equal_descriptors_route_by_capability() -> Resu
     let observe = program.effect::<RecordDualStream>();
     program.component::<DualStreamComponent>(
         ComponentId::new("live-dual-stream"),
-        DualStreamComponent {
+        DualStreamComponentConfig {
             first: first.clone(),
             second: second.clone(),
             descriptor: StreamDescriptor::named("same-descriptor"),
@@ -920,13 +933,15 @@ enum FramedStreamMessage {
 
 type FramedStream = Framed<StreamDescriptor<u64>, IncrementDecoder>;
 
-struct FramedStreamComponent {
+struct FramedStreamComponent;
+
+struct FramedStreamComponentConfig {
     source: SourceCapability<FramedStream>,
     observe: Option<EffectCapability<RecordDualStream>>,
 }
 
 impl Component for FramedStreamComponent {
-    type Config = Self;
+    type Config = FramedStreamComponentConfig;
     type Model = Vec<u64>;
     type Message = FramedStreamMessage;
 
@@ -981,7 +996,7 @@ fn framed_stream_program() -> (
     let source = program.source::<FramedStream>();
     let component = program.component::<FramedStreamComponent>(
         ComponentId::new("framed-stream"),
-        FramedStreamComponent {
+        FramedStreamComponentConfig {
             source: source.clone(),
             observe: None,
         },
@@ -1020,7 +1035,7 @@ async fn live_exact_stream_bridge_runs_composed_layers_before_component_mapping(
     let observe = program.effect::<RecordDualStream>();
     program.component::<FramedStreamComponent>(
         ComponentId::new("live-framed-stream"),
-        FramedStreamComponent {
+        FramedStreamComponentConfig {
             source: source.clone(),
             observe: Some(observe),
         },

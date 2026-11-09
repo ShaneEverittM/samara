@@ -44,12 +44,14 @@ enum PrintMessage {
     Start,
 }
 
-struct PrintProbe {
+struct PrintProbe;
+
+struct PrintProbeConfig {
     stdout: EffectCapability<PrintStdout>,
 }
 
 impl Component for PrintProbe {
-    type Config = Self;
+    type Config = PrintProbeConfig;
     type Model = PrintModel;
     type Message = PrintMessage;
 
@@ -71,8 +73,10 @@ impl Component for PrintProbe {
 fn controlled_discarded_outcome_is_traced_without_scheduling_a_message() {
     let mut program = Program::builder();
     let stdout = program.effect::<PrintStdout>();
-    let probe =
-        program.component::<PrintProbe>(ComponentId::new("discarded-print"), PrintProbe { stdout });
+    let probe = program.component::<PrintProbe>(
+        ComponentId::new("discarded-print"),
+        PrintProbeConfig { stdout },
+    );
     let mut runtime = ControlledRuntime::builder(program.build().unwrap())
         .control_effect::<PrintStdout>()
         .build()
@@ -160,12 +164,14 @@ enum GateMessage {
     Noop,
 }
 
-struct GateProbe {
+struct GateProbe;
+
+struct GateProbeConfig {
     effect: EffectCapability<GateEffect>,
 }
 
 impl Component for GateProbe {
-    type Config = Self;
+    type Config = GateProbeConfig;
     type Model = ();
     type Message = GateMessage;
 
@@ -222,8 +228,10 @@ impl EffectDriver<GateEffect> for GatedDriver {
 fn gated_program() -> (Program, ComponentRef<GateProbe>) {
     let mut program = Program::builder();
     let effect = program.effect::<GateEffect>();
-    let probe =
-        program.component::<GateProbe>(ComponentId::new("discarded-gate"), GateProbe { effect });
+    let probe = program.component::<GateProbe>(
+        ComponentId::new("discarded-gate"),
+        GateProbeConfig { effect },
+    );
     (program.build().unwrap(), probe)
 }
 

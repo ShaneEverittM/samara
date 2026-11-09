@@ -36,14 +36,16 @@ enum OutputMessage {
     Observed,
 }
 
-struct OutputProbe {
+struct OutputProbe;
+
+struct OutputProbeConfig {
     stdout: EffectCapability<PrintStdout>,
     stderr: EffectCapability<PrintStderr>,
     observe: Option<EffectCapability<ObserveOutput>>,
 }
 
 impl Component for OutputProbe {
-    type Config = Self;
+    type Config = OutputProbeConfig;
     type Model = OutputModel;
     type Message = OutputMessage;
 
@@ -101,7 +103,7 @@ fn output_program(observe: bool) -> (Program, ComponentRef<OutputProbe>) {
     let observe = observe.then(|| builder.effect::<ObserveOutput>());
     let probe = builder.component::<OutputProbe>(
         ComponentId::new("standard-output"),
-        OutputProbe {
+        OutputProbeConfig {
             stdout,
             stderr,
             observe,

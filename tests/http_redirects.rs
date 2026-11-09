@@ -14,14 +14,16 @@ impl EffectDescriptor for Observed {
     type Output = ();
     type Error = Infallible;
 }
-struct Probe {
+struct Probe;
+
+struct ProbeConfig {
     http: EffectCapability<HttpRequest>,
     observed: EffectCapability<Observed>,
     request: HttpRequest,
     limit: usize,
 }
 impl Component for Probe {
-    type Config = Self;
+    type Config = ProbeConfig;
     type Model = Vec<Outcome>;
     type Message = Outcome;
     fn init(config: &Self::Config) -> Init<Self::Model, Self::Message> {
@@ -49,7 +51,7 @@ fn program(request: HttpRequest, limit: usize) -> (Program, ComponentRef<Probe>)
     let observed = builder.effect();
     let probe = builder.component::<Probe>(
         ComponentId::new("probe"),
-        Probe {
+        ProbeConfig {
             http,
             observed,
             request,
@@ -345,9 +347,11 @@ fn controlled_traces_repeat_and_next_hop_is_caused_by_previous_outcome() {
     assert_eq!(run(), run());
 }
 
-struct JsonProbe(EffectCapability<HttpRequest>);
+struct JsonProbe;
+
+struct JsonProbeConfig(EffectCapability<HttpRequest>);
 impl Component for JsonProbe {
-    type Config = Self;
+    type Config = JsonProbeConfig;
     type Model = Option<EffectOutcome<serde_json::Value, HttpResponseError>>;
     type Message = EffectOutcome<serde_json::Value, HttpResponseError>;
     fn init(config: &Self::Config) -> Init<Self::Model, Self::Message> {
@@ -376,7 +380,7 @@ fn status_and_json_transforms_run_only_after_following_and_keep_typed_errors() {
     for status in [200, 404, 301] {
         let mut builder = Program::builder();
         let http = builder.effect();
-        let probe = builder.component::<JsonProbe>(ComponentId::new("json"), JsonProbe(http));
+        let probe = builder.component::<JsonProbe>(ComponentId::new("json"), JsonProbeConfig(http));
         let mut runtime = ControlledRuntime::builder(builder.build().unwrap())
             .control_effect::<HttpRequest>()
             .build()

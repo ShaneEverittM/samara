@@ -7,9 +7,11 @@ This repository is in a documentation-first, acceptance-contract-gated implement
 - `Model` is the single source of truth.
 - `Message` is the only path for state transitions.
 - The semantic transition `Model + Message -> Model + Commands` is pure,
-  deterministic, and side effect free. The Phase 3 Rust spelling is
-  `update(&self, &mut Model, Message) -> Command<Message>`; in-place mutation is
-  exclusively owned and one composable Command represents zero or more intents.
+  deterministic, and side effect free. The Rust spelling (ADR-0013) is
+  `update(&Config, &mut Model, Message) -> Command<Message>`, where `Config` is
+  the Component's immutable wiring and the implementing type is only a name
+  for the kind; in-place mutation is exclusively owned and one composable
+  Command represents zero or more intents.
 - `Command` is a typed enum describing finite work. World-facing work remains explicit as typed `EffectDescriptor` values; opaque async closures are not allowed in v0.
 - Live side effects run only through Drivers on runtime-owned Tokio tasks.
 - Async code must not mutate state directly; it can only emit `Message` values back through runtime-managed message delivery.

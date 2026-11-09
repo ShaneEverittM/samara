@@ -44,23 +44,26 @@ The accepted Phase 2 audit constrains Phase 3 to this slice:
 
 - `ComponentId` is stable logical identity, not a task, mailbox, type singleton,
   or registration-order token.
-- A `Component` value is immutable logical configuration. Behaviorally relevant
-  mutable state belongs in `Component::Model`.
+- The type implementing `Component` names a kind and is never stored. Its
+  immutable logical configuration is `Component::Config`, supplied at
+  registration as `component::<Kind>(id, config)`; behaviorally relevant
+  mutable state belongs in `Component::Model`
+  ([ADR-0013](adr/0013-component-kinds-assemblies-and-first-party-effects.md)).
 - `Component::Message` is the only transition input.
-- `Component::init(&self) -> Init<Model, Message>` declares initial state and
+- `Component::init(&Config) -> Init<Model, Message>` declares initial state and
   optional startup work.
-- `Component::update(&self, &mut Model, Message) -> Command<Message>` is the v0
-  Rust spelling of the conceptual pure transition. Exclusively owned in-place
-  mutation is observationally equivalent to returning a new Model.
+- `Component::update(&Config, &mut Model, Message) -> Command<Message>` is the
+  v0 Rust spelling of the conceptual pure transition. Exclusively owned
+  in-place mutation is observationally equivalent to returning a new Model.
 - One composable `Command<Message>` is returned. `Command::none` represents no
   finite work and `Command::batch` groups declarations; batching does not
   promise completion order.
-- `Component::subscriptions(&self, &Model) -> Subscriptions<Message>` is a pure
-  projection with an empty default.
-- The base Component contract requires movable configuration, Model, and
-  Messages, but does not require the Component configuration itself to be
-  `Sync`. Per-Component serialization does not require concurrent access to the
-  configuration, and a stronger bound would prematurely constrain placement.
+- `Component::subscriptions(&Config, &Model) -> Subscriptions<Message>` is a
+  pure projection with an empty default.
+- The base Component contract requires movable `Config`, Model, and Messages,
+  but does not require `Config` to be `Sync`. Per-Component serialization does
+  not require concurrent access to the configuration, and a stronger bound
+  would prematurely constrain placement.
 - `ComponentRef<C>` is an inert typed logical address. It grants neither model
   access nor live delivery capability.
 - `ComponentHandle<C>` is a live boundary capability and is deliberately

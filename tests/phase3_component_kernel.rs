@@ -47,7 +47,9 @@ enum KernelMessage {
     Add(u64),
 }
 
-struct KernelComponent {
+struct KernelComponent;
+
+struct KernelComponentConfig {
     scale: u64,
     init_calls: Arc<AtomicUsize>,
     configuration_drops: Arc<AtomicUsize>,
@@ -55,7 +57,7 @@ struct KernelComponent {
     not_sync: PhantomData<Cell<()>>,
 }
 
-impl Drop for KernelComponent {
+impl Drop for KernelComponentConfig {
     fn drop(&mut self) {
         self.configuration_drops.fetch_add(1, Ordering::SeqCst);
     }
@@ -81,7 +83,7 @@ impl PartialEq for OwnedModel {
 
 impl Eq for OwnedModel {}
 
-impl KernelComponent {
+impl KernelComponentConfig {
     fn fixture() -> (Self, Arc<AtomicUsize>, Arc<AtomicUsize>, Arc<AtomicUsize>) {
         let init_calls = Arc::new(AtomicUsize::new(0));
         let configuration_drops = Arc::new(AtomicUsize::new(0));
@@ -103,7 +105,7 @@ impl KernelComponent {
 }
 
 impl Component for KernelComponent {
-    type Config = Self;
+    type Config = KernelComponentConfig;
     type Model = OwnedModel;
     type Message = KernelMessage;
 
@@ -129,7 +131,7 @@ impl Component for KernelComponent {
 
 #[test]
 fn v1_same_input_produces_equivalent_model_and_command_intent() {
-    let (component, _, _, _) = KernelComponent::fixture();
+    let (component, _, _, _) = KernelComponentConfig::fixture();
     let mut left = KernelComponent::init(&component).model;
     let mut right = KernelComponent::init(&component).model;
 
@@ -143,8 +145,11 @@ fn v1_same_input_produces_equivalent_model_and_command_intent() {
 
 #[test]
 fn v1_update_has_no_runtime_capability() {
-    let update: fn(&KernelComponent, &mut OwnedModel, KernelMessage) -> Command<KernelMessage> =
-        KernelComponent::update;
+    let update: fn(
+        &KernelComponentConfig,
+        &mut OwnedModel,
+        KernelMessage,
+    ) -> Command<KernelMessage> = KernelComponent::update;
 
     let _ = update;
 }
@@ -168,16 +173,16 @@ fn v2_protocol_message_remains_distinct_from_provider_message() {
 #[test]
 fn component_identity_is_explicit_and_not_registration_order() {
     let mut left_program = Program::builder();
-    let (left_first, _, _, _) = KernelComponent::fixture();
-    let (left_second, _, _, _) = KernelComponent::fixture();
+    let (left_first, _, _, _) = KernelComponentConfig::fixture();
+    let (left_second, _, _, _) = KernelComponentConfig::fixture();
     let alpha_left =
         left_program.component::<KernelComponent>(ComponentId::new("alpha"), left_first);
     let beta_left =
         left_program.component::<KernelComponent>(ComponentId::new("beta"), left_second);
 
     let mut right_program = Program::builder();
-    let (right_first, _, _, _) = KernelComponent::fixture();
-    let (right_second, _, _, _) = KernelComponent::fixture();
+    let (right_first, _, _, _) = KernelComponentConfig::fixture();
+    let (right_second, _, _, _) = KernelComponentConfig::fixture();
     let beta_right =
         right_program.component::<KernelComponent>(ComponentId::new("beta"), right_first);
     let alpha_right =
@@ -190,7 +195,8 @@ fn component_identity_is_explicit_and_not_registration_order() {
 
 #[test]
 fn registration_transfers_configuration_and_model_ownership_to_program() {
-    let (component, init_calls, configuration_drops, model_drops) = KernelComponent::fixture();
+    let (component, init_calls, configuration_drops, model_drops) =
+        KernelComponentConfig::fixture();
     let mut builder = Program::builder();
 
     let component_ref = builder.component::<KernelComponent>(ComponentId::new("owned"), component);

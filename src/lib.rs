@@ -20,7 +20,7 @@
 //! enum Message { Add(u64) }
 //!
 //! impl Component for Counter {
-//!     type Config = Self;
+//!     type Config = ();
 //!     type Model = u64;
 //!     type Message = Message;
 //!
@@ -37,7 +37,7 @@
 //! }
 //!
 //! let mut builder = Program::builder();
-//! let counter = builder.component::<Counter>(ComponentId::new("counter"), Counter);
+//! let counter = builder.component::<Counter>(ComponentId::new("counter"), ());
 //! let mut runtime = ControlledRuntime::builder(builder.build()?).build()?;
 //! runtime.send(&counter, Message::Add(3))?;
 //! runtime.run_until_idle()?;
@@ -2644,9 +2644,11 @@ impl<Message> From<Vec<Subscription<Message>>> for Subscriptions<Message> {
 /// ```
 /// use samara::prelude::*;
 /// use std::convert::Infallible;
-/// struct Sum { input: SourceCapability<StreamDescriptor<u64>> }
+/// struct Sum;
+///
+/// struct SumConfig { input: SourceCapability<StreamDescriptor<u64>> }
 /// impl Component for Sum {
-///     type Config = Self;
+///     type Config = SumConfig;
 ///     type Model = u64;
 ///     type Message = SourceEvent<u64, Infallible>;
 ///     fn init(_config: &Self::Config) -> Init<u64, Self::Message> { Init::new(0) }
@@ -2663,7 +2665,7 @@ impl<Message> From<Vec<Subscription<Message>>> for Subscriptions<Message> {
 /// fn program() -> Result<(Program, ComponentRef<Sum>, SourceCapability<StreamDescriptor<u64>>), ProgramBuildError> {
 ///     let mut builder = Program::builder();
 ///     let input = builder.source::<StreamDescriptor<u64>>();
-///     let sum = builder.component::<Sum>(ComponentId::new("sum"), Sum { input: input.clone() });
+///     let sum = builder.component::<Sum>(ComponentId::new("sum"), SumConfig { input: input.clone() });
 ///     Ok((builder.build()?, sum, input))
 /// }
 /// let (program_under_test, sum, input) = program()?;
@@ -2758,11 +2760,13 @@ impl<T: Send + 'static> StreamSourceDescriptor for StreamDescriptor<T> {
 /// ```
 /// use samara::prelude::*;
 ///
-/// struct Reader { input: SourceCapability<StdinLines> }
+/// struct Reader;
+///
+/// struct ReaderConfig { input: SourceCapability<StdinLines> }
 /// struct Model { lines: Vec<String>, error: Option<StdinError>, open: bool }
 ///
 /// impl Component for Reader {
-///     type Config = Self;
+///     type Config = ReaderConfig;
 ///     type Model = Model;
 ///     type Message = SourceEvent<String, StdinError>;
 ///
@@ -2791,7 +2795,7 @@ impl<T: Send + 'static> StreamSourceDescriptor for StreamDescriptor<T> {
 /// fn program() -> Result<(Program, ComponentRef<Reader>), ProgramBuildError> {
 ///     let mut builder = Program::builder();
 ///     let input = builder.source::<StdinLines>();
-///     let reader = builder.component::<Reader>(ComponentId::new("reader"), Reader { input });
+///     let reader = builder.component::<Reader>(ComponentId::new("reader"), ReaderConfig { input });
 ///     Ok((builder.build()?, reader))
 /// }
 ///
@@ -4799,7 +4803,7 @@ impl ProgramBuilder {
     ///
     /// struct Counter;
     /// impl Component for Counter {
-    ///     type Config = Self;
+    ///     type Config = ();
     ///     type Model = u64;
     ///     type Message = CountMessage;
     ///     fn init(_config: &Self::Config) -> Init<u64, CountMessage> { Init::new(42) }
@@ -4810,9 +4814,11 @@ impl ProgramBuilder {
     ///     }
     /// }
     ///
-    /// struct Client { counter: Port<Count> }
+    /// struct Client;
+    ///
+    /// struct ClientConfig { counter: Port<Count> }
     /// impl Component for Client {
-    ///     type Config = Self;
+    ///     type Config = ClientConfig;
     ///     type Model = Option<u64>;
     ///     type Message = RequestOutcome<u64>;
     ///     fn init(config: &Self::Config) -> Init<Self::Model, Self::Message> {
@@ -4826,9 +4832,9 @@ impl ProgramBuilder {
     ///
     /// let mut builder = Program::builder();
     /// let port = builder.port::<Count>(PortId::new("counter"));
-    /// let counter = builder.component::<Counter>(ComponentId::new("counter"), Counter);
+    /// let counter = builder.component::<Counter>(ComponentId::new("counter"), ());
     /// builder.bind_port(&port, &counter);
-    /// let client = builder.component::<Client>(ComponentId::new("client"), Client { counter: port });
+    /// let client = builder.component::<Client>(ComponentId::new("client"), ClientConfig { counter: port });
     /// let mut runtime = ControlledRuntime::builder(builder.build()?).build()?;
     /// runtime.run_until_idle()?;
     /// assert_eq!(*runtime.state(&client)?, Some(42));
@@ -5246,7 +5252,7 @@ pub struct LiveRuntimeBuilder {
 /// use samara::prelude::*;
 /// struct Counter;
 /// impl Component for Counter {
-///     type Config = Self;
+///     type Config = ();
 ///     type Model = u64;
 ///     type Message = u64;
 ///     fn init(_config: &Self::Config) -> Init<u64, u64> { Init::new(0) }
@@ -5258,7 +5264,7 @@ pub struct LiveRuntimeBuilder {
 /// let tokio = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
 /// tokio.block_on(async {
 ///     let mut builder = Program::builder();
-///     let counter = builder.component::<Counter>(ComponentId::new("counter"), Counter);
+///     let counter = builder.component::<Counter>(ComponentId::new("counter"), ());
 ///     let runtime = LiveRuntime::builder(builder.build()?).build()?;
 ///     let sender = runtime.handle(&counter)?;
 ///     let task = runtime.spawn();
@@ -5596,7 +5602,7 @@ impl<C: Component> ComponentHandle<C> {
 /// protocol! { type Count => enum CountMessage { Read -> u64, } }
 /// struct Counter;
 /// impl Component for Counter {
-///     type Config = Self;
+///     type Config = ();
 ///     type Model = u64;
 ///     type Message = CountMessage;
 ///     fn init(_config: &Self::Config) -> Init<u64, CountMessage> { Init::new(42) }
@@ -5610,7 +5616,7 @@ impl<C: Component> ComponentHandle<C> {
 /// tokio.block_on(async {
 ///     let mut builder = Program::builder();
 ///     let count = builder.port::<Count>(PortId::new("count"));
-///     let counter = builder.component::<Counter>(ComponentId::new("counter"), Counter);
+///     let counter = builder.component::<Counter>(ComponentId::new("counter"), ());
 ///     builder.bind_port(&count, &counter);
 ///     let runtime = LiveRuntime::builder(builder.build()?).build()?;
 ///     let client = runtime.port_handle(&count)?;
@@ -5985,9 +5991,11 @@ pub struct ControlledRuntimeBuilder {
 ///
 /// ```
 /// use samara::prelude::*;
-/// struct Check { http: EffectCapability<HttpRequest> }
+/// struct Check;
+///
+/// struct CheckConfig { http: EffectCapability<HttpRequest> }
 /// impl Component for Check {
-///     type Config = Self;
+///     type Config = CheckConfig;
 ///     type Model = Option<StatusCode>;
 ///     type Message = EffectOutcome<HttpResponse, HttpError>;
 ///     fn init(config: &Self::Config) -> Init<Self::Model, Self::Message> {
@@ -6004,7 +6012,7 @@ pub struct ControlledRuntimeBuilder {
 /// }
 /// let mut builder = Program::builder();
 /// let http = builder.effect::<HttpRequest>();
-/// let check = builder.component::<Check>(ComponentId::new("check"), Check { http });
+/// let check = builder.component::<Check>(ComponentId::new("check"), CheckConfig { http });
 /// let mut runtime = ControlledRuntime::builder(builder.build()?)
 ///     .control_effect::<HttpRequest>().build()?;
 /// runtime.run_until_idle()?;
@@ -6162,7 +6170,7 @@ impl ControlledRuntime {
     /// use std::time::Duration;
     /// struct Timer;
     /// impl Component for Timer {
-    ///     type Config = Self;
+    ///     type Config = ();
     ///     type Model = bool;
     ///     type Message = ();
     ///     fn init(_config: &Self::Config) -> Init<bool, ()> {
@@ -6174,7 +6182,7 @@ impl ControlledRuntime {
     ///     }
     /// }
     /// let mut builder = Program::builder();
-    /// let timer = builder.component::<Timer>(ComponentId::new("timer"), Timer);
+    /// let timer = builder.component::<Timer>(ComponentId::new("timer"), ());
     /// let mut runtime = ControlledRuntime::builder(builder.build()?).build()?;
     /// runtime.advance(Duration::from_secs(1))?;
     /// assert!(!*runtime.state(&timer)?);
@@ -7238,7 +7246,7 @@ mod request_authority_tests {
     struct Replier;
 
     impl Component for Replier {
-        type Config = Self;
+        type Config = ();
         type Model = ();
         type Message = ReplyTo<u64>;
 
@@ -7257,7 +7265,7 @@ mod request_authority_tests {
 
     fn fixture() -> (Program, ComponentRef<Replier>, ReplyTo<u64>) {
         let mut builder = Program::builder();
-        let replier = builder.component::<Replier>(ComponentId::new("replier"), Replier);
+        let replier = builder.component::<Replier>(ComponentId::new("replier"), ());
         let token = RequestToken::new(0, Arc::new(()));
         token.expire();
         (builder.build().unwrap(), replier, ReplyTo::runtime(token))

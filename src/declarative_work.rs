@@ -162,7 +162,9 @@ mod tests {
         ))
     }
 
-    struct DesiredComponent {
+    struct DesiredComponent;
+
+    struct DesiredComponentConfig {
         source: SourceCapability<StreamDescriptor<u64>>,
     }
 
@@ -173,7 +175,7 @@ mod tests {
     }
 
     impl Component for DesiredComponent {
-        type Config = Self;
+        type Config = DesiredComponentConfig;
         type Model = Option<&'static str>;
         type Message = DesiredMessage;
 
@@ -263,7 +265,7 @@ mod tests {
         let source = program.source::<StreamDescriptor<u64>>();
         let mut kernel = ComponentKernel::<DesiredComponent>::new(
             ComponentId::new("desired"),
-            DesiredComponent { source },
+            DesiredComponentConfig { source },
         );
 
         assert!(matches!(

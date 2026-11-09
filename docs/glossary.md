@@ -64,16 +64,19 @@ messages, applies one transition at a time, emits Commands, and declares
 Subscriptions. The name is the canonical replacement for the historical term
 *Actor*.
 
-**Component implementation** — The Rust type and `impl Component` that define a
-kind of Component. Its methods receive `&self`, signaling that the
-implementation's configuration is observationally read-only during execution.
-Because Rust permits interior mutability, preserving that property is also a
-conformance obligation.
+**Component kind** — The Rust type that implements `Component`. It is only a
+name: no value of it is ever stored, and `init`, `update`, and
+`subscriptions` are associated functions on it (ADR-0013). `ComponentRef<C>`
+and `component::<C>(..)` name the kind.
 
-**Component configuration** — A particular immutable value of a Component
-implementation type. It may hold logical wiring and declarative configuration,
-such as Ports, EffectCapabilities, SourceCapabilities, and SourceDescriptors.
-Behaviorally relevant mutable state does not belong here.
+**Component configuration / `Component::Config`** — The immutable value a
+kind is registered with. It holds logical wiring and declarative
+configuration, such as Ports, EffectCapabilities, SourceCapabilities, and
+SourceDescriptors, and is passed to every Component function by shared
+reference, signaling that it is observationally read-only during execution.
+Because Rust permits interior mutability, preserving that property is also a
+conformance obligation. Behaviorally relevant mutable state does not belong
+here.
 
 **Model** — The mutable behavioral state exclusively owned by one Component.
 Sockets, tasks, clocks, transport-correlation tables, and other operational
@@ -535,7 +538,7 @@ to hold.
 | Historical or ambiguous term | Current vocabulary | Guidance |
 | --- | --- | --- |
 | Actor | Component | Use *Component* for Samara's topology-neutral application unit. Actor language survives in older PoC documents. |
-| Component value | Component configuration | Name the role rather than implying a second application unit. |
+| Component value, Component implementation | Component kind, Component configuration | The implementing type is a name; the configuration is the value it is registered with. |
 | `Msg` | Message / `Component::Message` | Use *Component Message* when it must be distinguished from a Protocol Message. |
 | `Cmd` | Command | Use the full word in type and method names. |
 | Effect value / Effect intent | EffectDescriptor | Use *effect* generically for the interaction, not as a second ambiguous type noun. |

@@ -100,14 +100,16 @@ enum PipelineMessage {
     Observed,
 }
 
-struct PipelineComponent {
+struct PipelineComponent;
+
+struct PipelineComponentConfig {
     http: EffectCapability<HttpRequest>,
     observe: EffectCapability<ObservePipelineResult>,
     url: String,
 }
 
 impl Component for PipelineComponent {
-    type Config = Self;
+    type Config = PipelineComponentConfig;
     type Model = PipelineModel;
     type Message = PipelineMessage;
 
@@ -163,7 +165,7 @@ fn pipeline_program(url: impl Into<String>) -> (Program, ComponentRef<PipelineCo
     let observe = builder.effect::<ObservePipelineResult>();
     let component = builder.component::<PipelineComponent>(
         ComponentId::new("http-pipeline"),
-        PipelineComponent {
+        PipelineComponentConfig {
             http,
             observe,
             url: url.into(),

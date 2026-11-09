@@ -45,7 +45,9 @@ enum CounterMessage {
     Recorded,
 }
 
-struct Counter {
+struct Counter;
+
+struct CounterConfig {
     input: SourceCapability<StreamDescriptor<u64>>,
     input_descriptor: StreamDescriptor<u64>,
     record: EffectCapability<Record>,
@@ -58,7 +60,7 @@ struct CounterModel {
 }
 
 impl Component for Counter {
-    type Config = Self;
+    type Config = CounterConfig;
     type Model = CounterModel;
     type Message = CounterMessage;
 
@@ -113,7 +115,7 @@ fn counter_program(
     let record = program.effect::<Record>();
     let counter = program.component::<Counter>(
         ComponentId::new("counter"),
-        Counter {
+        CounterConfig {
             input: input.clone(),
             input_descriptor,
             record,
@@ -197,13 +199,15 @@ enum CancelMessage {
     UnexpectedOutcome,
 }
 
-struct CancelProbe {
+struct CancelProbe;
+
+struct CancelProbeConfig {
     mapper_calls: Arc<AtomicUsize>,
     effect: EffectCapability<Hang>,
 }
 
 impl Component for CancelProbe {
-    type Config = Self;
+    type Config = CancelProbeConfig;
     type Model = ();
     type Message = CancelMessage;
 
@@ -238,7 +242,7 @@ async fn phase6_scope_cancel_drops_effect_without_invoking_mapper() {
     let effect = program.effect::<Hang>();
     let probe = program.component::<CancelProbe>(
         ComponentId::new("cancel-probe"),
-        CancelProbe {
+        CancelProbeConfig {
             mapper_calls: mapper_calls.clone(),
             effect,
         },
@@ -272,7 +276,7 @@ async fn phase6_cancelled_shutdown_future_detaches_no_runtime_work() {
     let effect = program.effect::<Hang>();
     let probe = program.component::<CancelProbe>(
         ComponentId::new("shutdown-future-cancel"),
-        CancelProbe {
+        CancelProbeConfig {
             mapper_calls: mapper_calls.clone(),
             effect,
         },
@@ -321,7 +325,9 @@ async fn phase6_cancelled_shutdown_future_detaches_no_runtime_work() {
     assert_eq!(mapper_calls.load(Ordering::SeqCst), 0);
 }
 
-struct InitialCancelProbe {
+struct InitialCancelProbe;
+
+struct InitialCancelProbeConfig {
     mapper_calls: Arc<AtomicUsize>,
     effect: EffectCapability<Hang>,
 }
@@ -335,7 +341,7 @@ async fn shutdown_escalation_joins_pending_effect_without_mapping() {
     let effect = program.effect::<Hang>();
     let probe = program.component::<CancelProbe>(
         ComponentId::new("escalation-effect"),
-        CancelProbe {
+        CancelProbeConfig {
             mapper_calls: mapper_calls.clone(),
             effect,
         },
@@ -379,7 +385,7 @@ async fn shutdown_escalation_joins_pending_effect_without_mapping() {
 }
 
 impl Component for InitialCancelProbe {
-    type Config = Self;
+    type Config = InitialCancelProbeConfig;
     type Model = ();
     type Message = ();
 
@@ -414,7 +420,7 @@ async fn phase6_cancel_stops_driving_without_mapping_scope_abort() {
     let effect = program.effect::<Hang>();
     let _ = program.component::<InitialCancelProbe>(
         ComponentId::new("immediate-cancel"),
-        InitialCancelProbe {
+        InitialCancelProbeConfig {
             mapper_calls: mapper_calls.clone(),
             effect,
         },
@@ -447,7 +453,7 @@ async fn shutdown_escalation_before_owner_poll_cannot_restart_work() {
     let effect = program.effect::<Hang>();
     program.component::<InitialCancelProbe>(
         ComponentId::new("early-escalation"),
-        InitialCancelProbe {
+        InitialCancelProbeConfig {
             mapper_calls: mapper_calls.clone(),
             effect,
         },
@@ -488,12 +494,14 @@ impl EffectDriver<PanicEffect> for PanickingDriver {
     }
 }
 
-struct PanicProbe {
+struct PanicProbe;
+
+struct PanicProbeConfig {
     effect: EffectCapability<PanicEffect>,
 }
 
 impl Component for PanicProbe {
-    type Config = Self;
+    type Config = PanicProbeConfig;
     type Model = ();
     type Message = ();
 
@@ -510,8 +518,8 @@ impl Component for PanicProbe {
 async fn phase6_driver_panic_faults_and_cleans_scope() {
     let mut program = Program::builder();
     let effect = program.effect::<PanicEffect>();
-    let probe =
-        program.component::<PanicProbe>(ComponentId::new("panic-probe"), PanicProbe { effect });
+    let probe = program
+        .component::<PanicProbe>(ComponentId::new("panic-probe"), PanicProbeConfig { effect });
     let runtime = LiveRuntime::builder(program.build().expect("valid program"))
         .bind_effect::<PanicEffect, _>(PanickingDriver)
         .build()
@@ -532,8 +540,10 @@ async fn phase6_driver_panic_faults_and_cleans_scope() {
 async fn shutdown_requests_preserve_completed_fault() {
     let mut program = Program::builder();
     let effect = program.effect::<PanicEffect>();
-    let probe =
-        program.component::<PanicProbe>(ComponentId::new("preserved-fault"), PanicProbe { effect });
+    let probe = program.component::<PanicProbe>(
+        ComponentId::new("preserved-fault"),
+        PanicProbeConfig { effect },
+    );
     let runtime = LiveRuntime::builder(program.build().expect("valid program"))
         .bind_effect::<PanicEffect, _>(PanickingDriver)
         .build()
@@ -626,7 +636,9 @@ enum SourceMessage {
     Observed,
 }
 
-struct SourceProbe {
+struct SourceProbe;
+
+struct SourceProbeConfig {
     causal_timer: bool,
     source: SourceCapability<ScriptedSource>,
     observe: EffectCapability<Observe>,
@@ -638,7 +650,7 @@ struct SourceModel {
 }
 
 impl Component for SourceProbe {
-    type Config = Self;
+    type Config = SourceProbeConfig;
     type Model = SourceModel;
     type Message = SourceMessage;
 
@@ -726,7 +738,7 @@ fn source_fixture(causal_timer: bool) -> SourceFixture {
     let observe = program.effect::<Observe>();
     let component = program.component::<SourceProbe>(
         ComponentId::new("source-probe"),
-        SourceProbe {
+        SourceProbeConfig {
             causal_timer,
             source,
             observe,
@@ -832,7 +844,7 @@ async fn phase6_silent_source_return_ends_once() {
     let observe = program.effect::<Observe>();
     let _component = program.component::<SourceProbe>(
         ComponentId::new("silent-source"),
-        SourceProbe {
+        SourceProbeConfig {
             causal_timer: false,
             source,
             observe,
@@ -897,7 +909,7 @@ async fn phase6_source_driver_panics_fault_and_clean_the_scope() {
         let observe = program.effect::<Observe>();
         let _ = program.component::<SourceProbe>(
             ComponentId::new(format!("source-panic-{mode:?}")),
-            SourceProbe {
+            SourceProbeConfig {
                 causal_timer: false,
                 source,
                 observe,
@@ -1029,7 +1041,9 @@ async fn phase6_drain_stops_sources_and_drains_accepted_causal_work() {
     assert_eq!(sink.end().await, Err(DriverStopped));
 }
 
-struct AdmissionProbe {
+struct AdmissionProbe;
+
+struct AdmissionProbeConfig {
     record: EffectCapability<Record>,
 }
 
@@ -1039,7 +1053,7 @@ enum AdmissionMessage {
 }
 
 impl Component for AdmissionProbe {
-    type Config = Self;
+    type Config = AdmissionProbeConfig;
     type Model = u64;
     type Message = AdmissionMessage;
 
@@ -1069,7 +1083,7 @@ async fn admitted_burst(count: usize) -> Vec<u64> {
     let record = program.effect::<Record>();
     let probe = program.component::<AdmissionProbe>(
         ComponentId::new("admission-probe"),
-        AdmissionProbe { record },
+        AdmissionProbeConfig { record },
     );
     let values = Arc::new(Mutex::new(Vec::new()));
     let runtime = LiveRuntime::builder(program.build().expect("valid program"))
@@ -1121,7 +1135,7 @@ async fn phase6_shutdown_closes_external_ingress() -> Result<(), RuntimeError> {
     let record = program.effect::<Record>();
     let probe = program.component::<AdmissionProbe>(
         ComponentId::new("closed-ingress"),
-        AdmissionProbe { record },
+        AdmissionProbeConfig { record },
     );
     let values = Arc::new(Mutex::new(Vec::new()));
     let runtime = LiveRuntime::builder(program.build().expect("valid program"))
@@ -1146,12 +1160,14 @@ impl EffectDescriptor for InitialEffect {
     type Error = Infallible;
 }
 
-struct InitialEffectComponent {
+struct InitialEffectComponent;
+
+struct InitialEffectComponentConfig {
     effect: EffectCapability<InitialEffect>,
 }
 
 impl Component for InitialEffectComponent {
-    type Config = Self;
+    type Config = InitialEffectComponentConfig;
     type Model = ();
     type Message = ();
 
@@ -1178,7 +1194,7 @@ async fn phase6_knowable_live_binding_errors_fail_build() {
     let effect = program.effect::<InitialEffect>();
     let _ = program.component::<InitialEffectComponent>(
         ComponentId::new("initial-effect"),
-        InitialEffectComponent { effect },
+        InitialEffectComponentConfig { effect },
     );
     assert!(
         LiveRuntime::builder(program.build().expect("valid program"))
@@ -1190,7 +1206,7 @@ async fn phase6_knowable_live_binding_errors_fail_build() {
     let effect = program.effect::<InitialEffect>();
     let _ = program.component::<InitialEffectComponent>(
         ComponentId::new("duplicate-effect"),
-        InitialEffectComponent { effect },
+        InitialEffectComponentConfig { effect },
     );
     assert!(
         LiveRuntime::builder(program.build().expect("valid program"))
@@ -1205,7 +1221,7 @@ async fn phase6_knowable_live_binding_errors_fail_build() {
     let observe = program.effect::<Observe>();
     let _ = program.component::<SourceProbe>(
         ComponentId::new("missing-source"),
-        SourceProbe {
+        SourceProbeConfig {
             causal_timer: false,
             source,
             observe,
@@ -1226,7 +1242,7 @@ async fn phase6_knowable_live_binding_errors_fail_build() {
     let observe = program.effect::<Observe>();
     let _ = program.component::<SourceProbe>(
         ComponentId::new("duplicate-source"),
-        SourceProbe {
+        SourceProbeConfig {
             causal_timer: false,
             source,
             observe,
@@ -1266,12 +1282,14 @@ enum DynamicMessage {
     Mapped,
 }
 
-struct DynamicProbe {
+struct DynamicProbe;
+
+struct DynamicProbeConfig {
     effect: EffectCapability<DynamicEffect>,
 }
 
 impl Component for DynamicProbe {
-    type Config = Self;
+    type Config = DynamicProbeConfig;
     type Model = ();
     type Message = DynamicMessage;
 
@@ -1297,8 +1315,8 @@ impl Component for DynamicProbe {
 fn phase6_declared_missing_binding_rejects_live_build() {
     let mut program = Program::builder();
     let effect = program.effect::<DynamicEffect>();
-    let _probe =
-        program.component::<DynamicProbe>(ComponentId::new("dynamic"), DynamicProbe { effect });
+    let _probe = program
+        .component::<DynamicProbe>(ComponentId::new("dynamic"), DynamicProbeConfig { effect });
     let _trigger = DynamicMessage::Trigger;
     let error = LiveRuntime::builder(program.build().expect("valid program"))
         .build()
@@ -1372,14 +1390,16 @@ enum QueryMessage {
     Observed,
 }
 
-struct QueryProbe {
+struct QueryProbe;
+
+struct QueryProbeConfig {
     mapper_calls: Arc<AtomicUsize>,
     query: EffectCapability<Query>,
     observe: EffectCapability<ObserveQuery>,
 }
 
 impl Component for QueryProbe {
-    type Config = Self;
+    type Config = QueryProbeConfig;
     type Model = ();
     type Message = QueryMessage;
 
@@ -1435,7 +1455,7 @@ async fn phase6_effect_success_and_failure_map_exactly_once() -> Result<(), Runt
     let observe = program.effect::<ObserveQuery>();
     let probe = program.component::<QueryProbe>(
         ComponentId::new("query"),
-        QueryProbe {
+        QueryProbeConfig {
             mapper_calls: mapper_calls.clone(),
             query,
             observe,
@@ -1506,14 +1526,16 @@ enum DrainGateMessage {
     Observed,
 }
 
-struct DrainGateProbe {
+struct DrainGateProbe;
+
+struct DrainGateProbeConfig {
     gate: EffectCapability<GateEffect>,
     observe: EffectCapability<Observe>,
     source: SourceCapability<ScriptedSource>,
 }
 
 impl Component for DrainGateProbe {
-    type Config = Self;
+    type Config = DrainGateProbeConfig;
     type Model = bool;
     type Message = DrainGateMessage;
 
@@ -1568,7 +1590,7 @@ async fn phase6_drain_realizes_no_new_sources() {
     let source = program.source::<ScriptedSource>();
     let probe = program.component::<DrainGateProbe>(
         ComponentId::new("drain-gate"),
-        DrainGateProbe {
+        DrainGateProbeConfig {
             gate,
             observe,
             source,
@@ -1622,7 +1644,7 @@ async fn phase6_successful_shutdown_owns_zero_work() -> Result<(), RuntimeError>
         let record = program.effect::<Record>();
         let _ = program.component::<AdmissionProbe>(
             ComponentId::new(format!("empty-{mode:?}")),
-            AdmissionProbe { record },
+            AdmissionProbeConfig { record },
         );
         let runtime = LiveRuntime::builder(program.build().expect("valid program"))
             .bind_effect::<Record, _>(RecordingDriver {
@@ -1680,13 +1702,15 @@ impl EffectDriver<ProviderSeen> for ProviderSeenDriver {
     }
 }
 
-struct EchoProvider {
+struct EchoProvider;
+
+struct EchoProviderConfig {
     reply: bool,
     seen: EffectCapability<ProviderSeen>,
 }
 
 impl Component for EchoProvider {
-    type Config = Self;
+    type Config = EchoProviderConfig;
     type Model = ();
     type Message = EchoProviderMessage;
 
@@ -1740,14 +1764,16 @@ enum EchoRequesterMessage {
     Observed,
 }
 
-struct EchoRequester {
+struct EchoRequester;
+
+struct EchoRequesterConfig {
     echo: Port<EchoProtocol>,
     continuation_calls: Arc<AtomicUsize>,
     observe: EffectCapability<ObserveReply>,
 }
 
 impl Component for EchoRequester {
-    type Config = Self;
+    type Config = EchoRequesterConfig;
     type Model = ();
     type Message = EchoRequesterMessage;
 
@@ -1791,12 +1817,12 @@ fn echo_program(
     let observe = program.effect::<ObserveReply>();
     let provider = program.component::<EchoProvider>(
         ComponentId::new("echo-provider"),
-        EchoProvider { reply, seen },
+        EchoProviderConfig { reply, seen },
     );
     program.bind_port(&echo, &provider);
     let requester = program.component::<EchoRequester>(
         ComponentId::new("echo-requester"),
-        EchoRequester {
+        EchoRequesterConfig {
             echo,
             continuation_calls,
             observe,
@@ -1943,13 +1969,15 @@ enum IndependentMessage {
     Recorded,
 }
 
-struct IndependentProbe {
+struct IndependentProbe;
+
+struct IndependentProbeConfig {
     independent: EffectCapability<Independent>,
     record: EffectCapability<RecordOrder>,
 }
 
 impl Component for IndependentProbe {
-    type Config = Self;
+    type Config = IndependentProbeConfig;
     type Model = ();
     type Message = IndependentMessage;
 
@@ -2001,7 +2029,7 @@ async fn forced_independent_order(first: char, second: char) -> Vec<char> {
     let record = program.effect::<RecordOrder>();
     let probe = program.component::<IndependentProbe>(
         ComponentId::new("independent"),
-        IndependentProbe {
+        IndependentProbeConfig {
             independent,
             record,
         },
@@ -2075,7 +2103,7 @@ fn query_program(mapper_calls: Arc<AtomicUsize>) -> (Program, ComponentRef<Query
     let observe = program.effect::<ObserveQuery>();
     let probe = program.component::<QueryProbe>(
         ComponentId::new("query-parity"),
-        QueryProbe {
+        QueryProbeConfig {
             mapper_calls,
             query,
             observe,

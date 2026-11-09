@@ -95,13 +95,15 @@ impl From<QuotaProtocolMessage> for QuotaMessage {
 }
 
 /// Immutable configuration for one Quota Component instance.
-struct Quota {
+struct Quota;
+
+struct QuotaConfig {
     /// Capacity copied into the Model when the Component starts.
     initial: u64,
 }
 
 impl Component for Quota {
-    type Config = Self;
+    type Config = QuotaConfig;
     type Model = QuotaModel;
     type Message = QuotaMessage;
 
@@ -196,7 +198,9 @@ struct PersistError {
 }
 
 /// Immutable logical wiring for one Counter Component instance.
-struct Counter {
+struct Counter;
+
+struct CounterConfig {
     /// Declared authority for the ongoing increment source.
     increment_source: SourceCapability<StreamDescriptor<u64>>,
 
@@ -211,7 +215,7 @@ struct Counter {
 }
 
 impl Component for Counter {
-    type Config = Self;
+    type Config = CounterConfig;
     type Model = CounterModel;
     type Message = CounterMessage;
 
@@ -343,7 +347,7 @@ fn program(increments: StreamDescriptor<u64>) -> (Program, AppRefs) {
     // A named Port is immutable dependency wiring. Naming allows another Quota
     // protocol instance to coexist without a global “one provider per type” rule.
     let quota_port = program.port(PortId::new(QUOTA));
-    let quota = program.component::<Quota>(ComponentId::new("quota"), Quota { initial: 100 });
+    let quota = program.component::<Quota>(ComponentId::new("quota"), QuotaConfig { initial: 100 });
 
     // Assembly chooses the concrete provider. `QuotaMessage` declares its
     // canonical Protocol conversion through `From`; Counter never needs to
@@ -351,7 +355,7 @@ fn program(increments: StreamDescriptor<u64>) -> (Program, AppRefs) {
     program.bind_port(&quota_port, &quota);
     let counter = program.component::<Counter>(
         ComponentId::new("counter"),
-        Counter {
+        CounterConfig {
             increment_source: increment_source.clone(),
             increments: increments.clone(),
             persistence,
@@ -486,7 +490,7 @@ mod tests {
         let increment_source = program.source::<StreamDescriptor<u64>>();
         let persistence = program.effect::<PersistCount>();
         let quota = program.port(PortId::new(QUOTA));
-        let component = Counter {
+        let component = CounterConfig {
             increment_source,
             increments: increments.clone(),
             persistence,

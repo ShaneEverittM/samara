@@ -136,14 +136,22 @@ The following evidence must pass before the Phase 2 audit:
 - Library unit tests validate the `protocol!` expansion for unit, tuple, and
   struct-like entries, including flattened struct notification variants and
   typed Request reply association.
-- `tests/assemblies.rs` validates `Assembly`, `RuntimeBuilder`, `Bindings`,
-  and `Installed`: `ProgramBuilder::install` returns a token carrying the
-  exports, `with_assembly(token).and_drivers(..)` binds every effect
-  and source requirement on the live builder and controls every one on the
-  controlled builder, and either builder fails synchronously when the
-  drivers are not bound. The `Assembly` rustdoc compile-fail cases show
-  that one Assembly's drivers cannot be passed for another and that a
-  chain which skips `and_drivers` has no builder to finish.
+- `tests/assemblies.rs` validates `Assembly`, `Requires`, `Drivers`,
+  `VendorsDrivers`, and `Installed` (ADR-0013): `ProgramBuilder::install`
+  returns a token carrying the exports, `with_assembly(token).and_drivers(..)`
+  binds a driver tuple position by position on the live builder,
+  `and_its_vendored_drivers()` binds what the Assembly vendors,
+  `with_assembly(token)` controls every requirement on the controlled
+  builder, and either builder fails synchronously when the requirements are
+  not met. The `Assembly` rustdoc compile-fail cases show that a driver for
+  the wrong effect cannot be passed and that a chain which skips
+  `and_drivers` has no builder to finish.
+- `tests/fs_effects.rs` (feature `fs`, provisional under ADR-0013) validates
+  the filesystem effects as ordinary controlled boundaries asserted by
+  relative path, a live append, read, replace, remove walk under a bound root
+  with no temp files left behind, `OutsideRoot` rejection before any I/O, and
+  that `bind_fs` binds only declared effects and participates in duplicate
+  validation.
 - Rustdoc compile-fail cases validate that an arbitrary value cannot be passed
   as an EffectDescriptor, an async closure cannot replace a synchronous message
   mapper, raw descriptors cannot bypass Program-issued Effect/Source

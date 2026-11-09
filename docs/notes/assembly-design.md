@@ -1,12 +1,13 @@
 # Exploratory Design: Assemblies
 
-Status: implemented November 7, 2026 as additive API (`RuntimeBuilder`,
-`Controlled`, `Bindings`, `Assembly`, `Installed`, `WithAssembly`,
-`ProgramBuilder::install`), with
-evidence in `tests/assemblies.rs`, the `Assembly` rustdoc, and
-`examples/pulse`. The follow-on that moves drivers into `install`'s
-signature was considered and rejected; see "What remains open". Two findings
-from landing it are under "What implementation taught".
+Status: implemented November 7, 2026 as `Subprogram` with a profile-generic
+drivers struct; redesigned and renamed November 8, 2026 as `Assembly` with a
+type-level `Requires` list, accepted in
+[ADR-0013](../adr/0013-component-kinds-assemblies-and-first-party-effects.md).
+Evidence is in `tests/assemblies.rs`, the `Assembly` and `VendorsDrivers`
+rustdoc, and `examples/pulse`. The follow-on that moves drivers into
+`install`'s signature was considered and rejected; see "What remains open".
+Findings from both passes are under "What implementation taught".
 Motivated by `examples/pulse` and the
 [install tension](framework-follow-ups.md#pulse-monitor-api-exercise--october-8-2026)
 recorded there.
@@ -36,14 +37,17 @@ and controlled tests never construct a Driver.
   Program, not to another Component. An Assembly is usually one Component but
   may install several cooperating ones. The term replaces the descriptive
   "assembly" already used in the follow-ups note.
-- **Drivers (type):** the struct naming what an Assembly needs bound, one
-  field per declared effect or source capability, generic over the execution
-  profile. A `Default` impl per profile lets hosts accept the Assembly's
-  shipped Drivers; the controlled impl is always `Controlled` markers.
-- **RuntimeBuilder:** the profile-neutral binding surface shared by
-  `LiveRuntimeBuilder` and `ControlledRuntimeBuilder`. It unifies only binding.
-  Spawning, stepping, emitting source events, and supplying outcomes stay
-  profile-specific and are deliberately not unified.
+- **Requires:** the type-level list naming what an Assembly needs driven:
+  `Effect<D>` and `Source<S>` markers, `()`, or tuples of them. It is data the
+  crate can read in both directions: control every entry on the controlled
+  builder, and check a supplied driver tuple against it on the live builder.
+- **Drivers (trait):** `Drivers<Requires>`, satisfied position by position by
+  any `EffectDriver<D>` for `Effect<D>` and any `SourceDriver<S>` for
+  `Source<S>`. Implemented by the crate for tuples; applications never
+  implement it.
+- **VendorsDrivers:** an optional subtrait naming and constructing concrete
+  drivers for `Requires`, bound with `and_its_vendored_drivers()`. The one
+  impl a library feature-gates.
 
 The name `SubComponent` was considered and rejected. It reads as a child inside
 a parent Component's `update`, which is the nested-component model Samara does
@@ -53,34 +57,37 @@ not use; Components are peers connected by Ports.
 
 The authoritative description is the `Assembly` rustdoc in `src/lib.rs`,
 with its full example and two compile-fail cases, and `tests/assemblies.rs`.
-In one paragraph: `RuntimeBuilder` is the profile-neutral binding surface
-shared by the live and controlled builders; its generic associated types make
-a live binding a boxed Driver and a controlled binding the `Controlled`
-marker. `Bindings<R>` is implemented once per drivers struct, generic over the
-profile. `Assembly` has `Config`, `Exports`, and `Drivers<R>`, and an
-`install` associated function that declares into a `ProgramBuilder`;
-`ProgramBuilder::install` returns a `must_use` `Installed<S>` token carrying
-the exports. On either builder, `with_assembly(token)` returns a
-`WithAssembly` step whose only method, `and_drivers`, binds them and returns
-the builder. Implement `Assembly` on the protocol type, not the Component.
-The pulse journal (`examples/pulse/src/journal.rs`) is the worked example.
+In one paragraph: `Assembly` has `Config`, `Exports`, and `Requires`, and
+an `install` associated function that declares into a `ProgramBuilder`;
+`ProgramBuilder::install` returns a `must_use` `Installed<A>` token carrying
+the exports. The live builder's `with_assembly(token)` returns a
+`WithAssembly` step whose only method, `and_drivers`, takes any value
+implementing `Drivers<Requires>` (a single driver or a tuple matching the
+requirement tuple) and returns the builder. The controlled builder's
+`with_assembly(token)` controls every requirement and returns the builder
+directly. Implement `Assembly` on the protocol type, not the Component. The
+pulse journal (`examples/pulse/src/journal.rs`) is the worked example: one
+`type Requires` line and a four-line `VendorsDrivers` impl.
 
 ## What it settles
 
-- Drivers are named once, as a struct whose field names document them.
-  No variadic generics are needed because the trait names one type per
-  Assembly, never a list of descriptors; the builders keep validating
-  bindings by `TypeId` at build time.
+- Requirements are named once, as a type the crate can read. The builders
+  keep validating bindings by `TypeId` at build time, and `Requires` adds a
+  second check: a list that disagrees with what `install` declared fails
+  `build()` on both profiles with the type named.
 - The link between installing and binding is both a type association and a
-  value. Only `JournalDrivers` can be passed for `Journal`, adding a
-  capability to the journal breaks every call site at compile time, and
-  `with_assembly` takes the `Installed<S>` token that only
-  `ProgramBuilder::install` can create, so drivers cannot be bound for a
-  Assembly the Program never installed. The profile is the builder's own
-  type, so the drivers literal needs no annotation in either profile.
+  value. A driver at the wrong position is a compile error naming the
+  expected `Effect<D>`, adding a requirement breaks every live call site at
+  compile time, and `with_assembly` takes the `Installed<A>` token that only
+  `ProgramBuilder::install` can create, so drivers cannot be bound for an
+  Assembly the Program never installed.
+- The controlled profile is never spelled by an Assembly or its tests. A
+  controlled binding has no content beyond the descriptor type, and
+  `Requires` already names that, so `with_assembly` on the controlled builder
+  needs nothing further.
 - **A forgotten `and_drivers` does not compile inside a chain.**
-  `with_assembly` returns `WithAssembly<B, S>`, which holds the builder and
-  offers nothing but `and_drivers`. A chain that goes straight to
+  `with_assembly` returns `WithAssembly<A>` live, which holds the builder and
+  offers nothing but `and_drivers` and `and_its_vendored_drivers`. A chain that goes straight to
   `build()` or another binding method has no receiver for it. This is the only
   misuse the type system catches; the token lint below covers discards, and
   `build()` validation covers everything else. Earlier shapes, a free
@@ -103,9 +110,9 @@ The pulse journal (`examples/pulse/src/journal.rs`) is the worked example.
   by reference and has no `into_exports`: an owned-exports escape hatch would
   reintroduce a forgettable path for no gain.
 - Controlled tests never see a Driver type.
-- Live and controlled builders share a binding trait without sharing a runtime
-  interface. The earlier direction that the two runtimes share no interface is
-  narrowed, not reversed: execution stays separate.
+- Live and controlled builders share no trait. The first pass introduced a
+  profile-neutral `RuntimeBuilder`; the second removed it, because once
+  `Requires` is data the two builders need nothing in common.
 
 ## What remains open
 
@@ -129,10 +136,14 @@ The pulse journal (`examples/pulse/src/journal.rs`) is the worked example.
   `ComponentRef` retained. Whether `Exports` should carry test-only handles,
   or whether that is what the isolated Component runtime follow-up is for, is
   open.
-- **Boxing versus generics.** `Box<dyn EffectDriver<D>>` is the simple choice.
-  A generic alternative would avoid the allocation at the cost of the
-  drivers struct growing one type parameter per field, which defeats the
-  point.
+- **Named positions.** `Requires` is positional. Past five or six entries a
+  host's `and_drivers((a, b, c, d, e, f))` stops reading well, which is also
+  a signal that the Assembly is too large. A `Requires`-level grouping that
+  one driver satisfies, such as an `FsDriver` for several filesystem effects,
+  is the expected extension; a named-field form was considered and deferred.
+- **Vendored-driver discovery.** `VendorsDrivers` gives rustdoc a name to
+  find. Whether hosts actually find it, or whether a module-level convention
+  would have sufficed, is a question for the second Assembly that vendors.
 
 ## What implementation taught
 
@@ -161,24 +172,39 @@ The pulse journal (`examples/pulse/src/journal.rs`) is the worked example.
   ADR extending 0003 and 0006, since host Port ingress becomes a traced root
   event in controlled execution.
 
+- **The drivers struct was pure derivation.** Its `Bindings` impl called
+  one bind method per field and its controlled `Default` was a row of
+  identical markers; neither carried a decision. Making the declaration a
+  type (`Requires`) instead of a struct let the crate derive both, and
+  removed `RuntimeBuilder`, `Bindings`, and `Controlled` with them. Coherence
+  allows the two driver blankets because the kind lives on the marker
+  (`Effect<D>` versus `Source<S>`), not on the descriptor trait; blankets over
+  `EffectDescriptor` and `SourceDescriptor` would overlap.
+- **Vendored drivers are a free function or a subtrait, not a trait item.**
+  A required `drivers()` on `Assembly` would force every Assembly to answer,
+  and a gated trait item is impossible. A free function was the first form;
+  `VendorsDrivers` replaced it for discoverability, at the cost of one more
+  concept.
+
 ## Relation to existing contracts
 
-- Additive public API: one trait with two impls, one marker type, one trait
-  for drivers, one trait for Assemblies, one method on `ProgramBuilder`,
-  and one default method on `RuntimeBuilder`. No runtime semantics change, so
-  ADR-0002, ADR-0003, and ADR-0004 are unaffected.
+- Additive public API apart from the kernel signature, which ADR-0013
+  records: `Assembly`, `Installed`, `WithAssembly`, `Effect`, `Source`,
+  `Requirements`, `Drivers`, `VendorsDrivers`, `ProgramBuilder::install`, and
+  `with_assembly` on each builder. No runtime semantics change, so ADR-0002,
+  ADR-0003, and ADR-0004 are unaffected.
 - ADR-0008 is unaffected by this sketch; its two-stage validation is what makes
   the omission backstop work. The follow-on that moves assembly into the
   runtime builder would revise it.
 - Phase 6 froze its API slice under change control. This is additive and does
   not reshape frozen items, but the acceptance matrix and API guidance must
   cite it when it lands.
-- The glossary needs entries for Assembly and Drivers, and the
-  "Composable Programs / assemblies" follow-up should reference this note.
+- The glossary has entries for Assembly, Requires, and VendorsDrivers; the
+  "Library assembly via `install`" follow-up references this note.
 
 ## Evidence
 
-`tests/assemblies.rs`, the `Assembly` rustdoc examples, and the
-`examples/pulse` journal; cited in the acceptance matrix. Rollback is
+`tests/assemblies.rs`, the `Assembly` and `VendorsDrivers` rustdoc examples,
+and the `examples/pulse` journal; cited in the acceptance matrix. Rollback is
 deleting the traits and types, after which callers assemble by hand and bind
 Drivers directly.

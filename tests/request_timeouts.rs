@@ -28,7 +28,7 @@ impl From<ProbeProtocolMessage> for ProviderMessage {
 struct Provider;
 
 impl Component for Provider {
-    type Config = Self;
+    type Config = ();
     type Model = Vec<u64>;
     type Message = ProviderMessage;
 
@@ -85,13 +85,15 @@ impl From<RequestOutcome<u64>> for RequesterMessage {
     }
 }
 
-struct Requester {
+struct Requester;
+
+struct RequesterConfig {
     port: Port<ProbeProtocol>,
     observe: EffectCapability<Observation>,
 }
 
 impl Component for Requester {
-    type Config = Self;
+    type Config = RequesterConfig;
     type Model = Vec<Observation>;
     type Message = RequesterMessage;
 
@@ -145,11 +147,11 @@ fn fixture() -> Fixture {
     let mut builder = Program::builder();
     let port = builder.port(PortId::new("probe"));
     let observe = builder.effect::<Observation>();
-    let provider = builder.component::<Provider>(ComponentId::new("provider"), Provider);
+    let provider = builder.component::<Provider>(ComponentId::new("provider"), ());
     builder.bind_port(&port, &provider);
     let requester = builder.component::<Requester>(
         ComponentId::new("requester"),
-        Requester {
+        RequesterConfig {
             port: port.clone(),
             observe,
         },

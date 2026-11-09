@@ -48,12 +48,14 @@ impl From<SourceEvent<String, StdinError>> for StdinMessage {
     }
 }
 
-struct StdinProbe {
+struct StdinProbe;
+
+struct StdinProbeConfig {
     stdin: SourceCapability<StdinLines>,
 }
 
 impl Component for StdinProbe {
-    type Config = Self;
+    type Config = StdinProbeConfig;
     type Model = StdinModel;
     type Message = StdinMessage;
 
@@ -100,7 +102,7 @@ fn stdin_program() -> (
     let stdin = builder.source::<StdinLines>();
     let probe = builder.component::<StdinProbe>(
         ComponentId::new("stdin-probe"),
-        StdinProbe {
+        StdinProbeConfig {
             stdin: stdin.clone(),
         },
     );

@@ -2934,12 +2934,14 @@ mod tests {
         Outcome,
     }
 
-    struct CutoffComponent {
+    struct CutoffComponent;
+
+    struct CutoffComponentConfig {
         effect: crate::EffectCapability<CutoffIntent>,
     }
 
     impl Component for CutoffComponent {
-        type Config = Self;
+        type Config = CutoffComponentConfig;
         type Model = bool;
         type Message = CutoffMessage;
 
@@ -2981,12 +2983,14 @@ mod tests {
         items: Vec<u64>,
     }
 
-    struct GenerationComponent {
+    struct GenerationComponent;
+
+    struct GenerationComponentConfig {
         source: crate::SourceCapability<GenerationSource>,
     }
 
     impl Component for GenerationComponent {
-        type Config = Self;
+        type Config = GenerationComponentConfig;
         type Model = GenerationModel;
         type Message = GenerationMessage;
 
@@ -3067,13 +3071,15 @@ mod tests {
         }
     }
 
-    struct FramedDrainComponent {
+    struct FramedDrainComponent;
+
+    struct FramedDrainComponentConfig {
         source: crate::SourceCapability<Framed<GenerationSource, DrainFailDecoder>>,
         decoder: DrainFailDecoder,
     }
 
     impl Component for FramedDrainComponent {
-        type Config = Self;
+        type Config = FramedDrainComponentConfig;
         type Model = ();
         type Message = SourceEvent<u64, FramedError<Infallible, &'static str>>;
 
@@ -3146,7 +3152,7 @@ mod tests {
         let source = builder.source::<GenerationSource>();
         let component = builder.component::<GenerationComponent>(
             ComponentId::new("generation"),
-            GenerationComponent { source },
+            GenerationComponentConfig { source },
         );
         let program = builder.build().expect("valid generation Program");
         let id = component.id().clone();
@@ -3215,7 +3221,7 @@ mod tests {
         let effect = builder.effect::<CutoffIntent>();
         let component = builder.component::<CutoffComponent>(
             ComponentId::new("cancel-cutoff"),
-            CutoffComponent { effect },
+            CutoffComponentConfig { effect },
         );
         let program = builder.build().expect("valid cutoff Program");
         let id = component.id().clone();
@@ -3346,7 +3352,7 @@ mod tests {
         let source = builder.source::<Framed<GenerationSource, DrainFailDecoder>>();
         let _ = builder.component::<FramedDrainComponent>(
             ComponentId::new("framed-drain"),
-            FramedDrainComponent {
+            FramedDrainComponentConfig {
                 source,
                 decoder: DrainFailDecoder {
                     finish_calls: finish_calls.clone(),
@@ -3406,7 +3412,7 @@ mod tests {
         let source = builder.source::<GenerationSource>();
         let component = builder.component::<GenerationComponent>(
             ComponentId::new("drain-panic"),
-            GenerationComponent { source },
+            GenerationComponentConfig { source },
         );
         let program = builder.build().expect("valid Source panic Program");
         let (entered, entered_rx) = tokio::sync::oneshot::channel();
@@ -3450,7 +3456,7 @@ mod tests {
             let source = builder.source::<GenerationSource>();
             let component = builder.component::<GenerationComponent>(
                 ComponentId::new("escalation-panic"),
-                GenerationComponent { source },
+                GenerationComponentConfig { source },
             );
             let (entered, entered_rx) = tokio::sync::oneshot::channel();
             let mut bindings = LiveBindings::new();

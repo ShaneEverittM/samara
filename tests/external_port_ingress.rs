@@ -94,7 +94,7 @@ impl From<BindingProtocolMessage> for PanickingBindingProviderMessage {
 struct PanickingBindingProvider;
 
 impl Component for PanickingBindingProvider {
-    type Config = Self;
+    type Config = ();
     type Model = ();
     type Message = PanickingBindingProviderMessage;
 
@@ -124,14 +124,16 @@ impl From<HostProtocolMessage> for ProviderMessage {
     }
 }
 
-struct Provider {
+struct Provider;
+
+struct ProviderConfig {
     ingress_observed: EffectCapability<IngressObserved>,
     request_observed: EffectCapability<RequestObserved>,
     await_release: EffectCapability<AwaitRelease>,
 }
 
 impl Component for Provider {
-    type Config = Self;
+    type Config = ProviderConfig;
     type Model = u64;
     type Message = ProviderMessage;
 
@@ -292,7 +294,7 @@ fn program() -> (Program, Port<HostProtocol>) {
     let await_release = builder.effect::<AwaitRelease>();
     let provider = builder.component::<Provider>(
         ComponentId::new("provider"),
-        Provider {
+        ProviderConfig {
             ingress_observed,
             request_observed,
             await_release,
@@ -305,10 +307,8 @@ fn program() -> (Program, Port<HostProtocol>) {
 fn panicking_binding_program() -> (Program, Port<BindingProtocol>) {
     let mut builder = Program::builder();
     let port = builder.port(PortId::new("panicking-binding"));
-    let provider = builder.component::<PanickingBindingProvider>(
-        ComponentId::new("panicking-binding-provider"),
-        PanickingBindingProvider,
-    );
+    let provider = builder
+        .component::<PanickingBindingProvider>(ComponentId::new("panicking-binding-provider"), ());
     builder.bind_port(&port, &provider);
     (builder.build().expect("valid binding Program"), port)
 }
@@ -393,7 +393,7 @@ async fn cloned_port_handles_deliver_each_notification_exactly_once() -> Result<
     let await_release = builder.effect::<AwaitRelease>();
     let provider = builder.component::<Provider>(
         ComponentId::new("cloned-provider"),
-        Provider {
+        ProviderConfig {
             ingress_observed,
             request_observed,
             await_release,
@@ -585,7 +585,7 @@ async fn component_and_port_ingress_share_one_shutdown_cutoff() -> Result<(), Ru
     let await_release = builder.effect::<AwaitRelease>();
     let provider = builder.component::<Provider>(
         ComponentId::new("race-provider"),
-        Provider {
+        ProviderConfig {
             ingress_observed,
             request_observed,
             await_release,

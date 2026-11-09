@@ -221,7 +221,7 @@ impl From<EchoProtocolMessage> for ProviderMessage {
 struct EchoProvider;
 
 impl Component for EchoProvider {
-    type Config = Self;
+    type Config = ();
     type Model = ();
     type Message = ProviderMessage;
 
@@ -261,12 +261,14 @@ impl From<RequestOutcome<u64>> for RequesterMessage {
     }
 }
 
-struct Requester {
+struct Requester;
+
+struct RequesterConfig {
     echo: Port<EchoProtocol>,
 }
 
 impl Component for Requester {
-    type Config = Self;
+    type Config = RequesterConfig;
     type Model = RequesterModel;
     type Message = RequesterMessage;
 
@@ -303,11 +305,11 @@ impl Component for Requester {
 fn request_default_uses_from_and_request_with_preserves_context() {
     let mut builder = Program::builder();
     let echo = builder.port::<EchoProtocol>(PortId::new("echo"));
-    let provider = builder.component::<EchoProvider>(ComponentId::new("provider"), EchoProvider);
+    let provider = builder.component::<EchoProvider>(ComponentId::new("provider"), ());
     builder.bind_port(&echo, &provider);
     let requester = builder.component::<Requester>(
         ComponentId::new("requester"),
-        Requester { echo: echo.clone() },
+        RequesterConfig { echo: echo.clone() },
     );
     let mut runtime = ControlledRuntime::builder(builder.build().unwrap())
         .build()

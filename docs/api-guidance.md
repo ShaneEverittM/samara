@@ -108,13 +108,13 @@ should become a Component.
 ### Where Does Each Kind of State Belong?
 
 
-The `Model` contains mutable behavioral state. A Component configuration may
-contain immutable logical configuration and wiring, such as Ports,
-EffectCapabilities, SourceCapabilities, and SourceDescriptors. Component
-methods receive `&self`; after registration, the
-configuration is observationally immutable. Behaviorally relevant mutation
-belongs in the Model rather than behind interior mutability in the
-configuration.
+The `Model` contains mutable behavioral state. `Component::Config` holds
+immutable logical configuration and wiring, such as Ports, EffectCapabilities,
+SourceCapabilities, and SourceDescriptors. Component functions receive it as
+`&Config`; after registration, the configuration is observationally
+immutable. The type implementing `Component` is only a name for the kind and
+holds nothing. Behaviorally relevant mutation belongs in the Model rather
+than behind interior mutability in the configuration.
 
 Layer state may contain deterministic mechanism state, such as a framing
 buffer, but no ambient I/O resource. Runtime, Driver, and Source state may

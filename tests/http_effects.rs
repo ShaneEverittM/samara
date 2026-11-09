@@ -58,14 +58,16 @@ enum HttpMessage {
     Observed,
 }
 
-struct HttpSequence {
+struct HttpSequence;
+
+struct HttpSequenceConfig {
     http: EffectCapability<HttpRequest>,
     observe: EffectCapability<ObserveHttp>,
     requests: Vec<HttpRequest>,
 }
 
 impl Component for HttpSequence {
-    type Config = Self;
+    type Config = HttpSequenceConfig;
     type Model = HttpModel;
     type Message = HttpMessage;
 
@@ -135,7 +137,7 @@ fn http_program(requests: Vec<HttpRequest>) -> (Program, ComponentRef<HttpSequen
     let observe = builder.effect::<ObserveHttp>();
     let probe = builder.component::<HttpSequence>(
         ComponentId::new("http-sequence"),
-        HttpSequence {
+        HttpSequenceConfig {
             http,
             observe,
             requests,

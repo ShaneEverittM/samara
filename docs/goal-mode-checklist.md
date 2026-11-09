@@ -26,6 +26,7 @@ Governing documents:
 - [ADR-0004: Initial Live Runtime Semantics](adr/0004-initial-live-runtime-semantics.md)
 - [ADR-0008: Closed Program Capabilities](adr/0008-closed-program-capabilities.md)
 - [ADR-0009: First-Party Standard-Input Line Source](adr/0009-first-party-stdin-lines.md)
+- [ADR-0013: Component Kinds, Assemblies, and Provisional First-Party Effects](adr/0013-component-kinds-assemblies-and-first-party-effects.md)
 - [Architecture Test Strategy](testing/architecture-test-strategy.md)
 - [v0 Acceptance Matrix](testing/v0-acceptance-matrix.md)
 
@@ -146,8 +147,14 @@ own definition of what counts as a problem.
 Cost ledger. API choices made for developer experience that are known to cost
 at runtime, recorded so 0.2 and 0.3 start from a list rather than a profile:
 
-- Live Assembly Drivers are boxed per binding (one allocation at startup).
+- Assembly drivers are concrete at the host's call site and boxed once per
+  binding inside `and_drivers` (one allocation at startup).
+- `Assembly::Requires` is a positional tuple; a named-field form was deferred
+  (ADR-0013).
 - Every effect carries a boxed outcome mapper.
+- Every Port binding carries a boxed conversion, including `bind_port`'s
+  `From` (one allocation at assembly, one indirect call per delivered
+  message).
 - Internal delivery is unbounded (ADR-0004).
 
 Add to this ledger whenever a cheaper shape is rejected for a better one.

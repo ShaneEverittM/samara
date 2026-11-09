@@ -53,7 +53,9 @@ impl HttpTimeModel {
 }
 
 /// HTTP-backed implementation of the provider-neutral time protocol.
-struct HttpTimeServer {
+struct HttpTimeServer;
+
+struct HttpTimeServerConfig {
     http: EffectCapability<HttpRequest>,
     stderr: EffectCapability<PrintStderr>,
 }
@@ -64,7 +66,7 @@ impl HttpTimeServer {
 }
 
 impl Component for HttpTimeServer {
-    type Config = Self;
+    type Config = HttpTimeServerConfig;
     type Model = HttpTimeModel;
     type Message = HttpTimeMessage;
 
@@ -180,7 +182,9 @@ struct CliModel {
 }
 
 /// Interactive Component that translates terminal commands into Samara intent.
-struct Cli {
+struct Cli;
+
+struct CliConfig {
     input: SourceCapability<StdinLines>,
     stdout: EffectCapability<PrintStdout>,
     stderr: EffectCapability<PrintStderr>,
@@ -189,7 +193,7 @@ struct Cli {
 }
 
 impl Component for Cli {
-    type Config = Self;
+    type Config = CliConfig;
     type Model = CliModel;
     type Message = CliMessage;
 
@@ -308,7 +312,7 @@ async fn main() -> Result<()> {
     // The concrete provider happens to obtain time over HTTP.
     let http_time_server = builder.component::<HttpTimeServer>(
         ComponentId::new("http-time-server"),
-        HttpTimeServer {
+        HttpTimeServerConfig {
             http,
             stderr: stderr.clone(),
         },
@@ -321,7 +325,7 @@ async fn main() -> Result<()> {
     // CLI owns parsing, presentation, and its dependency on the time service.
     builder.component::<Cli>(
         ComponentId::new("cli"),
-        Cli {
+        CliConfig {
             input: cli_input.clone(),
             time_server: time_port,
             stdout,
@@ -380,9 +384,9 @@ mod polling_tests;
 mod tests {
     use super::*;
 
-    fn cli_fixture() -> Cli {
+    fn cli_fixture() -> CliConfig {
         let mut builder = Program::builder();
-        Cli {
+        CliConfig {
             input: builder.source::<StdinLines>(),
             time_server: builder.port(PortId::new(TIME_SERVER_PORT)),
             stdout: builder.effect::<PrintStdout>(),

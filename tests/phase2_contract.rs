@@ -43,14 +43,16 @@ struct SaveError;
 /// mutable state. Compiling its Component implementation proves that the base
 /// kernel contract does not require scheduler-driven shared access to a
 /// Component configuration.
-struct ContractComponent {
+struct ContractComponent;
+
+struct ContractComponentConfig {
     source: SourceCapability<StreamDescriptor<u64>>,
     save: EffectCapability<SaveTotal>,
     input: StreamDescriptor<u64>,
     not_sync: PhantomData<Cell<()>>,
 }
 
-impl ContractComponent {
+impl ContractComponentConfig {
     fn new(program: &mut ProgramBuilder) -> Self {
         Self {
             source: program.source::<StreamDescriptor<u64>>(),
@@ -62,7 +64,7 @@ impl ContractComponent {
 }
 
 impl Component for ContractComponent {
-    type Config = Self;
+    type Config = ContractComponentConfig;
     type Model = ContractModel;
     type Message = ContractMessage;
 
@@ -117,7 +119,7 @@ impl Component for ContractComponent {
 #[test]
 fn v1_same_input_produces_equivalent_model_and_command_intent() {
     let mut program = Program::builder();
-    let component = ContractComponent::new(&mut program);
+    let component = ContractComponentConfig::new(&mut program);
     let mut left = ContractComponent::init(&component).model;
     let mut right = ContractComponent::init(&component).model;
 
@@ -134,7 +136,7 @@ fn v1_same_input_produces_equivalent_model_and_command_intent() {
 #[test]
 fn v3_effect_command_exposes_typed_descriptor() {
     let mut program = Program::builder();
-    let component = ContractComponent::new(&mut program);
+    let component = ContractComponentConfig::new(&mut program);
     let mut model = ContractComponent::init(&component).model;
 
     let command = ContractComponent::update(&component, &mut model, ContractMessage::Add(11));
@@ -152,7 +154,7 @@ fn v3_effect_command_exposes_typed_descriptor() {
 #[test]
 fn v4_subscription_separates_component_identity_from_source_descriptor() {
     let mut program = Program::builder();
-    let component = ContractComponent::new(&mut program);
+    let component = ContractComponentConfig::new(&mut program);
     let model = ContractComponent::init(&component).model;
 
     let subscriptions = ContractComponent::subscriptions(&component, &model);
@@ -171,7 +173,7 @@ fn component_kernel_accepts_non_sync_configuration() {
     assert_component::<ContractComponent>();
 
     let mut program = Program::builder();
-    let contract = ContractComponent::new(&mut program);
+    let contract = ContractComponentConfig::new(&mut program);
     let component = program.component::<ContractComponent>(ComponentId::new("contract"), contract);
 
     assert_eq!(component.id(), &ComponentId::new("contract"));

@@ -261,7 +261,7 @@ impl From<HealthProtocolMessage> for HealthMessage {
 struct Health;
 
 impl Component for Health {
-    type Config = Self;
+    type Config = ();
     type Model = HealthModel;
     type Message = HealthMessage;
 
@@ -401,7 +401,9 @@ struct StoreError(String);
 /// The Port belongs here because it is a stable dependency of this Component
 /// instance. Mutable feed state belongs in `TelemetryModel`; live connection
 /// and decoder state belong in the runtime Driver and framing Layer.
-struct Telemetry {
+struct Telemetry;
+
+struct TelemetryConfig {
     /// Named protocol dependency, independent of the provider's message enum.
     health: Port<HealthProtocol>,
 
@@ -425,7 +427,7 @@ fn health_checked(
 }
 
 impl Component for Telemetry {
-    type Config = Self;
+    type Config = TelemetryConfig;
     type Model = TelemetryModel;
     type Message = TelemetryMessage;
 
@@ -584,7 +586,7 @@ fn program() -> (Program, AppRefs) {
     // A named Port permits multiple independently bound instances of the same
     // protocol; the protocol's Rust type alone is not a global service key.
     let health_port = program.port(PortId::new(HEALTH));
-    let health = program.component::<Health>(ComponentId::new("health"), Health);
+    let health = program.component::<Health>(ComponentId::new("health"), ());
 
     // Assembly selects the provider; `HealthMessage` declares the canonical
     // Protocol conversion through its `From` implementation.
@@ -592,7 +594,7 @@ fn program() -> (Program, AppRefs) {
 
     let telemetry = program.component::<Telemetry>(
         ComponentId::new("telemetry"),
-        Telemetry {
+        TelemetryConfig {
             health: health_port.clone(),
             storage,
             socket,
@@ -805,7 +807,7 @@ mod tests {
     fn same_subscription_identity_exposes_changed_configuration() {
         let mut builder = Program::builder();
         let health = builder.port(PortId::new(HEALTH));
-        let component = Telemetry {
+        let component = TelemetryConfig {
             health,
             storage: builder.effect::<StoreFrame>(),
             socket: builder.source::<TelemetryFeed>(),
@@ -841,7 +843,7 @@ mod tests {
         let mut builder = Program::builder();
         let primary = builder.port::<HealthProtocol>(PortId::new("health/primary"));
         let fallback = builder.port::<HealthProtocol>(PortId::new("health/fallback"));
-        let provider = builder.component::<Health>(ComponentId::new("health"), Health);
+        let provider = builder.component::<Health>(ComponentId::new("health"), ());
 
         builder.bind_port(&primary, &provider);
         builder.bind_port(&fallback, &provider);
@@ -863,7 +865,7 @@ mod tests {
     fn telemetry_emits_protocol_notifications_without_provider_messages() {
         let mut builder = Program::builder();
         let health = builder.port(PortId::new(HEALTH));
-        let component = Telemetry {
+        let component = TelemetryConfig {
             health,
             storage: builder.effect::<StoreFrame>(),
             socket: builder.source::<TelemetryFeed>(),
@@ -894,7 +896,7 @@ mod tests {
 
         let mut builder = Program::builder();
         let health = builder.port(PortId::new(HEALTH));
-        let component = Telemetry {
+        let component = TelemetryConfig {
             health,
             storage: builder.effect::<StoreFrame>(),
             socket: builder.source::<TelemetryFeed>(),

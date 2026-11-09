@@ -33,15 +33,17 @@ fn failed_http_outcomes() -> Vec<EffectOutcome<HttpResponse, HttpError>> {
     ]
 }
 
-fn http_fixture() -> HttpTimeServer {
+fn http_fixture() -> HttpTimeServerConfig {
     let mut builder = Program::builder();
-    HttpTimeServer {
+    HttpTimeServerConfig {
         http: builder.effect::<HttpRequest>(),
         stderr: builder.effect::<PrintStderr>(),
     }
 }
 
-struct TimeReader(Port<TimeServerProtocol>);
+struct TimeReader;
+
+struct TimeReaderConfig(Port<TimeServerProtocol>);
 
 enum ReadMessage {
     Read,
@@ -55,7 +57,7 @@ impl From<RequestOutcome<Option<DateTime<Utc>>>> for ReadMessage {
 }
 
 impl Component for TimeReader {
-    type Config = Self;
+    type Config = TimeReaderConfig;
     type Model = Vec<Option<DateTime<Utc>>>;
     type Message = ReadMessage;
 
@@ -90,10 +92,11 @@ fn controlled_http_fixture() -> (
     let port = builder.port(PortId::new(TIME_SERVER_PORT));
     let server = builder.component::<HttpTimeServer>(
         ComponentId::new("time-server"),
-        HttpTimeServer { http, stderr },
+        HttpTimeServerConfig { http, stderr },
     );
     builder.bind_port(&port, &server);
-    let reader = builder.component::<TimeReader>(ComponentId::new("reader"), TimeReader(port));
+    let reader =
+        builder.component::<TimeReader>(ComponentId::new("reader"), TimeReaderConfig(port));
     let runtime = ControlledRuntime::builder(builder.build().unwrap())
         .control_effect::<HttpRequest>()
         .control_effect::<PrintStderr>()

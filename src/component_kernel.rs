@@ -217,12 +217,14 @@ mod tests {
     use crate::{Command, Component, ComponentId, Init};
     use tokio::sync::oneshot;
 
-    struct ProbeComponent {
+    struct ProbeComponent;
+
+    struct ProbeComponentConfig {
         not_sync: PhantomData<Cell<()>>,
     }
 
     impl Component for ProbeComponent {
-        type Config = Self;
+        type Config = ProbeComponentConfig;
         type Model = Vec<usize>;
         type Message = usize;
 
@@ -256,7 +258,7 @@ mod tests {
     async fn assert_local_serialization(id: &str) {
         let component = SerializedComponent::new(ComponentKernel::<ProbeComponent>::new(
             ComponentId::new(id),
-            ProbeComponent {
+            ProbeComponentConfig {
                 not_sync: PhantomData,
             },
         ));
@@ -308,7 +310,7 @@ mod tests {
         struct Startup;
 
         impl Component for Startup {
-            type Config = Self;
+            type Config = ();
             type Model = ();
             type Message = ();
 
@@ -325,7 +327,7 @@ mod tests {
             }
         }
 
-        let mut kernel = ComponentKernel::<Startup>::new(ComponentId::new("startup"), Startup);
+        let mut kernel = ComponentKernel::<Startup>::new(ComponentId::new("startup"), ());
 
         assert!(kernel.take_initial_command().is_some());
         assert!(kernel.take_initial_command().is_none());
