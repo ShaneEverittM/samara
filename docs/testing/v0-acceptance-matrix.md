@@ -152,7 +152,12 @@ The following evidence must pass before the Phase 2 audit:
   own Protocol with one coupling function, notify, request, and reply all
   travel through the coupling in controlled execution, a `Plug` is inert and
   remembers only the Message type it accepts, and a Plug from another Program
-  fails `build()`.
+  fails `build()`. As an address: a library written the Elm way (opaque
+  Message, constructor functions, no `protocol!`) is driven through
+  `Command::send` and `Command::request_to` alone, a Plug request times out
+  under ADR-0011 rules, `Plug::accepting` adapts a library Plug to the
+  holder's vocabulary, an initial request to a foreign Plug fails both
+  profile builds, and `request_intents` ignores Plug requests.
 - `tests/fs_effects.rs` (feature `fs`, provisional under ADR-0013) validates
   the filesystem effects as ordinary controlled boundaries asserted by
   relative path, a live append, read, replace, remove walk under a bound root

@@ -221,3 +221,374 @@ fn a_plug_from_another_program_is_rejected_at_build() {
         "a foreign plug is not a provider here"
     );
 }
+
+// ---------------------------------------------------------------------------
+// A Plug as a first-class address: send and request with no Jack and no
+// Protocol, the way an Elm module exposes an opaque `Msg` with constructors.
+// ---------------------------------------------------------------------------
+
+/// Stands in for a crate written the Elm way: an opaque message type whose
+/// public surface is its constructor functions. No `protocol!`, no Jack.
+mod tally_lib {
+    use samara::prelude::*;
+
+    pub struct TallyMessage(Inner);
+
+    enum Inner {
+        Add(u64),
+        Total(ReplyTo<u64>),
+        Park(ReplyTo<u64>),
+    }
+
+    impl TallyMessage {
+        pub fn add(amount: u64) -> Self {
+            Self(Inner::Add(amount))
+        }
+
+        /// A request: the `ReplyTo<u64>` parameter is what types the reply.
+        pub fn total(reply_to: ReplyTo<u64>) -> Self {
+            Self(Inner::Total(reply_to))
+        }
+
+        /// A request the provider accepts and never answers.
+        pub fn park(reply_to: ReplyTo<u64>) -> Self {
+            Self(Inner::Park(reply_to))
+        }
+    }
+
+    struct Counter;
+
+    struct CounterModel {
+        total: u64,
+        parked: Vec<ReplyTo<u64>>,
+    }
+
+    impl Component for Counter {
+        type Config = ();
+        type Model = CounterModel;
+        type Message = TallyMessage;
+
+        fn init(_: &()) -> Init<CounterModel, TallyMessage> {
+            Init::new(CounterModel {
+                total: 0,
+                parked: Vec::new(),
+            })
+        }
+
+        fn update(
+            _: &(),
+            model: &mut CounterModel,
+            TallyMessage(inner): TallyMessage,
+        ) -> Command<TallyMessage> {
+            match inner {
+                Inner::Add(amount) => {
+                    model.total += amount;
+                    Command::none()
+                }
+                Inner::Total(reply_to) => Command::reply(reply_to, model.total),
+                Inner::Park(reply_to) => {
+                    model.parked.push(reply_to);
+                    Command::none()
+                }
+            }
+        }
+    }
+
+    pub struct Tally;
+
+    impl Assembly for Tally {
+        type Config = ();
+        type Exports = Plug<TallyMessage>;
+        type Requires = ();
+
+        fn install(program: &mut ProgramBuilder, _: ()) -> Plug<TallyMessage> {
+            program
+                .component::<Counter>(ComponentId::new("tally"), ())
+                .to_plug()
+        }
+    }
+}
+
+use std::time::Duration;
+use tally_lib::{Tally, TallyMessage};
+
+struct Teller;
+
+struct TellerConfig {
+    tally: Plug<TallyMessage>,
+    /// `None` asks for the total; `Some` parks a request with that timeout.
+    patience: Option<Duration>,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct TellerModel {
+    total: Option<RequestOutcome<u64>>,
+}
+
+enum TellerMessage {
+    Start,
+    Total(RequestOutcome<u64>),
+}
+
+impl Component for Teller {
+    type Config = TellerConfig;
+    type Model = TellerModel;
+    type Message = TellerMessage;
+
+    fn init(_: &TellerConfig) -> Init<TellerModel, TellerMessage> {
+        Init::new(TellerModel::default())
+    }
+
+    fn update(
+        config: &TellerConfig,
+        model: &mut TellerModel,
+        message: TellerMessage,
+    ) -> Command<TellerMessage> {
+        match message {
+            TellerMessage::Start => Command::batch([
+                Command::send(config.tally.clone(), TallyMessage::add(2)),
+                Command::send(config.tally.clone(), TallyMessage::add(3)),
+                match config.patience {
+                    None => Command::request_to(
+                        config.tally.clone(),
+                        TallyMessage::total,
+                        TellerMessage::Total,
+                    ),
+                    Some(patience) => Command::request_to_timeout(
+                        config.tally.clone(),
+                        TallyMessage::park,
+                        patience,
+                        TellerMessage::Total,
+                    ),
+                },
+            ]),
+            TellerMessage::Total(outcome) => {
+                model.total = Some(outcome);
+                Command::none()
+            }
+        }
+    }
+}
+
+fn assemble_tally(patience: Option<Duration>) -> (Program, Installed<Tally>, ComponentRef<Teller>) {
+    let mut program = Program::builder();
+    let tally = program.install::<Tally>(());
+    let teller = program.component::<Teller>(
+        ComponentId::new("teller"),
+        TellerConfig {
+            tally: tally.exports().clone(),
+            patience,
+        },
+    );
+    (program.build().expect("program assembles"), tally, teller)
+}
+
+#[test]
+fn a_component_sends_and_requests_through_a_plug_with_no_jack_or_protocol() {
+    let (program, tally, teller) = assemble_tally(None);
+    let mut runtime = ControlledRuntime::builder(program)
+        .with_assembly(tally)
+        .build()
+        .expect("the library requires nothing");
+
+    runtime.send(&teller, TellerMessage::Start).expect("start");
+    runtime
+        .run_until_idle()
+        .expect("sends, request, and reply settle");
+
+    assert_eq!(
+        runtime.state(&teller).expect("teller model"),
+        &TellerModel {
+            total: Some(RequestOutcome::Replied(5)),
+        }
+    );
+    let request = runtime
+        .trace()
+        .iter()
+        .find(|record| {
+            matches!(
+                record.event,
+                TraceEvent::CommandEmitted {
+                    kind: TraceCommandKind::Request,
+                    ..
+                }
+            )
+        })
+        .expect("the request is traced");
+    assert!(matches!(
+        &request.event,
+        TraceEvent::CommandEmitted {
+            target_component: Some(target),
+            target_jack: None,
+            ..
+        } if target == &ComponentId::new("tally")
+    ));
+    assert!(runtime.cancel().expect("clean close").is_clean());
+}
+
+#[test]
+fn a_plug_request_times_out_exactly_like_a_jack_request() {
+    let patience = Duration::from_secs(1);
+    let (program, tally, teller) = assemble_tally(Some(patience));
+    let mut runtime = ControlledRuntime::builder(program)
+        .with_assembly(tally)
+        .build()
+        .expect("the library requires nothing");
+
+    runtime.send(&teller, TellerMessage::Start).expect("start");
+    runtime
+        .run_until_idle()
+        .expect("the parked request is outstanding");
+    assert_eq!(runtime.state(&teller).expect("teller model").total, None);
+
+    runtime.advance(patience).expect("the deadline fires");
+    assert_eq!(
+        runtime.state(&teller).expect("teller model").total,
+        Some(RequestOutcome::TimedOut)
+    );
+    assert!(runtime.cancel().expect("clean close").is_clean());
+}
+
+/// Holds an adapted plug in its own vocabulary and never names the library's.
+struct DirectMonitor;
+
+struct DirectMonitorConfig {
+    audit: Plug<AuditMessage>,
+}
+
+impl Component for DirectMonitor {
+    type Config = DirectMonitorConfig;
+    type Model = MonitorModel;
+    type Message = MonitorMessage;
+
+    fn init(_: &DirectMonitorConfig) -> Init<MonitorModel, MonitorMessage> {
+        Init::new(MonitorModel::default())
+    }
+
+    fn update(
+        config: &DirectMonitorConfig,
+        model: &mut MonitorModel,
+        message: MonitorMessage,
+    ) -> Command<MonitorMessage> {
+        match message {
+            MonitorMessage::Start => Command::batch([
+                Command::send(
+                    config.audit.clone(),
+                    AuditMessage::Changed {
+                        what: "db".into(),
+                        from: "cold".into(),
+                        to: "warm".into(),
+                    },
+                ),
+                Command::request_to(
+                    config.audit.clone(),
+                    |reply_to| AuditMessage::Tail(RequestInvocation::new(Tail(1), reply_to)),
+                    MonitorMessage::Tail,
+                ),
+            ]),
+            MonitorMessage::Tail(RequestOutcome::Replied(tail)) => {
+                model.tail = Some(tail);
+                Command::none()
+            }
+            MonitorMessage::Tail(_) => Command::none(),
+        }
+    }
+}
+
+#[test]
+fn a_plug_is_adapted_to_the_holders_vocabulary_once_with_accepting() {
+    let mut program = Program::builder();
+    let journal = program.install::<Journal>(());
+    // Elm 0.16's `Signal.forwardTo`: the library's plug, speaking our language.
+    let audit: Plug<AuditMessage> = journal.exports().accepting(couple);
+    let shown = format!("{audit:?}");
+    assert!(
+        shown.contains("AuditMessage") && !shown.contains("JournalMessage"),
+        "{shown}"
+    );
+    let monitor = program
+        .component::<DirectMonitor>(ComponentId::new("monitor"), DirectMonitorConfig { audit });
+    let program = program.build().expect("program assembles");
+    let mut runtime = ControlledRuntime::builder(program)
+        .with_assembly(journal)
+        .build()
+        .expect("the library requires nothing");
+
+    runtime
+        .send(&monitor, MonitorMessage::Start)
+        .expect("start");
+    runtime
+        .run_until_idle()
+        .expect("send, request, and reply settle");
+    assert_eq!(
+        runtime.state(&monitor).expect("monitor model"),
+        &MonitorModel {
+            tail: Some(vec!["db: cold -> warm".into()]),
+        }
+    );
+    assert!(runtime.cancel().expect("clean close").is_clean());
+}
+
+/// Issues a request to whatever plug it is given before anything runs.
+struct EagerTeller;
+
+impl Component for EagerTeller {
+    type Config = Plug<TallyMessage>;
+    type Model = ();
+    type Message = TellerMessage;
+
+    fn init(tally: &Plug<TallyMessage>) -> Init<(), TellerMessage> {
+        Init::new(()).with_command(Command::request_to(
+            tally.clone(),
+            TallyMessage::total,
+            TellerMessage::Total,
+        ))
+    }
+
+    fn update(_: &Plug<TallyMessage>, _: &mut (), _: TellerMessage) -> Command<TellerMessage> {
+        Command::none()
+    }
+}
+
+#[test]
+fn an_initial_request_to_a_foreign_plug_fails_both_profile_builds() {
+    fn program() -> Program {
+        let mut other = Program::builder();
+        let foreign = other.install::<Tally>(());
+        let mut program = Program::builder();
+        program.component::<EagerTeller>(ComponentId::new("eager"), foreign.exports().clone());
+        program
+            .build()
+            .expect("the hidden plug is ordinary Rust until a profile reads initial work")
+    }
+
+    let live = LiveRuntime::builder(program())
+        .build()
+        .err()
+        .expect("initial foreign plug must fail live build");
+    assert!(live.to_string().contains("another Program"), "{live}");
+
+    let controlled = ControlledRuntime::builder(program())
+        .build()
+        .err()
+        .expect("initial foreign plug must fail controlled build");
+    assert!(
+        controlled.to_string().contains("another Program"),
+        "{controlled}"
+    );
+}
+
+#[test]
+fn request_intents_only_see_jack_requests() {
+    let mut program = Program::builder();
+    let tally = program.install::<Tally>(());
+    let command: Command<TellerMessage> = Command::request_to(
+        tally.exports().clone(),
+        TallyMessage::total,
+        TellerMessage::Total,
+    );
+    // A Plug request has no request value until the runtime mints its token;
+    // it is observed through controlled execution instead.
+    assert!(command.request_intents::<()>().is_empty());
+    assert!(command.request_intents::<TallyMessage>().is_empty());
+}

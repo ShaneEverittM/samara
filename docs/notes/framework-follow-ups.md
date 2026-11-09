@@ -158,17 +158,14 @@ a journal Component; exploratory proposals, not accepted API decisions.
   Jack-level controlled ingress so an Assembly can be tested from outside its
   module.
 
-- [ ] **Plugs as first-class addresses.** `Plug<M>` is a Jack binding target
-  only (ADR-0014). Three small extensions would let a library be used with no
-  Jack at all: `Command::send` over any `Pluggable`; a `Command::request_to`
-  that mints the `ReplyTo` against a Plug from a constructor function,
-  `|reply_to| JournalMessage::recent(1, reply_to)`, inferring the reply type
-  from the constructor's signature as Elm infers it from `expect`; and a
-  public `Plug::with_input`, Elm 0.16's `forwardTo`. The send form is thirty
-  lines on the existing Send arm. The request form skips the binding lookup
-  in both runtimes' Request arms, needs an initial-command validation arm and
-  a Message-keyed intent inspector, and wants an amendment to ADR-0014; no
-  change to ordering, isolation, or determinism.
+- [x] **Plugs as first-class addresses.** Landed November 8, 2026
+  (ADR-0014): `Command::send` over any `Pluggable`, `Command::request_to` and
+  `request_to_timeout` minting the `ReplyTo` against a Plug from a published
+  constructor function, and `Plug::accepting`, Elm 0.16's `forwardTo`. A
+  library written the Elm way, an opaque Message with constructor functions,
+  now needs no `protocol!` and no Jack; `tests/plugs.rs` has one. Still open:
+  there is no intent inspector for a Plug request, because its message does
+  not exist until the token is minted; controlled execution observes it.
 
 - [ ] **No small-scale composition: `Command::map` and `Subscriptions::map`
   are missing.** Nothing lifts a `Command<Child>` into a `Command<Parent>` or

@@ -1494,30 +1494,31 @@ trait ErasedSendCommand: Send {
     fn into_message(self: Box<Self>) -> Box<dyn Any + Send>;
 }
 
-struct SendTo<C: Component> {
-    target: ComponentRef<C>,
-    message: C::Message,
+struct SendTo<M> {
+    plug: Plug<M>,
+    message: M,
 }
 
-impl<C: Component> ErasedSendCommand for SendTo<C> {
+impl<M: Send + 'static> ErasedSendCommand for SendTo<M> {
     fn target(&self) -> &ComponentId {
-        self.target.id()
+        &self.plug.id
     }
 
     fn target_program(&self) -> &Arc<()> {
-        &self.target.program
+        &self.plug.program
     }
 
     fn message_type_name(&self) -> &'static str {
-        std::any::type_name::<C::Message>()
+        self.plug.message_type_name
     }
 
     fn message_type_id(&self) -> TypeId {
-        TypeId::of::<C::Message>()
+        self.plug.message_type
     }
 
     fn into_message(self: Box<Self>) -> Box<dyn Any + Send> {
-        Box::new(self.message)
+        let Self { plug, message } = *self;
+        (plug.convert)(message)
     }
 }
 
@@ -1574,16 +1575,41 @@ where
     }
 }
 
+/// Where a request Command is addressed: a Jack resolved through its binding
+/// at interpretation, or a Plug that already names the provider.
+pub(crate) enum RequestTarget<'a> {
+    Jack {
+        id: &'a JackId,
+        program: &'a Arc<()>,
+        protocol: TypeId,
+    },
+    Plug {
+        id: &'a ComponentId,
+        program: &'a Arc<()>,
+        message_type: TypeId,
+        message_type_name: &'static str,
+    },
+}
+
+/// A request target the runtime has validated, ready to address a message.
+pub(crate) enum RequestRoute {
+    Binding(usize),
+    Direct {
+        target: ComponentId,
+        message_type: TypeId,
+        message_type_name: &'static str,
+    },
+}
+
 trait ErasedRequestCommand<Message>: Send {
-    fn jack(&self) -> &JackId;
-    fn jack_program(&self) -> &Arc<()>;
-    fn request(&self) -> &dyn Any;
+    fn target(&self) -> RequestTarget<'_>;
+    /// The request value for a Jack-addressed request; a Plug-addressed request
+    /// builds its message from the reply token and has none to inspect.
+    fn request(&self) -> Option<&dyn Any>;
     fn timeout(&self) -> Option<Duration>;
     fn request_type_name(&self) -> &'static str;
     fn reply_type_name(&self) -> &'static str;
     fn reply_type_id(&self) -> TypeId;
-    fn protocol_type_id(&self) -> TypeId;
-    fn protocol_type_name(&self) -> &'static str;
     fn mapper_type_name(&self) -> &'static str;
     fn into_parts(
         self: Box<Self>,
@@ -1627,16 +1653,16 @@ where
     R: Request<P>,
     Map: FnOnce(RequestOutcome<R::Reply>) -> Message + Send + 'static,
 {
-    fn jack(&self) -> &JackId {
-        self.jack.id()
+    fn target(&self) -> RequestTarget<'_> {
+        RequestTarget::Jack {
+            id: self.jack.id(),
+            program: &self.jack.program,
+            protocol: TypeId::of::<P>(),
+        }
     }
 
-    fn jack_program(&self) -> &Arc<()> {
-        &self.jack.program
-    }
-
-    fn request(&self) -> &dyn Any {
-        &self.request
+    fn request(&self) -> Option<&dyn Any> {
+        Some(&self.request)
     }
 
     fn timeout(&self) -> Option<Duration> {
@@ -1655,14 +1681,6 @@ where
         TypeId::of::<R::Reply>()
     }
 
-    fn protocol_type_id(&self) -> TypeId {
-        TypeId::of::<P>()
-    }
-
-    fn protocol_type_name(&self) -> &'static str {
-        std::any::type_name::<P>()
-    }
-
     fn mapper_type_name(&self) -> &'static str {
         std::any::type_name::<Map>()
     }
@@ -1675,6 +1693,70 @@ where
         let message = request.into_message(ReplyTo::runtime(token));
         let mapper = Box::new(move |outcome| map(typed_request_outcome::<R::Reply>(outcome)));
         (Box::new(message), mapper)
+    }
+}
+
+/// A request addressed to a Plug. The message is built from the reply token by
+/// a constructor the provider published, which is what fixes the reply type.
+struct PlugRequest<M, R, Build, Map> {
+    plug: Plug<M>,
+    build: Build,
+    timeout: Option<Duration>,
+    map: Map,
+    reply: PhantomData<fn(R)>,
+}
+
+impl<Message, M, R, Build, Map> ErasedRequestCommand<Message> for PlugRequest<M, R, Build, Map>
+where
+    Message: Send + 'static,
+    M: Send + 'static,
+    R: Send + 'static,
+    Build: FnOnce(ReplyTo<R>) -> M + Send + 'static,
+    Map: FnOnce(RequestOutcome<R>) -> Message + Send + 'static,
+{
+    fn target(&self) -> RequestTarget<'_> {
+        RequestTarget::Plug {
+            id: &self.plug.id,
+            program: &self.plug.program,
+            message_type: self.plug.message_type,
+            message_type_name: self.plug.message_type_name,
+        }
+    }
+
+    fn request(&self) -> Option<&dyn Any> {
+        None
+    }
+
+    fn timeout(&self) -> Option<Duration> {
+        self.timeout
+    }
+
+    fn request_type_name(&self) -> &'static str {
+        std::any::type_name::<M>()
+    }
+
+    fn reply_type_name(&self) -> &'static str {
+        std::any::type_name::<R>()
+    }
+
+    fn reply_type_id(&self) -> TypeId {
+        TypeId::of::<R>()
+    }
+
+    fn mapper_type_name(&self) -> &'static str {
+        std::any::type_name::<Map>()
+    }
+
+    fn into_parts(
+        self: Box<Self>,
+        token: Arc<RequestToken>,
+    ) -> (Box<dyn Any + Send>, ErasedRequestMapper<Message>) {
+        let Self {
+            plug, build, map, ..
+        } = *self;
+        let message = (plug.convert)(build(ReplyTo::runtime(token)));
+        let mapper = Box::new(move |outcome| map(typed_request_outcome::<R>(outcome)));
+        (message, mapper)
     }
 }
 
@@ -1952,23 +2034,31 @@ impl<Message> Command<Message> {
         })))
     }
 
-    /// Queues a message for another component.
+    /// Queues a message for another component, addressed by a [`ComponentRef`] or a [`Plug`].
     ///
-    /// The recipient handles it after the current update returns. No delivery result
+    /// The target handles it after the current update returns. No delivery result
     /// is sent back; a routing error faults the runtime. Use [`Self::notify`] or
-    /// [`Self::request`] to depend on a protocol instead of another component's type.
+    /// [`Self::request`] to depend on a [`Jack`] in your own vocabulary instead;
+    /// use a `Plug` when the target is a library Component that exposes itself in
+    /// its own vocabulary (see [`Plug`]).
     ///
     /// ```
-    /// use samara::{Command, Component, ComponentRef};
+    /// use samara::{Command, Component, ComponentRef, Plug};
     /// fn forward<C: Component>(target: ComponentRef<C>, message: C::Message) -> Command<()> {
     ///     Command::send(target, message)
     /// }
+    /// fn forward_to_plug<M: Send + 'static>(target: Plug<M>, message: M) -> Command<()> {
+    ///     Command::send(target, message)
+    /// }
     /// ```
-    pub fn send<C>(target: ComponentRef<C>, message: C::Message) -> Self
+    pub fn send<T>(target: T, message: T::Message) -> Self
     where
-        C: Component,
+        T: Pluggable,
     {
-        Self(CommandKind::Send(Box::new(SendTo { target, message })))
+        Self(CommandKind::Send(Box::new(SendTo {
+            plug: target.to_plug(),
+            message,
+        })))
     }
 
     /// Sends a notification to the component bound to a Jack.
@@ -2080,6 +2170,78 @@ impl<Message> Command<Message> {
             request,
             timeout: Some(timeout),
             map,
+        })))
+    }
+
+    /// Sends a request to a [`Plug`] or [`ComponentRef`] and maps its reply to a message.
+    ///
+    /// `request` is a constructor the provider published that takes the reply
+    /// token, such as `TallyMessage::total`; its `ReplyTo<R>` parameter fixes the
+    /// reply type, and `map` must accept `RequestOutcome<R>`. This is how a
+    /// Component addressed by a Plug offers request and reply without a
+    /// [`Protocol`]: the pairing lives in the constructor's signature. Both
+    /// functions must be pure. There is no timeout; see [`Self::request_to_timeout`].
+    ///
+    /// ```
+    /// use samara::prelude::*;
+    /// // A library's opaque message with a published request constructor.
+    /// pub struct TallyMessage(Inner);
+    /// enum Inner { Total(ReplyTo<u64>) }
+    /// impl TallyMessage { pub fn total(reply_to: ReplyTo<u64>) -> Self { Self(Inner::Total(reply_to)) } }
+    /// # struct Tally;
+    /// # impl Component for Tally {
+    /// #     type Config = (); type Model = u64; type Message = TallyMessage;
+    /// #     fn init(_: &()) -> Init<u64, TallyMessage> { Init::new(0) }
+    /// #     fn update(_: &(), total: &mut u64, TallyMessage(Inner::Total(reply_to)): TallyMessage) -> Command<TallyMessage> {
+    /// #         Command::reply(reply_to, *total)
+    /// #     }
+    /// # }
+    /// let mut program = Program::builder();
+    /// let tally: Plug<TallyMessage> = program.component::<Tally>(ComponentId::new("tally"), ()).to_plug();
+    /// let command: Command<RequestOutcome<u64>> =
+    ///     Command::request_to(tally, TallyMessage::total, |outcome| outcome);
+    /// # let _ = command;
+    /// ```
+    pub fn request_to<T, R, Build, Map>(target: T, request: Build, map: Map) -> Self
+    where
+        Message: Send + 'static,
+        T: Pluggable,
+        R: Send + 'static,
+        Build: FnOnce(ReplyTo<R>) -> T::Message + Send + 'static,
+        Map: FnOnce(RequestOutcome<R>) -> Message + Send + 'static,
+    {
+        Self(CommandKind::Request(Box::new(PlugRequest {
+            plug: target.to_plug(),
+            build: request,
+            timeout: None,
+            map,
+            reply: PhantomData,
+        })))
+    }
+
+    /// Sends a request to a [`Plug`] or [`ComponentRef`] with a timeout.
+    ///
+    /// Uses the deadline rules of [`Self::request_timeout`] and the constructor
+    /// form of [`Self::request_to`].
+    pub fn request_to_timeout<T, R, Build, Map>(
+        target: T,
+        request: Build,
+        timeout: Duration,
+        map: Map,
+    ) -> Self
+    where
+        Message: Send + 'static,
+        T: Pluggable,
+        R: Send + 'static,
+        Build: FnOnce(ReplyTo<R>) -> T::Message + Send + 'static,
+        Map: FnOnce(RequestOutcome<R>) -> Message + Send + 'static,
+    {
+        Self(CommandKind::Request(Box::new(PlugRequest {
+            plug: target.to_plug(),
+            build: request,
+            timeout: Some(timeout),
+            map,
+            reply: PhantomData,
         })))
     }
 
@@ -2263,8 +2425,11 @@ impl<Message> Command<Message> {
     fn collect_request_intents<'a, R: 'static>(&'a self, intents: &mut Vec<(&'a JackId, &'a R)>) {
         match &self.0 {
             CommandKind::Request(command) => {
-                if let Some(request) = command.request().downcast_ref() {
-                    intents.push((command.jack(), request));
+                if let (RequestTarget::Jack { id, .. }, Some(request)) =
+                    (command.target(), command.request())
+                    && let Some(request) = request.downcast_ref()
+                {
+                    intents.push((id, request));
                 }
             }
             CommandKind::Batch(commands) => {
@@ -4345,7 +4510,14 @@ impl<M: Send + 'static> Plug<M> {
         &self.id
     }
 
-    fn with_input<N, Map>(&self, map: Map) -> Plug<N>
+    /// Returns a plug that accepts `N` by converting it into `M` first.
+    ///
+    /// This is Elm 0.16's `Signal.forwardTo`: the holder of a library's
+    /// `Plug<LibraryMessage>` adapts it to its own vocabulary once, and its
+    /// Components then hold a `Plug<AppMessage>` and never name the library's
+    /// types. `map` must be pure. [`ProgramBuilder::plug_in_with`] does the same
+    /// adaptation for a Jack binding.
+    pub fn accepting<N, Map>(&self, map: Map) -> Plug<N>
     where
         N: Send + 'static,
         Map: Fn(N) -> M + Send + Sync + 'static,
@@ -4385,10 +4557,12 @@ impl<M> fmt::Debug for Plug<M> {
     }
 }
 
-/// Something a Jack can be bound to: a [`ComponentRef`] or a [`Plug`].
+/// Something a Jack can be bound to and a Command can be addressed to: a
+/// [`ComponentRef`] or a [`Plug`].
 ///
-/// [`ProgramBuilder::plug_in`] and [`ProgramBuilder::plug_in_with`] accept
-/// either. Applications do not implement it.
+/// [`ProgramBuilder::plug_in`], [`ProgramBuilder::plug_in_with`],
+/// [`Command::send`], and [`Command::request_to`] accept either. Applications
+/// do not implement it.
 pub trait Pluggable {
     /// The message type this provider accepts.
     type Message: Send + 'static;
@@ -4597,20 +4771,35 @@ where
                     )))
                 }
             }
-            CommandKind::Request(request) => {
-                if program.declares_jack_target(
-                    request.jack_program(),
-                    request.jack(),
-                    request.protocol_type_id(),
-                ) {
-                    Ok(())
-                } else {
-                    Err(RuntimeError::harness(format!(
-                        "Component {component:?} has an initial request Jack {:?} from another Program or absent from this Program",
-                        request.jack()
-                    )))
+            CommandKind::Request(request) => match request.target() {
+                RequestTarget::Jack {
+                    id,
+                    program: jack_program,
+                    protocol,
+                } => {
+                    if program.declares_jack_target(jack_program, id, protocol) {
+                        Ok(())
+                    } else {
+                        Err(RuntimeError::harness(format!(
+                            "Component {component:?} has an initial request Jack {id:?} from another Program or absent from this Program"
+                        )))
+                    }
                 }
-            }
+                RequestTarget::Plug {
+                    id,
+                    program: target_program,
+                    message_type,
+                    ..
+                } => {
+                    if program.declares_component_target(target_program, id, message_type) {
+                        Ok(())
+                    } else {
+                        Err(RuntimeError::harness(format!(
+                            "Component {component:?} has an initial request Plug target {id:?} from another Program or absent from this Program"
+                        )))
+                    }
+                }
+            },
             CommandKind::Batch(commands) => {
                 for command in commands {
                     validate_command(program, component, command)?;
@@ -5065,7 +5254,7 @@ impl ProgramBuilder {
     {
         self.bindings.push(Box::new(JackBinding {
             jack: jack.clone(),
-            plug: provider.to_plug().with_input(map),
+            plug: provider.to_plug().accepting(map),
         }));
     }
 

@@ -543,9 +543,19 @@ exposed and renames the consumer-owned one:
   `Plug<P::Message>`, so both forms share one boxed conversion.
 - A Plug from another `ProgramBuilder` fails `build()` as a foreign provider
   under ADR-0008's existing rule.
-- `Plug` is a binding target only in this slice. Direct `Command::send` and a
-  request form addressed to a Plug are recorded in the framework follow-ups
-  and need an ADR amendment before implementation.
+- `Command::send(target, message)` takes any `Pluggable`.
+  `Command::request_to(target, constructor, map)` and `request_to_timeout`
+  address a request to a `Pluggable`: `constructor: FnOnce(ReplyTo<R>) ->
+  T::Message` is a function the provider published, its `ReplyTo<R>`
+  parameter fixes the reply type, and the runtime mints the token and routes
+  the message exactly as for a Jack request, including ADR-0011 deadlines.
+  Initial work addressed to a foreign Plug fails profile build under
+  ADR-0008.
+- `Plug::accepting(map)` returns a Plug of another Message type that converts
+  through `map` first; `map` must be pure.
+- `Command::request_intents` sees Jack requests only. A Plug request has no
+  request value before its token exists and is observed through controlled
+  execution.
 
 ## Deliberately Unfrozen Surfaces
 

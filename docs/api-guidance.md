@@ -536,13 +536,24 @@ coupling between the two vocabularies is written once at that site. The
 dependency points the right way, from application to library, and the
 library's Component kind never becomes nameable outside its crate.
 
+A Plug is also an address in its own right. A Component may hold a `Plug<M>`
+in its `Config` and reach it with `Command::send`, or with
+`Command::request_to(plug, Constructor, map)` where `Constructor` is a
+function the provider published that takes a `ReplyTo<R>`; the reply type is
+fixed by that parameter and checked against `map`. `Plug::accepting` adapts
+a library's Plug to the holder's vocabulary once, so the holder's Components
+never name the library's types even without a Jack.
+
 Elm has no private messages; it gets both the public API and the hiding from
 one mechanism, exporting `Msg` as an opaque type and publishing constructor
 functions for the callable subset. A Rust library can do the same with a
-public newtype over a private enum as its `Component::Message` and hand out a
-Plug of it, needing no `protocol!` at all. `protocol!` remains the monolith's
-tool: it types request and reply pairs as a trait on the request, which Elm
-never needed because its queries were function calls on a shared Model.
+public newtype over a private enum as its `Component::Message`, public
+constructor functions including ones that take a `ReplyTo`, and a Plug of it,
+needing no `protocol!` at all. `protocol!` remains the monolith's tool: it
+types request and reply pairs as a trait on the request, which Elm never
+needed because its queries were function calls on a shared Model and its
+asynchronous replies were typed by the `expect` argument, which is what
+`request_to` does.
 
 ### Why Are Jacks the Normal Component Dependency Boundary?
 

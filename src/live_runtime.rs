@@ -48,10 +48,10 @@ use crate::{
     BoxFuture, CapabilityToken, Command, CommandKind, ComponentId, DriverStopped, EffectDescriptor,
     EffectDriver, EffectOutcome, ErasedRequestMapper, ErasedSourceEvent, HttpError, HttpRequest,
     HttpResponse, Jack, JackId, Notification, PrintStderr, PrintStdout, Program, Protocol, ReplyTo,
-    Request, RequestOutcome, RequestToken, RuntimeError, Shutdown, ShutdownReport,
-    SourceCapability, SourceDescriptor, SourceDriver, SourceEvent, SourcePlan, SourceRequirement,
-    SourceSink, StreamDescriptor, StreamSourceDescriptor, SubscriptionId, TcpBytes, TcpError,
-    TraceId,
+    Request, RequestOutcome, RequestRoute, RequestTarget, RequestToken, RuntimeError, Shutdown,
+    ShutdownReport, SourceCapability, SourceDescriptor, SourceDriver, SourceEvent, SourcePlan,
+    SourceRequirement, SourceSink, StreamDescriptor, StreamSourceDescriptor, SubscriptionId,
+    TcpBytes, TcpError, TraceId,
 };
 #[cfg(unix)]
 use crate::{StdinError, StdinLines};
@@ -2025,23 +2025,54 @@ impl LiveCore {
                     let _ = self.scope.accept_finite(LiveEvent::Message(message));
                 }
                 CommandKind::Request(command) => {
-                    let jack = command.jack().clone();
-                    let protocol = command.protocol_type_id();
-                    if !Arc::ptr_eq(command.jack_program(), &self.program.program) {
-                        return Err(self.runtime_fault(
-                            component.clone(),
-                            None,
-                            work,
-                            "request Jack belongs to another Program",
-                        ));
-                    }
-                    let Some(binding_index) = self.binding_index(protocol, &jack) else {
-                        return Err(self.runtime_fault(
-                            component.clone(),
-                            None,
-                            work,
-                            "request Jack has no runtime binding",
-                        ));
+                    let route = match command.target() {
+                        RequestTarget::Jack {
+                            id,
+                            program,
+                            protocol,
+                        } => {
+                            if !Arc::ptr_eq(program, &self.program.program) {
+                                return Err(self.runtime_fault(
+                                    component.clone(),
+                                    None,
+                                    work,
+                                    "request Jack belongs to another Program",
+                                ));
+                            }
+                            let Some(binding_index) = self.binding_index(protocol, id) else {
+                                return Err(self.runtime_fault(
+                                    component.clone(),
+                                    None,
+                                    work,
+                                    "request Jack has no runtime binding",
+                                ));
+                            };
+                            RequestRoute::Binding(binding_index)
+                        }
+                        RequestTarget::Plug {
+                            id,
+                            program,
+                            message_type,
+                            message_type_name,
+                        } => {
+                            if !Arc::ptr_eq(program, &self.program.program)
+                                || self.component_index(id, message_type).is_none()
+                            {
+                                return Err(self.runtime_fault(
+                                    component.clone(),
+                                    None,
+                                    work,
+                                    format!(
+                                        "request Plug target {id:?} is absent from the Program"
+                                    ),
+                                ));
+                            }
+                            RequestRoute::Direct {
+                                target: id.clone(),
+                                message_type,
+                                message_type_name,
+                            }
+                        }
                     };
                     let deadline = match command.timeout() {
                         Some(timeout) => Some(
@@ -2066,13 +2097,28 @@ impl LiveCore {
                         command.into_parts(token.clone());
                     let mapper: ErasedRequestMapper<ErasedValue> =
                         Box::new(move |reply| Box::new(mapper(reply)));
-                    let binding = &self.program.bindings[binding_index];
-                    let message = QueuedMessage {
-                        target: binding.provider_id().clone(),
-                        target_message_type: binding.provider_message_type(),
-                        message_type_name: binding.provider_message_type_name(),
-                        message: binding.convert(protocol_message),
-                        source: None,
+                    let message = match route {
+                        RequestRoute::Binding(binding_index) => {
+                            let binding = &self.program.bindings[binding_index];
+                            QueuedMessage {
+                                target: binding.provider_id().clone(),
+                                target_message_type: binding.provider_message_type(),
+                                message_type_name: binding.provider_message_type_name(),
+                                message: binding.convert(protocol_message),
+                                source: None,
+                            }
+                        }
+                        RequestRoute::Direct {
+                            target,
+                            message_type,
+                            message_type_name,
+                        } => QueuedMessage {
+                            target,
+                            target_message_type: message_type,
+                            message_type_name,
+                            message: protocol_message,
+                            source: None,
+                        },
                     };
                     let deadline_task =
                         self.schedule_request_deadline(correlation, deadline, component, work);

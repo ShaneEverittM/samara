@@ -331,8 +331,11 @@ Message type it accepts, `Plug<M>`, together with the pure conversion from `M`
 into the Component's private Message. A Component or Assembly hands out a Plug
 to expose itself without naming its Component kind; the holder plugs it into
 one of its own Jacks with `plug_in_with`, writing the coupling between the two
-vocabularies once at that site. Like `ComponentRef` and `Jack`, a Plug grants
-no delivery capability.
+vocabularies once at that site, or holds it directly and addresses it with
+`Command::send` and `Command::request_to`, whose request is a constructor
+function the provider published taking `ReplyTo<R>`. `Plug::accepting`
+adapts a Plug to the holder's vocabulary. Like `ComponentRef` and `Jack`, a
+Plug grants no delivery capability.
 
 **Pluggable** — The trait of things a Jack can be bound to: `ComponentRef<C>`
 and `Plug<M>`. `plug_in` and `plug_in_with` accept either. Applications do

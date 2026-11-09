@@ -156,6 +156,10 @@ at runtime, recorded so 0.2 and 0.3 start from a list rather than a profile:
 - Every Jack binding carries a boxed conversion, including `plug_in`'s
   `From` (one allocation at assembly, one indirect call per delivered
   message).
+- `Command::send` erases its target into a `Plug` so one constructor serves
+  `ComponentRef` and `Plug` targets: one `Arc` allocation per send Command
+  when the target is a `ComponentRef`, none beyond the clone when a `Plug`
+  is held in `Config` (ADR-0014).
 - Internal delivery is unbounded (ADR-0004).
 
 Add to this ledger whenever a cheaper shape is rejected for a better one.

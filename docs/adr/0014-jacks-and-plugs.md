@@ -4,7 +4,8 @@
 - Date: November 8, 2026
 - Deciders: Samara maintainers
 - Scope: The two ways a Component is exposed to others; the rename of `Port`
-  to `Jack`; the new `Plug<M>` address and `Pluggable` trait
+  to `Jack`; the new `Plug<M>` address and `Pluggable` trait; Commands
+  addressed to a Plug
 
 ## Context
 
@@ -65,6 +66,29 @@ the application's vocabulary to the library's written once at that site.
 Internally a Jack binding is stored as the Jack plus a `Plug<P::Message>`, so
 both forms share one representation and one boxed conversion.
 
+### A Plug is an address Commands can use directly
+
+`Command::send(target, message)` takes any `Pluggable`, so a Component may
+hold a `Plug<M>` in its `Config` and send to it with no Jack. For request and
+reply without a Protocol, `Command::request_to(target, constructor, map)`
+takes a function the provider published, `FnOnce(ReplyTo<R>) -> M`, such as
+`TallyMessage::total`; its `ReplyTo<R>` parameter fixes the reply type and
+`map: FnOnce(RequestOutcome<R>) -> Message` is checked against it. The
+runtime mints the token, calls the constructor, converts through the Plug,
+and enqueues the message exactly as it does after a Jack binding lookup;
+`request_to_timeout` adds the ADR-0011 deadline. This is Elm's `expect`
+argument transliterated: the request and reply pairing lives in a function
+signature, not in a trait on the request. `Plug::accepting(map)` adapts a
+Plug to the holder's vocabulary, Elm 0.16's `Signal.forwardTo`.
+
+Internally one `CommandKind::Request` carries a `RequestTarget`, either a
+Jack with its Protocol type or a Plug with its provider identity, and both
+runtimes resolve it to a `RequestRoute` before minting the token. Initial
+work validation accepts a Plug target only when its Component and Message
+type are declared in the Program (ADR-0008). A Plug-addressed request has no
+request value until its token exists, so `Command::request_intents` sees
+Jack requests only; Plug requests are observed through controlled execution.
+
 ### Rename
 
 | Before | After |
@@ -112,11 +136,11 @@ within one application.
 - A Plug conversion composes with the Jack binding's conversion: one boxed
   closure per binding, one indirect call per delivered message, already on the
   cost ledger.
-- `Plug<M>` is a binding target only. `Command::send` over any `Pluggable`, a
-  `Command::request_to` that mints the `ReplyTo` against a Plug from a
-  constructor function, and a public `Plug::with_input` are recorded in the
-  framework follow-ups; the request form touches both runtimes and needs an
-  amendment here.
+- `Command::send` erases its target into a Plug, which costs one `Arc`
+  allocation per send Command when the target is a `ComponentRef`; a Plug
+  held in `Config` is cloned by reference count. Added to the cost ledger.
+- A Plug request is traced as a Request with `target_component` set and
+  `target_jack` empty, so trace consumers distinguish the two forms.
 - Every public use of the old names changes. Mechanical; the compiler names
   each site. Landed before 0.1, so no released surface is affected.
 
@@ -126,7 +150,14 @@ within one application.
 Component is private; the application declares its own `Audit` Protocol and
 couples with one function; notify, request, and reply travel through the
 coupling under controlled execution; a Plug is inert and names only what it
-accepts; a foreign Plug fails `build()`. The `Plug` rustdoc example. The
+accepts; a foreign Plug fails `build()`. A second library module written the
+Elm way, an opaque `TallyMessage` with constructor functions and no
+`protocol!`, is driven with `Command::send` and `Command::request_to` alone;
+a Plug request times out under ADR-0011 rules; `accepting` adapts a library
+Plug to the application's vocabulary and `Debug` shows only the adapted type;
+an initial request to a foreign Plug fails both profile builds; and
+`request_intents` ignores Plug requests. The `Plug`, `Command::send`, and
+`Command::request_to` rustdoc examples. The
 existing Jack suites (`tests/external_jack_ingress.rs`, request and
 notification tests) pass unchanged under the rename.
 

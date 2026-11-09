@@ -15,10 +15,11 @@ use crate::declarative_work::SubscriptionChange;
 use crate::{
     CapabilityToken, Command, CommandKind, Component, ComponentId, ComponentRef, EffectDescriptor,
     EffectOutcome, EffectOutcomeKind, ErasedRequestMapper, ErasedSourceEvent, JackId, LogicalTime,
-    PendingEffect, PendingWork, Program, RequestOutcome, RequestOutcomeKind, RequestToken,
-    RunReport, RuntimeError, ShutdownReport, SourceCapability, SourceDescriptor, SourceEvent,
-    SourcePlan, StreamDescriptor, StreamSourceDescriptor, Subscription, SubscriptionAction,
-    SubscriptionId, TraceCommandKind, TraceEvent, TraceId, TraceRecord,
+    PendingEffect, PendingWork, Program, RequestOutcome, RequestOutcomeKind, RequestRoute,
+    RequestTarget, RequestToken, RunReport, RuntimeError, ShutdownReport, SourceCapability,
+    SourceDescriptor, SourceEvent, SourcePlan, StreamDescriptor, StreamSourceDescriptor,
+    Subscription, SubscriptionAction, SubscriptionId, TraceCommandKind, TraceEvent, TraceId,
+    TraceRecord,
 };
 
 type ErasedValue = Box<dyn Any + Send>;
@@ -838,34 +839,78 @@ impl ControlledCore {
                     );
                 }
                 CommandKind::Request(command) => {
-                    let jack = command.jack().clone();
-                    let protocol = command.protocol_type_id();
                     let request_type = command.request_type_name();
                     let reply_type = command.reply_type_id();
                     let reply_type_name = command.reply_type_name();
-                    let work = self.command_trace(
-                        cause,
-                        component,
-                        TraceCommandKind::Request,
-                        request_type,
-                        None,
-                        Some(jack.clone()),
-                    );
-                    if !Arc::ptr_eq(command.jack_program(), &self.program.program) {
-                        return Err(self.set_fault(
-                            component.clone(),
-                            None,
-                            work,
-                            "request Jack belongs to another Program",
-                        ));
-                    }
-                    let Some(binding_index) = self.binding_index(protocol, &jack) else {
-                        return Err(self.set_fault(
-                            component.clone(),
-                            None,
-                            work,
-                            "request Jack has no runtime binding",
-                        ));
+                    let (work, route) = match command.target() {
+                        RequestTarget::Jack {
+                            id,
+                            program,
+                            protocol,
+                        } => {
+                            let jack = id.clone();
+                            let work = self.command_trace(
+                                cause,
+                                component,
+                                TraceCommandKind::Request,
+                                request_type,
+                                None,
+                                Some(jack.clone()),
+                            );
+                            if !Arc::ptr_eq(program, &self.program.program) {
+                                return Err(self.set_fault(
+                                    component.clone(),
+                                    None,
+                                    work,
+                                    "request Jack belongs to another Program",
+                                ));
+                            }
+                            let Some(binding_index) = self.binding_index(protocol, &jack) else {
+                                return Err(self.set_fault(
+                                    component.clone(),
+                                    None,
+                                    work,
+                                    "request Jack has no runtime binding",
+                                ));
+                            };
+                            (work, RequestRoute::Binding(binding_index))
+                        }
+                        RequestTarget::Plug {
+                            id,
+                            program,
+                            message_type,
+                            message_type_name,
+                        } => {
+                            let target = id.clone();
+                            let work = self.command_trace(
+                                cause,
+                                component,
+                                TraceCommandKind::Request,
+                                request_type,
+                                Some(target.clone()),
+                                None,
+                            );
+                            if !Arc::ptr_eq(program, &self.program.program)
+                                || self.component_index(&target, message_type).is_none()
+                            {
+                                return Err(self.set_fault(
+                                    component.clone(),
+                                    None,
+                                    work,
+                                    format!(
+                                        "request Plug target {target:?} is absent from the Program"
+                                    ),
+                                ));
+                            }
+                            (
+                                work,
+                                RequestRoute::Direct {
+                                    target,
+                                    message_type,
+                                    message_type_name,
+                                },
+                            )
+                        }
                     };
                     let deadline = match command.timeout() {
                         Some(timeout) => Some(self.now.checked_add(timeout).ok_or_else(|| {
@@ -885,14 +930,21 @@ impl ControlledCore {
                         command.into_parts(token.clone());
                     let mapper: ErasedRequestMapper<ErasedValue> =
                         Box::new(move |reply| Box::new(mapper(reply)));
-                    let (target, message_type, message_type_name, message) = {
-                        let binding = &self.program.bindings[binding_index];
-                        (
-                            binding.provider_id().clone(),
-                            binding.provider_message_type(),
-                            binding.provider_message_type_name(),
-                            binding.convert(protocol_message),
-                        )
+                    let (target, message_type, message_type_name, message) = match route {
+                        RequestRoute::Binding(binding_index) => {
+                            let binding = &self.program.bindings[binding_index];
+                            (
+                                binding.provider_id().clone(),
+                                binding.provider_message_type(),
+                                binding.provider_message_type_name(),
+                                binding.convert(protocol_message),
+                            )
+                        }
+                        RequestRoute::Direct {
+                            target,
+                            message_type,
+                            message_type_name,
+                        } => (target, message_type, message_type_name, protocol_message),
                     };
                     self.requests.push(OutstandingRequest {
                         token,

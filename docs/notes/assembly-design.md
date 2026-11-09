@@ -164,7 +164,7 @@ pulse journal (`examples/pulse/src/journal.rs`) is the worked example: one
   instead lets the application declare its own `Audit` Protocol and write the
   coupling once; `tests/plugs.rs` is the evidence. Elm's model is the same: a
   module exports its `Msg` opaquely with constructor functions, and
-  `Signal.forwardTo` in Elm 0.16 was `Plug::with_input`.
+  `Signal.forwardTo` in Elm 0.16 is `Plug::accepting`.
 - **Controlled execution has no Jack-level ingress.** `ControlledRuntime`
   delivers messages by `ComponentRef<C>` only, and inspects state the same way,
   so an Assembly that exports just a Jack cannot be driven or observed in a
