@@ -223,7 +223,7 @@ impl Component for Counter {
                 // the runtime maps this request's eventual terminal outcome back
                 // into the requester's ordinary message stream.
                 Command::request_to(
-                    config.quota.clone(),
+                    &config.quota,
                     move |reply_with| QuotaProtocolMessage::Reserve { amount, reply_with },
                     CounterMessage::Reserved,
                 )

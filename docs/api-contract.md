@@ -547,8 +547,8 @@ exposed and renames the consumer-owned one:
   `Connector<P::Message>`, so both forms share one boxed conversion.
 - A Connector from another `ProgramBuilder` fails `build()` as a foreign provider
   under ADR-0008's existing rule.
-- `Command::send(target, message)` takes any `Addressable`.
-  `Command::request_to(target, constructor, map)` and `request_to_timeout`
+- `Command::send(&target, message)` takes any `Addressable`.
+  `Command::request_to(&target, constructor, map)` and `request_to_timeout`
   address a request to an `Addressable`: `constructor: FnOnce(ReplyWith<R>) ->
   T::Message` is a function the provider published, its `ReplyWith<R>`
   parameter fixes the reply type, and the runtime mints the token and routes
@@ -566,9 +566,9 @@ exposed and renames the consumer-owned one:
 interaction and leaves one way for a Command to reach a Component:
 
 - `Addressable` is implemented for `Port<M>`, `Connector<M>`, and
-  `ComponentRef<C>`. `Command::send(target, message)`,
-  `Command::request_to(target, constructor, map)`, and
-  `Command::request_to_timeout(target, constructor, timeout, map)` accept any
+  `ComponentRef<C>`. `Command::send(&target, message)`,
+  `Command::request_to(&target, constructor, map)`, and
+  `Command::request_to_timeout(&target, constructor, timeout, map)` accept any
   of them and deliver a value of the destination's message type.
 - A request is a message variant carrying `ReplyWith<R>`; `constructor:
   FnOnce(ReplyWith<R>) -> M` fixes `R`, and `map: FnOnce(RequestOutcome<R>) ->

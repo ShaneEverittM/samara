@@ -130,7 +130,7 @@ impl Component for Requester {
                 key,
             } => match (timeout, key) {
                 (Some(timeout), Some(key)) => Command::request_to_timeout(
-                    config.port.clone(),
+                    &config.port,
                     ask(value, delay),
                     timeout,
                     move |outcome| {
@@ -141,16 +141,14 @@ impl Component for Requester {
                     },
                 ),
                 (Some(timeout), None) => Command::request_to_timeout(
-                    config.port.clone(),
+                    &config.port,
                     ask(value, delay),
                     timeout,
                     RequesterMessage::from,
                 ),
-                (None, _) => Command::request_to(
-                    config.port.clone(),
-                    ask(value, delay),
-                    RequesterMessage::from,
-                ),
+                (None, _) => {
+                    Command::request_to(&config.port, ask(value, delay), RequesterMessage::from)
+                }
             },
             RequesterMessage::Outcome(observation) => {
                 model.push(observation.clone());

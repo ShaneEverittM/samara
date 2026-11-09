@@ -91,16 +91,16 @@ impl Component for Clerk {
     ) -> Command<ClerkMessage> {
         match message {
             ClerkMessage::Start => Command::batch([
-                Command::send(config.ledger.clone(), LedgerMessage::Add(2)),
-                Command::send(config.ledger.clone(), LedgerMessage::Add(3)),
+                Command::send(&config.ledger, LedgerMessage::Add(2)),
+                Command::send(&config.ledger, LedgerMessage::Add(3)),
                 match config.patience {
                     None => Command::request_to(
-                        config.ledger.clone(),
+                        &config.ledger,
                         LedgerMessage::Total,
                         ClerkMessage::Total,
                     ),
                     Some(patience) => Command::request_to_timeout(
-                        config.ledger.clone(),
+                        &config.ledger,
                         LedgerMessage::Park,
                         patience,
                         ClerkMessage::Total,
@@ -196,7 +196,7 @@ fn into_request_to_inspects_a_request_without_a_runtime() {
     let mut program = Program::builder();
     let ledger = program.port::<LedgerMessage>(PortId::new("ledger"));
 
-    let intent = Command::request_to(ledger.clone(), LedgerMessage::Total, ClerkMessage::Total)
+    let intent = Command::request_to(&ledger, LedgerMessage::Total, ClerkMessage::Total)
         .into_request_to::<LedgerMessage>()
         .ok()
         .expect("a request addressed with LedgerMessage");
@@ -207,10 +207,10 @@ fn into_request_to_inspects_a_request_without_a_runtime() {
     ));
 
     // Anything else comes back unchanged.
-    let send: Command<ClerkMessage> = Command::send(ledger.clone(), LedgerMessage::Add(1));
+    let send: Command<ClerkMessage> = Command::send(&ledger, LedgerMessage::Add(1));
     assert!(send.into_request_to::<LedgerMessage>().is_err());
     let other: Command<ClerkMessage> =
-        Command::request_to(ledger, LedgerMessage::Total, ClerkMessage::Total);
+        Command::request_to(&ledger, LedgerMessage::Total, ClerkMessage::Total);
     assert!(other.into_request_to::<ClerkMessage>().is_err());
 }
 
@@ -222,7 +222,7 @@ fn an_initial_send_to_a_foreign_port_fails_both_profile_builds() {
         type Model = ();
         type Message = ClerkMessage;
         fn init(ledger: &Port<LedgerMessage>) -> Init<(), ClerkMessage> {
-            Init::new(()).with_command(Command::send(ledger.clone(), LedgerMessage::Add(1)))
+            Init::new(()).with_command(Command::send(ledger, LedgerMessage::Add(1)))
         }
         fn update(_: &Port<LedgerMessage>, _: &mut (), _: ClerkMessage) -> Command<ClerkMessage> {
             Command::none()

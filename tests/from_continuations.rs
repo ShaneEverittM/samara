@@ -274,14 +274,14 @@ impl Component for Requester {
             // The short form: `Message::from` is the continuation, so the
             // `From<RequestOutcome<u64>>` impl above still decides the variant.
             RequesterMessage::StartDefault => Command::request_to(
-                config.echo.clone(),
+                &config.echo,
                 |reply_with| EchoProtocolMessage::Echo(11, reply_with),
                 RequesterMessage::from,
             ),
             RequesterMessage::StartExplicit => {
                 let context = "second request";
                 Command::request_to(
-                    config.echo.clone(),
+                    &config.echo,
                     |reply_with| EchoProtocolMessage::Echo(12, reply_with),
                     move |outcome| RequesterMessage::Explicit { context, outcome },
                 )

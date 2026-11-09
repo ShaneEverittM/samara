@@ -422,7 +422,7 @@ impl Component for InitialForeignSend {
     type Message = ();
 
     fn init(config: &Self::Config) -> Init<Self::Model, Self::Message> {
-        Init::new(()).with_command(Command::send(config.target.clone(), ()))
+        Init::new(()).with_command(Command::send(&config.target, ()))
     }
 
     fn update(
@@ -467,7 +467,7 @@ impl Component for InitialForeignPortSend {
     type Message = ();
 
     fn init(config: &Self::Config) -> Init<Self::Model, Self::Message> {
-        Init::new(()).with_command(Command::send(config.port.clone(), ForeignMessage::Signal))
+        Init::new(()).with_command(Command::send(&config.port, ForeignMessage::Signal))
     }
 
     fn update(
@@ -492,7 +492,7 @@ impl Component for InitialForeignRequest {
 
     fn init(config: &Self::Config) -> Init<Self::Model, Self::Message> {
         Init::new(()).with_command(Command::request_to(
-            config.port.clone(),
+            &config.port,
             ForeignMessage::Read,
             |_| (),
         ))

@@ -446,7 +446,7 @@ impl Component for Telemetry {
                 model.desired = Some(config.clone());
                 model.last_failure = None;
                 Command::send(
-                    telemetry.health.clone(),
+                    &telemetry.health,
                     HealthProtocolMessage::Connecting(config.endpoint),
                 )
             }
@@ -454,17 +454,14 @@ impl Component for Telemetry {
                 // Removing desire is enough. Reconciliation and cancellation
                 // are runtime work, not reducer-side effects.
                 model.desired = None;
-                Command::send(
-                    telemetry.health.clone(),
-                    HealthProtocolMessage::Disconnected,
-                )
+                Command::send(&telemetry.health, HealthProtocolMessage::Disconnected)
             }
             TelemetryMessage::Socket(SourceEvent::Item(frame)) => {
                 model.received += 1;
                 // One transition can declare independent intents without
                 // performing either operation inline.
                 Command::batch([
-                    Command::send(telemetry.health.clone(), HealthProtocolMessage::FrameSeen),
+                    Command::send(&telemetry.health, HealthProtocolMessage::FrameSeen),
                     Command::effect_with(
                         &telemetry.storage,
                         StoreFrame { frame },
@@ -478,17 +475,11 @@ impl Component for Telemetry {
                 model.desired = None;
                 let error = format!("{error:?}");
                 model.last_failure = Some(error.clone());
-                Command::send(
-                    telemetry.health.clone(),
-                    HealthProtocolMessage::Failed(error),
-                )
+                Command::send(&telemetry.health, HealthProtocolMessage::Failed(error))
             }
             TelemetryMessage::Socket(SourceEvent::Ended) => {
                 model.desired = None;
-                Command::send(
-                    telemetry.health.clone(),
-                    HealthProtocolMessage::Disconnected,
-                )
+                Command::send(&telemetry.health, HealthProtocolMessage::Disconnected)
             }
             TelemetryMessage::Stored(EffectOutcome::Succeeded(_frame_id)) => {
                 // Async completion re-enters the Component only as a Message.
@@ -509,7 +500,7 @@ impl Component for Telemetry {
                 // the domain key needed to interpret its eventual reply.
                 Command::batch(probes.map(|probe| {
                     Command::request_to(
-                        telemetry.health.clone(),
+                        &telemetry.health,
                         HealthProtocolMessage::Read,
                         health_checked(probe),
                     )

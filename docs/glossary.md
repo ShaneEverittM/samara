@@ -359,7 +359,7 @@ gets no correlated outcome. There is no trait; the word only distinguishes it
 from a request in prose.
 
 **Request** — A message variant carrying a `ReplyWith<R>`. A Component issues
-one with `Command::request_to(target, constructor, map)`, passing the
+one with `Command::request_to(&target, constructor, map)`, passing the
 variant's constructor; the runtime mints the token, the constructor's
 `ReplyWith<R>` fixes the reply type, and the typed `RequestOutcome<R>` arrives
 later through `map` as an ordinary Message. A live host issues the same

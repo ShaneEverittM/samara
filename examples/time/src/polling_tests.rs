@@ -66,7 +66,7 @@ impl Component for TimeReader {
     ) -> Command<Self::Message> {
         match message {
             ReadMessage::Read => Command::request_to(
-                config.0.clone(),
+                &config.0,
                 TimeServerMessage::GetCurrentTime,
                 ReadMessage::Received,
             ),

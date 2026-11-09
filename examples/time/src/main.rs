@@ -208,7 +208,7 @@ impl Component for Cli {
                 samara::println!(&config.stdout, "{text}")
             }
             CliMessage::Command(CliCommand::GetTime) => Command::request_to(
-                config.time_server.clone(),
+                &config.time_server,
                 TimeServerMessage::GetCurrentTime,
                 CliMessage::TimeReceived,
             ),

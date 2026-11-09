@@ -538,7 +538,7 @@ library's Component kind never becomes nameable outside its crate.
 
 A Connector is also an address in its own right. A Component may hold a `Connector<M>`
 in its `Config` and reach it with `Command::send`, or with
-`Command::request_to(connector, Constructor, map)` where `Constructor` is a
+`Command::request_to(&connector, Constructor, map)` where `Constructor` is a
 function the provider published that takes a `ReplyWith<R>`; the reply type is
 fixed by that parameter and checked against `map`. `Connector::accepting` adapts
 a library's Connector to the holder's vocabulary once, so the holder's Components
@@ -677,7 +677,7 @@ waiter with `RuntimeError` without manufacturing a Component outcome.
 ### How Do I Bound a Request's Lifetime?
 
 
-Use `Command::request_to_timeout(target, constructor, duration, mapper)`;
+Use `Command::request_to_timeout(&target, constructor, duration, mapper)`;
 pass `Message::from` as the mapper for the canonical
 `From<RequestOutcome<R>>` conversion or a closure to capture application
 context. The runtime starts the duration when interpreting the Command, using

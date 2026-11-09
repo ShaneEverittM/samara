@@ -119,7 +119,7 @@ impl Component for Monitor {
         match message {
             MonitorMessage::Start => Command::batch([
                 Command::send(
-                    config.audit.clone(),
+                    &config.audit,
                     AuditMessage::Changed {
                         what: "api".into(),
                         from: "up".into(),
@@ -127,7 +127,7 @@ impl Component for Monitor {
                     },
                 ),
                 Command::send(
-                    config.audit.clone(),
+                    &config.audit,
                     AuditMessage::Changed {
                         what: "api".into(),
                         from: "down".into(),
@@ -135,7 +135,7 @@ impl Component for Monitor {
                     },
                 ),
                 Command::request_to(
-                    config.audit.clone(),
+                    &config.audit,
                     |reply_with| AuditMessage::Tail(1, reply_with),
                     MonitorMessage::Tail,
                 ),
@@ -357,16 +357,16 @@ impl Component for Teller {
     ) -> Command<TellerMessage> {
         match message {
             TellerMessage::Start => Command::batch([
-                Command::send(config.tally.clone(), TallyMessage::add(2)),
-                Command::send(config.tally.clone(), TallyMessage::add(3)),
+                Command::send(&config.tally, TallyMessage::add(2)),
+                Command::send(&config.tally, TallyMessage::add(3)),
                 match config.patience {
                     None => Command::request_to(
-                        config.tally.clone(),
+                        &config.tally,
                         TallyMessage::total,
                         TellerMessage::Total,
                     ),
                     Some(patience) => Command::request_to_timeout(
-                        config.tally.clone(),
+                        &config.tally,
                         TallyMessage::park,
                         patience,
                         TellerMessage::Total,
@@ -486,7 +486,7 @@ impl Component for DirectMonitor {
         match message {
             MonitorMessage::Start => Command::batch([
                 Command::send(
-                    config.audit.clone(),
+                    &config.audit,
                     AuditMessage::Changed {
                         what: "db".into(),
                         from: "cold".into(),
@@ -494,7 +494,7 @@ impl Component for DirectMonitor {
                     },
                 ),
                 Command::request_to(
-                    config.audit.clone(),
+                    &config.audit,
                     |reply_with| AuditMessage::Tail(1, reply_with),
                     MonitorMessage::Tail,
                 ),
@@ -552,7 +552,7 @@ impl Component for EagerTeller {
 
     fn init(tally: &Connector<TallyMessage>) -> Init<(), TellerMessage> {
         Init::new(()).with_command(Command::request_to(
-            tally.clone(),
+            tally,
             TallyMessage::total,
             TellerMessage::Total,
         ))
@@ -595,11 +595,8 @@ fn an_initial_request_to_a_foreign_connector_fails_both_profile_builds() {
 fn a_connector_request_is_inspectable_without_a_runtime() {
     let mut program = Program::builder();
     let tally = program.install::<Tally>(());
-    let command: Command<TellerMessage> = Command::request_to(
-        tally.exports().clone(),
-        TallyMessage::total,
-        TellerMessage::Total,
-    );
+    let command: Command<TellerMessage> =
+        Command::request_to(tally.exports(), TallyMessage::total, TellerMessage::Total);
     // The message is built with an inert reply token; the continuation runs on
     // an outcome the test chooses. The library's private `Inner` stays private,
     // so the test can only observe what the constructor exposes.

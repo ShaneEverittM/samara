@@ -1783,7 +1783,7 @@ impl Component for EchoRequester {
             EchoRequesterMessage::Start => {
                 let continuation_calls = config.continuation_calls.clone();
                 Command::request_to(
-                    config.echo.clone(),
+                    &config.echo,
                     |reply_with| EchoMessage::Echo(42, reply_with),
                     move |outcome| {
                         continuation_calls.fetch_add(1, Ordering::SeqCst);

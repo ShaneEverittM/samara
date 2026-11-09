@@ -1518,16 +1518,16 @@ impl<Message> Command<Message> {
     /// ```
     /// use samara::{Command, Component, ComponentRef, Connector, Port};
     /// fn forward<C: Component>(target: ComponentRef<C>, message: C::Message) -> Command<()> {
-    ///     Command::send(target, message)
+    ///     Command::send(&target, message)
     /// }
     /// fn through_port<M: Send + 'static>(port: Port<M>, message: M) -> Command<()> {
-    ///     Command::send(port, message)
+    ///     Command::send(&port, message)
     /// }
     /// fn to_connector<M: Send + 'static>(target: Connector<M>, message: M) -> Command<()> {
-    ///     Command::send(target, message)
+    ///     Command::send(&target, message)
     /// }
     /// ```
-    pub fn send<T>(target: T, message: T::Message) -> Self
+    pub fn send<T>(target: &T, message: T::Message) -> Self
     where
         T: Addressable,
     {
@@ -1564,10 +1564,10 @@ impl<Message> Command<Message> {
     /// let mut program = Program::builder();
     /// let tally: Connector<TallyMessage> = program.component::<Tally>(ComponentId::new("tally"), ()).connector();
     /// let command: Command<RequestOutcome<u64>> =
-    ///     Command::request_to(tally, TallyMessage::total, |outcome| outcome);
+    ///     Command::request_to(&tally, TallyMessage::total, |outcome| outcome);
     /// # let _ = command;
     /// ```
-    pub fn request_to<T, R, Build, Map>(target: T, request: Build, map: Map) -> Self
+    pub fn request_to<T, R, Build, Map>(target: &T, request: Build, map: Map) -> Self
     where
         Message: Send + 'static,
         T: Addressable,
@@ -1591,7 +1591,7 @@ impl<Message> Command<Message> {
     /// [`RequestOutcome::TimedOut`], the provider keeps running, and later replies are
     /// ignored. Live execution uses Tokio time; controlled tests advance time themselves.
     pub fn request_to_timeout<T, R, Build, Map>(
-        target: T,
+        target: &T,
         request: Build,
         timeout: Duration,
         map: Map,
@@ -1758,8 +1758,8 @@ impl<Message> Command<Message> {
     /// let mut program = Program::builder();
     /// let ledger = program.port::<LedgerMessage>(PortId::new("ledger"));
     /// let command: Command<()> = Command::batch([
-    ///     Command::send(ledger.clone(), LedgerMessage::Add(2)),
-    ///     Command::send(ledger, LedgerMessage::Add(3)),
+    ///     Command::send(&ledger, LedgerMessage::Add(2)),
+    ///     Command::send(&ledger, LedgerMessage::Add(3)),
     /// ]);
     /// assert_eq!(command.send_intents::<LedgerMessage>(), [&LedgerMessage::Add(2), &LedgerMessage::Add(3)]);
     /// ```
@@ -1803,7 +1803,7 @@ impl<Message> Command<Message> {
     /// enum ClerkMessage { Total(RequestOutcome<u64>) }
     /// let mut program = Program::builder();
     /// let ledger = program.port::<LedgerMessage>(PortId::new("ledger"));
-    /// let command = Command::request_to(ledger, LedgerMessage::Total, ClerkMessage::Total);
+    /// let command = Command::request_to(&ledger, LedgerMessage::Total, ClerkMessage::Total);
     /// let intent = command.into_request_to::<LedgerMessage>().ok().expect("a request to the ledger");
     /// assert!(matches!(intent.message, LedgerMessage::Total(_)));
     /// assert!(matches!(intent.reply(RequestOutcome::Replied(5u64)), ClerkMessage::Total(RequestOutcome::Replied(5))));
@@ -4631,7 +4631,7 @@ impl ProgramBuilder {
     ///     type Model = Option<u64>;
     ///     type Message = RequestOutcome<u64>;
     ///     fn init(config: &Self::Config) -> Init<Self::Model, Self::Message> {
-    ///         Init::default().with_command(Command::request_to(config.counter.clone(), CountMessage::Read, |outcome| outcome))
+    ///         Init::default().with_command(Command::request_to(&config.counter, CountMessage::Read, |outcome| outcome))
     ///     }
     ///     fn update(_config: &Self::Config, value: &mut Option<u64>, reply: Self::Message) -> Command<Self::Message> {
     ///         if let RequestOutcome::Replied(count) = reply { *value = Some(count); }
@@ -5405,7 +5405,7 @@ impl<C: Component> ComponentHandle<C> {
 /// enum ExampleMessage { Notified }
 ///
 /// fn misuse(handle: PortHandle<ExampleMessage>) -> Command<()> {
-///     Command::send(handle, ExampleMessage::Notified)
+///     Command::send(&handle, ExampleMessage::Notified)
 /// }
 /// ```
 ///
