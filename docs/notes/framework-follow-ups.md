@@ -211,6 +211,18 @@ a journal Component; exploratory proposals, not accepted API decisions.
   reply-token variants) is the remedy; it must not reintroduce a request
   trait or a second Command form.
 
+- [ ] **Single-Component Assembly shortcut (wait for a pattern).** Pulse's
+  Journal has a three-line `install`: register one Component, pass every
+  capability through, export `accepting(map)`. That is the degenerate case of
+  a general mechanism, not evidence the mechanism is too strong; `install`
+  earns its shape when an Assembly splits authority, wires its own Ports, or
+  chooses its front door. If several single-Component Assemblies appear, the
+  shortcut must generate the `install` body (macro or derive). A
+  `SimpleAssembly` trait with `type Component` does not work: an associated
+  type in a public impl must be public (E0446), which forces the Component
+  and then its `Message` to be `pub` and undoes the privacy the Assembly
+  provides. A function body is where private types can be named freely.
+
 - [ ] **No small-scale composition: `Command::map` and `Subscriptions::map`
   are missing.** Nothing lifts a `Command<Child>` into a `Command<Parent>` or
   a `Subscriptions<Child>` into a `Subscriptions<Parent>`; the existing `map_*`
