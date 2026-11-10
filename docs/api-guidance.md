@@ -216,7 +216,7 @@ capability values ([ADR-0019](adr/0019-typed-program-requirements.md)):
 type World = (Effect<HttpRequest>, Source<StreamDescriptor<Input>>);
 let (mut program, (http, input)) = Program::builder::<World>();
 let worker = program.component::<Worker>(settings)
-    .with_capabilities((http, input))
+    .with_capabilities(&(http, input))
     .finish()?;
 let program: Program<World> = program.build()?;
 ```
@@ -226,15 +226,32 @@ receives that tuple separately from Config, and every issuance site names the
 corresponding capability. Cloning one capability shares a declared boundary
 without adding another driver obligation. The values perform no I/O.
 
-Live execution uses `with_drivers((HttpDriver::new(), MpscReceiver::new(receiver)))`.
+Live execution pairs capability values with Drivers and hands the pairs to
+the runtime builder in any order (ADR-0027):
+
+```rust,ignore
+Runtime::builder(program)
+    .with_capability(http.supplied_by(HttpDriver::new()))
+    .with_capability(input.supplied_by(MpscReceiver::new(receiver)))
+    .build()?;
+```
+
+`supplied_by` works on one capability or on a tuple of them, and
+`with_capabilities(&caps)` borrows, so the host still holds the values. A
+Driver goes to the capability value it was paired with, which is the value a
+Component was registered with, so two capabilities of the same type cannot
+be exchanged by position. A Driver of the wrong type does not compile. A
+capability left without a Driver fails `build()`; build the live runtime in
+a test if you want that caught in CI. `with_drivers(tuple)` remains for a
+whole positional tuple checked at compile time.
 Controlled execution uses `control_all()`, deriving all controls from the Program
-while retaining exact resource identities. Both then call `build()`. Missing or
-wrong tuples fail compilation; both profiles retain value-level validation.
+while retaining exact resource identities. Both then call `build()`.
+Both profiles retain value-level validation.
 For a type-wide source Driver, use `DrivenSource::new(driver)`. The wrapper
 keeps source Driver selection distinct from exact receiver binding under Rust's
 trait coherence rules. Built-in source Layers execute in both profiles.
-`with_drivers` is the only public live binding operation; its returned builder
-validates the completed bindings with `build()`.
+`with_capability` and `with_drivers` are the only public live binding
+operations; `build()` validates the completed bindings.
 
 The closed set does not mean Samara reflects over Component fields or predicts
 every message edge. Deliberately hiding a foreign capability remains a user
@@ -251,11 +268,12 @@ type Requires = (File<ReadAppend>, Effect<ReadSystemTime>);
 
 // In update, using the supplied file capability:
 let append = File::append_line(&file, format!("{name}: {from} -> {to}")).discard_outcome();
-let read = File::read(&file).into_command_with(Message::ReadCompleted);
+let read = File::read(&file).producing(Message::ReadCompleted);
 
 // The host binds the target once:
 Runtime::builder(program)
-    .with_drivers((FileDriver::new("./data/pulse.journal"), SystemClockDriver))
+    .with_capability(file.supplied_by(FileDriver::new("./data/pulse.journal")))
+    .with_capability(clock.supplied_by(SystemClockDriver))
     .build()?;
 ```
 
@@ -836,7 +854,7 @@ Messages and identities can remain private (ADR-0019 and ADR-0026).
 | Assembly world dependencies | `Assembly::Requires` | The enclosing Program's capability tuple |
 | Complete runtime world | `Program<R>` | `with_drivers(drivers)` live, `control_all()` controlled |
 
-`program.install::<A>(config).with_capabilities(caps).finish()?` returns
+`program.install::<A>(config).with_capabilities(&caps).finish()?` returns
 `InstalledAssembly<A>` holding only the Connector and exports. The Program
 carries binding obligations into runtime setup, so no Assembly token must be
 passed separately. Driver tuples match the Program's requirement shape and

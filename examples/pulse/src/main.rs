@@ -1,7 +1,7 @@
 use samara::{
-    Assembly, Capabilities, Command, Component, Connector, Effect, FileDriver, Init, PrintStdout,
-    Program, RequestOutcome, Runtime, Shutdown, Source, SourceEvent, StdinDriver, StdinLines,
-    StdoutDriver, Subscription, Subscriptions, SystemClockDriver,
+    Assembly, Capabilities, Capability, Command, Component, Connector, Effect, FileDriver, Init,
+    PrintStdout, Program, RequestOutcome, Runtime, Shutdown, Source, SourceEvent, StdinDriver,
+    StdinLines, StdoutDriver, Subscription, Subscriptions, SystemClockDriver,
 };
 
 // This is a "library assembly", that is a subsection of a Program (discussed later)
@@ -98,7 +98,7 @@ async fn main() -> anyhow::Result<()> {
     let journal = builder
         .install::<Journal>(())
         // ...failing to compile if you don't give it its declared capabilities.
-        .with_capabilities(journal_caps)
+        .with_capabilities(&journal_caps)
         .finish()?;
 
     // Install our application component...
@@ -107,7 +107,7 @@ async fn main() -> anyhow::Result<()> {
             journal: journal.connector().clone(),
         })
         // ...that also requires its capabilities.
-        .with_capabilities(monitor_caps)
+        .with_capabilities(&monitor_caps)
         .finish()?;
 
     // Assemble the program, this checks things that _can't_ be checked at compile time.
@@ -115,11 +115,12 @@ async fn main() -> anyhow::Result<()> {
 
     // Create a runtime for our program...
     let runtime = Runtime::builder(program)
-        // ...and install the drivers that actually supply the behavior to the capabilities.
-        .with_drivers((
-            (FileDriver::new("./data/pulse.journal"), SystemClockDriver),
-            (StdinDriver, StdoutDriver::new()),
-        ))
+        // ...and supply each set of capabilities with the drivers that implement it.
+        // Order is free; a capability left out fails the build below.
+        .with_capability(
+            journal_caps.supplied_by((FileDriver::new("./data/pulse.journal"), SystemClockDriver)),
+        )
+        .with_capability(monitor_caps.supplied_by((StdinDriver, StdoutDriver::new())))
         .build()?;
 
     // Run it!

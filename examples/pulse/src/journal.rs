@@ -103,7 +103,7 @@ impl Assembly for Journal {
     ) -> Result<Connector<JournalMessage>, ProgramBuildError> {
         let recorder = program
             .component::<Recorder>(())
-            .with_capabilities(capabilities)
+            .with_capabilities(&capabilities)
             .finish()?;
         Ok(recorder.accepting(Message::Journal))
     }

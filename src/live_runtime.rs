@@ -998,6 +998,11 @@ impl LiveBindings {
         }
     }
 
+    pub(crate) fn extend(&mut self, other: Self) {
+        self.effects.extend(other.effects);
+        self.sources.extend(other.sources);
+    }
+
     pub(crate) fn bind_effect<D, Driver>(&mut self, driver: Driver)
     where
         D: EffectDescriptor,

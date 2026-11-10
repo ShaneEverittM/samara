@@ -76,7 +76,7 @@ fn controlled(model: Model) -> (ControlledRuntime, ComponentRef<Probe>, Capabili
     let (mut builder, caps) = Program::builder::<Inputs>();
     let probe = builder
         .component::<Probe>(model)
-        .with_capabilities(caps.clone())
+        .with_capabilities(&caps)
         .finish()
         .unwrap();
     let runtime = ControlledRuntime::builder(builder.build().unwrap())
@@ -109,18 +109,18 @@ fn optional_and_duplicate_names_do_not_alias_components() {
     let first = builder
         .component::<Probe>(one(1))
         .name("same")
-        .with_capabilities(caps.clone())
+        .with_capabilities(&caps)
         .finish()
         .unwrap();
     let second = builder
         .component::<Probe>(one(1))
-        .with_capabilities(caps.clone())
+        .with_capabilities(&caps)
         .name("same")
         .finish()
         .unwrap();
     let unnamed = builder
         .component::<Probe>(Model::default())
-        .with_capabilities(caps.clone())
+        .with_capabilities(&caps)
         .finish()
         .unwrap();
     assert_ne!(first.id(), second.id());
@@ -148,7 +148,7 @@ fn diagnostic_names_do_not_change_semantic_trace() {
             builder
                 .component::<Probe>(one(1))
                 .name(name)
-                .with_capabilities(caps.clone())
+                .with_capabilities(&caps)
                 .finish()
                 .unwrap();
         }
@@ -212,7 +212,7 @@ fn ambiguous_defaults_explain_how_to_supply_keys() {
             desired: vec![(1, 1), (2, 2)],
             ..Model::default()
         })
-        .with_capabilities(caps)
+        .with_capabilities(&caps)
         .finish()
         .unwrap();
     let error = ControlledRuntime::builder(builder.build().unwrap())
@@ -303,7 +303,7 @@ fn dropped_registration_does_not_change_identity_or_startup_trace() {
         }
         builder
             .component::<Probe>(one(1))
-            .with_capabilities(caps)
+            .with_capabilities(&caps)
             .finish()
             .unwrap();
         let runtime = ControlledRuntime::builder(builder.build().unwrap())
@@ -376,7 +376,7 @@ async fn default_subscription_runs_unchanged_live_and_controlled() {
         let source = caps.0.clone();
         let mirror = builder
             .component::<Mirror>(())
-            .with_capabilities(caps)
+            .with_capabilities(&caps)
             .finish()
             .unwrap();
         (builder.build().unwrap(), mirror, source)

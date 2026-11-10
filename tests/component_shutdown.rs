@@ -180,7 +180,7 @@ fn fixture() -> Fixture {
         .unwrap();
     let vault = builder
         .component::<Vault>(())
-        .with_capabilities(capabilities)
+        .with_capabilities(&capabilities)
         .finish()
         .unwrap();
     builder.connect(&vault_port, &vault.connector());

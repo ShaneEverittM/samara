@@ -10,6 +10,9 @@ ADR-0022 adds `File<P>` requirements with one exact resource binding for their
 permitted operations and moves Journal's target path into that binding.
 ADR-0023 respells boundary work and ADR-0025 flattens `EffectOutcome`; the
 pulse description below reflects both.
+ADR-0027 (trial) adds per-capability Driver binding, whose completeness is
+checked by `build()` instead of the compiler, and makes `with_capabilities`
+take a borrow.
 
 ## Decision
 

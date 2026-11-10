@@ -351,7 +351,7 @@ fn program(increments: StreamDescriptor<u64>) -> (AppProgram, AppRefs) {
             increments: increments.clone(),
             quota: quota_port,
         })
-        .with_capabilities((increment_source.clone(), persistence))
+        .with_capabilities(&(increment_source.clone(), persistence))
         .finish()
         .expect("component registration");
 

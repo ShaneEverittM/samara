@@ -32,6 +32,7 @@ Governing documents:
 - [ADR-0016: One Sending API](adr/0016-one-sending-api.md)
 - [ADR-0018: Assemblies Export a Connector](adr/0018-assemblies-export-a-connector.md)
 - [ADR-0026: Assemblies Export One Value](adr/0026-assemblies-export-one-value.md)
+- [ADR-0027: Drivers Are Supplied per Capability Value](adr/0027-drivers-are-supplied-per-capability.md)
 - [ADR-0023: Boundary Work Is Named `Kind::verb` and Ends with a Finisher](adr/0023-boundary-work-builders-and-finishers.md)
 - [ADR-0024: Component Shutdown](adr/0024-component-shutdown.md)
 - [ADR-0025: Bare Effect Outcomes](adr/0025-bare-effect-outcomes.md)

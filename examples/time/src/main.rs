@@ -312,7 +312,7 @@ async fn main() -> Result<()> {
     // The concrete provider happens to obtain time over HTTP.
     let http_time_server = builder
         .component::<HttpTimeServer>(HttpTimeServerConfig {})
-        .with_capabilities((http, stderr.clone()))
+        .with_capabilities(&(http, stderr.clone()))
         .finish()
         .expect("component registration");
 
@@ -325,7 +325,7 @@ async fn main() -> Result<()> {
         .component::<Cli>(CliConfig {
             time_server: time_port,
         })
-        .with_capabilities((cli_input.clone(), stdout, stderr))
+        .with_capabilities(&(cli_input.clone(), stdout, stderr))
         .finish()
         .expect("component registration");
 

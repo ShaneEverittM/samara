@@ -5,6 +5,7 @@ mod private {
     use super::{Capabilities, Requirements, live_runtime::LiveBindings};
 
     pub trait Requirement {}
+    pub trait CapabilityValue {}
     pub(crate) trait Driver<R: Requirements> {
         fn bind(self, capabilities: &Capabilities<R>, bindings: &mut LiveBindings);
     }
@@ -231,6 +232,72 @@ impl<P: FilePermissions> private::Driver<File<P>> for FileDriver {
         }
     }
 }
+/// A capability value, or a tuple of them, that live Drivers can be supplied for.
+///
+/// Implemented for every shape `Program::builder` hands out. Sealed.
+///
+/// ```
+/// use samara::prelude::*;
+/// let (program, (clock,)) = Program::builder::<(Effect<ReadSystemTime>,)>();
+/// let runtime = Runtime::builder(program.build().unwrap())
+///     .with_capability(clock.supplied_by(SystemClockDriver))
+///     .build();
+/// assert!(runtime.is_ok());
+/// ```
+#[allow(private_bounds)]
+pub trait Capability: private::CapabilityValue + Clone + Send + 'static {
+    /// The requirement shape these capability values were issued for.
+    type Requires: Requirements<Capabilities = Self>;
+
+    /// Pairs these capabilities with the live Drivers that implement them.
+    ///
+    /// The Driver types are checked against the capability shape here. Whether
+    /// every declared capability was supplied exactly once is checked by
+    /// [`RuntimeSetup::build`].
+    fn supplied_by(&self, drivers: impl Drivers<Self::Requires>) -> BoundCapability {
+        let mut bindings = live_runtime::LiveBindings::new();
+        private::Driver::bind(drivers, self, &mut bindings);
+        let capabilities = self.clone();
+        BoundCapability {
+            bindings,
+            validate: Box::new(move |program| Self::Requires::validate(&capabilities, program)),
+        }
+    }
+}
+impl<D: EffectDescriptor> private::CapabilityValue for EffectCapability<D> {}
+impl<D: EffectDescriptor> Capability for EffectCapability<D> {
+    type Requires = Effect<D>;
+}
+impl<S: SourceDescriptor> private::CapabilityValue for SourceCapability<S> {}
+impl<S: SourceDescriptor> Capability for SourceCapability<S> {
+    type Requires = Source<S>;
+}
+#[cfg(feature = "fs")]
+impl<P: FilePermissions> private::CapabilityValue for FileCapability<P> {}
+#[cfg(feature = "fs")]
+impl<P: FilePermissions> Capability for FileCapability<P> {
+    type Requires = File<P>;
+}
+impl private::CapabilityValue for () {}
+impl Capability for () {
+    type Requires = ();
+}
+
+type Provenance = Box<dyn FnOnce(&Arc<()>) -> Result<(), ProgramBuildError> + Send>;
+
+/// Capabilities paired with their live Drivers, awaiting
+/// [`RuntimeSetup::with_capability`]. Made by [`Capability::supplied_by`].
+#[must_use = "pass this to RuntimeSetup::with_capability"]
+pub struct BoundCapability {
+    bindings: live_runtime::LiveBindings,
+    validate: Provenance,
+}
+impl fmt::Debug for BoundCapability {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BoundCapability").finish_non_exhaustive()
+    }
+}
+
 /// A type-wide terminal source Driver used in a requirement tuple.
 pub struct DrivenSource<T>(T);
 impl<T> DrivenSource<T> {
@@ -263,6 +330,10 @@ macro_rules! tuples {
             fn control(caps: &Self::Capabilities, runtime: ControlledRuntimeBuilder, _: private::Key) -> ControlledRuntimeBuilder {
                 $(let runtime = $r::control(&caps.$i, runtime, private::Key);)+ runtime
             }
+        }
+        impl<$($r: Capability),+> private::CapabilityValue for ($($r,)+) {}
+        impl<$($r: Capability),+> Capability for ($($r,)+) {
+            type Requires = ($($r::Requires,)+);
         }
         impl<$($r: Requirements, $d: Drivers<$r>),+> private::Driver<($($r,)+)> for ($($d,)+) {
             fn bind(self, caps: &Capabilities<($($r,)+)>, bindings: &mut live_runtime::LiveBindings) {
@@ -314,18 +385,30 @@ impl<S: SourceDescriptor<Terminal = StdinLines>> private::Driver<Source<S>> for 
     }
 }
 
-/// A live Program awaiting its complete driver tuple.
+/// A live Program awaiting Drivers for its declared capabilities.
 ///
-/// Missing bindings cannot reach runtime construction, even for boundaries
-/// first used after a later Message:
+/// Supply them one capability (or tuple of capabilities) at a time with
+/// [`Self::with_capability`], in any order, then [`Self::build`]. A Driver of
+/// the wrong type for its capability does not compile. A capability left
+/// without a Driver, or given two, fails `build`, even for a boundary first
+/// used after a later Message:
+///
+/// ```
+/// use samara::prelude::*;
+/// let (program, _) = Program::builder::<(Effect<ReadSystemTime>,)>();
+/// let error = Runtime::builder(program.build().unwrap()).build().err().unwrap();
+/// assert!(error.to_string().contains("ReadSystemTime"));
+/// ```
 ///
 /// ```compile_fail
 /// use samara::prelude::*;
-/// let (program, _) = Program::builder::<(Effect<ReadSystemTime>,)>();
-/// Runtime::builder(program.build().unwrap()).build();
+/// let (program, (clock,)) = Program::builder::<(Effect<ReadSystemTime>,)>();
+/// clock.supplied_by(samara::HttpDriver::new());
 /// ```
 ///
-/// The tuple must have every required position and the correct Driver types:
+/// [`Self::with_drivers`] instead takes the whole tuple at once and checks
+/// completeness at compile time. It must have every required position and
+/// the correct Driver types:
 ///
 /// ```compile_fail
 /// use samara::prelude::*;
@@ -338,22 +421,41 @@ impl<S: SourceDescriptor<Terminal = StdinLines>> private::Driver<Source<S>> for 
 /// let (program, _) = Program::builder::<(Effect<ReadSystemTime>,)>();
 /// Runtime::builder(program.build().unwrap()).with_drivers((samara::HttpDriver::new(),));
 /// ```
-#[must_use = "supply the Program's driver tuple with with_drivers"]
+#[must_use = "supply Drivers with with_capability(...) and then build()"]
 pub struct RuntimeSetup<R: Requirements> {
     pub(crate) capabilities: Capabilities<R>,
     pub(crate) builder: RuntimeBuilder,
+    pub(crate) rejected: Option<RuntimeError>,
 }
 impl<R: Requirements> RuntimeSetup<R> {
+    /// Supplies the Drivers paired with some of the Program's capabilities.
+    ///
+    /// Order does not matter. The Driver goes to the capability value it was
+    /// paired with, which is the same value a Component was registered with.
+    pub fn with_capability(mut self, bound: BoundCapability) -> Self {
+        match (bound.validate)(&self.builder.program.program) {
+            Ok(()) => self.builder.bindings.extend(bound.bindings),
+            Err(error) => {
+                self.rejected
+                    .get_or_insert_with(|| RuntimeError::harness(error.to_string()));
+            }
+        }
+        self
+    }
+
+    /// Validates that every declared capability has exactly one Driver and
+    /// builds the runtime.
+    pub fn build(self) -> Result<Runtime, RuntimeError> {
+        match self.rejected {
+            Some(error) => Err(error),
+            None => self.builder.build(),
+        }
+    }
+
     /// Supplies every declared boundary and enables final value-level validation.
     pub fn with_drivers(mut self, drivers: impl Drivers<R>) -> RuntimeBuilder {
         private::Driver::bind(drivers, &self.capabilities, &mut self.builder.bindings);
         self.builder
-    }
-}
-impl RuntimeSetup<()> {
-    /// Builds a Program with no world boundaries.
-    pub fn build(self) -> Result<Runtime, RuntimeError> {
-        self.with_drivers(()).build()
     }
 }
 /// A controlled Program awaiting explicit selection of its declared boundaries.
@@ -410,7 +512,7 @@ pub struct SuppliedCapabilities<T>(T);
 ///     fn update(_: &(), _: &Capabilities<Self::Requires>, _: &mut (), _: ()) -> Command<()> { Command::none() }
 /// }
 /// let (mut program, http) = Program::builder::<(Effect<HttpRequest>,)>();
-/// program.component::<Clock>(()).with_capabilities(http);
+/// program.component::<Clock>(()).with_capabilities(&http);
 /// ```
 #[must_use = "finish component registration with with_capabilities(...).finish()"]
 pub struct ComponentRegistration<'a, R: Requirements, C: Component, State = MissingCapabilities> {
@@ -429,15 +531,18 @@ impl<'a, R: Requirements, C: Component> ComponentRegistration<'a, R, C> {
         }
     }
     /// Supplies the exact capability tuple declared by the Component.
+    ///
+    /// Borrowed, so the same values can later be paired with Drivers through
+    /// [`Capability::supplied_by`].
     pub fn with_capabilities(
         self,
-        caps: Capabilities<C::Requires>,
+        caps: &Capabilities<C::Requires>,
     ) -> ComponentRegistration<'a, R, C, SuppliedCapabilities<Capabilities<C::Requires>>> {
         ComponentRegistration {
             program: self.program,
             name: self.name,
             config: self.config,
-            state: SuppliedCapabilities(caps),
+            state: SuppliedCapabilities(caps.clone()),
         }
     }
 }
@@ -452,7 +557,7 @@ impl<R: Requirements, C: Component, State> ComponentRegistration<'_, R, C, State
 impl<R: Requirements, C: Component<Requires = ()>> ComponentRegistration<'_, R, C> {
     /// Registers a Component with no world capabilities.
     pub fn finish(self) -> Result<ComponentRef<C>, ProgramBuildError> {
-        self.with_capabilities(()).finish()
+        self.with_capabilities(&()).finish()
     }
 }
 impl<R: Requirements, C: Component>
@@ -563,22 +668,22 @@ impl<R: Requirements> ProgramBuilder<R> {
     }
 }
 impl<'a, R: Requirements, A: Assembly> AssemblyRegistration<'a, R, A> {
-    /// Supplies the capabilities required by the Assembly.
+    /// Supplies the capabilities required by the Assembly, borrowed.
     pub fn with_capabilities(
         self,
-        caps: Capabilities<A::Requires>,
+        caps: &Capabilities<A::Requires>,
     ) -> AssemblyRegistration<'a, R, A, SuppliedCapabilities<Capabilities<A::Requires>>> {
         AssemblyRegistration {
             program: self.program,
             config: self.config,
-            state: SuppliedCapabilities(caps),
+            state: SuppliedCapabilities(caps.clone()),
         }
     }
 }
 impl<R: Requirements, A: Assembly<Requires = ()>> AssemblyRegistration<'_, R, A> {
     /// Installs an Assembly requiring no world capabilities.
     pub fn finish(self) -> Result<InstalledAssembly<A>, ProgramBuildError> {
-        self.with_capabilities(()).finish()
+        self.with_capabilities(&()).finish()
     }
 }
 impl<R: Requirements, A: Assembly>

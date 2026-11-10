@@ -146,7 +146,11 @@ pulse journal (`examples/pulse/src/journal.rs`) is the worked example: one
   retained; that is what `Exports` now carries in `tests/assemblies.rs`,
   with the leak it implies noted below. Whether an isolated Component
   runtime makes that unnecessary is still open.
-- **Named positions.** `Requires` is positional. Past five or six entries a
+- **Named positions.** Partly addressed by ADR-0027 (trial): Drivers are
+  supplied per capability value in any order, which removes the same-type
+  swap and the single large tuple. The capability destructure is still
+  positional, and a macro-generated named struct remains the way to keep a
+  compile-time completeness check. Original note: `Requires` is positional. Past five or six entries a
   host's `and_drivers((a, b, c, d, e, f))` stops reading well, which is also
   a signal that the Assembly is too large. A `Requires`-level grouping that
   one driver satisfies, such as an `FsDriver` for several filesystem effects,

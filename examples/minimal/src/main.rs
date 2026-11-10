@@ -130,7 +130,7 @@ fn program(
 
     let counter = program
         .component::<Counter>(CounterConfig { increments })
-        .with_capabilities((input.clone(),))
+        .with_capabilities(&(input.clone(),))
         .finish()
         .expect("component registration");
     (

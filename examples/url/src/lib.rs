@@ -318,7 +318,7 @@ fn assemble() -> Result<Assembled, ProgramBuildError> {
 
     let checker = builder
         .component::<Checker>(CheckerConfig {})
-        .with_capabilities((input.clone(), stdout, stderr, http))
+        .with_capabilities(&(input.clone(), stdout, stderr, http))
         .finish()
         .expect("component registration");
 

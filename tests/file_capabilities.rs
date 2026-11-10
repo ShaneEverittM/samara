@@ -70,12 +70,12 @@ fn fixture() -> Fixture {
     let (mut builder, (left, right, report)) = Program::builder::<ProgramNeeds>();
     let first = builder
         .component::<Writer>("first")
-        .with_capabilities((left.clone(), report.clone()))
+        .with_capabilities(&(left.clone(), report.clone()))
         .finish()
         .unwrap();
     let second = builder
         .component::<Writer>("second")
-        .with_capabilities((right.clone(), report))
+        .with_capabilities(&(right.clone(), report))
         .finish()
         .unwrap();
     (builder.build().unwrap(), [first, second], [left, right])
@@ -122,12 +122,12 @@ fn write_authority_constructs_typed_replacements_and_narrows_to_existing_permiss
     // Both existing component permission sets accept narrower views of this resource.
     let writer = builder
         .component::<Writer>("append")
-        .with_capabilities((file.read_append(), report))
+        .with_capabilities(&(file.read_append(), report))
         .finish()
         .unwrap();
     builder
         .component::<Reader>(())
-        .with_capabilities(file.read_only())
+        .with_capabilities(&file.read_only())
         .finish()
         .unwrap();
     let mut runtime = ControlledRuntime::builder(builder.build().unwrap())
@@ -182,12 +182,12 @@ fn replacements_select_the_exact_resource_and_deliver_typed_outcomes() {
         let (mut builder, (left, right)) = Program::builder::<(File<ReadWrite>, File<WriteOnly>)>();
         let first = builder
             .component::<Replacer>("first")
-            .with_capabilities(left.write_only())
+            .with_capabilities(&left.write_only())
             .finish()
             .unwrap();
         let second = builder
             .component::<Replacer>("second")
-            .with_capabilities(right.clone())
+            .with_capabilities(&right)
             .finish()
             .unwrap();
         let mut runtime = ControlledRuntime::builder(builder.build().unwrap())
@@ -226,12 +226,12 @@ async fn live_write_permissions_replace_existing_contents_at_each_bound_path() {
     let (mut builder, (left, right)) = Program::builder::<(File<ReadWrite>, File<WriteOnly>)>();
     builder
         .component::<Replacer>("first")
-        .with_capabilities(left.write_only())
+        .with_capabilities(&left.write_only())
         .finish()
         .unwrap();
     builder
         .component::<Replacer>("second")
-        .with_capabilities(right)
+        .with_capabilities(&right)
         .finish()
         .unwrap();
     let runtime = Runtime::builder(builder.build().unwrap())
@@ -334,7 +334,7 @@ fn foreign_file_is_rejected_during_component_registration() {
     assert!(
         builder
             .component::<Writer>("foreign")
-            .with_capabilities((foreign, report))
+            .with_capabilities(&(foreign, report))
             .finish()
             .is_err()
     );
@@ -367,7 +367,7 @@ fn narrowed_capability_supplies_a_read_only_component_without_another_binding() 
     let (mut builder, file) = Program::builder::<File<ReadAppend>>();
     let reader = builder
         .component::<Reader>(())
-        .with_capabilities(file.read_only())
+        .with_capabilities(&file.read_only())
         .finish()
         .unwrap();
     let mut runtime = ControlledRuntime::builder(builder.build().unwrap())

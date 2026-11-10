@@ -50,9 +50,11 @@ several doors or a `ComponentRef`, or `()` for an Assembly nobody sends to
 **Requires** — A type-level shape of `Effect<D>`, `Source<S>`, `()`, or nested
 tuples. A `Program<R>` declares its full world boundary; Components and
 Assemblies use `Requires` to describe the capability values they receive.
-`Capabilities<R>` is the corresponding value tuple. Live setup's
-`with_drivers(..)` matches the Program shape position by position, while
-controlled setup's `control_all()` derives every control (ADR-0019).
+`Capabilities<R>` is the corresponding value tuple. Live setup pairs
+capability values with Drivers through `supplied_by` and
+`with_capability` (ADR-0027), or matches the whole shape position by
+position with `with_drivers(..)`, while controlled setup's `control_all()`
+derives every control (ADR-0019).
 
 **VendorsDrivers** — An optional trait an Assembly implements to supply concrete
 live Drivers for its `Requires` through `drivers(driver_config)`. Its

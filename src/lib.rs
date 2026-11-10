@@ -132,21 +132,22 @@ pub mod prelude {
     #[cfg(unix)]
     pub use crate::StdinDriver;
     pub use crate::{
-        Addressable, Assembly, BoxFuture, Capabilities, Command, Component, ComponentHandle,
-        ComponentId, ComponentRef, Connector, ControlledRuntime, ControlledRuntimeBuilder, Decoder,
-        Deliverable, DrivenSource, DriverStopped, Drivers, Effect, EffectBuilder, EffectCapability,
-        EffectDescriptor, EffectDriver, EffectInvocation, EffectOutcome, EffectOutcomeKind, Framed,
-        FramedError, FramedLayer, HttpDriver, HttpError, HttpErrorKind, HttpJsonError, HttpRequest,
-        HttpResponse, HttpResponseError, HttpStatusError, Init, InstalledAssembly, LogicalTime,
-        MpscReceiver, NoMessage, PendingEffect, PendingWork, Port, PortHandle, PortId, PrintStderr,
-        PrintStdout, Program, ProgramBuildError, ProgramBuilder, ReadSystemTime, ReplyWith,
-        RequestBuilder, RequestError, RequestIntent, RequestOutcome, RequestOutcomeKind,
-        Requirements, RunReport, Runtime, RuntimeBuilder, RuntimeError, RuntimeTask, Shutdown,
-        ShutdownReport, Source, SourceCapability, SourceDescriptor, SourceDriver, SourceEvent,
-        SourceEventKind, SourceSink, StatusCode, StderrDriver, StdinError, StdinErrorKind,
-        StdinLines, StdoutDriver, StreamDescriptor, Subscription, SubscriptionAction,
-        SubscriptionId, Subscriptions, SystemClockDriver, TcpBytes, TcpDriver, TcpError,
-        TcpErrorKind, TraceCommandKind, TraceEvent, TraceId, TraceRecord, VendorsDrivers,
+        Addressable, Assembly, BoundCapability, BoxFuture, Capabilities, Capability, Command,
+        Component, ComponentHandle, ComponentId, ComponentRef, Connector, ControlledRuntime,
+        ControlledRuntimeBuilder, Decoder, Deliverable, DrivenSource, DriverStopped, Drivers,
+        Effect, EffectBuilder, EffectCapability, EffectDescriptor, EffectDriver, EffectInvocation,
+        EffectOutcome, EffectOutcomeKind, Framed, FramedError, FramedLayer, HttpDriver, HttpError,
+        HttpErrorKind, HttpJsonError, HttpRequest, HttpResponse, HttpResponseError,
+        HttpStatusError, Init, InstalledAssembly, LogicalTime, MpscReceiver, NoMessage,
+        PendingEffect, PendingWork, Port, PortHandle, PortId, PrintStderr, PrintStdout, Program,
+        ProgramBuildError, ProgramBuilder, ReadSystemTime, ReplyWith, RequestBuilder, RequestError,
+        RequestIntent, RequestOutcome, RequestOutcomeKind, Requirements, RunReport, Runtime,
+        RuntimeBuilder, RuntimeError, RuntimeTask, Shutdown, ShutdownReport, Source,
+        SourceCapability, SourceDescriptor, SourceDriver, SourceEvent, SourceEventKind, SourceSink,
+        StatusCode, StderrDriver, StdinError, StdinErrorKind, StdinLines, StdoutDriver,
+        StreamDescriptor, Subscription, SubscriptionAction, SubscriptionId, Subscriptions,
+        SystemClockDriver, TcpBytes, TcpDriver, TcpError, TcpErrorKind, TraceCommandKind,
+        TraceEvent, TraceId, TraceRecord, VendorsDrivers,
     };
     #[cfg(feature = "fs")]
     pub use crate::{
@@ -2018,7 +2019,7 @@ impl<Message> From<Vec<Subscription<Message>>> for Subscriptions<Message> {
 /// fn program() -> Result<(Program<(Source<StreamDescriptor<u64>>,)>, ComponentRef<Sum>, SourceCapability<StreamDescriptor<u64>>), ProgramBuildError> {
 ///     let (mut builder, (declared_0,)) = samara::Program::builder::<(samara::Source<StreamDescriptor<u64>>,)>();
 ///     let input = declared_0;
-///     let sum = builder.component::<Sum>(()).with_capabilities((input.clone(),)).finish().expect("component registration");
+///     let sum = builder.component::<Sum>(()).with_capabilities(&(input.clone(),)).finish().expect("component registration");
 ///     Ok((builder.build()?, sum, input))
 /// }
 /// let (program_under_test, sum, input) = program()?;
@@ -2149,7 +2150,7 @@ impl<T: Send + 'static> StreamSourceDescriptor for StreamDescriptor<T> {
 /// fn program() -> Result<(Program<(Source<StdinLines>,)>, ComponentRef<Reader>, SourceCapability<StdinLines>), ProgramBuildError> {
 ///     let (mut builder, (declared_0,)) = samara::Program::builder::<(samara::Source<StdinLines>,)>();
 ///     let input = declared_0;
-///     let reader = builder.component::<Reader>(()).with_capabilities((input.clone(),)).finish().expect("component registration");
+///     let reader = builder.component::<Reader>(()).with_capabilities(&(input.clone(),)).finish().expect("component registration");
 ///     Ok((builder.build()?, reader, input))
 /// }
 ///
@@ -5278,6 +5279,7 @@ impl Runtime {
                 program: program.erase(),
                 bindings: live_runtime::LiveBindings::new(),
             },
+            rejected: None,
         }
     }
 
@@ -5834,7 +5836,7 @@ pub struct ControlledRuntimeBuilder {
 /// }
 /// let (mut builder, (declared_0,)) = samara::Program::builder::<(samara::Effect<HttpRequest>,)>();
 /// let http = declared_0;
-/// let check = builder.component::<Check>(()).with_capabilities((http,)).finish().expect("component registration");
+/// let check = builder.component::<Check>(()).with_capabilities(&(http,)).finish().expect("component registration");
 /// let mut runtime = ControlledRuntime::builder(builder.build()?).control_all().build()?;
 /// runtime.run_until_idle()?;
 /// let request = runtime.next_effect::<HttpRequest>()?;

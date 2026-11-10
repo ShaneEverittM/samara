@@ -57,13 +57,13 @@ fn shared_capability_reaches_callbacks_and_delayed_effects() {
     let first = program
         .component::<Reader>(count.clone())
         .name("first")
-        .with_capabilities((read.clone(),))
+        .with_capabilities(&(read.clone(),))
         .finish()
         .unwrap();
     let second = program
         .component::<Reader>(count.clone())
         .name("second")
-        .with_capabilities((read,))
+        .with_capabilities(&(read,))
         .finish()
         .unwrap();
     assert_eq!(count.load(Ordering::SeqCst), 2);
@@ -93,7 +93,7 @@ fn foreign_registration_fails_before_init_and_leaves_no_component() {
         program
             .component::<Reader>(count.clone())
             .name("reader")
-            .with_capabilities(foreign)
+            .with_capabilities(&foreign)
             .finish()
             .is_err()
     );
@@ -101,7 +101,7 @@ fn foreign_registration_fails_before_init_and_leaves_no_component() {
     program
         .component::<Reader>(count.clone())
         .name("reader")
-        .with_capabilities(own)
+        .with_capabilities(&own)
         .finish()
         .unwrap();
     assert_eq!(count.load(Ordering::SeqCst), 1);
@@ -115,13 +115,13 @@ async fn live_tuple_binds_one_driver_for_shared_capabilities() {
     let first = program
         .component::<Reader>(count.clone())
         .name("first")
-        .with_capabilities((read.clone(),))
+        .with_capabilities(&(read.clone(),))
         .finish()
         .unwrap();
     program
         .component::<Reader>(count)
         .name("second")
-        .with_capabilities((read,))
+        .with_capabilities(&(read,))
         .finish()
         .unwrap();
     let runtime = Runtime::builder(program.build().unwrap())
@@ -169,7 +169,7 @@ impl Assembly for Library {
         let reader = program
             .component::<Reader>(count)
             .name("library")
-            .with_capabilities(caps)
+            .with_capabilities(&caps)
             .finish()?;
         Ok(reader)
     }
@@ -181,12 +181,12 @@ fn repeated_assembly_installations_need_no_component_name_coordination() {
     let count = Arc::new(AtomicUsize::new(0));
     let first = program
         .install::<Library>(count.clone())
-        .with_capabilities(caps.clone())
+        .with_capabilities(&caps)
         .finish()
         .unwrap();
     let second = program
         .install::<Library>(count.clone())
-        .with_capabilities(caps)
+        .with_capabilities(&caps)
         .finish()
         .unwrap();
     assert_eq!(first.exports().id().name(), second.exports().id().name());
@@ -202,7 +202,7 @@ fn assembly_forwards_a_subset_of_nested_program_requirements() {
     let count = Arc::new(AtomicUsize::new(0));
     let installed = program
         .install::<Library>(count.clone())
-        .with_capabilities(reader_caps)
+        .with_capabilities(&reader_caps)
         .finish()
         .unwrap();
     assert_eq!(count.load(Ordering::SeqCst), 1);
@@ -231,14 +231,14 @@ fn foreign_assembly_capabilities_fail_before_installation() {
     assert!(
         program
             .install::<Library>(count.clone())
-            .with_capabilities(foreign)
+            .with_capabilities(&foreign)
             .finish()
             .is_err()
     );
     assert_eq!(count.load(Ordering::SeqCst), 0);
     program
         .install::<Library>(count)
-        .with_capabilities(own)
+        .with_capabilities(&own)
         .finish()
         .unwrap();
     program.build().unwrap();

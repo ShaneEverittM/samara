@@ -178,6 +178,10 @@ The following evidence must pass before the Phase 2 audit:
   its two refusal cases, an initial send to a foreign Port failing both
   profile builds, and `PortHandle::send`, `request_to`, and
   `request_to_timeout` live.
+- `tests/capability_binding.rs` validates per-capability Driver binding
+  (ADR-0027): a Driver follows its capability value for two same-typed
+  files, a tuple is supplied whole or split, and a missing, duplicate, or
+  foreign capability fails `build` with a naming error.
 - `tests/assemblies.rs` validates `Assembly`, `Requires`, `Drivers`,
   `VendorsDrivers`, and `InstalledAssembly` (ADR-0013, ADR-0019, ADR-0026):
   `ProgramBuilder::install(...).with_capabilities(...).finish()` returns the
