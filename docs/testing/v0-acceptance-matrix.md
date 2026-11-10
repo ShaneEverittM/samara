@@ -179,9 +179,10 @@ The following evidence must pass before the Phase 2 audit:
   profile builds, and `PortHandle::send`, `request_to`, and
   `request_to_timeout` live.
 - `tests/assemblies.rs` validates `Assembly`, `Requires`, `Drivers`,
-  `VendorsDrivers`, and `InstalledAssembly` (ADR-0013, ADR-0018, ADR-0019):
+  `VendorsDrivers`, and `InstalledAssembly` (ADR-0013, ADR-0019, ADR-0026):
   `ProgramBuilder::install(...).with_capabilities(...).finish()` returns the
-  Assembly's Connector and exports. The host names its own Port and connects
+  Assembly's exports: a struct carrying a Connector and a `ComponentRef`,
+  two peer doors onto two Components, or `()`. The host names its own Port and connects
   the Connector to it. `with_drivers` supplies the Program's complete driver
   tuple, optionally using `A::drivers(driver_config)`, and `control_all()` controls its
   requirements. `RuntimeSetup` compile-fail cases reject missing or incorrect

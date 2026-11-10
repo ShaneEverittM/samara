@@ -2,7 +2,9 @@
 
 - Status: Accepted; the `Assembly` trait is amended by
   [ADR-0018](0018-assemblies-export-a-connector.md), which adds `Accepts` and
-  makes `install` return the Assembly's Connector alongside its exports.
+  makes `install` return the Assembly's Connector alongside its exports, and
+  then by [ADR-0026](0026-assemblies-export-one-value.md), which returns to a
+  single `Exports` value that is usually that Connector.
 - Date: November 8, 2026
 - Deciders: Samara maintainers
 - Scope: The `Component` trait signature, the reuse unit (`Assembly`), Port

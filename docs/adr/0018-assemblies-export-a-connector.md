@@ -1,6 +1,9 @@
 # ADR-0018: Assemblies Export a Connector
 
-- Status: Accepted. Amends the `Assembly` trait of ADR-0013.
+- Status: Accepted. Amends the `Assembly` trait of ADR-0013. Superseded in
+  part by [ADR-0026](0026-assemblies-export-one-value.md), which removes
+  `Accepts` and the tuple result: an Assembly's Connector is its `Exports`.
+  The rule that Assemblies declare no Ports continues as guidance.
 - Date: November 9, 2026
 - Deciders: Samara maintainers
 - Scope: The shape of `Assembly::install`'s result; `Assembly::Accepts`;

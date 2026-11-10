@@ -469,9 +469,8 @@ impl<R: Requirements, C: Component>
 pub trait Assembly {
     /// Settings and connections supplied by the caller.
     type Config;
-    /// The public message vocabulary accepted by its Connector.
-    type Accepts: Send + 'static;
-    /// Additional exported values, often `()`.
+    /// What the caller receives: a [`Connector`] for an Assembly with one
+    /// door, a struct naming several, or `()` when nobody sends to it.
     type Exports;
     /// The capability tuple required by its internal Components.
     type Requires: Requirements;
@@ -480,27 +479,63 @@ pub trait Assembly {
         program: &mut ProgramBuilder<R>,
         config: Self::Config,
         capabilities: Capabilities<Self::Requires>,
-    ) -> Result<(Connector<Self::Accepts>, Self::Exports), ProgramBuildError>;
+    ) -> Result<Self::Exports, ProgramBuildError>;
 }
-/// An Assembly's address and exports. Runtime obligations remain in the Program.
+/// An installed Assembly's exports. Runtime obligations remain in the Program.
 pub struct InstalledAssembly<A: Assembly> {
-    connector: Connector<A::Accepts>,
     exports: A::Exports,
 }
 impl<A: Assembly> InstalledAssembly<A> {
-    /// The Assembly's public address.
-    pub fn connector(&self) -> &Connector<A::Accepts> {
-        &self.connector
-    }
-    /// Additional exports.
+    /// What the Assembly exported.
     pub fn exports(&self) -> &A::Exports {
         &self.exports
     }
 }
-impl<A: Assembly> Addressable for InstalledAssembly<A> {
-    type Message = A::Accepts;
-    fn to_address(&self) -> Address<A::Accepts> {
-        self.connector.to_address()
+impl<A, M> InstalledAssembly<A>
+where
+    A: Assembly<Exports = Connector<M>>,
+{
+    /// The Assembly's address, when its export is a single [`Connector`].
+    ///
+    /// An Assembly that exports several doors names them as fields; reach
+    /// those through [`Self::exports`].
+    ///
+    /// ```compile_fail
+    /// use samara::prelude::*;
+    ///
+    /// struct Doors {
+    ///     samples: Connector<u8>,
+    ///     queries: Connector<u16>,
+    /// }
+    /// struct Telemetry;
+    /// impl Assembly for Telemetry {
+    ///     type Config = ();
+    ///     type Exports = Doors;
+    ///     type Requires = ();
+    ///     fn install<R: Requirements>(
+    ///         _: &mut ProgramBuilder<R>,
+    ///         _: (),
+    ///         _: Capabilities<()>,
+    ///     ) -> Result<Doors, ProgramBuildError> {
+    ///         unimplemented!()
+    ///     }
+    /// }
+    /// fn which_door(installed: &InstalledAssembly<Telemetry>) {
+    ///     let _ = installed.connector();
+    /// }
+    /// ```
+    pub fn connector(&self) -> &Connector<M> {
+        &self.exports
+    }
+}
+impl<A, M> Addressable for InstalledAssembly<A>
+where
+    A: Assembly<Exports = Connector<M>>,
+    M: Send + 'static,
+{
+    type Message = M;
+    fn to_address(&self) -> Address<M> {
+        self.exports.to_address()
     }
 }
 impl<A: Assembly> fmt::Debug for InstalledAssembly<A> {
@@ -552,8 +587,8 @@ impl<R: Requirements, A: Assembly>
     /// Validates provenance and installs the Assembly. Discard the ProgramBuilder on failure.
     pub fn finish(self) -> Result<InstalledAssembly<A>, ProgramBuildError> {
         A::Requires::validate(&self.state.0, &self.program.program)?;
-        let (connector, exports) = A::install(self.program, self.config, self.state.0)?;
-        Ok(InstalledAssembly { connector, exports })
+        let exports = A::install(self.program, self.config, self.state.0)?;
+        Ok(InstalledAssembly { exports })
     }
 }
 /// Optional default live implementations for a library Assembly.

@@ -825,9 +825,9 @@ that defense-in-depth fault does not add a dynamic dependency to the Program.
 
 A library ships a type implementing `Assembly`. Its `install` registers one
 or more Components in the caller's `ProgramBuilder<R>`, using the capabilities
-the caller supplies, and returns a `Connector<Accepts>` plus other `Exports`.
+the caller supplies, and returns its `Exports`: usually a `Connector`.
 The host owns Port naming and connection. Internal Component kinds, Models,
-Messages and identities can remain private (ADR-0018 and ADR-0019).
+Messages and identities can remain private (ADR-0019 and ADR-0026).
 
 | Scope | Declaration | Supplied by |
 | --- | --- | --- |
@@ -859,12 +859,23 @@ Implement `Assembly` on a public marker struct, not on a Component.
 Component forces its `Config`, `Model`, and `Message` public too; a marker
 costs one line and names nothing else.
 
-An Assembly's address is always a `Connector<Accepts>`, whether the Assembly
-is part of your own application or a library: the host either cuts a Port in
-its own vocabulary and connects the Connector to it, adapting with
-`accepting` when the vocabularies differ, or holds the Connector in a Config
-and addresses it directly. `Exports` is for anything else, such as a
-`ComponentRef` a controlled test needs, and is `()` otherwise. See
+An Assembly's address is a `Connector`, whether the Assembly is part of your
+own application or a library: the host either cuts a Port in its own
+vocabulary and connects the Connector to it, adapting with `accepting` when
+the vocabularies differ, or holds the Connector in a Config and addresses it
+directly. `Exports` takes one of three shapes (ADR-0026):
+
+```rust,ignore
+type Exports = Connector<JournalMessage>;   // one door: journal.connector()
+type Exports = TelemetryDoors;              // several: telemetry.exports().queries
+type Exports = ();                          // nobody sends to it
+```
+
+`installed.connector()` exists only for the first, where it reads the same
+as `ComponentRef::connector()`. Use a struct when the doors lead to
+different Components or serve audiences that should not share a message
+type, or when a controlled test needs a `ComponentRef`. Do not export a
+Port: the consumer owns Ports. See
 [How Does a Component Expose Itself?](#how-does-a-component-expose-itself).
 
 Controlled execution delivers messages and inspects state by `ComponentRef<C>`,

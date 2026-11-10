@@ -93,20 +93,19 @@ pub enum JournalMessage {
 
 impl Assembly for Journal {
     type Config = ();
-    type Accepts = JournalMessage;
-    type Exports = ();
+    type Exports = Connector<JournalMessage>;
     type Requires = (File<ReadAppend>, Effect<ReadSystemTime>);
 
     fn install<R: Requirements>(
         program: &mut ProgramBuilder<R>,
         _: Self::Config,
         capabilities: Capabilities<Self::Requires>,
-    ) -> Result<(Connector<JournalMessage>, ()), ProgramBuildError> {
+    ) -> Result<Connector<JournalMessage>, ProgramBuildError> {
         let recorder = program
             .component::<Recorder>(())
             .with_capabilities(capabilities)
             .finish()?;
-        Ok((recorder.accepting(Message::Journal), ()))
+        Ok(recorder.accepting(Message::Journal))
     }
 }
 

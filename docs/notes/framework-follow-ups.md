@@ -155,8 +155,8 @@ a journal Component; exploratory proposals, not accepted API decisions.
   `with_assembly(..)` alone on the controlled one, and `VendorsDrivers`
   (ADR-0013); design, rejected alternatives, and remaining open items are in
   the [Assembly design note](assembly-design.md). Amended November 9 by
-  ADR-0018: every Assembly returns a `Connector<Accepts>` and declares no
-  Ports. ADR-0021 resolves Component identity scoping with builder-issued IDs
+  ADR-0018 and ADR-0026: an Assembly declares no Ports and exports one
+  value, usually a `Connector`. ADR-0021 resolves Component identity scoping with builder-issued IDs
   and optional diagnostic names. Still open: named `Requires` positions and a
   Port-level controlled ingress so an Assembly can be tested from outside its
   module.

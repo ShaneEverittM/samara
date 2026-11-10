@@ -66,21 +66,20 @@ mod journal_lib {
 
     impl Assembly for Journal {
         type Config = ();
-        type Accepts = JournalMessage;
-        type Exports = ();
+        type Exports = Connector<JournalMessage>;
         type Requires = ();
 
         fn install<R: Requirements>(
             program: &mut ProgramBuilder<R>,
             _: (),
             _: Capabilities<Self::Requires>,
-        ) -> Result<(Connector<JournalMessage>, ()), ProgramBuildError> {
+        ) -> Result<Connector<JournalMessage>, ProgramBuildError> {
             let recorder = program
                 .component::<Recorder>(())
                 .name("journal")
                 .finish()
                 .expect("component registration");
-            Ok((recorder.accepting(RecorderMessage::Journal), ()))
+            Ok(recorder.accepting(RecorderMessage::Journal))
         }
     }
 }
@@ -346,21 +345,20 @@ mod tally_lib {
 
     impl Assembly for Tally {
         type Config = ();
-        type Accepts = TallyMessage;
-        type Exports = ();
+        type Exports = Connector<TallyMessage>;
         type Requires = ();
 
         fn install<R: Requirements>(
             program: &mut ProgramBuilder<R>,
             _: (),
             _: Capabilities<Self::Requires>,
-        ) -> Result<(Connector<TallyMessage>, ()), ProgramBuildError> {
+        ) -> Result<Connector<TallyMessage>, ProgramBuildError> {
             let counter = program
                 .component::<Counter>(())
                 .name("tally")
                 .finish()
                 .expect("component registration");
-            Ok((counter.connector(), ()))
+            Ok(counter.connector())
         }
     }
 }
@@ -684,4 +682,18 @@ fn a_connector_request_is_inspectable_without_a_runtime() {
         intent.reply(RequestOutcome::Replied(5u64)),
         TellerMessage::Total(RequestOutcome::Replied(5))
     ));
+}
+
+#[test]
+fn a_one_door_assembly_is_itself_an_address() {
+    fn message_type_of<T: Addressable>(_: &T) -> &'static str {
+        std::any::type_name::<T::Message>()
+    }
+    let (mut program, ()) = Program::builder::<()>();
+    let tally = program
+        .install::<tally_lib::Tally>(())
+        .finish()
+        .expect("assembly installation");
+    assert_eq!(message_type_of(&tally), message_type_of(tally.connector()));
+    assert_eq!(tally.connector().id(), tally.exports().id());
 }

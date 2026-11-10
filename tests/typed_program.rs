@@ -159,20 +159,19 @@ fn two_exact_stream_positions_remain_distinct() {
 struct Library;
 impl Assembly for Library {
     type Config = Arc<AtomicUsize>;
-    type Accepts = Option<u64>;
     type Exports = ComponentRef<Reader>;
     type Requires = (Effect<Read>,);
     fn install<R: Requirements>(
         program: &mut ProgramBuilder<R>,
         count: Self::Config,
         caps: Capabilities<Self::Requires>,
-    ) -> Result<(Connector<Self::Accepts>, Self::Exports), ProgramBuildError> {
+    ) -> Result<Self::Exports, ProgramBuildError> {
         let reader = program
             .component::<Reader>(count)
             .name("library")
             .with_capabilities(caps)
             .finish()?;
-        Ok((reader.connector(), reader))
+        Ok(reader)
     }
 }
 
@@ -190,11 +189,8 @@ fn repeated_assembly_installations_need_no_component_name_coordination() {
         .with_capabilities(caps)
         .finish()
         .unwrap();
-    assert_eq!(
-        first.connector().id().name(),
-        second.connector().id().name()
-    );
-    assert_ne!(first.connector().id(), second.connector().id());
+    assert_eq!(first.exports().id().name(), second.exports().id().name());
+    assert_ne!(first.exports().id(), second.exports().id());
     assert_eq!(count.load(Ordering::SeqCst), 2);
     program.build().unwrap();
 }

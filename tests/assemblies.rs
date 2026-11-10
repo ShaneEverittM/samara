@@ -94,15 +94,15 @@ impl Component for Recorder {
     }
 }
 
-/// Controlled execution has no Port-level ingress, so the test keeps the
-/// `ComponentRef` in `Exports`. Live hosts only use the Connector.
+/// Controlled execution has no Port-level ingress, so the test exports the
+/// `ComponentRef` beside the Connector. Live hosts only use the Connector.
 struct RecorderExports {
+    ledger: Connector<LedgerMessage>,
     recorder: ComponentRef<Recorder>,
 }
 
 impl Assembly for Recorder {
     type Config = ();
-    type Accepts = LedgerMessage;
     type Exports = RecorderExports;
     type Requires = (Effect<Stamp>, Source<Pulses>);
 
@@ -110,16 +110,16 @@ impl Assembly for Recorder {
         program: &mut ProgramBuilder<R>,
         _: (),
         (stamp, pulses): Capabilities<RecorderNeeds>,
-    ) -> Result<(Connector<LedgerMessage>, RecorderExports), ProgramBuildError> {
+    ) -> Result<RecorderExports, ProgramBuildError> {
         let recorder = program
             .component::<Recorder>(())
             .name("recorder")
             .with_capabilities((stamp, pulses))
             .finish()?;
-        Ok((
-            recorder.accepting(RecorderMessage::Ledger),
-            RecorderExports { recorder },
-        ))
+        Ok(RecorderExports {
+            ledger: recorder.accepting(RecorderMessage::Ledger),
+            recorder,
+        })
     }
 }
 
@@ -171,7 +171,7 @@ fn assemble() -> (
         .finish()
         .expect("assembly installation");
     let ledger = program.port::<LedgerMessage>(PortId::new("ledger"));
-    program.connect(&ledger, recorder.connector());
+    program.connect(&ledger, &recorder.exports().ledger);
     (
         program.build().expect("program assembles"),
         recorder,
@@ -180,9 +180,12 @@ fn assemble() -> (
 }
 
 #[test]
-fn install_returns_a_token_carrying_the_connector_and_exports() {
+fn install_returns_a_token_carrying_the_exports() {
     let (_program, recorder, _) = assemble();
-    assert_eq!(recorder.connector().id(), recorder.exports().recorder.id());
+    assert_eq!(
+        recorder.exports().ledger.id(),
+        recorder.exports().recorder.id()
+    );
     assert_eq!(recorder.exports().recorder.id().name(), "recorder");
     assert!(format!("{recorder:?}").contains("Recorder"));
 }
@@ -262,3 +265,160 @@ fn controlled_builder_registers_every_requirement_through_with_assembly() {
 }
 
 // Missing-binding coverage moved to RuntimeSetup compile-fail contracts (ADR-0019).
+
+// ADR-0026: an Assembly exports one value. Two doors onto two Components are
+// two named fields, and neither is "the" address.
+
+struct Sample(u8);
+struct Query(&'static str);
+
+struct Ingest;
+impl Component for Ingest {
+    type Requires = ();
+    type Config = ();
+    type Model = Vec<u8>;
+    type Message = Sample;
+
+    fn init(_: &(), _: &Capabilities<()>) -> Init<Vec<u8>, Sample> {
+        Init::new(Vec::new())
+    }
+
+    fn update(
+        _: &(),
+        _: &Capabilities<()>,
+        seen: &mut Vec<u8>,
+        Sample(value): Sample,
+    ) -> Command<Sample> {
+        seen.push(value);
+        Command::none()
+    }
+}
+
+struct Reader;
+impl Component for Reader {
+    type Requires = ();
+    type Config = ();
+    type Model = Vec<&'static str>;
+    type Message = Query;
+
+    fn init(_: &(), _: &Capabilities<()>) -> Init<Vec<&'static str>, Query> {
+        Init::new(Vec::new())
+    }
+
+    fn update(
+        _: &(),
+        _: &Capabilities<()>,
+        asked: &mut Vec<&'static str>,
+        Query(question): Query,
+    ) -> Command<Query> {
+        asked.push(question);
+        Command::none()
+    }
+}
+
+struct TelemetryDoors {
+    samples: Connector<Sample>,
+    queries: Connector<Query>,
+    ingest: ComponentRef<Ingest>,
+    reader: ComponentRef<Reader>,
+}
+
+struct Telemetry;
+impl Assembly for Telemetry {
+    type Config = ();
+    type Exports = TelemetryDoors;
+    type Requires = ();
+
+    fn install<R: Requirements>(
+        program: &mut ProgramBuilder<R>,
+        _: (),
+        _: Capabilities<()>,
+    ) -> Result<TelemetryDoors, ProgramBuildError> {
+        let ingest = program.component::<Ingest>(()).finish()?;
+        let reader = program.component::<Reader>(()).finish()?;
+        Ok(TelemetryDoors {
+            samples: ingest.connector(),
+            queries: reader.connector(),
+            ingest,
+            reader,
+        })
+    }
+}
+
+/// Holds one Connector per door and uses each once at startup.
+struct Probe;
+struct ProbeConfig {
+    samples: Connector<Sample>,
+    queries: Connector<Query>,
+}
+impl Component for Probe {
+    type Requires = ();
+    type Config = ProbeConfig;
+    type Model = ();
+    type Message = ();
+
+    fn init(config: &ProbeConfig, _: &Capabilities<()>) -> Init<(), ()> {
+        Init::new(()).with_command(Command::batch([
+            Command::send(&config.samples, Sample(7)),
+            Command::send(&config.queries, Query("latest")),
+        ]))
+    }
+
+    fn update(_: &ProbeConfig, _: &Capabilities<()>, (): &mut (), (): ()) -> Command<()> {
+        Command::none()
+    }
+}
+
+#[test]
+fn an_assembly_with_two_doors_exports_both_as_peers() {
+    let (mut program, ()) = Program::builder::<()>();
+    let telemetry = program
+        .install::<Telemetry>(())
+        .finish()
+        .expect("assembly installation");
+    let doors = telemetry.exports();
+    program
+        .component::<Probe>(ProbeConfig {
+            samples: doors.samples.clone(),
+            queries: doors.queries.clone(),
+        })
+        .finish()
+        .expect("probe registration");
+    let (ingest, reader) = (doors.ingest.clone(), doors.reader.clone());
+    let mut runtime = ControlledRuntime::builder(program.build().expect("program assembles"))
+        .control_all()
+        .build()
+        .expect("nothing to control");
+
+    runtime.run_until_idle().expect("startup settles");
+
+    assert_eq!(runtime.state(&ingest).expect("ingest state"), &[7]);
+    assert_eq!(runtime.state(&reader).expect("reader state"), &["latest"]);
+}
+
+struct Background;
+impl Assembly for Background {
+    type Config = ();
+    type Exports = ();
+    type Requires = ();
+
+    fn install<R: Requirements>(
+        program: &mut ProgramBuilder<R>,
+        _: (),
+        _: Capabilities<()>,
+    ) -> Result<(), ProgramBuildError> {
+        program.component::<Ingest>(()).finish()?;
+        Ok(())
+    }
+}
+
+#[test]
+fn an_assembly_nobody_sends_to_exports_nothing() {
+    let (mut program, ()) = Program::builder::<()>();
+    let background = program
+        .install::<Background>(())
+        .finish()
+        .expect("assembly installation");
+    let () = background.exports();
+    program.build().expect("program assembles");
+}

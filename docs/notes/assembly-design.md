@@ -62,10 +62,10 @@ not use; Components are peers connected by Ports.
 
 The authoritative description is the `Assembly` rustdoc in `src/lib.rs`,
 with its full example and two compile-fail cases, and `tests/assemblies.rs`.
-In one paragraph: `Assembly` has `Config`, `Accepts`, `Exports`, and
+In one paragraph: `Assembly` has `Config`, `Exports`, and
 `Requires`, and an `install` associated function that declares into a
-`ProgramBuilder` and returns the Assembly's `Connector<Accepts>` plus its
-other exports (ADR-0018); `ProgramBuilder::install` returns a `must_use`
+`ProgramBuilder` and returns its `Exports`, usually a `Connector`
+(ADR-0026, superseding ADR-0018's separate `Accepts`); `ProgramBuilder::install` returns a `must_use`
 `InstalledAssembly<A>` token carrying
 the exports. The live builder's `with_assembly(token)` returns a
 `WithAssembly` step whose only method, `and_drivers`, takes any value
@@ -141,7 +141,8 @@ pulse journal (`examples/pulse/src/journal.rs`) is the worked example: one
   Assembly installations require no Component-name coordination through Config.
 - **Exports beyond a Port.** Settled November 9, 2026 (ADR-0018): every
   Assembly returns a `Connector<Accepts>` as its address, and `Exports` is
-  for anything else. The url checker's tests wanted a private `ComponentRef`
+  for anything else. Revised the same day by ADR-0026: `Exports` is the one
+  result, a `Connector` for one door, a struct for several, `()` for none. The url checker's tests wanted a private `ComponentRef`
   retained; that is what `Exports` now carries in `tests/assemblies.rs`,
   with the leak it implies noted below. Whether an isolated Component
   runtime makes that unnecessary is still open.

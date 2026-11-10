@@ -628,16 +628,17 @@ interaction and leaves one way for a Command to reach a Component:
 ## Accepted and Implemented Contract: Assemblies
 
 [ADR-0013](adr/0013-component-kinds-assemblies-and-first-party-effects.md)
-as amended by [ADR-0018](adr/0018-assemblies-export-a-connector.md) and
-[ADR-0019](adr/0019-typed-program-requirements.md):
+as amended by [ADR-0018](adr/0018-assemblies-export-a-connector.md),
+[ADR-0019](adr/0019-typed-program-requirements.md), and
+[ADR-0026](adr/0026-assemblies-export-one-value.md):
 
-- `Assembly` has `Config`, `Accepts`, `Exports`, and `Requires`. Its generic
+- `Assembly` has `Config`, `Exports`, and `Requires`. Its generic
   `install<R>(&mut ProgramBuilder<R>, Config, Capabilities<Self::Requires>)`
-  returns `Result<(Connector<Accepts>, Exports), ProgramBuildError>`.
+  returns `Result<Exports, ProgramBuildError>`.
   It installs Components using supplied capabilities, and declares no Ports or drivers.
 - `program.install::<A>(config).with_capabilities(caps).finish()?` returns
-  `InstalledAssembly<A>` exposing `connector()` and `exports()`, and implementing
-  `Addressable`. It carries no separate runtime installation obligation.
+  `InstalledAssembly<A>` exposing `exports()`. When `Exports` is a
+  `Connector<M>` it also exposes `connector()` and implements `Addressable`. It carries no separate runtime installation obligation.
 - The enclosing `Program<R>` carries all binding obligations. Live setup uses
   `Runtime::builder(program).with_drivers(drivers).build()?`; controlled setup
   uses `ControlledRuntime::builder(program).control_all().build()?`.

@@ -33,18 +33,19 @@ a full driver tuple or `control_all()` completes it (ADR-0019).
 
 **Assembly** — A reusable slice of Program assembly: a type whose `install`
 registers its own Components using capabilities supplied by the enclosing
-`ProgramBuilder<R>`, hands back a `Connector` accepting `Accepts` as its
-address plus any other `Exports`, and lists the world boundaries the host
-must drive as `Requires`. It declares no Ports; the host names its own and
-connects the Connector to them (ADR-0018). The unit of reuse in Samara is an
+`ProgramBuilder<R>`, hands back its `Exports`, and lists the world
+boundaries the host must drive as `Requires`. It declares no Ports; the host
+names its own and connects the Assembly's Connector to them (ADR-0018,
+ADR-0026). The unit of reuse in Samara is an
 Assembly, not a Component. It leaves no trace at runtime: the Components it
 installs are ordinary peers. Not a *SubComponent*: Samara has no
 parent-child `update` nesting.
 
-**Accepts (of an Assembly)** — The message type the Assembly's Connector
-accepts, named from the host's side: the Assembly's public vocabulary. For a
-library it is usually an opaque type whose constructor functions are the
-API; an Assembly nobody sends to still names its facade Component's Message.
+**Exports (of an Assembly)** — The one value `install` returns: a
+`Connector<M>` for an Assembly with one door (then `installed.connector()`
+exists and the installed Assembly is itself `Addressable`), a struct naming
+several doors or a `ComponentRef`, or `()` for an Assembly nobody sends to
+(ADR-0026).
 
 **Requires** — A type-level shape of `Effect<D>`, `Source<S>`, `()`, or nested
 tuples. A `Program<R>` declares its full world boundary; Components and
@@ -605,7 +606,8 @@ to hold.
 | `Command::effect`, `effect_with`, `effect_discarding_outcome`, `request_to`, `request_to_timeout`, `into_command_with`, `into_request_to` | `Effect::perform(&capability, d)`, `File::read(&file)`, `Command::request(&target, ctor)` with `.timeout(d)`, and the finishers `producing`, `into_command`, `finish_with`, `discard_outcome`; `into_request` | Replaced November 2026 (ADR-0023, spelling under audit). World work is called on the requirement that authorizes it; `Command` is the root for work that needs no capability (`send`, `reply`, `request`, `none`, `batch`, `after`); how an outcome ends is a finisher, not part of a function name. |
 | `EffectFailure<E>`, `EffectFailure::Cancelled`, `CancelReason`, `EffectOutcomeKind::Cancelled` | `EffectOutcome::Failed(E)` | Removed November 2026 (ADR-0025, amending ADR-0020). No live mechanism cancelled a bare effect, and shutdown is `Component::shutdown`, so the case had no producer. |
 | Recipient, Address | Connector | Working names while the provider-owned address was designed; *Connector* pairs with *Port* and names the thing held rather than a role. |
-| An Assembly exporting a `Port` | `Assembly::Accepts` and `InstalledAssembly::connector` | Removed November 9, 2026 (ADR-0018). Assemblies declare no Ports; the host names its own and connects the Assembly's Connector. |
+| An Assembly exporting a `Port` | A `Connector` in `Exports` | Removed November 9, 2026 (ADR-0018). Assemblies declare no Ports; the host names its own and connects the Assembly's Connector. |
+| `Assembly::Accepts`, `install` returning `(Connector<Accepts>, Exports)` | `type Exports = Connector<M>` (or a struct, or `()`) | Removed November 9, 2026 (ADR-0026). A required door ranked peer doors and gave a door to Assemblies nobody sends to; `installed.connector()` now exists exactly when `Exports` is a Connector. |
 | `Installed<A>` | `InstalledAssembly<A>` | Renamed November 8, 2026 so `with_assembly(installed_assembly)` reads as a sentence; ADR-0019 subsequently removed its runtime token role; it retains the Connector and exports. |
 | `LiveRuntime`, `LiveRuntimeBuilder` | `Runtime`, `RuntimeBuilder` | Renamed November 9, 2026: the live profile is the one every application names, so it carries no qualifier; *live execution* remains the glossary term for the profile, and `ControlledRuntime` keeps its adjective. |
 | `messages!`, `Notification<M>`, `Request<M>`, `RequestInvocation`, `Command::notify`, `request`, `request_with`, `request_timeout`, `request_timeout_with`, `TraceCommandKind::Notify` | `Command::send(&target, ..)`, `Command::request(&target, ctor)`, `request_to_timeout`; a request variant carrying `ReplyWith<R>`; `TraceCommandKind::Send` with `target_port` | Removed November 8, 2026 (ADR-0016). The trait form and the constructor form gave the same guarantee twice; the message type is the protocol. |
