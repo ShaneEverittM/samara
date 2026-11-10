@@ -236,6 +236,33 @@ a journal Component; exploratory proposals, not accepted API decisions.
 
 ## Component Completion and Supervision — Open Design Questions
 
+Positions reached November 2026, not yet an ADR:
+
+- **Shutdown is never a reason on an effect outcome.** Drain lets in-flight
+  effects finish with real outcomes; Cancel aborts them and drops their
+  mappers. Delivering `Cancelled(Shutdown)` would mean running `update`,
+  whose Commands either run (so it was a drain) or are discarded (so the
+  transition was unobservable). "The program is stopping" is a fact about
+  the Component, not about each effect it has in flight.
+- **Stopping is a `Component::shutdown` method, not a Message.** Sketch:
+  `fn shutdown(config, capabilities, model: Self::Model) -> Command<NoMessage>`
+  with a default of `Command::none()`. No Message variant to invent, nothing
+  another Component can forge, the Model taken by value so held reply tokens
+  can be answered, and termination guaranteed by the return type: finishing
+  work only (ADR-0023). Open: which shutdown modes call it (Drain yes,
+  Cancel probably not), deterministic order across Components, how its
+  finishing work is awaited and bounded, what happens to messages that
+  arrive afterwards, and whether a faulted Component gets the call.
+- **Cancellation should appear in an outcome type only where something that
+  cancels is present.** The live runtime has no source of per-effect
+  cancellation today; `EffectFailure::Cancelled` reaches a Component only
+  from a controlled test. A bare effect's outcome could be success or its
+  Driver's error, making `|EffectOutcome::Succeeded(t)| ..` irrefutable for
+  an infallible effect such as `ReadSystemTime`, with a deadline or
+  supersession step adding its reason to the type when asked for. This would
+  undo part of ADR-0020, which is acceptable; decide it when the first
+  mechanism that cancels an effect is designed.
+
 - **Completion rule:** Consider having `Command::stop(...)` declare that its
   Component is finished, with the runtime finishing when all Components have
   stopped. Define how runtime-owned cleanup and faults reach the host. A
