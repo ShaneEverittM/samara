@@ -463,9 +463,11 @@ impl EffectDriver<Observation> for Observer {
 
 fn live(program: TestProgram) -> (Runtime, tokio::sync::mpsc::UnboundedReceiver<Observation>) {
     let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+    let caps = program.capabilities().clone();
     (
         Runtime::builder(program)
-            .with_drivers((Observer(sender),))
+            .with(&caps)
+            .supplied_by((Observer(sender),))
             .build()
             .unwrap(),
         receiver,

@@ -121,11 +121,12 @@ async fn live_tuple_binds_one_driver_for_shared_capabilities() {
     program
         .component::<Reader>(count)
         .name("second")
-        .with_capabilities(&(read,))
+        .with_capabilities(&(read.clone(),))
         .finish()
         .unwrap();
     let runtime = Runtime::builder(program.build().unwrap())
-        .with_drivers((ReadDriver,))
+        .with(&read)
+        .supplied_by(ReadDriver)
         .build()
         .unwrap();
     let handle = runtime.handle(&first).unwrap();
@@ -137,7 +138,7 @@ async fn live_tuple_binds_one_driver_for_shared_capabilities() {
 #[test]
 fn two_exact_stream_positions_remain_distinct() {
     type Inputs = (Source<StreamDescriptor<u64>>, Source<StreamDescriptor<u64>>);
-    let (program, _) = Program::builder::<Inputs>();
+    let (program, inputs) = Program::builder::<Inputs>();
     let (_, first) = tokio::sync::mpsc::channel(1);
     let (_, second) = tokio::sync::mpsc::channel(1);
     let tokio = tokio::runtime::Builder::new_current_thread()
@@ -146,7 +147,8 @@ fn two_exact_stream_positions_remain_distinct() {
         .unwrap();
     let _guard = tokio.enter();
     Runtime::builder(program.build().unwrap())
-        .with_drivers((MpscReceiver::new(first), MpscReceiver::new(second)))
+        .with(&inputs)
+        .supplied_by((MpscReceiver::new(first), MpscReceiver::new(second)))
         .build()
         .unwrap();
     let (program, _) = Program::builder::<Inputs>();

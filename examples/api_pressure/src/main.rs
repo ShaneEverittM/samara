@@ -378,8 +378,10 @@ async fn live_shape() -> Result<(), RuntimeError> {
     // Runtime assembly owns the operational channel receiver and effect
     // executor. The logical capabilities and descriptors inside Components
     // stay inert.
+    let caps = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with_drivers((samara::MpscReceiver::new(receiver), LivePersistence))
+        .with(&caps)
+        .supplied_by((samara::MpscReceiver::new(receiver), LivePersistence))
         .build()?;
 
     let counter = runtime.handle(&refs.counter)?;

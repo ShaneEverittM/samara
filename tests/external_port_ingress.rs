@@ -328,8 +328,10 @@ fn runtime_with_observer(
 ) -> (Runtime, tokio::sync::mpsc::UnboundedReceiver<()>) {
     let (observed, observations) = tokio::sync::mpsc::unbounded_channel();
     let (ingress_observed, _ingress_observations) = tokio::sync::mpsc::unbounded_channel();
+    let caps = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with_drivers((
+        .with(&caps)
+        .supplied_by((
             IngressObserver {
                 observed: ingress_observed,
             },
@@ -344,8 +346,10 @@ fn runtime_with_observer(
 fn runtime_with_default_effects(program: TestProgram) -> Runtime {
     let (request_observed, _request_observations) = tokio::sync::mpsc::unbounded_channel();
     let (ingress_observed, _ingress_observations) = tokio::sync::mpsc::unbounded_channel();
+    let caps = program.capabilities().clone();
     Runtime::builder(program)
-        .with_drivers((
+        .with(&caps)
+        .supplied_by((
             IngressObserver {
                 observed: ingress_observed,
             },
@@ -422,8 +426,11 @@ async fn cloned_port_handles_deliver_each_send_exactly_once() -> Result<(), Runt
     builder.connect(&port, &provider.accepting(ProviderMessage::Host));
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
     let (request_observed, _request_observations) = tokio::sync::mpsc::unbounded_channel();
-    let runtime = Runtime::builder(builder.build().expect("valid cloned-handle Program"))
-        .with_drivers((
+    let program = builder.build().expect("valid cloned-handle Program");
+    let caps = program.capabilities().clone();
+    let runtime = Runtime::builder(program)
+        .with(&caps)
+        .supplied_by((
             IngressObserver { observed },
             ObservationDriver {
                 observed: request_observed,
@@ -544,8 +551,10 @@ async fn dropping_the_waiter_does_not_cancel_runtime_owned_request_work() -> Res
     let (release, request_release) = tokio::sync::oneshot::channel();
     let (request_observed, _request_observations) = tokio::sync::mpsc::unbounded_channel();
     let (ingress_observed, _ingress_observations) = tokio::sync::mpsc::unbounded_channel();
+    let caps = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with_drivers((
+        .with(&caps)
+        .supplied_by((
             IngressObserver {
                 observed: ingress_observed,
             },
@@ -632,8 +641,11 @@ async fn component_and_port_ingress_share_one_shutdown_cutoff() -> Result<(), Ru
     builder.connect(&port, &provider.accepting(ProviderMessage::Host));
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
     let (request_observed, _request_observations) = tokio::sync::mpsc::unbounded_channel();
-    let runtime = Runtime::builder(builder.build().expect("valid race Program"))
-        .with_drivers((
+    let program = builder.build().expect("valid race Program");
+    let caps = program.capabilities().clone();
+    let runtime = Runtime::builder(program)
+        .with(&caps)
+        .supplied_by((
             IngressObserver { observed },
             ObservationDriver {
                 observed: request_observed,

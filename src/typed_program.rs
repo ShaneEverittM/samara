@@ -197,15 +197,15 @@ impl Requirements for () {
 /// A source driver handles the terminal descriptor beneath its declared Layers.
 /// Use `MpscReceiver` for an exact channel resource and `StdinDriver` for stdin.
 /// With the `fs` feature, one `FileDriver` supplies all operations of a `File<P>`.
-/// Binding is private; supply values through [`RuntimeSetup::with_drivers`].
+/// Binding is private; supply values through [`RuntimeSetup::with`].
 /// This trait is sealed. Implement [`EffectDriver`] or [`SourceDriver`] for
 /// application-defined Drivers.
 ///
 /// ```compile_fail
 /// use samara::*;
-/// fn bypass(builder: RuntimeBuilder, capability: &EffectCapability<ReadSystemTime>) {
+/// fn bypass(capability: &EffectCapability<ReadSystemTime>) {
 ///     <SystemClockDriver as Drivers<Effect<ReadSystemTime>>>::bind(
-///         SystemClockDriver, capability, builder,
+///         SystemClockDriver, capability,
 ///     );
 /// }
 /// ```
@@ -234,35 +234,12 @@ impl<P: FilePermissions> private::Driver<File<P>> for FileDriver {
 }
 /// A capability value, or a tuple of them, that live Drivers can be supplied for.
 ///
-/// Implemented for every shape `Program::builder` hands out. Sealed.
-///
-/// ```
-/// use samara::prelude::*;
-/// let (program, (clock,)) = Program::builder::<(Effect<ReadSystemTime>,)>();
-/// let runtime = Runtime::builder(program.build().unwrap())
-///     .with_capability(clock.supplied_by(SystemClockDriver))
-///     .build();
-/// assert!(runtime.is_ok());
-/// ```
+/// Implemented for every shape `Program::builder` hands out. Sealed. Pass a
+/// reference to [`RuntimeSetup::with`].
 #[allow(private_bounds)]
 pub trait Capability: private::CapabilityValue + Clone + Send + 'static {
     /// The requirement shape these capability values were issued for.
     type Requires: Requirements<Capabilities = Self>;
-
-    /// Pairs these capabilities with the live Drivers that implement them.
-    ///
-    /// The Driver types are checked against the capability shape here. Whether
-    /// every declared capability was supplied exactly once is checked by
-    /// [`RuntimeSetup::build`].
-    fn supplied_by(&self, drivers: impl Drivers<Self::Requires>) -> BoundCapability {
-        let mut bindings = live_runtime::LiveBindings::new();
-        private::Driver::bind(drivers, self, &mut bindings);
-        let capabilities = self.clone();
-        BoundCapability {
-            bindings,
-            validate: Box::new(move |program| Self::Requires::validate(&capabilities, program)),
-        }
-    }
 }
 impl<D: EffectDescriptor> private::CapabilityValue for EffectCapability<D> {}
 impl<D: EffectDescriptor> Capability for EffectCapability<D> {
@@ -281,21 +258,6 @@ impl<P: FilePermissions> Capability for FileCapability<P> {
 impl private::CapabilityValue for () {}
 impl Capability for () {
     type Requires = ();
-}
-
-type Provenance = Box<dyn FnOnce(&Arc<()>) -> Result<(), ProgramBuildError> + Send>;
-
-/// Capabilities paired with their live Drivers, awaiting
-/// [`RuntimeSetup::with_capability`]. Made by [`Capability::supplied_by`].
-#[must_use = "pass this to RuntimeSetup::with_capability"]
-pub struct BoundCapability {
-    bindings: live_runtime::LiveBindings,
-    validate: Provenance,
-}
-impl fmt::Debug for BoundCapability {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("BoundCapability").finish_non_exhaustive()
-    }
 }
 
 /// A type-wide terminal source Driver used in a requirement tuple.
@@ -369,8 +331,8 @@ impl<S: StreamSourceDescriptor> private::Driver<Source<S>> for MpscReceiver<S::S
 
 /// Binds the corresponding standard-input capability to the process stdin reader.
 ///
-/// Supply this value at a `Source<StdinLines>` position, or a composed source
-/// with that terminal descriptor, in [`RuntimeSetup::with_drivers`]. Multiple
+/// Supply this value for a `Source<StdinLines>` capability, or a composed source
+/// with that terminal descriptor, through [`RuntimeSetup::with`]. Multiple
 /// process-input bindings or a competing type-wide Driver fail runtime build.
 /// Only one active subscription may read stdin across all runtimes. A competing
 /// reader faults the runtime; application code must not read stdin concurrently.
@@ -387,11 +349,37 @@ impl<S: SourceDescriptor<Terminal = StdinLines>> private::Driver<Source<S>> for 
 
 /// A live Program awaiting Drivers for its declared capabilities.
 ///
-/// Supply them one capability (or tuple of capabilities) at a time with
-/// [`Self::with_capability`], in any order, then [`Self::build`]. A Driver of
-/// the wrong type for its capability does not compile. A capability left
-/// without a Driver, or given two, fails `build`, even for a boundary first
-/// used after a later Message:
+/// Name a capability, or a tuple of them, with [`Self::with`] and supply its
+/// Drivers, in any order, then [`Self::build`]:
+///
+/// ```
+/// use samara::prelude::*;
+/// let (program, (clock,)) = Program::builder::<(Effect<ReadSystemTime>,)>();
+/// let runtime = Runtime::builder(program.build().unwrap())
+///     .with(&clock)
+///     .supplied_by(SystemClockDriver)
+///     .build();
+/// assert!(runtime.is_ok());
+/// ```
+///
+/// A Driver of the wrong type for its capability does not compile:
+///
+/// ```compile_fail
+/// use samara::prelude::*;
+/// let (program, (clock,)) = Program::builder::<(Effect<ReadSystemTime>,)>();
+/// Runtime::builder(program.build().unwrap()).with(&clock).supplied_by(samara::HttpDriver::new());
+/// ```
+///
+/// A capability must be given its Drivers before anything else happens:
+///
+/// ```compile_fail
+/// use samara::prelude::*;
+/// let (program, (clock,)) = Program::builder::<(Effect<ReadSystemTime>,)>();
+/// Runtime::builder(program.build().unwrap()).with(&clock).build();
+/// ```
+///
+/// A capability left without a Driver, or given two, fails `build`, even for
+/// a boundary first used after a later Message:
 ///
 /// ```
 /// use samara::prelude::*;
@@ -400,62 +388,70 @@ impl<S: SourceDescriptor<Terminal = StdinLines>> private::Driver<Source<S>> for 
 /// assert!(error.to_string().contains("ReadSystemTime"));
 /// ```
 ///
-/// ```compile_fail
-/// use samara::prelude::*;
-/// let (program, (clock,)) = Program::builder::<(Effect<ReadSystemTime>,)>();
-/// clock.supplied_by(samara::HttpDriver::new());
-/// ```
-///
-/// [`Self::with_drivers`] instead takes the whole tuple at once and checks
-/// completeness at compile time. It must have every required position and
-/// the correct Driver types:
+/// Bindings can only be added this way:
 ///
 /// ```compile_fail
 /// use samara::prelude::*;
-/// let (program, _) = Program::builder::<(Effect<ReadSystemTime>,)>();
-/// Runtime::builder(program.build().unwrap()).with_drivers(());
+/// let (program, ()) = Program::builder::<()>();
+/// Runtime::builder(program.build().unwrap()).bind_effect::<ReadSystemTime, _>(SystemClockDriver);
 /// ```
-///
-/// ```compile_fail
-/// use samara::prelude::*;
-/// let (program, _) = Program::builder::<(Effect<ReadSystemTime>,)>();
-/// Runtime::builder(program.build().unwrap()).with_drivers((samara::HttpDriver::new(),));
-/// ```
-#[must_use = "supply Drivers with with_capability(...) and then build()"]
+#[must_use = "supply Drivers with with(&capability).supplied_by(driver) and then build()"]
 pub struct RuntimeSetup<R: Requirements> {
-    pub(crate) capabilities: Capabilities<R>,
     pub(crate) builder: RuntimeBuilder,
     pub(crate) rejected: Option<RuntimeError>,
+    pub(crate) requirements: PhantomData<fn() -> R>,
 }
 impl<R: Requirements> RuntimeSetup<R> {
-    /// Supplies the Drivers paired with some of the Program's capabilities.
+    /// Names the capabilities whose Drivers are supplied next.
     ///
-    /// Order does not matter. The Driver goes to the capability value it was
-    /// paired with, which is the same value a Component was registered with.
-    pub fn with_capability(mut self, bound: BoundCapability) -> Self {
-        match (bound.validate)(&self.builder.program.program) {
-            Ok(()) => self.builder.bindings.extend(bound.bindings),
-            Err(error) => {
-                self.rejected
-                    .get_or_insert_with(|| RuntimeError::harness(error.to_string()));
-            }
+    /// Takes one capability or a tuple of them, borrowed. Order across calls
+    /// does not matter: a Driver goes to the capability value named here,
+    /// which is the same value a Component was registered with.
+    pub fn with<C: Capability>(self, capabilities: &C) -> RuntimeSupply<'_, R, C> {
+        RuntimeSupply {
+            setup: self,
+            capabilities,
         }
-        self
     }
 
     /// Validates that every declared capability has exactly one Driver and
     /// builds the runtime.
+    ///
+    /// A missing, duplicate, conflicting, or foreign binding returns an error
+    /// naming the descriptor type, as do foreign capabilities in startup
+    /// commands and subscriptions. Call [`Runtime::spawn`] to begin work.
     pub fn build(self) -> Result<Runtime, RuntimeError> {
         match self.rejected {
             Some(error) => Err(error),
             None => self.builder.build(),
         }
     }
-
-    /// Supplies every declared boundary and enables final value-level validation.
-    pub fn with_drivers(mut self, drivers: impl Drivers<R>) -> RuntimeBuilder {
-        private::Driver::bind(drivers, &self.capabilities, &mut self.builder.bindings);
-        self.builder
+}
+/// Capabilities named by [`RuntimeSetup::with`], awaiting their Drivers.
+#[must_use = "supply the Drivers for these capabilities with supplied_by(...)"]
+pub struct RuntimeSupply<'a, R: Requirements, C: Capability> {
+    setup: RuntimeSetup<R>,
+    capabilities: &'a C,
+}
+impl<R: Requirements, C: Capability> RuntimeSupply<'_, R, C> {
+    /// Supplies the live Drivers for the named capabilities.
+    ///
+    /// The Driver types are checked against the capability shape here.
+    /// Whether every declared capability was supplied exactly once is checked
+    /// by [`RuntimeSetup::build`].
+    pub fn supplied_by(self, drivers: impl Drivers<C::Requires>) -> RuntimeSetup<R> {
+        let mut setup = self.setup;
+        match C::Requires::validate(self.capabilities, &setup.builder.program.program) {
+            Ok(()) => {
+                private::Driver::bind(drivers, self.capabilities, &mut setup.builder.bindings)
+            }
+            Err(error) => {
+                setup
+                    .rejected
+                    .get_or_insert_with(|| RuntimeError::harness(error.to_string()));
+            }
+        }
+        setup
     }
 }
 /// A controlled Program awaiting explicit selection of its declared boundaries.
@@ -532,8 +528,8 @@ impl<'a, R: Requirements, C: Component> ComponentRegistration<'a, R, C> {
     }
     /// Supplies the exact capability tuple declared by the Component.
     ///
-    /// Borrowed, so the same values can later be paired with Drivers through
-    /// [`Capability::supplied_by`].
+    /// Borrowed, so the same values can later be named to
+    /// [`RuntimeSetup::with`] when Drivers are supplied.
     pub fn with_capabilities(
         self,
         caps: &Capabilities<C::Requires>,

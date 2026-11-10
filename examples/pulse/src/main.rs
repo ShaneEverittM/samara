@@ -1,7 +1,7 @@
 use samara::{
-    Assembly, Capabilities, Capability, Command, Component, Connector, Effect, FileDriver, Init,
-    PrintStdout, Program, RequestOutcome, Runtime, Shutdown, Source, SourceEvent, StdinDriver,
-    StdinLines, StdoutDriver, Subscription, Subscriptions, SystemClockDriver,
+    Assembly, Capabilities, Command, Component, Connector, Effect, FileDriver, Init, PrintStdout,
+    Program, RequestOutcome, Runtime, Shutdown, Source, SourceEvent, StdinDriver, StdinLines,
+    StdoutDriver, Subscription, Subscriptions, SystemClockDriver,
 };
 
 // This is a "library assembly", that is a subsection of a Program (discussed later)
@@ -117,10 +117,10 @@ async fn main() -> anyhow::Result<()> {
     let runtime = Runtime::builder(program)
         // ...and supply each set of capabilities with the drivers that implement it.
         // Order is free; a capability left out fails the build below.
-        .with_capability(
-            journal_caps.supplied_by((FileDriver::new("./data/pulse.journal"), SystemClockDriver)),
-        )
-        .with_capability(monitor_caps.supplied_by((StdinDriver, StdoutDriver::new())))
+        .with(&journal_caps)
+        .supplied_by((FileDriver::new("./data/pulse.journal"), SystemClockDriver))
+        .with(&monitor_caps)
+        .supplied_by((StdinDriver, StdoutDriver::new()))
         .build()?;
 
     // Run it!

@@ -158,8 +158,10 @@ async fn phase6_mpsc_closure_ends_once() {
     drop(sender);
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
     let (program, _, _stream) = stream_program(descriptor, 1);
+    let caps = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with_drivers((
+        .with(&caps)
+        .supplied_by((
             samara::MpscReceiver::new(receiver),
             StreamObserver {
                 observations: observed,
@@ -183,8 +185,10 @@ async fn phase6_mpsc_duplicate_or_reactivation_faults() {
     let (_sender, receiver) = tokio::sync::mpsc::channel::<u64>(1);
     let (observed, _observations) = tokio::sync::mpsc::unbounded_channel();
     let (program, components, _stream) = stream_program(descriptor, 2);
+    let caps = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with_drivers((
+        .with(&caps)
+        .supplied_by((
             samara::MpscReceiver::new(receiver),
             StreamObserver {
                 observations: observed,
@@ -217,8 +221,10 @@ async fn phase6_mpsc_duplicate_or_reactivation_faults() {
     drop(sender);
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
     let (program, components, _stream) = stream_program(descriptor, 1);
+    let caps = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with_drivers((
+        .with(&caps)
+        .supplied_by((
             samara::MpscReceiver::new(receiver),
             StreamObserver {
                 observations: observed,
@@ -371,8 +377,10 @@ fn tcp_runtime(
 ) {
     let (program, _probe) = tcp_program(endpoint);
     let (observed, observations) = tokio::sync::mpsc::unbounded_channel();
+    let caps = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with_drivers((
+        .with(&caps)
+        .supplied_by((
             samara::DrivenSource::new(samara::TcpDriver),
             TcpObserver {
                 observations: observed,

@@ -51,15 +51,15 @@ several doors or a `ComponentRef`, or `()` for an Assembly nobody sends to
 tuples. A `Program<R>` declares its full world boundary; Components and
 Assemblies use `Requires` to describe the capability values they receive.
 `Capabilities<R>` is the corresponding value tuple. Live setup pairs
-capability values with Drivers through `supplied_by` and
-`with_capability` (ADR-0027), or matches the whole shape position by
-position with `with_drivers(..)`, while controlled setup's `control_all()`
+capability values with Drivers through
+`with(&capabilities).supplied_by(drivers)` (ADR-0027), while controlled
+setup's `control_all()`
 derives every control (ADR-0019).
 
 **VendorsDrivers** — An optional trait an Assembly implements to supply concrete
 live Drivers for its `Requires` through `drivers(driver_config)`. Its
 `DriverConfig` contains live binding settings independently of `Assembly::Config`.
-The caller incorporates that tuple into the Program's `with_drivers` tuple. A library normally
+The caller supplies that tuple for the Assembly's capabilities with `supplied_by`. A library normally
 feature-gates the implementation.
 
 **Program boundary** — The scope within which Samara's guarantees apply. Code
@@ -165,8 +165,8 @@ the decode error. Cancellation is not a variant.
 UTF-8 lines from process stdin (ADR-0009), with line-ending stripping and one
 final unterminated Item at EOF. `StdinError` is a typed `Read` or
 `InvalidUtf8` failure that ends the Source without `Ended`. The descriptor is
-platform-neutral; `StdinDriver` selects the exact capability at its
-`with_drivers` tuple position on Unix, one per runtime, sharing one process-wide lease.
+platform-neutral; `StdinDriver` binds the exact capability it is supplied
+for on Unix, one per runtime, sharing one process-wide lease.
 
 **Error** — Typed data explaining why an operation could not complete, such as
 `TcpError` or `RequestError`. Payload types use the `Error` noun.
@@ -301,8 +301,8 @@ Concrete descriptor types must not use `Source` to mean an inert declaration,
 because `Source` is reserved for the runtime-scoped realization.
 `StreamDescriptor<T>` uses the otherwise optional `Descriptor` suffix to avoid
 confusion with a running stream. It names logical event production independently
-of the live adapter; `MpscReceiver::new(receiver)` in `with_drivers` names one
-concrete Tokio realization for the exact SourceCapability at that position, whose terminal descriptor is
+of the live adapter; `MpscReceiver::new(receiver)` names one
+concrete Tokio realization for the exact SourceCapability it is supplied for, whose terminal descriptor is
 `StreamDescriptor<T>`. That capability may itself describe a built-in composed
 Source, in which case stream items still traverse its Layers.
 
@@ -609,6 +609,7 @@ to hold.
 | `EffectFailure<E>`, `EffectFailure::Cancelled`, `CancelReason`, `EffectOutcomeKind::Cancelled` | `EffectOutcome::Failed(E)` | Removed November 2026 (ADR-0025, amending ADR-0020). No live mechanism cancelled a bare effect, and shutdown is `Component::shutdown`, so the case had no producer. |
 | Recipient, Address | Connector | Working names while the provider-owned address was designed; *Connector* pairs with *Port* and names the thing held rather than a role. |
 | An Assembly exporting a `Port` | A `Connector` in `Exports` | Removed November 9, 2026 (ADR-0018). Assemblies declare no Ports; the host names its own and connects the Assembly's Connector. |
+| `RuntimeSetup::with_drivers(tuple)`, public `RuntimeBuilder`, `with_capabilities(caps)` by value | `Runtime::builder(program).with(&capabilities).supplied_by(drivers)`, `with_capabilities(&caps)` | Replaced November 10, 2026 (ADR-0027). A positional tuple let two same-typed capabilities swap Drivers silently; Drivers now follow the capability value, and completeness is checked by `build()` instead of the compiler. |
 | `Assembly::Accepts`, `install` returning `(Connector<Accepts>, Exports)` | `type Exports = Connector<M>` (or a struct, or `()`) | Removed November 9, 2026 (ADR-0026). A required door ranked peer doors and gave a door to Assemblies nobody sends to; `installed.connector()` now exists exactly when `Exports` is a Connector. |
 | `Installed<A>` | `InstalledAssembly<A>` | Renamed November 8, 2026 so `with_assembly(installed_assembly)` reads as a sentence; ADR-0019 subsequently removed its runtime token role; it retains the Connector and exports. |
 | `LiveRuntime`, `LiveRuntimeBuilder` | `Runtime`, `RuntimeBuilder` | Renamed November 9, 2026: the live profile is the one every application names, so it carries no qualifier; *live execution* remains the glossary term for the profile, and `ControlledRuntime` keeps its adjective. |

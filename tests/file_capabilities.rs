@@ -235,7 +235,10 @@ async fn live_write_permissions_replace_existing_contents_at_each_bound_path() {
         .finish()
         .unwrap();
     let runtime = Runtime::builder(builder.build().unwrap())
-        .with_drivers((FileDriver::new(&first_path), FileDriver::new(&second_path)))
+        .with(&left)
+        .supplied_by(FileDriver::new(&first_path))
+        .with(&right)
+        .supplied_by(FileDriver::new(&second_path))
         .build()
         .unwrap();
     assert_eq!(
@@ -477,14 +480,15 @@ fn hidden_foreign_file_is_rejected_at_startup_or_before_controlled_execution() {
 async fn hidden_foreign_file_is_rejected_before_live_execution() {
     for initial in [true, false] {
         let (_, foreign) = Program::builder::<File<ReadOnly>>();
-        let (mut builder, _) = Program::builder::<File<ReadOnly>>();
+        let (mut builder, declared) = Program::builder::<File<ReadOnly>>();
         let target = builder
             .component::<HiddenFile>((foreign, initial))
             .finish()
             .unwrap();
         let root = TempRoot::new();
         let runtime = Runtime::builder(builder.build().unwrap())
-            .with_drivers(FileDriver::new(root.0.join("unread.log")))
+            .with(&declared)
+            .supplied_by(FileDriver::new(root.0.join("unread.log")))
             .build();
         if initial {
             assert!(runtime.is_err());
@@ -524,8 +528,10 @@ async fn same_type_files_bind_independently_and_read_their_own_appends() {
     let root = TempRoot::new();
     let (program, components, _) = fixture();
     let (sender, mut reports) = tokio::sync::mpsc::unbounded_channel();
+    let caps = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with_drivers((
+        .with(&caps)
+        .supplied_by((
             FileDriver::new(root.0.join("left/events.log")),
             FileDriver::new(root.0.join("right/events.log")),
             Reporter(sender),

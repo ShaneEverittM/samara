@@ -351,8 +351,10 @@ async fn finish_with_runs_the_same_way_live() -> Result<(), RuntimeError> {
         relay_port,
         ..
     } = fixture();
+    let caps = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with_drivers(FixedProbe(9))
+        .with(&caps)
+        .supplied_by(FixedProbe(9))
         .build()?;
     let relay = runtime.port_handle(&relay_port)?;
     let task = runtime.spawn();

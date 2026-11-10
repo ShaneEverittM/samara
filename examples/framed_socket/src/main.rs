@@ -630,8 +630,10 @@ fn config(endpoint: &str, generation: u64) -> FeedConfig {
 /// structured shutdown through the runtime owner.
 async fn live_shape() -> Result<(), RuntimeError> {
     let (program, refs) = program();
+    let caps = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with_drivers((LiveFrameStore, samara::DrivenSource::new(TokioTcpBytes)))
+        .with(&caps)
+        .supplied_by((LiveFrameStore, samara::DrivenSource::new(TokioTcpBytes)))
         .build()?;
 
     let telemetry = runtime.handle(&refs.telemetry)?;

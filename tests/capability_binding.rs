@@ -66,8 +66,10 @@ async fn a_driver_follows_its_capability_value_not_a_position() {
         .unwrap();
 
     let runtime = Runtime::builder(builder.build().unwrap())
-        .with_capability(journal_file.supplied_by(FileDriver::new(root.0.join("journal.log"))))
-        .with_capability(config_file.supplied_by(FileDriver::new(root.0.join("config.log"))))
+        .with(&journal_file)
+        .supplied_by(FileDriver::new(root.0.join("journal.log")))
+        .with(&config_file)
+        .supplied_by(FileDriver::new(root.0.join("config.log")))
         .build()
         .expect("every capability has one Driver");
 
@@ -91,9 +93,8 @@ fn a_tuple_is_supplied_whole_or_split_after_registration_borrowed_it() {
 
     let (builder, caps) = Program::builder::<FileAndClock>();
     let whole = Runtime::builder(builder.build().unwrap())
-        .with_capability(
-            caps.supplied_by((FileDriver::new(root.0.join("whole.log")), SystemClockDriver)),
-        )
+        .with(&caps)
+        .supplied_by((FileDriver::new(root.0.join("whole.log")), SystemClockDriver))
         .build();
     assert!(whole.is_ok());
 
@@ -105,8 +106,10 @@ fn a_tuple_is_supplied_whole_or_split_after_registration_borrowed_it() {
         .unwrap();
     let (file, clock) = &caps;
     let split = Runtime::builder(builder.build().unwrap())
-        .with_capability(clock.supplied_by(SystemClockDriver))
-        .with_capability(file.supplied_by(FileDriver::new(root.0.join("split.log"))))
+        .with(clock)
+        .supplied_by(SystemClockDriver)
+        .with(file)
+        .supplied_by(FileDriver::new(root.0.join("split.log")))
         .build();
     assert!(split.is_ok());
 }
@@ -116,7 +119,8 @@ fn a_capability_without_a_driver_fails_the_build_and_is_named() {
     let root = TempRoot::new();
     let (builder, (file, _clock)) = Program::builder::<FileAndClock>();
     let error = Runtime::builder(builder.build().unwrap())
-        .with_capability(file.supplied_by(FileDriver::new(root.0.join("only.log"))))
+        .with(&file)
+        .supplied_by(FileDriver::new(root.0.join("only.log")))
         .build()
         .err()
         .expect("the build is refused")
@@ -130,9 +134,12 @@ fn a_capability_supplied_twice_fails_the_build() {
     let root = TempRoot::new();
     let (builder, (file, clock)) = Program::builder::<FileAndClock>();
     let error = Runtime::builder(builder.build().unwrap())
-        .with_capability(file.supplied_by(FileDriver::new(root.0.join("a.log"))))
-        .with_capability(file.supplied_by(FileDriver::new(root.0.join("b.log"))))
-        .with_capability(clock.supplied_by(SystemClockDriver))
+        .with(&file)
+        .supplied_by(FileDriver::new(root.0.join("a.log")))
+        .with(&file)
+        .supplied_by(FileDriver::new(root.0.join("b.log")))
+        .with(&clock)
+        .supplied_by(SystemClockDriver)
         .build()
         .err()
         .expect("the build is refused")
@@ -145,7 +152,8 @@ fn a_capability_from_another_program_fails_the_build() {
     let (_, (foreign_clock,)) = Program::builder::<(Effect<ReadSystemTime>,)>();
     let (builder, (_clock,)) = Program::builder::<(Effect<ReadSystemTime>,)>();
     let error = Runtime::builder(builder.build().unwrap())
-        .with_capability(foreign_clock.supplied_by(SystemClockDriver))
+        .with(&foreign_clock)
+        .supplied_by(SystemClockDriver)
         .build()
         .err()
         .expect("the build is refused")

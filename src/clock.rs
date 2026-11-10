@@ -14,7 +14,7 @@ use crate::{BoxFuture, EffectDescriptor, EffectDriver};
 ///
 /// Always succeeds with a [`SystemTime`]: its error type has no values, so a
 /// finisher can take the success directly. Supply [`SystemClockDriver`]
-/// at its position in [`RuntimeSetup::with_drivers`](crate::RuntimeSetup::with_drivers).
+/// for its capability through [`RuntimeSetup::with`](crate::RuntimeSetup::with).
 ///
 /// ```
 /// use samara::prelude::*;

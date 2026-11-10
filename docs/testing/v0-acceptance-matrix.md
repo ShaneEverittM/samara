@@ -187,11 +187,11 @@ The following evidence must pass before the Phase 2 audit:
   `ProgramBuilder::install(...).with_capabilities(...).finish()` returns the
   Assembly's exports: a struct carrying a Connector and a `ComponentRef`,
   two peer doors onto two Components, or `()`. The host names its own Port and connects
-  the Connector to it. `with_drivers` supplies the Program's complete driver
-  tuple, optionally using `A::drivers(driver_config)`, and `control_all()` controls its
-  requirements. `RuntimeSetup` compile-fail cases reject missing or incorrect
-  tuples. `RuntimeBuilder` and `Drivers` compile-fail cases reject incremental
-  or direct trait binding after the tuple is supplied.
+  the Connector to it. `with(&caps).supplied_by(drivers)` supplies Drivers,
+  optionally using `A::drivers(driver_config)`, and `control_all()` controls its
+  requirements. `RuntimeSetup` compile-fail cases reject a mismatched Driver
+  type, a named capability left without Drivers, and direct binding; the
+  `Drivers` compile-fail case rejects direct trait binding.
   Vendored-driver coverage verifies that caller-supplied driver settings reach
   live execution while the Assembly's logical config and controlled setup stay
   independent of those settings.

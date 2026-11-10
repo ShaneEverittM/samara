@@ -312,7 +312,7 @@ async fn main() -> Result<()> {
     // The concrete provider happens to obtain time over HTTP.
     let http_time_server = builder
         .component::<HttpTimeServer>(HttpTimeServerConfig {})
-        .with_capabilities(&(http, stderr.clone()))
+        .with_capabilities(&(http.clone(), stderr.clone()))
         .finish()
         .expect("component registration");
 
@@ -325,7 +325,7 @@ async fn main() -> Result<()> {
         .component::<Cli>(CliConfig {
             time_server: time_port,
         })
-        .with_capabilities(&(cli_input.clone(), stdout, stderr))
+        .with_capabilities(&(cli_input.clone(), stdout.clone(), stderr.clone()))
         .finish()
         .expect("component registration");
 
@@ -334,12 +334,14 @@ async fn main() -> Result<()> {
 
     // Configure a runtime for real usage...
     let runtime = Runtime::builder(program)
-        .with_drivers((
-            samara::HttpDriver::new(),
-            samara::StdoutDriver::new(),
-            samara::StderrDriver::new(),
-            samara::StdinDriver,
-        ))
+        .with(&http)
+        .supplied_by(samara::HttpDriver::new())
+        .with(&stdout)
+        .supplied_by(samara::StdoutDriver::new())
+        .with(&stderr)
+        .supplied_by(samara::StderrDriver::new())
+        .with(&cli_input)
+        .supplied_by(samara::StdinDriver)
         .build()?;
 
     // We've now set up the program, runtime, and ingress points, so start the runtime.

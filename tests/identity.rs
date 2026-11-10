@@ -399,8 +399,10 @@ async fn default_subscription_runs_unchanged_live_and_controlled() {
 
     let (definition, _, _) = program();
     let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+    let caps = definition.capabilities().clone();
     let runtime = Runtime::builder(definition)
-        .with_drivers((DrivenSource::new(FeedDriver), ReportDriver(sender)))
+        .with(&caps)
+        .supplied_by((DrivenSource::new(FeedDriver), ReportDriver(sender)))
         .build()
         .unwrap()
         .spawn();

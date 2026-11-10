@@ -323,8 +323,10 @@ async fn file_binding_selects_the_journal_target() {
     let root = TestRoot::new();
     let file = "custom/events.log";
     let (program, _, port, _) = program();
+    let capabilities = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with_drivers((FileDriver::new(root.0.join(file)), SystemClockDriver))
+        .with(&capabilities)
+        .supplied_by((FileDriver::new(root.0.join(file)), SystemClockDriver))
         .build()
         .unwrap();
     let journal = runtime.port_handle(&port).unwrap();
@@ -348,8 +350,10 @@ async fn recent_reads_existing_entries_through_the_standard_driver() {
     std::fs::create_dir_all(root.0.join("custom")).unwrap();
     std::fs::write(root.0.join(file), "first\nsecond\nthird\n").unwrap();
     let (program, _, port, _) = program();
+    let capabilities = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with_drivers((FileDriver::new(root.0.join(file)), SystemClockDriver))
+        .with(&capabilities)
+        .supplied_by((FileDriver::new(root.0.join(file)), SystemClockDriver))
         .build()
         .unwrap();
     let journal = runtime.port_handle(&port).unwrap();

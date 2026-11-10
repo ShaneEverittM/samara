@@ -360,7 +360,7 @@ Both descriptors own text, provide `text` for exact UTF-8 and `line` for UTF-8
 followed by `\n`, produce `()`, and use `Infallible` as their Error type. The
 values contain no handles and perform no work when constructed.
 
-`with_drivers` accepts `StdoutDriver::new()` and `StderrDriver::new()` at
+`supplied_by` accepts `StdoutDriver::new()` and `StderrDriver::new()` at
 the corresponding declared effect positions.
 Each Driver serializes its own Samara-issued print attempts within one live
 binding, writes the complete text, and flushes the selected stream. An
@@ -410,7 +410,7 @@ failure is not followed by `Ended`. The initial descriptor has no line-length
 limit. Bounded or byte-oriented acquisition therefore requires another
 terminal descriptor; a Layer above `StdinLines` sees only complete lines.
 
-On Unix, `StdinDriver` in the `with_drivers` tuple binds process stdin to the
+On Unix, `StdinDriver` supplied for the capability binds process stdin to the
 exact capability at its position. That position must declare a source whose
 terminal descriptor is `StdinLines`.
 The capability may be direct or a built-in composition such as
@@ -450,7 +450,7 @@ terminal EffectDescriptor:
 - `HttpError` carries an `HttpErrorKind` distinguishing `Configuration` from
   `Transport`, plus explanatory text that controlled fixtures can construct.
 
-`HttpDriver::new()` in the `with_drivers` tuple supplies one reusable reqwest
+`HttpDriver::new()` supplied for the capability provides one reusable reqwest
 client and connection pool. The Driver explicitly follows no redirects,
 performs no protocol retries, discovers no system proxy, and performs no
 automatic content decompression. It supplies no Samara request timeout. All
@@ -538,7 +538,7 @@ around values issued by one `ProgramBuilder`:
   descriptor or Layer stack.
 
 The requirement shape fixes the capability inventory at builder creation.
-`ProgramBuilder::build()` closes the Component and connection graph. `RuntimeBuilder::build()` and
+`ProgramBuilder::build()` closes the Component and connection graph. `RuntimeSetup::build()` and
 `ControlledRuntimeBuilder::build()` synchronously require exactly one
 applicable terminal behavior for every declaration. Ordinary `Effect<D>` Drivers
 and controlled registrations are type-wide. `File<P>` uses one exact binding
@@ -641,21 +641,21 @@ as amended by [ADR-0018](adr/0018-assemblies-export-a-connector.md),
   `Connector<M>` it also exposes `connector()` and implements `Addressable`. It carries no separate runtime installation obligation.
 - The enclosing `Program<R>` carries all binding obligations. Live setup
   supplies Drivers per capability value
-  ([ADR-0027](adr/0027-drivers-are-supplied-per-capability.md), trial):
-  `Runtime::builder(program).with_capability(caps.supplied_by(drivers))...build()?`,
+  ([ADR-0027](adr/0027-drivers-are-supplied-per-capability.md)):
+  `Runtime::builder(program).with(&caps).supplied_by(drivers)...build()?`,
   in any order, for single capabilities or tuples of them. A Driver of the
-  wrong type does not compile; a capability with no Driver, with two, or from
-  another Program fails `build()` with an error naming its descriptor type.
-  `with_drivers(drivers)` still takes the whole positional tuple and checks
-  completeness at compile time. Controlled setup uses
+  wrong type does not compile, nor does a named capability left without
+  Drivers; a capability with no Driver, with two, or from another Program
+  fails `build()` with an error naming its descriptor type.
+  `Program::capabilities()` returns the whole capability tuple. Controlled setup uses
   `ControlledRuntime::builder(program).control_all().build()?`, which has no
   `build` before `control_all` except for the empty shape.
 - `with_capabilities` on Component and Assembly registration takes
   `&Capabilities<_>`, so the host keeps the values to supply later. `VendorsDrivers::drivers(driver_config)` can supply a
   matching tuple. Its `DriverConfig` associated type is separate from the
   Assembly's logical `Config`; controlled execution requires no driver config.
-- `with_capability` and `with_drivers` are the only public live binding operations. The completed
-  `RuntimeBuilder` exposes no incremental binding methods, and the sealed
+- `with(..).supplied_by(..)` is the only public live binding operation.
+  `RuntimeSetup` exposes no other binding methods, and the sealed
   `Drivers<R>` marker exposes no binding operation. Validation remains inside
   the runtime's private registry.
 - `DrivenSource::new(driver)` selects a type-wide terminal source implementation;

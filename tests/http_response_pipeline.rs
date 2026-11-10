@@ -483,8 +483,10 @@ async fn live_and_controlled_http_pipelines_produce_equivalent_component_results
     let server = tokio::spawn(serve_json_once(listener));
     let (program, component) = pipeline_program(format!("http://{endpoint}/value"));
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
+    let caps = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with_drivers((samara::HttpDriver::new(), PipelineObserver { observed }))
+        .with(&caps)
+        .supplied_by((samara::HttpDriver::new(), PipelineObserver { observed }))
         .build()
         .unwrap();
     let handle = runtime.handle(&component).unwrap();

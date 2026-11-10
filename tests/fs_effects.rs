@@ -246,8 +246,10 @@ async fn bound_driver_appends_reads_replaces_and_removes_under_the_root() {
     let root = unique_root("walk");
     let (program, walker) = walker_program();
     let (sender, mut reports) = tokio::sync::mpsc::unbounded_channel();
+    let caps = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with_drivers((
+        .with(&caps)
+        .supplied_by((
             FsDriver::new(&root),
             FsDriver::new(&root),
             FsDriver::new(&root),
@@ -285,8 +287,10 @@ async fn bound_driver_rejects_paths_outside_the_root_without_touching_disk() {
     let root = unique_root("escape");
     let (program, walker) = walker_program();
     let (sender, mut reports) = tokio::sync::mpsc::unbounded_channel();
+    let caps = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with_drivers((
+        .with(&caps)
+        .supplied_by((
             FsDriver::new(&root),
             FsDriver::new(&root),
             FsDriver::new(&root),
@@ -308,21 +312,23 @@ async fn bound_driver_rejects_paths_outside_the_root_without_touching_disk() {
 
 #[test]
 fn fs_driver_tuple_binds_declared_effects_and_rejects_duplicates() {
-    let (builder, (declared_0,)) = samara::Program::builder::<(samara::Effect<AppendToFile>,)>();
-    let _append = declared_0;
+    let (builder, (append,)) = samara::Program::builder::<(samara::Effect<AppendToFile>,)>();
     let program = builder.build().expect("append-only program");
     assert!(
         Runtime::builder(program)
-            .with_drivers((samara::FsDriver::new("ignored"),))
+            .with(&append)
+            .supplied_by(samara::FsDriver::new("ignored"))
             .build()
             .is_ok(),
         "a program that only appends needs no Read, Replace, or Remove binding"
     );
 
-    let (program, _) = Program::builder::<(samara::Effect<ReadFile>, samara::Effect<ReadFile>)>();
+    let (program, caps) =
+        Program::builder::<(samara::Effect<ReadFile>, samara::Effect<ReadFile>)>();
     assert!(
         Runtime::builder(program.build().unwrap())
-            .with_drivers((FsDriver::new("ignored"), FsDriver::new("elsewhere"),))
+            .with(&caps)
+            .supplied_by((FsDriver::new("ignored"), FsDriver::new("elsewhere"),))
             .build()
             .is_err(),
         "a second ReadFile binding is a duplicate"

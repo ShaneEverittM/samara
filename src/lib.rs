@@ -132,8 +132,8 @@ pub mod prelude {
     #[cfg(unix)]
     pub use crate::StdinDriver;
     pub use crate::{
-        Addressable, Assembly, BoundCapability, BoxFuture, Capabilities, Capability, Command,
-        Component, ComponentHandle, ComponentId, ComponentRef, Connector, ControlledRuntime,
+        Addressable, Assembly, BoxFuture, Capabilities, Capability, Command, Component,
+        ComponentHandle, ComponentId, ComponentRef, Connector, ControlledRuntime,
         ControlledRuntimeBuilder, Decoder, Deliverable, DrivenSource, DriverStopped, Drivers,
         Effect, EffectBuilder, EffectCapability, EffectDescriptor, EffectDriver, EffectInvocation,
         EffectOutcome, EffectOutcomeKind, Framed, FramedError, FramedLayer, HttpDriver, HttpError,
@@ -142,12 +142,12 @@ pub mod prelude {
         PendingEffect, PendingWork, Port, PortHandle, PortId, PrintStderr, PrintStdout, Program,
         ProgramBuildError, ProgramBuilder, ReadSystemTime, ReplyWith, RequestBuilder, RequestError,
         RequestIntent, RequestOutcome, RequestOutcomeKind, Requirements, RunReport, Runtime,
-        RuntimeBuilder, RuntimeError, RuntimeTask, Shutdown, ShutdownReport, Source,
-        SourceCapability, SourceDescriptor, SourceDriver, SourceEvent, SourceEventKind, SourceSink,
-        StatusCode, StderrDriver, StdinError, StdinErrorKind, StdinLines, StdoutDriver,
-        StreamDescriptor, Subscription, SubscriptionAction, SubscriptionId, Subscriptions,
-        SystemClockDriver, TcpBytes, TcpDriver, TcpError, TcpErrorKind, TraceCommandKind,
-        TraceEvent, TraceId, TraceRecord, VendorsDrivers,
+        RuntimeError, RuntimeTask, Shutdown, ShutdownReport, Source, SourceCapability,
+        SourceDescriptor, SourceDriver, SourceEvent, SourceEventKind, SourceSink, StatusCode,
+        StderrDriver, StdinError, StdinErrorKind, StdinLines, StdoutDriver, StreamDescriptor,
+        Subscription, SubscriptionAction, SubscriptionId, Subscriptions, SystemClockDriver,
+        TcpBytes, TcpDriver, TcpError, TcpErrorKind, TraceCommandKind, TraceEvent, TraceId,
+        TraceRecord, VendorsDrivers,
     };
     #[cfg(feature = "fs")]
     pub use crate::{
@@ -162,7 +162,7 @@ pub mod prelude {
 ///
 /// Return it from `update`, or include it in a [`Command::batch`], to request the
 /// write. Construction does no I/O. Writing schedules no response message and
-/// ignores I/O errors. Supply [`StdoutDriver`] through [`RuntimeSetup::with_drivers`].
+/// ignores I/O errors. Supply [`StdoutDriver`] through [`RuntimeSetup::with`].
 ///
 /// ```
 /// use samara::{Command, PrintStdout, Program};
@@ -185,7 +185,7 @@ macro_rules! print {
 ///
 /// Return it from `update`, or include it in a [`Command::batch`], to request the
 /// write. Construction does no I/O. Writing schedules no response message and
-/// ignores I/O errors. Supply [`StdoutDriver`] through [`RuntimeSetup::with_drivers`].
+/// ignores I/O errors. Supply [`StdoutDriver`] through [`RuntimeSetup::with`].
 ///
 /// ```
 /// use samara::{Command, PrintStdout, Program};
@@ -208,7 +208,7 @@ macro_rules! println {
 ///
 /// Return it from `update`, or include it in a [`Command::batch`], to request the
 /// write. Construction does no I/O. Writing schedules no response message and
-/// ignores I/O errors. Supply [`StderrDriver`] through [`RuntimeSetup::with_drivers`].
+/// ignores I/O errors. Supply [`StderrDriver`] through [`RuntimeSetup::with`].
 ///
 /// ```
 /// use samara::{Command, PrintStderr, Program};
@@ -231,7 +231,7 @@ macro_rules! eprint {
 ///
 /// Return it from `update`, or include it in a [`Command::batch`], to request the
 /// write. Construction does no I/O. Writing schedules no response message and
-/// ignores I/O errors. Supply [`StderrDriver`] through [`RuntimeSetup::with_drivers`].
+/// ignores I/O errors. Supply [`StderrDriver`] through [`RuntimeSetup::with`].
 ///
 /// ```
 /// use samara::{Command, PrintStderr, Program};
@@ -2034,7 +2034,7 @@ impl<Message> From<Vec<Subscription<Message>>> for Subscriptions<Message> {
 /// // In the host, bind a real receiver instead.
 /// let (program, _, input) = program()?;
 /// let (sender, receiver) = tokio::sync::mpsc::channel(16);
-/// let live = Runtime::builder(program).with_drivers((samara::MpscReceiver::new(receiver),)).build()?;
+/// let live = Runtime::builder(program).with(&input).supplied_by(samara::MpscReceiver::new(receiver)).build()?;
 /// // Inside Tokio, call live.spawn() and sender.send(value).await.
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
@@ -2106,7 +2106,7 @@ impl<T: Send + 'static> StreamSourceDescriptor for StreamDescriptor<T> {
 /// EOF emits any remaining nonempty line, then [`SourceEvent::Ended`]. A read or
 /// UTF-8 error produces [`SourceEvent::Failed`] and stops reading. Lines have no
 /// size limit. Live input is available on Unix through
-/// `StdinDriver` in [`RuntimeSetup::with_drivers`]; tests can supply events on any platform.
+/// `StdinDriver` through [`RuntimeSetup::with`]; tests can supply events on any platform.
 ///
 /// The following example declares the input, stores its capability on a component,
 /// returns a subscription, and runs that component under test control. It also
@@ -2171,8 +2171,8 @@ impl<T: Send + 'static> StreamSourceDescriptor for StreamDescriptor<T> {
 /// // Bind the same component to process stdin on Unix.
 /// #[cfg(unix)]
 /// {
-///     let (program, _, _) = program()?;
-///     let live = Runtime::builder(program).with_drivers((samara::StdinDriver,)).build()?;
+///     let (program, _, input) = program()?;
+///     let live = Runtime::builder(program).with(&input).supplied_by(samara::StdinDriver).build()?;
 ///     // Call live.spawn() inside Tokio to start reading; see RuntimeTask for shutdown.
 /// }
 /// # Ok::<(), Box<dyn std::error::Error>>(())
@@ -2266,7 +2266,7 @@ impl Error for StdinError {}
 /// Creating the request does not parse the URL or perform I/O. Use
 /// [`Self::on_response`] to choose how to handle the response, then return the
 /// resulting Command from your component. Live programs supply [`HttpDriver`]
-/// through [`RuntimeSetup::with_drivers`]; controlled tests use
+/// through [`RuntimeSetup::with`]; controlled tests use
 /// [`ControlledRuntimeSetup::control_all`].
 ///
 /// ```
@@ -2927,7 +2927,7 @@ impl HttpJsonError {
 /// Text to write to standard output.
 ///
 /// Creating this value does not write anything. Submit it with a Command and
-/// supply [`StdoutDriver`] through [`RuntimeSetup::with_drivers`]. The driver writes and
+/// supply [`StdoutDriver`] through [`RuntimeSetup::with`]. The driver writes and
 /// flushes the text but ignores I/O errors. Use [`println!`] for formatting.
 ///
 /// ```
@@ -2971,7 +2971,7 @@ impl EffectDescriptor for PrintStdout {
 /// Text to write to standard error.
 ///
 /// Creating this value does not write anything. Submit it with a Command and
-/// supply [`StderrDriver`] through [`RuntimeSetup::with_drivers`]. The driver writes and
+/// supply [`StderrDriver`] through [`RuntimeSetup::with`]. The driver writes and
 /// flushes the text but ignores I/O errors. Use [`eprintln!`] for formatting.
 ///
 /// ```
@@ -3036,7 +3036,7 @@ impl EffectDescriptor for PrintStderr {
 ///
 /// Declare `Source<TcpBytes>` in [`Program::builder`] and pass its capability into
 /// the component. Supply `DrivenSource::new(TcpDriver)` through
-/// [`RuntimeSetup::with_drivers`]. Controlled tests use `control_all()` and
+/// [`RuntimeSetup::with`]. Controlled tests use `control_all()` and
 /// [`ControlledRuntime::emit_source`] to supply chunks, errors, or EOF.
 /// See [`StdinLines`] for the full source wiring pattern.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -4203,6 +4203,14 @@ impl Program {
 }
 
 impl<R: Requirements> Program<R> {
+    /// The capability values this Program declared, in requirement order.
+    ///
+    /// The same values `Program::builder` returned. Useful when the code that
+    /// builds the runtime did not assemble the Program.
+    pub fn capabilities(&self) -> &Capabilities<R> {
+        &self.requirements
+    }
+
     fn erase(self) -> Program {
         Program {
             program: self.program,
@@ -4643,7 +4651,7 @@ impl<R: Requirements> ProgramBuilder<R> {
     /// use samara::prelude::*;
     /// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<HttpRequest>,)>();
     /// let http = declared_0;
-    /// let runtime = Runtime::builder(program.build()?).with_drivers((samara::HttpDriver::new(),)).build()?;
+    /// let runtime = Runtime::builder(program.build()?).with(&http).supplied_by(samara::HttpDriver::new()).build()?;
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub(crate) fn effect<D>(&mut self) -> EffectCapability<D>
@@ -4935,7 +4943,7 @@ impl<R: Requirements> ProgramBuilder<R> {
 /// }
 /// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<CheckConnection>,)>();
 /// let network = declared_0;
-/// let runtime = Runtime::builder(program.build()?).with_drivers((Network,)).build()?;
+/// let runtime = Runtime::builder(program.build()?).with(&network).supplied_by(Network).build()?;
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 ///
@@ -4979,7 +4987,7 @@ pub trait EffectDriver<D: EffectDescriptor>: Send + Sync + 'static {
 /// }
 /// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Source<Values>,)>();
 /// let values = declared_0;
-/// let runtime = Runtime::builder(program.build()?).with_drivers((samara::DrivenSource::new(ValueSource),)).build()?;
+/// let runtime = Runtime::builder(program.build()?).with(&values).supplied_by(samara::DrivenSource::new(ValueSource)).build()?;
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub trait SourceDriver<D: SourceDescriptor>: Send + Sync + 'static {
@@ -5064,9 +5072,10 @@ impl Error for DriverStopped {}
 ///
 /// ```
 /// use samara::prelude::*;
-/// let (program, _) = Program::builder::<(Effect<ReadSystemTime>, Effect<ReadSystemTime>)>();
+/// let (program, clocks) = Program::builder::<(Effect<ReadSystemTime>, Effect<ReadSystemTime>)>();
 /// let result = Runtime::builder(program.build()?)
-///     .with_drivers((SystemClockDriver, SystemClockDriver))
+///     .with(&clocks)
+///     .supplied_by((SystemClockDriver, SystemClockDriver))
 ///     .build();
 /// assert!(result.is_err());
 /// # Ok::<(), Box<dyn std::error::Error>>(())
@@ -5153,74 +5162,8 @@ impl fmt::Display for RuntimeError {
 
 impl Error for RuntimeError {}
 
-/// A Program with its complete tuple of live Drivers supplied.
-///
-/// Created by [`RuntimeSetup::with_drivers`]. Building validates the bindings;
-/// [`Runtime::spawn`] starts work. See [`Runtime`] for running a program,
-/// [`StdinLines`] for input, and [`EffectDriver`] for a custom driver.
-///
-/// Driver bindings cannot be added after completing the tuple:
-///
-/// <details>
-/// <summary>Compile-time checks</summary>
-///
-/// ```compile_fail
-/// use samara::*;
-/// fn incremental(builder: RuntimeBuilder) { builder.bind_http(); }
-/// ```
-///
-/// ```compile_fail
-/// use samara::*;
-/// fn incremental(builder: RuntimeBuilder) { builder.bind_stdin(); }
-/// ```
-///
-/// ```compile_fail
-/// use samara::*;
-/// fn incremental(builder: RuntimeBuilder) { builder.bind_tcp(); }
-/// ```
-///
-/// ```compile_fail
-/// use samara::*;
-/// fn incremental(builder: RuntimeBuilder) { builder.bind_stdio(); }
-/// ```
-///
-/// ```compile_fail
-/// use samara::*;
-/// fn incremental(builder: RuntimeBuilder) { builder.bind_system_time(); }
-/// ```
-///
-/// ```compile_fail
-/// use samara::*;
-/// fn incremental(builder: RuntimeBuilder) { builder.bind_fs("."); }
-/// ```
-///
-/// ```compile_fail
-/// use samara::*;
-/// fn incremental(builder: RuntimeBuilder) {
-///     builder.bind_effect::<ReadSystemTime, _>(SystemClockDriver);
-/// }
-/// ```
-///
-/// ```compile_fail
-/// use samara::*;
-/// fn incremental(builder: RuntimeBuilder) {
-///     builder.bind_source::<TcpBytes, _>(TcpDriver);
-/// }
-/// ```
-///
-/// ```compile_fail
-/// use samara::*;
-/// fn incremental(
-///     builder: RuntimeBuilder,
-///     capability: &SourceCapability<StreamDescriptor<u64>>,
-///     receiver: tokio::sync::mpsc::Receiver<u64>,
-/// ) {
-///     builder.bind_mpsc(capability, receiver);
-/// }
-/// ```
-///
-/// </details>
-pub struct RuntimeBuilder {
+/// The erased Program and its live bindings behind [`RuntimeSetup`].
+pub(crate) struct RuntimeBuilder {
     program: Program,
     bindings: live_runtime::LiveBindings,
 }
@@ -5272,14 +5215,13 @@ pub struct Runtime {
 impl Runtime {
     /// Starts configuring I/O for a Program. See [`Runtime`].
     pub fn builder<R: Requirements>(program: Program<R>) -> RuntimeSetup<R> {
-        let capabilities = program.requirements.clone();
         RuntimeSetup {
-            capabilities,
             builder: RuntimeBuilder {
                 program: program.erase(),
                 bindings: live_runtime::LiveBindings::new(),
             },
             rejected: None,
+            requirements: PhantomData,
         }
     }
 
@@ -5353,13 +5295,7 @@ impl Runtime {
 }
 
 impl RuntimeBuilder {
-    /// Checks the bindings and returns a runtime ready to start.
-    ///
-    /// Every declared effect and source needs one matching implementation, even if
-    /// unused at startup. Missing, duplicate, conflicting, or foreign bindings return
-    /// an error, as do foreign capabilities in startup commands and subscriptions.
-    /// Call [`Runtime::spawn`] to begin work.
-    pub fn build(mut self) -> Result<Runtime, RuntimeError> {
+    pub(crate) fn build(mut self) -> Result<Runtime, RuntimeError> {
         self.bindings.validate(&self.program)?;
         for component in &self.program.components {
             component.validate_initial_capabilities(&self.program)?;

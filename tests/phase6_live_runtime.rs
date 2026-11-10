@@ -154,8 +154,10 @@ async fn phase6_live_ingress_success_means_accepted() {
     let values = Arc::new(Mutex::new(Vec::new()));
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
     let (program, counter, _input) = counter_program(input);
+    let caps = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with_drivers((
+        .with(&caps)
+        .supplied_by((
             samara::MpscReceiver::new(receiver),
             RecordingDriver {
                 values: values.clone(),
@@ -276,8 +278,11 @@ async fn phase6_scope_cancel_drops_effect_without_invoking_mapper() {
         .name("cancel-probe")
         .finish()
         .expect("component registration");
-    let runtime = Runtime::builder(program.build().expect("valid program"))
-        .with_drivers((HangingDriver {
+    let program = program.build().expect("valid program");
+    let caps = program.capabilities().clone();
+    let runtime = Runtime::builder(program)
+        .with(&caps)
+        .supplied_by((HangingDriver {
             entered: Mutex::new(Some(entered)),
             dropped: dropped.clone(),
         },))
@@ -311,8 +316,11 @@ async fn phase6_cancelled_shutdown_future_detaches_no_runtime_work() {
         .name("shutdown-future-cancel")
         .finish()
         .expect("component registration");
-    let runtime = Runtime::builder(program.build().expect("valid program"))
-        .with_drivers((HangingDriver {
+    let program = program.build().expect("valid program");
+    let caps = program.capabilities().clone();
+    let runtime = Runtime::builder(program)
+        .with(&caps)
+        .supplied_by((HangingDriver {
             entered: Mutex::new(Some(entered)),
             dropped: dropped.clone(),
         },))
@@ -377,8 +385,11 @@ async fn shutdown_escalation_joins_pending_effect_without_mapping() {
         .name("escalation-effect")
         .finish()
         .expect("component registration");
-    let runtime = Runtime::builder(program.build().expect("valid program"))
-        .with_drivers((HangingDriver {
+    let program = program.build().expect("valid program");
+    let caps = program.capabilities().clone();
+    let runtime = Runtime::builder(program)
+        .with(&caps)
+        .supplied_by((HangingDriver {
             entered: Mutex::new(Some(entered)),
             dropped: dropped.clone(),
         },))
@@ -466,8 +477,11 @@ async fn phase6_cancel_stops_driving_without_mapping_scope_abort() {
         .name("immediate-cancel")
         .finish()
         .expect("component registration");
-    let runtime = Runtime::builder(program.build().expect("valid program"))
-        .with_drivers((CountedHangingDriver {
+    let program = program.build().expect("valid program");
+    let caps = program.capabilities().clone();
+    let runtime = Runtime::builder(program)
+        .with(&caps)
+        .supplied_by((CountedHangingDriver {
             calls: driver_calls.clone(),
         },))
         .build()
@@ -500,8 +514,11 @@ async fn shutdown_escalation_before_owner_poll_cannot_restart_work() {
         .name("early-escalation")
         .finish()
         .expect("component registration");
-    let mut task = Runtime::builder(program.build().expect("valid program"))
-        .with_drivers((CountedHangingDriver {
+    let program = program.build().expect("valid program");
+    let caps = program.capabilities().clone();
+    let mut task = Runtime::builder(program)
+        .with(&caps)
+        .supplied_by((CountedHangingDriver {
             calls: driver_calls.clone(),
         },))
         .build()
@@ -574,8 +591,11 @@ async fn phase6_driver_panic_faults_and_cleans_scope() {
         .name("panic-probe")
         .finish()
         .expect("component registration");
-    let runtime = Runtime::builder(program.build().expect("valid program"))
-        .with_drivers((PanickingDriver,))
+    let program = program.build().expect("valid program");
+    let caps = program.capabilities().clone();
+    let runtime = Runtime::builder(program)
+        .with(&caps)
+        .supplied_by((PanickingDriver,))
         .build()
         .expect("valid live bindings");
     let handle = runtime.handle(&probe).expect("registered Component");
@@ -599,8 +619,11 @@ async fn shutdown_requests_preserve_completed_fault() {
         .name("preserved-fault")
         .finish()
         .expect("component registration");
-    let runtime = Runtime::builder(program.build().expect("valid program"))
-        .with_drivers((PanickingDriver,))
+    let program = program.build().expect("valid program");
+    let caps = program.capabilities().clone();
+    let runtime = Runtime::builder(program)
+        .with(&caps)
+        .supplied_by((PanickingDriver,))
         .build()
         .expect("valid bindings");
     let handle = runtime.handle(&probe).expect("live handle");
@@ -814,8 +837,11 @@ fn source_fixture(causal_timer: bool) -> SourceFixture {
     let (sink_tx, sinks) = tokio::sync::mpsc::unbounded_channel();
     let starts = Arc::new(AtomicUsize::new(0));
     let dropped = Arc::new(AtomicUsize::new(0));
-    let runtime = Runtime::builder(program.build().expect("valid source program"))
-        .with_drivers((
+    let program = program.build().expect("valid source program");
+    let caps = program.capabilities().clone();
+    let runtime = Runtime::builder(program)
+        .with(&caps)
+        .supplied_by((
             samara::DrivenSource::new(HarnessSourceDriver {
                 starts: starts.clone(),
                 dropped: dropped.clone(),
@@ -922,8 +948,11 @@ async fn phase6_silent_source_return_ends_once() {
         .expect("component registration");
     let starts = Arc::new(AtomicUsize::new(0));
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
-    let runtime = Runtime::builder(program.build().expect("valid program"))
-        .with_drivers((
+    let program = program.build().expect("valid program");
+    let caps = program.capabilities().clone();
+    let runtime = Runtime::builder(program)
+        .with(&caps)
+        .supplied_by((
             samara::DrivenSource::new(SilentSourceDriver {
                 starts: starts.clone(),
             }),
@@ -991,8 +1020,11 @@ async fn phase6_source_driver_panics_fault_and_clean_the_scope() {
             .expect("component registration");
         let (entered, entered_rx) = tokio::sync::oneshot::channel();
         let (observed, _observations) = tokio::sync::mpsc::unbounded_channel();
-        let runtime = Runtime::builder(program.build().expect("valid program"))
-            .with_drivers((
+        let program = program.build().expect("valid program");
+        let caps = program.capabilities().clone();
+        let runtime = Runtime::builder(program)
+            .with(&caps)
+            .supplied_by((
                 samara::DrivenSource::new(PanickingSourceDriver {
                     mode,
                     entered: Mutex::new(Some(entered)),
@@ -1167,8 +1199,11 @@ async fn admitted_burst(count: usize) -> Vec<u64> {
         .finish()
         .expect("component registration");
     let values = Arc::new(Mutex::new(Vec::new()));
-    let runtime = Runtime::builder(program.build().expect("valid program"))
-        .with_drivers((RecordingDriver {
+    let program = program.build().expect("valid program");
+    let caps = program.capabilities().clone();
+    let runtime = Runtime::builder(program)
+        .with(&caps)
+        .supplied_by((RecordingDriver {
             values: values.clone(),
             observed: None,
         },))
@@ -1220,8 +1255,11 @@ async fn phase6_shutdown_closes_external_ingress() -> Result<(), RuntimeError> {
         .finish()
         .expect("component registration");
     let values = Arc::new(Mutex::new(Vec::new()));
-    let runtime = Runtime::builder(program.build().expect("valid program"))
-        .with_drivers((RecordingDriver {
+    let program = program.build().expect("valid program");
+    let caps = program.capabilities().clone();
+    let runtime = Runtime::builder(program)
+        .with(&caps)
+        .supplied_by((RecordingDriver {
             values,
             observed: None,
         },))
@@ -1290,9 +1328,12 @@ async fn phase6_knowable_live_binding_errors_fail_build() {
         .name("duplicate-effect")
         .finish()
         .expect("component registration");
+    let program = program.build().expect("valid program");
+    let caps = program.capabilities().clone();
     assert!(
-        Runtime::builder(program.build().expect("valid program"))
-            .with_drivers((NoopInitialDriver, NoopInitialDriver))
+        Runtime::builder(program)
+            .with(&caps)
+            .supplied_by((NoopInitialDriver, NoopInitialDriver))
             .build()
             .is_err()
     );
@@ -1322,9 +1363,12 @@ async fn phase6_knowable_live_binding_errors_fail_build() {
         sinks: sinks.clone(),
     };
     let (observed, _observations) = tokio::sync::mpsc::unbounded_channel();
+    let program = program.build().expect("valid program");
+    let caps = program.capabilities().clone();
     assert!(
-        Runtime::builder(program.build().expect("valid program"))
-            .with_drivers((
+        Runtime::builder(program)
+            .with(&caps)
+            .supplied_by((
                 samara::DrivenSource::new(binding()),
                 ObservationDriver {
                     observations: observed,
@@ -1476,8 +1520,11 @@ async fn phase6_effect_success_and_failure_map_exactly_once() -> Result<(), Runt
         .name("query")
         .finish()
         .expect("component registration");
-    let runtime = Runtime::builder(program.build().expect("valid program"))
-        .with_drivers((
+    let program = program.build().expect("valid program");
+    let caps = program.capabilities().clone();
+    let runtime = Runtime::builder(program)
+        .with(&caps)
+        .supplied_by((
             QueryDriver {
                 calls: driver_calls.clone(),
             },
@@ -1625,8 +1672,11 @@ async fn phase6_drain_realizes_no_new_sources() {
         .name("drain-gate")
         .finish()
         .expect("component registration");
-    let runtime = Runtime::builder(program.build().expect("valid program"))
-        .with_drivers((
+    let program = program.build().expect("valid program");
+    let caps = program.capabilities().clone();
+    let runtime = Runtime::builder(program)
+        .with(&caps)
+        .supplied_by((
             GateDriver {
                 started: Mutex::new(Some(started)),
                 release: Mutex::new(Some(release_rx)),
@@ -1678,8 +1728,11 @@ async fn phase6_successful_shutdown_owns_zero_work() -> Result<(), RuntimeError>
             .name(format!("empty-{mode:?}"))
             .finish()
             .expect("component registration");
-        let runtime = Runtime::builder(program.build().expect("valid program"))
-            .with_drivers((RecordingDriver {
+        let program = program.build().expect("valid program");
+        let caps = program.capabilities().clone();
+        let runtime = Runtime::builder(program)
+            .with(&caps)
+            .supplied_by((RecordingDriver {
                 values: Arc::new(Mutex::new(Vec::new())),
                 observed: None,
             },))
@@ -1876,8 +1929,10 @@ async fn phase6_live_request_reply_drains_causally() -> Result<(), RuntimeError>
     let (program, requester) = echo_program(true, continuation_calls.clone());
     let (replies, mut observed) = tokio::sync::mpsc::unbounded_channel();
     let (seen, _seen_rx) = tokio::sync::oneshot::channel();
+    let caps = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with_drivers((
+        .with(&caps)
+        .supplied_by((
             ProviderSeenDriver {
                 seen: Mutex::new(Some(seen)),
             },
@@ -1900,8 +1955,10 @@ async fn phase6_cancel_drops_unanswered_request_without_mapping() -> Result<(), 
     let (program, requester) = echo_program(false, continuation_calls.clone());
     let (seen, seen_rx) = tokio::sync::oneshot::channel();
     let (replies, _observed) = tokio::sync::mpsc::unbounded_channel();
+    let caps = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with_drivers((
+        .with(&caps)
+        .supplied_by((
             ProviderSeenDriver {
                 seen: Mutex::new(Some(seen)),
             },
@@ -1925,8 +1982,10 @@ async fn drain_abandons_a_dropped_reply_token_and_tells_the_requester() -> Resul
     let (program, requester) = echo_program(false, continuation_calls.clone());
     let (seen, seen_rx) = tokio::sync::oneshot::channel();
     let (replies, _observed) = tokio::sync::mpsc::unbounded_channel();
+    let caps = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with_drivers((
+        .with(&caps)
+        .supplied_by((
             ProviderSeenDriver {
                 seen: Mutex::new(Some(seen)),
             },
@@ -2076,8 +2135,11 @@ async fn forced_independent_order(first: char, second: char) -> Vec<char> {
         .name("independent")
         .finish()
         .expect("component registration");
-    let runtime = Runtime::builder(program.build().expect("valid program"))
-        .with_drivers((
+    let program = program.build().expect("valid program");
+    let caps = program.capabilities().clone();
+    let runtime = Runtime::builder(program)
+        .with(&caps)
+        .supplied_by((
             IndependentDriver {
                 started,
                 releases: Mutex::new(releases),
@@ -2198,8 +2260,10 @@ async fn v5_live_and_controlled_boundaries_map_equivalent_observations() -> Resu
 
     let (program, probe) = query_program(Arc::new(AtomicUsize::new(0)));
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
+    let caps = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with_drivers((
+        .with(&caps)
+        .supplied_by((
             QueryDriver {
                 calls: Arc::new(AtomicUsize::new(0)),
             },

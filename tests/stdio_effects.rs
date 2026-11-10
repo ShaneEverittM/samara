@@ -168,8 +168,10 @@ fn standard_output_effects_are_ordinary_controlled_boundaries() {
 async fn bound_standard_output_drivers_write_and_flush_successfully() {
     let (program, probe) = output_program(true);
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
+    let caps = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with_drivers((
+        .with(&caps)
+        .supplied_by((
             samara::StdoutDriver::new(),
             samara::StderrDriver::new(),
             OutputObserver {
@@ -200,14 +202,15 @@ impl EffectDriver<PrintStdout> for DuplicateStdoutDriver {
 
 #[test]
 fn stdio_driver_tuple_rejects_duplicate_bindings() {
-    let (program, _) = Program::builder::<(
+    let (program, caps) = Program::builder::<(
         samara::Effect<PrintStdout>,
         samara::Effect<PrintStderr>,
         samara::Effect<PrintStdout>,
     )>();
     assert!(
         Runtime::builder(program.build().unwrap())
-            .with_drivers((
+            .with(&caps)
+            .supplied_by((
                 samara::StdoutDriver::new(),
                 samara::StderrDriver::new(),
                 DuplicateStdoutDriver,

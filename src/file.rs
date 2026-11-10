@@ -83,7 +83,7 @@ impl CanWrite for ReadWrite {}
 /// let append: Command<()> = File::append_line(&file, "hello").discard_outcome();
 /// assert_eq!(append.effect_intent::<FileAppend>().unwrap().as_bytes(), b"hello\n");
 /// let runtime = Runtime::builder(builder.build()?)
-///     .with_drivers((FileDriver::new("data/journal.log"),)).build()?;
+///     .with(&file).supplied_by(FileDriver::new("data/journal.log")).build()?;
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 ///
@@ -91,9 +91,9 @@ impl CanWrite for ReadWrite {}
 ///
 /// ```compile_fail
 /// use samara::prelude::*;
-/// let (builder, _) = Program::builder::<File<ReadAppend>>();
+/// let (builder, file) = Program::builder::<File<ReadAppend>>();
 /// Runtime::builder(builder.build().unwrap())
-///     .with_drivers((FileDriver::new("a"), FileDriver::new("b")));
+///     .with(&file).supplied_by((FileDriver::new("a"), FileDriver::new("b")));
 /// ```
 pub struct File<P: FilePermissions>(PhantomData<fn() -> P>);
 

@@ -146,7 +146,7 @@ pulse journal (`examples/pulse/src/journal.rs`) is the worked example: one
   retained; that is what `Exports` now carries in `tests/assemblies.rs`,
   with the leak it implies noted below. Whether an isolated Component
   runtime makes that unnecessary is still open.
-- **Named positions.** Partly addressed by ADR-0027 (trial): Drivers are
+- **Named positions.** Partly addressed by ADR-0027: Drivers are
   supplied per capability value in any order, which removes the same-type
   swap and the single large tuple. The capability destructure is still
   positional, and a macro-generated named struct remains the way to keep a

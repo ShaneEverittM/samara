@@ -210,8 +210,10 @@ impl SourceDriver<LateSource> for CountingSourceDriver {
 fn initially_visible_foreign_source_capability_is_rejected_during_profile_build() {
     let starts = Arc::new(AtomicUsize::new(0));
     let (program, _) = foreign_source_program(true);
+    let caps = program.capabilities().clone();
     let error = Runtime::builder(program)
-        .with_drivers((samara::DrivenSource::new(CountingSourceDriver {
+        .with(&caps)
+        .supplied_by((samara::DrivenSource::new(CountingSourceDriver {
             starts: starts.clone(),
         }),))
         .build()
@@ -246,8 +248,10 @@ async fn dynamically_reached_foreign_source_faults_before_terminal_behavior() {
 
     let starts = Arc::new(AtomicUsize::new(0));
     let (program, component) = foreign_source_program(false);
+    let caps = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with_drivers((samara::DrivenSource::new(CountingSourceDriver {
+        .with(&caps)
+        .supplied_by((samara::DrivenSource::new(CountingSourceDriver {
             starts: starts.clone(),
         }),))
         .build()
@@ -299,8 +303,10 @@ fn declared_effect_runs_in_controlled_execution() -> Result<(), RuntimeError> {
 async fn declared_effect_runs_in_live_execution() -> Result<(), RuntimeError> {
     let (program, component) = effect_program();
     let calls = Arc::new(AtomicUsize::new(0));
+    let caps = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with_drivers((CountingEffectDriver {
+        .with(&caps)
+        .supplied_by((CountingEffectDriver {
             calls: calls.clone(),
         },))
         .build()?;
@@ -362,8 +368,11 @@ fn initial_foreign_effect_program() -> TestProgram {
 #[test]
 fn initially_visible_foreign_effect_capability_is_rejected_during_profile_build() {
     let calls = Arc::new(AtomicUsize::new(0));
-    let live_error = Runtime::builder(initial_foreign_effect_program())
-        .with_drivers((CountingEffectDriver {
+    let program = initial_foreign_effect_program();
+    let caps = program.capabilities().clone();
+    let live_error = Runtime::builder(program)
+        .with(&caps)
+        .supplied_by((CountingEffectDriver {
             calls: calls.clone(),
         },))
         .build()
@@ -612,8 +621,11 @@ async fn run_forever_surfaces_dynamic_foreign_capability_before_live_driver() {
         .finish()
         .expect("component registration");
     let calls = Arc::new(AtomicUsize::new(0));
-    let runtime = Runtime::builder(owner.build().expect("valid owner Program"))
-        .with_drivers((CountingEffectDriver {
+    let program = owner.build().expect("valid owner Program");
+    let caps = program.capabilities().clone();
+    let runtime = Runtime::builder(program)
+        .with(&caps)
+        .supplied_by((CountingEffectDriver {
             calls: calls.clone(),
         },))
         .build()
@@ -663,8 +675,10 @@ fn two_exact_stream_capabilities_of_one_type_bind_independently() -> Result<(), 
     let (_first_sender, first_receiver) = tokio::sync::mpsc::channel(1);
     let (_second_sender, second_receiver) = tokio::sync::mpsc::channel(1);
 
+    let caps = program.capabilities().clone();
     Runtime::builder(program)
-        .with_drivers((
+        .with(&caps)
+        .supplied_by((
             samara::MpscReceiver::new(first_receiver),
             samara::MpscReceiver::new(second_receiver),
         ))
@@ -883,8 +897,11 @@ async fn live_exact_streams_with_equal_descriptors_route_by_capability() -> Resu
     let (first_sender, first_receiver) = tokio::sync::mpsc::channel(1);
     let (second_sender, second_receiver) = tokio::sync::mpsc::channel(1);
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
-    let runtime = Runtime::builder(program.build().expect("valid Program"))
-        .with_drivers((
+    let program = program.build().expect("valid Program");
+    let caps = program.capabilities().clone();
+    let runtime = Runtime::builder(program)
+        .with(&caps)
+        .supplied_by((
             samara::MpscReceiver::new(first_receiver),
             samara::MpscReceiver::new(second_receiver),
             RecordDualStreamDriver { observed },
@@ -1065,8 +1082,10 @@ fn framed_stream_program() -> (
 fn exact_stream_bridge_accepts_a_composed_source_capability() -> Result<(), RuntimeError> {
     let (program, _component, _source) = framed_stream_program();
     let (_sender, receiver) = tokio::sync::mpsc::channel(1);
+    let caps = program.capabilities().clone();
     Runtime::builder(program)
-        .with_drivers((samara::MpscReceiver::new(receiver),))
+        .with(&caps)
+        .supplied_by((samara::MpscReceiver::new(receiver),))
         .build()?;
 
     let (program, component, source) = framed_stream_program();
@@ -1097,8 +1116,11 @@ async fn live_exact_stream_bridge_runs_composed_layers_before_component_mapping(
         .expect("component registration");
     let (sender, receiver) = tokio::sync::mpsc::channel(1);
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
-    let runtime = Runtime::builder(program.build().expect("valid composed stream Program"))
-        .with_drivers((
+    let program = program.build().expect("valid composed stream Program");
+    let caps = program.capabilities().clone();
+    let runtime = Runtime::builder(program)
+        .with(&caps)
+        .supplied_by((
             samara::MpscReceiver::new(receiver),
             RecordDualStreamDriver { observed },
         ))
@@ -1136,8 +1158,11 @@ fn composed_source_program() -> TestProgram4 {
 
 #[test]
 fn composed_source_capability_declares_only_its_terminal_requirement() -> Result<(), RuntimeError> {
-    Runtime::builder(composed_source_program())
-        .with_drivers((samara::DrivenSource::new(LateSourceDriver),))
+    let program = composed_source_program();
+    let caps = program.capabilities().clone();
+    Runtime::builder(program)
+        .with(&caps)
+        .supplied_by((samara::DrivenSource::new(LateSourceDriver),))
         .build()?;
 
     ControlledRuntime::builder(composed_source_program())

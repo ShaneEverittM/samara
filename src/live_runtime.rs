@@ -792,7 +792,7 @@ async fn run_stdin_reader(
 /// Terminal Tokio TCP source Driver.
 ///
 /// Supply `DrivenSource::new(TcpDriver)` through
-/// [`RuntimeSetup::with_drivers`](crate::RuntimeSetup::with_drivers).
+/// [`RuntimeSetup::with`](crate::RuntimeSetup::with).
 /// Each input connects once to its configured IP address and port. No DNS,
 /// retry, or reconnect is performed; see [`TcpBytes`] for the descriptor.
 pub struct TokioTcpDriver;
@@ -800,7 +800,7 @@ pub struct TokioTcpDriver;
 /// Terminal HTTP Driver with a shared connection pool.
 ///
 /// Supply [`HttpDriver::new`](Self::new) through
-/// [`RuntimeSetup::with_drivers`](crate::RuntimeSetup::with_drivers).
+/// [`RuntimeSetup::with`](crate::RuntimeSetup::with).
 /// Each effect makes one request and buffers the response, returning every
 /// HTTP status. The Driver performs no retries, redirects, proxy discovery,
 /// or decompression, and imposes no request timeout or body-size limit.
@@ -868,7 +868,7 @@ impl EffectDriver<HttpRequest> for TokioHttpDriver {
 /// Serialized standard-output Driver.
 ///
 /// Supply this Driver through
-/// [`RuntimeSetup::with_drivers`](crate::RuntimeSetup::with_drivers).
+/// [`RuntimeSetup::with`](crate::RuntimeSetup::with).
 /// Each effect attempts to write all text and flush stdout, ignoring I/O errors.
 /// Writes through this binding do not interleave. Independent commands, other
 /// bindings, and direct process writes have no ordering guarantee.
@@ -896,7 +896,7 @@ impl EffectDriver<PrintStdout> for TokioPrintStdoutDriver {
 /// Serialized standard-error Driver.
 ///
 /// Supply this Driver through
-/// [`RuntimeSetup::with_drivers`](crate::RuntimeSetup::with_drivers).
+/// [`RuntimeSetup::with`](crate::RuntimeSetup::with).
 /// Each effect attempts to write all text and flush stderr, ignoring I/O errors.
 /// Writes through this binding do not interleave. Independent commands, other
 /// bindings, and direct process writes have no ordering guarantee.
@@ -996,11 +996,6 @@ impl LiveBindings {
             effects: Vec::new(),
             sources: Vec::new(),
         }
-    }
-
-    pub(crate) fn extend(&mut self, other: Self) {
-        self.effects.extend(other.effects);
-        self.sources.extend(other.sources);
     }
 
     pub(crate) fn bind_effect<D, Driver>(&mut self, driver: Driver)
@@ -3107,12 +3102,16 @@ mod tests {
     #[test]
     fn exact_stream_binding_rejects_a_foreign_capability_during_build() {
         let (_, (foreign,)) = Program::builder::<(crate::Source<StreamDescriptor<u64>>,)>();
-        let (owner, _) = Program::builder::<(crate::Source<StreamDescriptor<u64>>,)>();
+        let (owner, (own,)) = Program::builder::<(crate::Source<StreamDescriptor<u64>>,)>();
         let mut runtime = crate::Runtime::builder(owner.build().unwrap())
-            .with_drivers((crate::MpscReceiver::new(mpsc::channel(1).1),));
-        // Exercise the registry's defense directly: public tuples select their
-        // exact capability from the owning Program and cannot import a foreign one.
-        runtime.bindings.bind_mpsc(&foreign, mpsc::channel(1).1);
+            .with(&own)
+            .supplied_by(crate::MpscReceiver::new(mpsc::channel(1).1));
+        // Exercise the registry's defense directly, past the provenance check
+        // the public path performs when a capability is named.
+        runtime
+            .builder
+            .bindings
+            .bind_mpsc(&foreign, mpsc::channel(1).1);
         let error = runtime.build().err().expect("foreign capability rejected");
         assert!(error.to_string().contains("another Program"));
     }

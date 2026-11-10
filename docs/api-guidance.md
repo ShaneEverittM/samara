@@ -226,32 +226,31 @@ receives that tuple separately from Config, and every issuance site names the
 corresponding capability. Cloning one capability shares a declared boundary
 without adding another driver obligation. The values perform no I/O.
 
-Live execution pairs capability values with Drivers and hands the pairs to
-the runtime builder in any order (ADR-0027):
+Live execution names each capability value to the runtime builder and
+supplies its Driver, in any order (ADR-0027):
 
 ```rust,ignore
 Runtime::builder(program)
-    .with_capability(http.supplied_by(HttpDriver::new()))
-    .with_capability(input.supplied_by(MpscReceiver::new(receiver)))
+    .with(&http).supplied_by(HttpDriver::new())
+    .with(&input).supplied_by(MpscReceiver::new(receiver))
     .build()?;
 ```
 
-`supplied_by` works on one capability or on a tuple of them, and
+`with` takes one capability or a tuple of them, and
 `with_capabilities(&caps)` borrows, so the host still holds the values. A
-Driver goes to the capability value it was paired with, which is the value a
-Component was registered with, so two capabilities of the same type cannot
-be exchanged by position. A Driver of the wrong type does not compile. A
-capability left without a Driver fails `build()`; build the live runtime in
-a test if you want that caught in CI. `with_drivers(tuple)` remains for a
-whole positional tuple checked at compile time.
+Driver goes to the capability value it was supplied for, which is the value
+a Component was registered with, so two capabilities of the same type cannot
+be exchanged by position when they are named separately. A Driver of the
+wrong type does not compile. A capability left without a Driver fails
+`build()`; build the live runtime in a test if you want that caught in CI.
 Controlled execution uses `control_all()`, deriving all controls from the Program
 while retaining exact resource identities. Both then call `build()`.
 Both profiles retain value-level validation.
 For a type-wide source Driver, use `DrivenSource::new(driver)`. The wrapper
 keeps source Driver selection distinct from exact receiver binding under Rust's
 trait coherence rules. Built-in source Layers execute in both profiles.
-`with_capability` and `with_drivers` are the only public live binding
-operations; `build()` validates the completed bindings.
+`with(..).supplied_by(..)` is the only public live binding operation;
+`build()` validates the completed bindings.
 
 The closed set does not mean Samara reflects over Component fields or predicts
 every message edge. Deliberately hiding a foreign capability remains a user
@@ -272,8 +271,8 @@ let read = File::read(&file).producing(Message::ReadCompleted);
 
 // The host binds the target once:
 Runtime::builder(program)
-    .with_capability(file.supplied_by(FileDriver::new("./data/pulse.journal")))
-    .with_capability(clock.supplied_by(SystemClockDriver))
+    .with(&file).supplied_by(FileDriver::new("./data/pulse.journal"))
+    .with(&clock).supplied_by(SystemClockDriver)
     .build()?;
 ```
 
@@ -485,8 +484,8 @@ Concrete inert types should not use `Source`, which is reserved for the running
 realization. `StreamDescriptor<T>` uses the otherwise optional `Descriptor`
 suffix because plain `Stream` could be mistaken for that running realization.
 It names the logical stream independently of how the world realizes it;
-`MpscReceiver::new(receiver)` in the runtime's `with_drivers` tuple names the
-Tokio mechanism and selects the exact capability at its position. The capability may be
+`MpscReceiver::new(receiver)` supplied for the capability names the
+Tokio mechanism and binds exactly that capability. The capability may be
 `SourceCapability<StreamDescriptor<T>>` or a built-in composition whose
 terminal descriptor is `StreamDescriptor<T>`; callers declare and thread only
 the application-visible composed capability.
@@ -516,7 +515,7 @@ apply downstream policy only after a complete line has been acquired.
 
 Process stdin is one concrete resource, not an implementation that can realize
 arbitrarily many independent descriptors. Unix live assembly therefore uses
-`StdinDriver` in the `with_drivers` tuple to select an exact capability whose
+`StdinDriver`, supplied for an exact capability whose
 terminal descriptor is `StdinLines`. The capability may expose `StdinLines` directly or
 place built-in Layers such as `Framed<StdinLines, D>` above it. A second
 binding fails assembly, and concurrent realization faults instead of racing,
@@ -852,7 +851,7 @@ Messages and identities can remain private (ADR-0019 and ADR-0026).
 | Component settings and connections | `Component::Config` | Its assembler |
 | Component world dependencies | `Component::Requires` | Its assembler's capability tuple |
 | Assembly world dependencies | `Assembly::Requires` | The enclosing Program's capability tuple |
-| Complete runtime world | `Program<R>` | `with_drivers(drivers)` live, `control_all()` controlled |
+| Complete runtime world | `Program<R>` | `with(&caps).supplied_by(drivers)` live, `control_all()` controlled |
 
 `program.install::<A>(config).with_capabilities(&caps).finish()?` returns
 `InstalledAssembly<A>` holding only the Connector and exports. The Program
@@ -904,7 +903,7 @@ Application-level controlled tests reach the Assembly through the Components
 that use its Port. A Port-level controlled ingress would let callers test an
 Assembly they do not own and is tracked in the follow-ups.
 
-The gap between `install` and `with_drivers` is deliberate. A Program is
+The gap between `install` and supplying Drivers is deliberate. A Program is
 profile-neutral and one assembly serves both builders, so binding cannot live
 in `install` without merging the two. `Program<R>` carries the complete
 requirements across that gap; `InstalledAssembly` holds the Connector and

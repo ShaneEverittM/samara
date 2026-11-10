@@ -4,8 +4,10 @@ use samara::{Runtime, Shutdown};
 async fn main() -> anyhow::Result<()> {
     let program = urlchecker::program()?;
 
+    let caps = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with_drivers((
+        .with(&caps)
+        .supplied_by((
             samara::HttpDriver::new(),
             samara::StdoutDriver::new(),
             samara::StderrDriver::new(),

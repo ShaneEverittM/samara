@@ -334,8 +334,10 @@ async fn live_http_preserves_raw_status_and_reuses_one_client_pool() {
     let second = HttpRequest::get(format!("http://{endpoint}/redirect"));
     let (program, probe) = http_program(vec![first, second]);
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
+    let caps = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with_drivers((
+        .with(&caps)
+        .supplied_by((
             samara::HttpDriver::new(),
             HttpObserver {
                 observations: observed,
@@ -420,8 +422,10 @@ async fn live_http_preserves_raw_status_and_reuses_one_client_pool() {
 async fn invalid_live_http_configuration_is_a_typed_effect_failure() {
     let (program, probe) = http_program(vec![HttpRequest::get("not a URL")]);
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
+    let caps = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with_drivers((
+        .with(&caps)
+        .supplied_by((
             samara::HttpDriver::new(),
             HttpObserver {
                 observations: observed,
@@ -458,8 +462,10 @@ async fn live_http_eof_is_a_typed_transport_failure() {
     let request = HttpRequest::get(format!("http://{endpoint}/closed"));
     let (program, probe) = http_program(vec![request]);
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
+    let caps = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with_drivers((
+        .with(&caps)
+        .supplied_by((
             samara::HttpDriver::new(),
             HttpObserver {
                 observations: observed,
@@ -504,11 +510,12 @@ impl EffectDriver<HttpRequest> for DuplicateHttpDriver {
 
 #[test]
 fn http_driver_tuple_rejects_duplicate_bindings() {
-    let (program, _) =
+    let (program, caps) =
         Program::builder::<(samara::Effect<HttpRequest>, samara::Effect<HttpRequest>)>();
     assert!(
         Runtime::builder(program.build().unwrap())
-            .with_drivers((samara::HttpDriver::new(), DuplicateHttpDriver))
+            .with(&caps)
+            .supplied_by((samara::HttpDriver::new(), DuplicateHttpDriver))
             .build()
             .is_err()
     );

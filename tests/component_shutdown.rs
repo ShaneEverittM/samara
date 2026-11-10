@@ -385,8 +385,10 @@ async fn live_drain_completes_when_a_provider_holds_a_reply_token() -> Result<()
         ..
     } = fixture();
     let written = Arc::new(Mutex::new(Vec::new()));
+    let caps = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with_drivers(RecordingFarewell(written.clone()))
+        .with(&caps)
+        .supplied_by(RecordingFarewell(written.clone()))
         .build()?;
     let vault = runtime.port_handle(&vault_port)?;
     let task = runtime.spawn();

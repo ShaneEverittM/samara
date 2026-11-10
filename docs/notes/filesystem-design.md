@@ -4,7 +4,8 @@ Status: seed, November 7, 2026; a provisional implementation landed
 November 8, 2026 behind the `fs` feature
 ([ADR-0013](../adr/0013-component-kinds-assemblies-and-first-party-effects.md)):
 `AppendToFile`, `ReplaceFile`, `ReadFile`, `RemoveFile`, one `FsError`,
-and `FsDriver::new(root)` supplied through `with_drivers` (ADR-0019).
+and `FsDriver::new(root)` supplied through `with_drivers` (ADR-0019; since replaced by
+`with(..).supplied_by(..)`, ADR-0027).
 The implementation took positions
 on some open questions below without closing them: replace does fsync the
 file but not the directory; removing a missing file is `NotFound`, not

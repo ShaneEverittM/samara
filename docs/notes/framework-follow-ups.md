@@ -185,8 +185,7 @@ a journal Component; exploratory proposals, not accepted API decisions.
   typed decode failure beside `FsError` would make the correct handling the
   easy one. Found November 2026 reviewing the merged journal.
 
-- [ ] **After ADR-0027 (Drivers supplied per capability value, trial).**
-  Decide whether `with_drivers` stays once the trial has been lived with.
+- [ ] **After ADR-0027 (Drivers supplied per capability value).**
   Plain `Effect<D>` and type-wide Sources are still bound type-wide: one
   Driver serves every capability of that descriptor type and a second is a
   duplicate error, so two clocks cannot have different Drivers. Binding by

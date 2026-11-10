@@ -291,7 +291,15 @@ pub type UrlRequirements = (
 /// ```
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let program = urlchecker::program()?;
-/// let runtime = samara::Runtime::builder(program).with_drivers((samara::HttpDriver::new(), samara::StdoutDriver::new(), samara::StderrDriver::new(), samara::StdinDriver,))
+/// let caps = program.capabilities().clone();
+/// let runtime = samara::Runtime::builder(program)
+///     .with(&caps)
+///     .supplied_by((
+///         samara::HttpDriver::new(),
+///         samara::StdoutDriver::new(),
+///         samara::StderrDriver::new(),
+///         samara::StdinDriver,
+///     ))
 ///     .build()?;
 /// // Inside Tokio, call runtime.spawn() and use its RuntimeTask for shutdown.
 /// # Ok(())

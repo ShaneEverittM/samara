@@ -209,9 +209,11 @@ fn controlled_stdin_delivers_typed_failure_without_live_fallback() {
 #[test]
 fn live_stdin_binding_is_exact_and_required() {
     let (program, _probe, _stdin) = stdin_program();
+    let caps = program.capabilities().clone();
     assert!(
         Runtime::builder(program)
-            .with_drivers((samara::StdinDriver,))
+            .with(&caps)
+            .supplied_by((samara::StdinDriver,))
             .build()
             .is_ok()
     );
@@ -224,16 +226,16 @@ fn live_stdin_binding_accepts_a_composed_capability() {
         samara::Source<Framed<StdinLines, LineLength>>,
         samara::Source<TcpBytes>,
     )>();
-    let _stdin = declared_0;
-    let _tcp = declared_1;
+    let stdin = declared_0;
+    let tcp = declared_1;
     let program = builder.build().expect("valid composed stdin program");
 
     assert!(
         Runtime::builder(program)
-            .with_drivers((
-                samara::StdinDriver,
-                samara::DrivenSource::new(samara::TcpDriver),
-            ))
+            .with(&stdin)
+            .supplied_by(samara::StdinDriver)
+            .with(&tcp)
+            .supplied_by(samara::DrivenSource::new(samara::TcpDriver))
             .build()
             .is_ok()
     );
@@ -242,28 +244,26 @@ fn live_stdin_binding_accepts_a_composed_capability() {
 #[cfg(unix)]
 #[test]
 fn live_stdin_rejects_duplicate_or_competing_process_bindings() {
-    let (builder, (declared_0, declared_1)) =
+    let (builder, caps) =
         samara::Program::builder::<(samara::Source<StdinLines>, samara::Source<StdinLines>)>();
-    let _first = declared_0;
-    let _second = declared_1;
     let program = builder.build().expect("two declarations are valid");
     let error = Runtime::builder(program)
-        .with_drivers((samara::StdinDriver, samara::StdinDriver))
+        .with(&caps)
+        .supplied_by((samara::StdinDriver, samara::StdinDriver))
         .build()
         .err()
         .expect("two stdin declarations are ambiguous even without subscriptions");
     assert!(error.to_string().contains("duplicate or ambiguous"));
 
-    let (builder, (declared_0, declared_1)) = samara::Program::builder::<(
+    let (builder, caps) = samara::Program::builder::<(
         samara::Source<StdinLines>,
         samara::Source<Framed<StdinLines, LineLength>>,
     )>();
-    let _first = declared_0;
-    let _second = declared_1;
     let program = builder.build().expect("two declarations are valid");
     assert!(
         Runtime::builder(program)
-            .with_drivers((samara::StdinDriver, samara::StdinDriver))
+            .with(&caps)
+            .supplied_by((samara::StdinDriver, samara::StdinDriver))
             .build()
             .is_err()
     );
@@ -280,12 +280,16 @@ fn live_stdin_rejects_a_conflicting_type_wide_driver_in_either_order() {
     }
 
     for stdin_first in [false, true] {
-        let (program, _) = Program::builder::<(Source<StdinLines>, Source<StdinLines>)>();
+        let (program, caps) = Program::builder::<(Source<StdinLines>, Source<StdinLines>)>();
         let builder = Runtime::builder(program.build().unwrap());
         let builder = if stdin_first {
-            builder.with_drivers((StdinDriver, DrivenSource::new(UnusedStdinDriver)))
+            builder
+                .with(&caps)
+                .supplied_by((StdinDriver, DrivenSource::new(UnusedStdinDriver)))
         } else {
-            builder.with_drivers((DrivenSource::new(UnusedStdinDriver), StdinDriver))
+            builder
+                .with(&caps)
+                .supplied_by((DrivenSource::new(UnusedStdinDriver), StdinDriver))
         };
         assert!(builder.build().is_err());
     }

@@ -194,8 +194,10 @@ fn install_returns_a_token_carrying_the_exports() {
 async fn live_builder_binds_every_requirement_through_with_assembly() {
     let (program, _recorder, ledger) = assemble();
     let stamp = CountingStamp::default();
+    let caps = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with_drivers((stamp.clone(), DrivenSource::new(SilentPulses)))
+        .with(&caps)
+        .supplied_by((stamp.clone(), DrivenSource::new(SilentPulses)))
         .build()
         .expect("every requirement is bound");
     let client = runtime.port_handle(&ledger).expect("ledger handle");
@@ -223,8 +225,10 @@ async fn live_builder_binds_every_requirement_through_with_assembly() {
 async fn live_builder_accepts_the_drivers_a_assembly_vendors() {
     let (program, _recorder, ledger) = assemble();
     let executions = Arc::new(AtomicUsize::new(7));
+    let caps = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with_drivers(Recorder::drivers(executions.clone()))
+        .with(&caps)
+        .supplied_by(Recorder::drivers(executions.clone()))
         .build()
         .expect("vendored drivers satisfy the requirements");
     let client = runtime.port_handle(&ledger).unwrap();

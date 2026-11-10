@@ -223,8 +223,10 @@ async fn live_drain_waits_for_a_discarded_outcome_effect() {
     let (entered, entered_rx) = tokio::sync::oneshot::channel();
     let (release, release_rx) = tokio::sync::oneshot::channel();
     let dropped = Arc::new(AtomicBool::new(false));
+    let caps = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with_drivers((GatedDriver {
+        .with(&caps)
+        .supplied_by((GatedDriver {
             entered: Mutex::new(Some(entered)),
             release: Mutex::new(Some(release_rx)),
             dropped: dropped.clone(),
@@ -267,8 +269,10 @@ async fn live_cancel_aborts_a_discarded_outcome_effect() {
     let (program, probe) = gated_program();
     let (entered, entered_rx) = tokio::sync::oneshot::channel();
     let dropped = Arc::new(AtomicBool::new(false));
+    let caps = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with_drivers((GatedDriver {
+        .with(&caps)
+        .supplied_by((GatedDriver {
             entered: Mutex::new(Some(entered)),
             release: Mutex::new(None),
             dropped: dropped.clone(),
