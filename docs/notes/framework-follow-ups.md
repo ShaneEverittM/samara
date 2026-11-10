@@ -249,10 +249,32 @@ Positions reached November 2026, not yet an ADR:
   with a default of `Command::none()`. No Message variant to invent, nothing
   another Component can forge, the Model taken by value so held reply tokens
   can be answered, and termination guaranteed by the return type: finishing
-  work only (ADR-0023). Open: which shutdown modes call it (Drain yes,
-  Cancel probably not), deterministic order across Components, how its
-  finishing work is awaited and bounded, what happens to messages that
-  arrive afterwards, and whether a faulted Component gets the call.
+  work only (ADR-0023). Its semantics, decided November 2026 and ready for
+  an ADR:
+  1. **Modes.** Only Drain calls it. Cancel still means stop without
+     reacting.
+  2. **Timing.** After quiescence: Drain runs as today until nothing is
+     pending, so `shutdown` sees a Model that has absorbed every outcome.
+  3. **Order.** Reverse registration, one Component at a time, so dependents
+     stop while what they depend on is still alive. Deterministic under
+     control.
+  4. **Late work.** A finishing send or reply to a still-live Component is
+     delivered and that Component's Commands run normally; the runtime
+     returns to quiescence before stopping the next one.
+  5. **After a Component has stopped.** Sends and outcomes addressed to it
+     are dropped and traced. A request to it completes at once for the
+     requester with a typed outcome saying the provider has stopped.
+  6. **Bounding.** Finishing effects are awaited like drained work; the
+     ADR-0010 escalation deadline is the only bound. No new setting.
+  7. **Faults.** A faulted runtime calls no `shutdown`.
+  8. **Escalation.** If Drain escalates to Cancel partway, Components not yet
+     stopped are cancelled without the call, in-flight finishing effects are
+     aborted, and the shutdown report names the Components that did not get
+     their step.
+  Consequences to write up: item 5 needs a produced `RequestOutcome` or
+  `RequestError` variant (`ReplyAbandoned` or a provider-stopped reason are
+  reserved and unproduced today); item 8 extends `ShutdownReport`; the trace
+  needs a shutdown event per Component.
 - **Cancellation should appear in an outcome type only where something that
   cancels is present.** The live runtime has no source of per-effect
   cancellation today; `EffectFailure::Cancelled` reaches a Component only
