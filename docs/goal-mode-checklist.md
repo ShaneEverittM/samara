@@ -33,6 +33,7 @@ Governing documents:
 - [ADR-0018: Assemblies Export a Connector](adr/0018-assemblies-export-a-connector.md)
 - [ADR-0023: Boundary Work Builders and Finishers](adr/0023-boundary-work-builders-and-finishers.md)
 - [ADR-0024: Component Shutdown](adr/0024-component-shutdown.md)
+- [ADR-0025: Bare Effect Outcomes](adr/0025-bare-effect-outcomes.md)
 - [Architecture Test Strategy](testing/architecture-test-strategy.md)
 - [v0 Acceptance Matrix](testing/v0-acceptance-matrix.md)
 

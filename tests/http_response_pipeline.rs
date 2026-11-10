@@ -91,7 +91,6 @@ enum PipelineResult {
     Status(StatusCode),
     Json,
     OtherResponseFailure,
-    Cancelled(CancelReason),
 }
 
 #[derive(Default)]
@@ -141,21 +140,14 @@ impl Component for PipelineComponent {
             PipelineMessage::Finished(outcome) => {
                 let result = match outcome {
                     EffectOutcome::Succeeded(payload) => PipelineResult::Succeeded(payload.value),
-                    EffectOutcome::Failed(EffectFailure::Error(HttpResponseError::Http(error))) => {
+                    EffectOutcome::Failed(HttpResponseError::Http(error)) => {
                         PipelineResult::Http(error.kind())
                     }
-                    EffectOutcome::Failed(EffectFailure::Error(HttpResponseError::Status(
-                        error,
-                    ))) => PipelineResult::Status(error.response().status()),
-                    EffectOutcome::Failed(EffectFailure::Error(HttpResponseError::Json(_))) => {
-                        PipelineResult::Json
+                    EffectOutcome::Failed(HttpResponseError::Status(error)) => {
+                        PipelineResult::Status(error.response().status())
                     }
-                    EffectOutcome::Failed(EffectFailure::Error(_)) => {
-                        PipelineResult::OtherResponseFailure
-                    }
-                    EffectOutcome::Failed(EffectFailure::Cancelled(reason)) => {
-                        PipelineResult::Cancelled(reason)
-                    }
+                    EffectOutcome::Failed(HttpResponseError::Json(_)) => PipelineResult::Json,
+                    EffectOutcome::Failed(_) => PipelineResult::OtherResponseFailure,
                 };
                 model.result = Some(result.clone());
                 Effect::perform(&config.observe, ObservePipelineResult(result))
@@ -268,8 +260,7 @@ fn require_success_rejects_before_json_decoding() {
         .unwrap();
     let outcome = invocation.map_outcome(EffectOutcome::Succeeded(expected.clone()));
 
-    let EffectOutcome::Failed(EffectFailure::Error(HttpResponseError::Status(error))) = outcome
-    else {
+    let EffectOutcome::Failed(HttpResponseError::Status(error)) = outcome else {
         panic!("non-2xx response did not fail status policy")
     };
     assert_eq!(REJECTED_DECODE_CALLS.load(Ordering::SeqCst), 0);
@@ -287,8 +278,7 @@ fn json_failure_retains_source_and_complete_response() {
         .unwrap();
     let outcome = invocation.map_outcome(EffectOutcome::Succeeded(expected.clone()));
 
-    let EffectOutcome::Failed(EffectFailure::Error(HttpResponseError::Json(error))) = outcome
-    else {
+    let EffectOutcome::Failed(HttpResponseError::Json(error)) = outcome else {
         panic!("invalid JSON did not produce a JSON response error")
     };
     assert!(error.source().is_syntax());
@@ -317,33 +307,18 @@ impl<'de> Deserialize<'de> for BypassedDecode {
 }
 
 #[test]
-fn http_failure_and_cancellation_preserve_distinct_outcome_channels() {
+fn http_failure_bypasses_decoding_and_is_retained() {
     BYPASSED_DECODE_CALLS.store(0, Ordering::SeqCst);
     let expected = HttpError::new(HttpErrorKind::Transport, "connection reset");
     let invocation = successful_json_command::<BypassedDecode>()
         .into_effect::<HttpRequest>()
         .ok()
         .unwrap();
-    let outcome = invocation.map_outcome(EffectOutcome::Failed(EffectFailure::Error(
-        expected.clone(),
-    )));
-    let EffectOutcome::Failed(EffectFailure::Error(HttpResponseError::Http(actual))) = outcome
-    else {
+    let outcome = invocation.map_outcome(EffectOutcome::Failed(expected.clone()));
+    let EffectOutcome::Failed(HttpResponseError::Http(actual)) = outcome else {
         panic!("raw HTTP failure was not retained")
     };
     assert_eq!(actual, expected);
-
-    let invocation = successful_json_command::<BypassedDecode>()
-        .into_effect::<HttpRequest>()
-        .ok()
-        .unwrap();
-    let outcome = invocation.map_outcome(EffectOutcome::Failed(EffectFailure::Cancelled(
-        CancelReason::Deadline,
-    )));
-    assert!(matches!(
-        outcome,
-        EffectOutcome::Failed(EffectFailure::Cancelled(CancelReason::Deadline))
-    ));
     assert_eq!(BYPASSED_DECODE_CALLS.load(Ordering::SeqCst), 0);
 }
 

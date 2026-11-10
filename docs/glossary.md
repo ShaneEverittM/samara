@@ -136,9 +136,10 @@ declares nothing new, and its private provenance stops it authorizing work in
 another Program.
 
 **EffectOutcome** — The single terminal completion of an effect invocation:
-`Succeeded(output)` or `Failed(reason)`. The reason is an
-`EffectFailure<Error>`: typed `Error(error)` or `Cancelled(reason)` as the
-effect's contract defines (ADR-0020). A Command may instead declare that it discards the
+`Succeeded(output)` or `Failed(error)`, where the error is the Driver's typed
+error (ADR-0025). There is no cancellation case; when the error type has no
+values the failure case does not exist and a finisher can take the success
+directly. A Command may instead declare that it discards the
 outcome; that is still runtime-owned finite work, not fire and forget. Aborting
 the whole live scope is ownership cleanup and manufactures no outcome
 (ADR-0004).
@@ -168,11 +169,11 @@ platform-neutral; `StdinDriver` selects the exact capability at its
 `TcpError` or `RequestError`. Payload types use the `Error` noun.
 
 **Failure** — An operation did not produce its successful result. For an
-effect, `EffectOutcome::Failed` carries an `EffectFailure<Error>` that
-distinguishes `Error(error)` from `Cancelled(reason)`. Whether cancellation
-was expected or warrants recovery is application policy. Normal Source ending
-remains a normal terminal condition; whole-scope cancellation manufactures no
-application outcome (ADR-0020).
+effect, `EffectOutcome::Failed` carries the Driver's typed error. Whether a
+failure warrants recovery is application policy. Normal Source ending remains
+a normal terminal condition; whole-scope cancellation manufactures no
+application outcome, and a mechanism that cancels an effect, when one
+exists, adds its reason where the Component asks for it (ADR-0025).
 
 **SourceDescriptor** — An inert, typed, comparable description of ongoing event
 production. Comparability exists so reconciliation can tell whether desired
@@ -601,6 +602,7 @@ to hold.
 | Jack, `JackId`, `JackHandle`, `plug_in`, Plug, `Pluggable` | Port, `PortId`, `PortHandle`, `connect`, Connector | ADR-0014's names, replaced the same day by ADR-0015 with domain-neutral words. `bind_port` was the pre-0014 spelling of `connect`. |
 | `Connectable`, `connect_with`, `connector_with`, `to_connector` | `connect(&port, &connector)`, `ComponentRef::connector`, `accepting` | A Port takes a Connector and nothing else (ADR-0015 amendment, November 8, 2026); the conversion lives on the Connector side, under one verb. |
 | `Command::effect`, `effect_with`, `effect_discarding_outcome`, `request_to`, `request_to_timeout`, `into_command_with`, `into_request_to` | `Effect::perform(&capability, d)`, `File::read(&file)`, `Command::request(&target, ctor)` with `.timeout(d)`, and the finishers `producing`, `into_command`, `finish_with`, `discard_outcome`; `into_request` | Replaced November 2026 (ADR-0023, spelling under audit). World work is called on the requirement that authorizes it; `Command` is the root for work that needs no capability (`send`, `reply`, `request`, `none`, `batch`, `after`); how an outcome ends is a finisher, not part of a function name. |
+| `EffectFailure<E>`, `EffectFailure::Cancelled`, `CancelReason`, `EffectOutcomeKind::Cancelled` | `EffectOutcome::Failed(E)` | Removed November 2026 (ADR-0025, amending ADR-0020). No live mechanism cancelled a bare effect, and shutdown is `Component::shutdown`, so the case had no producer. |
 | Recipient, Address | Connector | Working names while the provider-owned address was designed; *Connector* pairs with *Port* and names the thing held rather than a role. |
 | An Assembly exporting a `Port` | `Assembly::Accepts` and `InstalledAssembly::connector` | Removed November 9, 2026 (ADR-0018). Assemblies declare no Ports; the host names its own and connects the Assembly's Connector. |
 | `Installed<A>` | `InstalledAssembly<A>` | Renamed November 8, 2026 so `with_assembly(installed_assembly)` reads as a sentence; ADR-0019 subsequently removed its runtime token role; it retains the Connector and exports. |

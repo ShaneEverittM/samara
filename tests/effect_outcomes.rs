@@ -1,5 +1,8 @@
 //! ADR-0020 acceptance: success-specific Messages and one failure-only Message
-//! keep routing separate from domain mapping, without losing trace reasons.
+//! keep routing separate from domain mapping, without losing trace kinds.
+//! ADR-0025 acceptance: an effect that cannot fail has an irrefutable outcome.
+
+use std::time::{Duration, SystemTime};
 
 use samara::prelude::*;
 
@@ -22,7 +25,6 @@ enum Observation {
     Text(String),
     Count(usize),
     BackendError(&'static str),
-    Cancelled(CancelReason),
 }
 
 enum Message {
@@ -30,7 +32,7 @@ enum Message {
     Count,
     Text(String),
     Counted(usize),
-    Failed(EffectFailure<&'static str>),
+    Failed(&'static str),
 }
 
 struct Reader;
@@ -66,10 +68,7 @@ impl Component for Reader {
             }
             Message::Text(text) => Observation::Text(text),
             Message::Counted(count) => Observation::Count(count),
-            Message::Failed(reason) => match reason {
-                EffectFailure::Error(error) => Observation::BackendError(error),
-                EffectFailure::Cancelled(reason) => Observation::Cancelled(reason),
-            },
+            Message::Failed(error) => Observation::BackendError(error),
         };
         model.push(observed);
         Command::none()
@@ -86,22 +85,13 @@ fn shared_failure_message_preserves_domain_mapping_and_trace_reasons() {
             [EffectOutcomeKind::Succeeded, EffectOutcomeKind::Succeeded],
         ),
         (
-            EffectOutcome::Failed(EffectFailure::Error("read failed")),
-            EffectOutcome::Failed(EffectFailure::Cancelled(CancelReason::Superseded)),
+            EffectOutcome::Failed("read failed"),
+            EffectOutcome::Failed("count failed"),
             vec![
                 Observation::BackendError("read failed"),
-                Observation::Cancelled(CancelReason::Superseded),
-            ],
-            [EffectOutcomeKind::Failed, EffectOutcomeKind::Cancelled],
-        ),
-        (
-            EffectOutcome::Failed(EffectFailure::Cancelled(CancelReason::Deadline)),
-            EffectOutcome::Failed(EffectFailure::Error("count failed")),
-            vec![
-                Observation::Cancelled(CancelReason::Deadline),
                 Observation::BackendError("count failed"),
             ],
-            [EffectOutcomeKind::Cancelled, EffectOutcomeKind::Failed],
+            [EffectOutcomeKind::Failed, EffectOutcomeKind::Failed],
         ),
     ];
 
@@ -141,4 +131,66 @@ fn shared_failure_message_preserves_domain_mapping_and_trace_reasons() {
         assert_eq!(runtime.pending_work(), PendingWork::default());
         assert!(runtime.cancel().unwrap().is_clean());
     }
+}
+
+struct Stamper;
+
+enum StampMessage {
+    Stamp,
+    Now(SystemTime),
+}
+
+impl Component for Stamper {
+    type Requires = Effect<ReadSystemTime>;
+    type Config = ();
+    type Model = Option<SystemTime>;
+    type Message = StampMessage;
+
+    fn init(_: &(), _: &Capabilities<Self::Requires>) -> Init<Self::Model, StampMessage> {
+        Init::default()
+    }
+
+    fn update(
+        _: &(),
+        clock: &Capabilities<Self::Requires>,
+        model: &mut Self::Model,
+        message: StampMessage,
+    ) -> Command<StampMessage> {
+        match message {
+            StampMessage::Stamp => Effect::perform(clock, ReadSystemTime)
+                .producing(|EffectOutcome::Succeeded(now)| StampMessage::Now(now)),
+            StampMessage::Now(now) => {
+                *model = Some(now);
+                Command::none()
+            }
+        }
+    }
+}
+
+#[test]
+fn an_infallible_effect_takes_its_success_directly() {
+    let (mut builder, clock) = Program::builder::<<Stamper as Component>::Requires>();
+    let stamper = builder
+        .component::<Stamper>(())
+        .name("stamper")
+        .with_capabilities(clock)
+        .finish()
+        .unwrap();
+    let mut runtime = ControlledRuntime::builder(builder.build().unwrap())
+        .control_all()
+        .build()
+        .unwrap();
+    runtime.send(&stamper, StampMessage::Stamp).unwrap();
+    runtime.run_until_idle().unwrap();
+    let pending = runtime.next_effect::<ReadSystemTime>().unwrap();
+
+    let some_time = SystemTime::UNIX_EPOCH + Duration::from_secs(1_762_646_400);
+    runtime
+        .complete(pending, EffectOutcome::Succeeded(some_time))
+        .unwrap();
+    runtime.run_until_idle().unwrap();
+
+    assert_eq!(runtime.state(&stamper).unwrap(), &Some(some_time));
+    assert_eq!(runtime.pending_work(), PendingWork::default());
+    assert!(runtime.cancel().unwrap().is_clean());
 }

@@ -171,13 +171,12 @@ impl Component for Replacer {
 fn replacements_select_the_exact_resource_and_deliver_typed_outcomes() {
     for outcome in [
         EffectOutcome::Succeeded(()),
-        EffectOutcome::Failed(EffectFailure::Error(FsError::new(
+        EffectOutcome::Failed(FsError::new(
             FsOperation::Replace,
             "fixture",
             FsErrorKind::PermissionDenied,
             "read-only fixture",
-        ))),
-        EffectOutcome::Failed(EffectFailure::Cancelled(CancelReason::Superseded)),
+        )),
     ] {
         let expected = outcome.clone();
         let (mut builder, (left, right)) = Program::builder::<(File<ReadWrite>, File<WriteOnly>)>();
@@ -314,7 +313,12 @@ fn foreign_file_selector_does_not_consume_another_files_operation() {
     runtime
         .complete(
             pending,
-            EffectOutcome::Failed(EffectFailure::Cancelled(CancelReason::Superseded)),
+            EffectOutcome::Failed(FsError::new(
+                FsOperation::Append,
+                "fixture",
+                FsErrorKind::PermissionDenied,
+                "read-only fixture",
+            )),
         )
         .unwrap();
     runtime.run_until_idle().unwrap();

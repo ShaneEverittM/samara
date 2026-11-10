@@ -132,22 +132,21 @@ pub mod prelude {
     #[cfg(unix)]
     pub use crate::StdinDriver;
     pub use crate::{
-        Addressable, Assembly, BoxFuture, CancelReason, Capabilities, Command, Component,
-        ComponentHandle, ComponentId, ComponentRef, Connector, ControlledRuntime,
-        ControlledRuntimeBuilder, Decoder, Deliverable, DrivenSource, DriverStopped, Drivers,
-        Effect, EffectBuilder, EffectCapability, EffectDescriptor, EffectDriver, EffectFailure,
-        EffectInvocation, EffectOutcome, EffectOutcomeKind, Framed, FramedError, FramedLayer,
-        HttpDriver, HttpError, HttpErrorKind, HttpJsonError, HttpRequest, HttpResponse,
-        HttpResponseError, HttpStatusError, Init, InstalledAssembly, LogicalTime, MpscReceiver,
-        NoMessage, PendingEffect, PendingWork, Port, PortHandle, PortId, PrintStderr, PrintStdout,
-        Program, ProgramBuildError, ProgramBuilder, ReadSystemTime, ReplyWith, RequestBuilder,
-        RequestError, RequestIntent, RequestOutcome, RequestOutcomeKind, Requirements, RunReport,
-        Runtime, RuntimeBuilder, RuntimeError, RuntimeTask, Shutdown, ShutdownReport, Source,
-        SourceCapability, SourceDescriptor, SourceDriver, SourceEvent, SourceEventKind, SourceSink,
-        StatusCode, StderrDriver, StdinError, StdinErrorKind, StdinLines, StdoutDriver,
-        StreamDescriptor, Subscription, SubscriptionAction, SubscriptionId, Subscriptions,
-        SystemClockDriver, TcpBytes, TcpDriver, TcpError, TcpErrorKind, TraceCommandKind,
-        TraceEvent, TraceId, TraceRecord, VendorsDrivers,
+        Addressable, Assembly, BoxFuture, Capabilities, Command, Component, ComponentHandle,
+        ComponentId, ComponentRef, Connector, ControlledRuntime, ControlledRuntimeBuilder, Decoder,
+        Deliverable, DrivenSource, DriverStopped, Drivers, Effect, EffectBuilder, EffectCapability,
+        EffectDescriptor, EffectDriver, EffectInvocation, EffectOutcome, EffectOutcomeKind, Framed,
+        FramedError, FramedLayer, HttpDriver, HttpError, HttpErrorKind, HttpJsonError, HttpRequest,
+        HttpResponse, HttpResponseError, HttpStatusError, Init, InstalledAssembly, LogicalTime,
+        MpscReceiver, NoMessage, PendingEffect, PendingWork, Port, PortHandle, PortId, PrintStderr,
+        PrintStdout, Program, ProgramBuildError, ProgramBuilder, ReadSystemTime, ReplyWith,
+        RequestBuilder, RequestError, RequestIntent, RequestOutcome, RequestOutcomeKind,
+        Requirements, RunReport, Runtime, RuntimeBuilder, RuntimeError, RuntimeTask, Shutdown,
+        ShutdownReport, Source, SourceCapability, SourceDescriptor, SourceDriver, SourceEvent,
+        SourceEventKind, SourceSink, StatusCode, StderrDriver, StdinError, StdinErrorKind,
+        StdinLines, StdoutDriver, StreamDescriptor, Subscription, SubscriptionAction,
+        SubscriptionId, Subscriptions, SystemClockDriver, TcpBytes, TcpDriver, TcpError,
+        TcpErrorKind, TraceCommandKind, TraceEvent, TraceId, TraceRecord, VendorsDrivers,
     };
     #[cfg(feature = "fs")]
     pub use crate::{
@@ -542,66 +541,38 @@ impl SourcePlan {
     }
 }
 
-/// The result of an effect: success or an unsuccessful completion reason.
+/// The result of an effect: success, or its Driver's typed error.
 ///
-/// Your command's mapper converts this value to a component message. A
-/// [`Self::Failed`] reason distinguishes an error from explicit cancellation;
-/// it can be forwarded independently of the successful output type.
-/// [`Shutdown::Cancel`] stops work without calling that mapper; it does not
-/// produce an [`EffectFailure::Cancelled`] outcome.
+/// Your command's finisher receives this value. There is no cancellation
+/// case: nothing cancels a bare effect and tells the Component.
+/// [`Shutdown::Cancel`] stops work without calling the finisher, and a
+/// stopping Component is told through [`Component::shutdown`] (ADR-0025).
 ///
 /// ```
-/// use samara::{EffectFailure, EffectOutcome};
+/// use samara::EffectOutcome;
 /// let outcome: EffectOutcome<u64, &str> = EffectOutcome::Succeeded(42);
 /// let text = match outcome {
 ///     EffectOutcome::Succeeded(value) => value.to_string(),
-///     EffectOutcome::Failed(EffectFailure::Error(error)) => format!("failed: {error}"),
-///     EffectOutcome::Failed(EffectFailure::Cancelled(reason)) => format!("cancelled: {reason:?}"),
+///     EffectOutcome::Failed(error) => format!("failed: {error}"),
 /// };
 /// assert_eq!(text, "42");
+/// ```
+///
+/// When the error type has no values, the failure case does not exist and a
+/// finisher can take the success directly:
+///
+/// ```
+/// use samara::EffectOutcome;
+/// use std::convert::Infallible;
+/// let now = |EffectOutcome::Succeeded(value): EffectOutcome<u64, Infallible>| value;
+/// assert_eq!(now(EffectOutcome::Succeeded(7)), 7);
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EffectOutcome<Output, EffectError> {
     /// The operation succeeded and produced this value.
     Succeeded(Output),
-    /// The operation did not produce its successful result for this reason.
-    Failed(EffectFailure<EffectError>),
-}
-
-/// Why an effect did not produce its successful result.
-///
-/// This type has no output parameter, so effects with different output types
-/// can route their failure to the same Message and share domain mapping in
-/// `update`. Cancellation remains distinct from an error; retry and recovery
-/// decisions belong to the application.
-///
-/// ```
-/// use samara::{CancelReason, EffectFailure, EffectOutcome};
-/// enum Message {
-///     Loaded(String),
-///     LoadFailed(EffectFailure<std::io::Error>),
-/// }
-/// fn route(outcome: EffectOutcome<String, std::io::Error>) -> Message {
-///     match outcome {
-///         EffectOutcome::Succeeded(text) => Message::Loaded(text),
-///         EffectOutcome::Failed(reason) => Message::LoadFailed(reason),
-///     }
-/// }
-/// let message = route(EffectOutcome::Failed(
-///     EffectFailure::Cancelled(CancelReason::Superseded),
-/// ));
-/// assert!(matches!(message,
-///     Message::LoadFailed(EffectFailure::Cancelled(CancelReason::Superseded))));
-/// ```
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum EffectFailure<EffectError> {
-    /// The operation encountered this typed error.
-    Error(EffectError),
-    /// The operation was cancelled for this reason.
-    ///
-    /// Runtime shutdown with [`Shutdown::Cancel`] does not send this outcome or
-    /// call the effect's message mapper.
-    Cancelled(CancelReason),
+    /// The operation failed with its Driver's typed error.
+    Failed(EffectError),
 }
 
 /// An item, error, or end-of-input notification from a source.
@@ -647,20 +618,6 @@ impl SourceEventKind {
     fn is_terminal(self) -> bool {
         matches!(self, Self::Failed | Self::Ended)
     }
-}
-
-/// Why an effect was cancelled.
-///
-/// These reasons come from effect-specific logic or a controlled test.
-/// Stopping the runtime with [`Shutdown::Cancel`] does not send effect outcomes.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum CancelReason {
-    /// The operation was cancelled because its scope shut down.
-    Shutdown,
-    /// Newer work made the operation obsolete.
-    Superseded,
-    /// The operation exceeded its deadline.
-    Deadline,
 }
 
 /// The model and startup command returned by [`Component::init`].
@@ -2794,14 +2751,9 @@ impl HttpResponsePipeline<HttpResponse, HttpError> {
                 EffectOutcome::Succeeded(response)
             }
             EffectOutcome::Succeeded(response) => {
-                EffectOutcome::Failed(EffectFailure::Error(HttpStatusError::new(response).into()))
+                EffectOutcome::Failed(HttpStatusError::new(response).into())
             }
-            EffectOutcome::Failed(EffectFailure::Error(error)) => {
-                EffectOutcome::Failed(EffectFailure::Error(error.into()))
-            }
-            EffectOutcome::Failed(EffectFailure::Cancelled(reason)) => {
-                EffectOutcome::Failed(EffectFailure::Cancelled(reason))
-            }
+            EffectOutcome::Failed(error) => EffectOutcome::Failed(error.into()),
         })
     }
 }
@@ -2835,17 +2787,12 @@ where
                 let decoded = serde_json::from_slice(response.body());
                 match decoded {
                     Ok(output) => EffectOutcome::Succeeded(output),
-                    Err(source) => EffectOutcome::Failed(EffectFailure::Error(
-                        HttpJsonError::new(source, response).into(),
-                    )),
+                    Err(source) => {
+                        EffectOutcome::Failed(HttpJsonError::new(source, response).into())
+                    }
                 }
             }
-            EffectOutcome::Failed(EffectFailure::Error(error)) => {
-                EffectOutcome::Failed(EffectFailure::Error(error.into()))
-            }
-            EffectOutcome::Failed(EffectFailure::Cancelled(reason)) => {
-                EffectOutcome::Failed(EffectFailure::Cancelled(reason))
-            }
+            EffectOutcome::Failed(error) => EffectOutcome::Failed(error.into()),
         })
     }
 }
@@ -2853,9 +2800,7 @@ where
 /// An HTTP request, status check, or JSON decoding error.
 ///
 /// Use [`Self::http_error`] to inspect request failures and [`Self::response`] to
-/// inspect responses rejected by status checks or JSON decoding. Cancellation
-/// is represented separately by [`EffectFailure::Cancelled`] inside
-/// [`EffectOutcome::Failed`].
+/// inspect responses rejected by status checks or JSON decoding.
 ///
 /// ```
 /// use samara::{HttpError, HttpErrorKind, HttpResponseError};
@@ -6105,9 +6050,7 @@ impl ControlledRuntime {
     /// Stops the test runtime and cancels its remaining work.
     ///
     /// Consumes the runtime and returns a report with no work remaining. It does not
-    /// send cancellation messages to components. To test a component's cancellation
-    /// handling, supply an [`EffectOutcome::Failed`] carrying
-    /// [`EffectFailure::Cancelled`] to [`Self::complete`] first.
+    /// send cancellation messages to components.
     /// See [`ControlledRuntime`] for cleanup after a test.
     pub fn cancel(self) -> Result<ShutdownReport, RuntimeError> {
         self.core.cancel()
@@ -6336,15 +6279,13 @@ pub enum SubscriptionAction {
     Cancelled,
 }
 
-/// Whether an effect succeeded, failed, or was cancelled, without its result data.
+/// Whether an effect succeeded or failed, without its result data.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EffectOutcomeKind {
     /// The effect succeeded.
     Succeeded,
-    /// The effect failed with an [`EffectFailure::Error`] reason.
+    /// The effect failed with its Driver's error.
     Failed,
-    /// The effect failed with an [`EffectFailure::Cancelled`] reason.
-    Cancelled,
 }
 
 /// Whether a request received a reply or timed out, without its reply data.

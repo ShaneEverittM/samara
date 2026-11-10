@@ -101,10 +101,9 @@ application's optional one-shot Message mapper under the effect occurrence.
 Completing the terminal descriptor consumes each layer exactly once, then
 consumes the Message mapper at most once.
 
-Cancellation should bypass `map_result` and remain
-`EffectOutcome::Failed(EffectFailure::Cancelled(reason))` at every layer
-(ADR-0020). This makes it impossible for
-a status or decoding Layer to reinterpret runtime cancellation accidentally.
+Bare effects have no cancellation case (ADR-0025), so a status or decoding
+Layer has only success and error to transform; a future deadline step would
+add its own reason outside what these Layers see.
 Built-in typed wrappers establish the input/output chain at compile time;
 runtime TypeId validation remains defensive evidence at the erasure boundary.
 

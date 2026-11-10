@@ -45,9 +45,9 @@ use crate::controlled_runtime::{
 };
 use crate::{
     BoxFuture, CapabilityToken, Command, CommandKind, ComponentId, DriverStopped, EffectDescriptor,
-    EffectDriver, EffectFailure, EffectOutcome, ErasedRequestMapper, ErasedSourceEvent, HttpError,
-    HttpRequest, HttpResponse, MessageRoute, MessageTarget, Port, PortId, PrintStderr, PrintStdout,
-    Program, ReplyWith, RequestOutcome, RequestToken, RuntimeError, Shutdown, ShutdownReport,
+    EffectDriver, EffectOutcome, ErasedRequestMapper, ErasedSourceEvent, HttpError, HttpRequest,
+    HttpResponse, MessageRoute, MessageTarget, Port, PortId, PrintStderr, PrintStdout, Program,
+    ReplyWith, RequestOutcome, RequestToken, RuntimeError, Shutdown, ShutdownReport,
     SourceCapability, SourceDescriptor, SourceDriver, SourceEvent, SourcePlan, SourceRequirement,
     SourceSink, StreamDescriptor, StreamSourceDescriptor, SubscriptionId, TcpBytes, TcpError,
     TraceId,
@@ -118,9 +118,7 @@ where
         Box::pin(async move {
             let outcome = match future.await {
                 Ok(output) => EffectOutcome::<D::Output, D::Error>::Succeeded(output),
-                Err(error) => {
-                    EffectOutcome::<D::Output, D::Error>::Failed(EffectFailure::Error(error))
-                }
+                Err(error) => EffectOutcome::<D::Output, D::Error>::Failed(error),
             };
             Box::new(outcome) as ErasedValue
         })

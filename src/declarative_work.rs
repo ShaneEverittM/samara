@@ -226,18 +226,10 @@ mod tests {
         let (_program, (declared_0,)) = crate::Program::builder::<(crate::Effect<Write>,)>();
         let write = declared_0;
         let command = Command::batch([
-            crate::Effect::perform(&write, Write(7)).producing(|outcome| {
-                let EffectOutcome::Succeeded(output) = outcome else {
-                    unreachable!("the fixture supplies success")
-                };
-                Written { request: 1, output }
-            }),
-            crate::Effect::perform(&write, Write(7)).producing(|outcome| {
-                let EffectOutcome::Succeeded(output) = outcome else {
-                    unreachable!("the fixture supplies success")
-                };
-                Written { request: 2, output }
-            }),
+            crate::Effect::perform(&write, Write(7))
+                .producing(|EffectOutcome::Succeeded(output)| Written { request: 1, output }),
+            crate::Effect::perform(&write, Write(7))
+                .producing(|EffectOutcome::Succeeded(output)| Written { request: 2, output }),
         ]);
 
         let mut declarations = command.into_declarations().into_iter();

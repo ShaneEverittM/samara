@@ -78,20 +78,23 @@ The accepted Phase 2 audit constrains Phase 3 to this slice:
 This slice freezes observable ownership and transition shapes, not the internal
 container, task, queue, lock, or scheduling topology used to implement them.
 
-## Accepted for ADR-0020: Effect Failure Reasons
+## Accepted for ADR-0020 and ADR-0025: Effect Outcomes
 
-[ADR-0020](adr/0020-effect-failure-reasons.md) refines the terminal effect
-representation to `Succeeded(output)` or `Failed(EffectFailure<Error>)`.
-`EffectFailure::Error(error)` carries driver or transformation error data;
-`EffectFailure::Cancelled(reason)` carries explicit cancellation. The failure
-type is independent of the success output type and can be forwarded to shared
-domain handlers. Both types are exported in the prelude.
+[ADR-0020](adr/0020-effect-failure-reasons.md) grouped unsuccessful
+completion under `Failed`; [ADR-0025](adr/0025-bare-effect-outcomes.md)
+amends its payload. The terminal effect representation is
+`Succeeded(output)` or `Failed(error)`, where `error` is the Driver's or a
+transformation's typed error. `EffectFailure` and `CancelReason` are removed:
+no live mechanism cancels a bare effect, and shutdown is
+`Component::shutdown` (ADR-0024). The error type is independent of the
+success output type and can be forwarded to shared domain handlers. When it
+is uninhabited, a finisher may take `EffectOutcome::Succeeded(value)`
+irrefutably.
 
 Drivers continue to return `Result`: `Err(error)` becomes
-`EffectOutcome::Failed(EffectFailure::Error(error))`. Controlled completion
-accepts either reason. Diagnostic traces retain their distinct `Failed`
-(Error reason) and `Cancelled` categories. Whole-scope shutdown still invokes
-no mapper and manufactures no outcome. Source and Request terminal shapes,
+`EffectOutcome::Failed(error)`. Diagnostic traces record `Succeeded` or
+`Failed`. Whole-scope shutdown still invokes no mapper and manufactures no
+outcome. Source and Request terminal shapes,
 ordering, and controlled determinism are unchanged.
 
 ## Compile-Checked Candidate Slices
@@ -486,9 +489,7 @@ modifies the request.
 
 The non-exhaustive `HttpResponseError` distinguishes raw `HttpError`,
 status-policy rejection, and JSON decoding while leaving room for later
-explicit response operations. Cancellation remains
-`EffectOutcome::Failed(EffectFailure::Cancelled(reason))`
-rather than becoming response-error data. `into_command(&http)` uses the
+explicit response operations. `into_command(&http)` uses the
 canonical `Message: From<EffectOutcome<...>>` conversion, while
 `into_command_with(&http, mapper)` accepts an explicit mapper. Both lower the
 complete chain to one ordinary Effect Command for the original `HttpRequest`;

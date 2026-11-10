@@ -62,9 +62,9 @@ controlled order follows deterministic declaration rather than names. The
 previous registration-order-independence scenarios are superseded.
 
 ADR-0020 adds `tests/effect_outcomes.rs` for V1, V3, V5, and V9: effects with
-different output types route unsuccessful completion to one
-`EffectFailure<E>` Message, domain mapping occurs in update, and controlled
-traces distinguish the Error and Cancelled reasons. Existing live error-parity,
+different output types route unsuccessful completion to one error Message,
+domain mapping occurs in update, and (ADR-0025) an infallible effect's
+finisher takes its success directly. Existing live error-parity,
 shutdown, and HTTP pipeline suites retain their lifecycle assertions.
 
 ADR-0019's typed Program trial adds `tests/typed_program.rs` and compile-fail
@@ -143,7 +143,7 @@ Each row of the traceability table below cites the evidence for one of them.
 | V6 Program-Wide Controlled Determinism | `v6_identical_controlled_runs_have_equal_structural_trace_and_final_state`; `v6_equal_final_state_with_different_structural_trace_is_not_equivalent`; `v3_effect_command_exposes_typed_descriptor`; `http_descriptor_preserves_method_url_headers_and_owned_body` | ADR-0003 defines structural trace equivalence and keeps typed domain-payload comparison in direct intent tests rather than requiring generic trace payload capture. | Phase 5 |
 | V7 Controlled Time Progression | `v7_manual_and_automatic_advance_are_repeatable_without_wall_sleep`; `v7_manual_advance_drains_due_causes_before_moving_logical_time`; `v7_equal_time_uses_deterministic_causal_insertion_order`; `v7_initial_work_follows_registration_order_independently_of_names`; `v7_controlled_inputs_follow_harness_order` | ADR-0003 fixes the v0 scheduler key as logical deadline plus deterministic insertion ticket, and the active Phase 5 runtime exercises every listed scenario. The synchronous controlled runtime reads no wall clock; manual and automatic advancement produce equal traces, including logical instants. | Phase 5 |
 | V8 Causal Semantics Without Global Order | `v2_cross_component_interaction_reenters_as_message`; `v8_request_to_reply_causal_edges_are_preserved`; `v8_component_transitions_do_not_overlap`; `v8_independent_live_events_accept_either_order`; `concurrent_external_requests_keep_their_own_typed_reply`; `v8_conformance_compares_partial_order_not_scheduler_sequence` | Controlled causal edges and Component serialization are active. Phase 6 tests exercise both valid independent live orders and reverse-completion Port request correlation without ordering independent handle calls. | Phase 3 serialization, Phase 5 controlled causality, implemented Phase 6 live independence and Port ingress, final audit Phase 7 |
-| V9 Structured Work Ownership | `v9_pending_now_counts_ready_messages_and_due_timers`; `v9_pending_later_counts_effects_future_timers_sources_and_requests`; `phase5_unanswered_request_remains_pending_until_cancellation`; `v9_controlled_cancel_leaves_zero_work`; `phase6_successful_shutdown_owns_zero_work`; `phase6_drain_stops_sources_and_drains_accepted_causal_work`; `v9_effect_cancellation_has_one_outcome`; `phase6_scope_cancel_drops_effect_without_invoking_mapper`; `phase6_cancel_drops_unanswered_request_without_mapping`; `v9_source_cancellation_emits_no_unpromised_event`; `phase6_source_cancellation_emits_no_unpromised_event`; `dropping_the_waiter_does_not_cancel_runtime_owned_request_work`; `run_forever_surfaces_dynamic_foreign_capability_before_live_driver`; `cancelled_run_forever_observation_preserves_owner_for_explicit_shutdown`; `dropping_idle_stdin_reader_interrupts_and_joins_its_thread` | ADR-0003 defines controlled obligations and explicit controlled effect cancellation. Phase 6 distinguishes whole-scope abort from application outcomes, proves that dropping a host waiter cannot abandon admitted runtime work, and exposes owner termination without making observation cancellation an ownership cutoff. ADR-0009 proves that even an idle blocking stdin boundary remains interruptible and joined. | Phase 5 controlled; implemented Phase 6 live, Port ingress, host lifecycle, ADR-0008 provenance, and ADR-0009 stdin ownership; final audit Phase 7 |
+| V9 Structured Work Ownership | `v9_pending_now_counts_ready_messages_and_due_timers`; `v9_pending_later_counts_effects_future_timers_sources_and_requests`; `phase5_unanswered_request_remains_pending_until_cancellation`; `v9_controlled_cancel_leaves_zero_work`; `phase6_successful_shutdown_owns_zero_work`; `phase6_drain_stops_sources_and_drains_accepted_causal_work`; `phase6_scope_cancel_drops_effect_without_invoking_mapper`; `phase6_cancel_drops_unanswered_request_without_mapping`; `v9_source_cancellation_emits_no_unpromised_event`; `phase6_source_cancellation_emits_no_unpromised_event`; `dropping_the_waiter_does_not_cancel_runtime_owned_request_work`; `run_forever_surfaces_dynamic_foreign_capability_before_live_driver`; `cancelled_run_forever_observation_preserves_owner_for_explicit_shutdown`; `dropping_idle_stdin_reader_interrupts_and_joins_its_thread` | ADR-0003 defines controlled obligations; ADR-0025 removed the cancelled effect outcome and its test. Phase 6 distinguishes whole-scope abort from application outcomes, proves that dropping a host waiter cannot abandon admitted runtime work, and exposes owner termination without making observation cancellation an ownership cutoff. ADR-0009 proves that even an idle blocking stdin boundary remains interruptible and joined. | Phase 5 controlled; implemented Phase 6 live, Port ingress, host lifecycle, ADR-0008 provenance, and ADR-0009 stdin ownership; final audit Phase 7 |
 | V10 Non-Influential Semantic Trace | `v10_reading_controlled_trace_after_drive_has_no_feedback_path`; `v10_trace_records_logical_time_and_exactly_one_immediate_parent_for_non_roots`; `v4_replaced_generation_discards_stale_work`; `v4_replaced_generation_discards_already_mapped_message` | ADR-0003 requires always-collected, read-afterward controlled records with logical time, parentless roots, and exactly one immediate parent for every non-root. The V3, V4, and V8 tests also assert effect, Source-lifecycle, and Request records. ADR-0004 explicitly defers a public live observer beyond v0. | Phase 5 controlled; public live observer deferred beyond v0 |
 | V11 Shallow Tokio Onboarding | `component_logic_is_directly_testable`; `controlled_stream_updates_the_same_program`; `v11_minimal_component_runs_with_live_mpsc`; `stdin_descriptor_and_errors_are_typed_fixture_data`; `controlled_stdin_delivers_lines_and_normal_eof`; `stdin_reader_delivers_framed_lines_then_eof_from_injected_stream` | The minimal example compiles as its own workspace package, tests its Component directly, and runs unchanged through controlled stream input and the live one-shot `mpsc` bridge. The expanded application uses the first-party `StdinLines` boundary without a host-owned reader thread or channel adapter. | Phase 5 controlled; implemented Phase 6 live and extended by ADR-0009 |
 | V12 Closed Program Capability Assembly | `RuntimeSetup` / `ControlledRuntimeSetup` compile-fail contracts (ADR-0019); `EffectCapability` and `SourceCapability` compile-fail doctests; `initially_visible_foreign_effect_capability_is_rejected_during_profile_build`; `dynamically_used_foreign_effect_capability_is_rejected_before_controlled_behavior`; `run_forever_surfaces_dynamic_foreign_capability_before_live_driver`; `exact_stream_binding_rejects_a_foreign_capability_during_build`; `two_exact_stream_capabilities_of_one_type_bind_independently`; `exact_stream_input_is_disambiguated_by_capability_not_equal_descriptor`; `composed_source_capability_declares_only_its_terminal_requirement`; `live_stdin_binding_is_exact_and_required`; `live_stdin_binding_accepts_a_composed_capability`; `live_stdin_rejects_duplicate_or_competing_process_bindings`; `live_stdin_rejects_a_conflicting_type_wide_driver_in_either_order` | ADR-0008 compile contracts and `closed_program_capabilities` scenarios cover closed issuance, complete profile validation, provenance, exact identity, and composed terminal declaration. ADR-0009 extends exact binding evidence to the unique Unix process-input resource. | ADR-0008 and ADR-0009 |
@@ -404,7 +404,7 @@ Pressure and first-party bridges:
 - `json_without_status_policy_decodes_a_non_success_response`
 - `require_success_rejects_before_json_decoding`
 - `json_failure_retains_source_and_complete_response`
-- `http_failure_and_cancellation_preserve_distinct_outcome_channels`
+- `http_failure_bypasses_decoding_and_is_retained`
 - `http_pipeline_transforms_and_maps_at_most_once`
 - `controlled_trace_records_raw_success_when_json_mapper_fails`
 - `live_and_controlled_http_pipelines_produce_equivalent_component_results`
@@ -421,10 +421,9 @@ Parity and ordering:
 
 The load scenario is characterization only. It must record workload and result
 without turning queue capacity, throughput, tail latency, or fairness into a
-stable conformance threshold. Tests of explicit controlled
-`EffectOutcome::Failed(EffectFailure::Cancelled(reason))` remain valid:
-ADR-0004's no-mapper rule
-applies specifically to aborting the whole live runtime scope.
+stable conformance threshold. ADR-0004's no-mapper rule for aborting the
+whole live runtime scope stands; since ADR-0025 there is no cancelled effect
+outcome for a controlled test to supply.
 
 ## Active ADR-0009 Standard-Input Scenarios
 
@@ -574,7 +573,7 @@ explicit, finite redirect following. Evidence lives in `tests/http_redirects.rs`
 | Final responses and URL validation | `missing_location_and_non_redirect_statuses_are_final_responses`; `malformed_unsupported_credentialed_and_downgrade_targets_fail` |
 | Method/body and credential policy stay in the Layer | `redirect_method_and_body_rules_are_explicit`; `origin_changes_strip_credentials_and_all_hops_remove_routing_headers` |
 | Pipeline transforms see only the terminal result | `status_and_json_transforms_run_only_after_following_and_keep_typed_errors` |
-| Failure and explicit cancellation terminate | `transport_failure_and_explicit_cancellation_end_the_chain` |
+| Transport failure terminates | `transport_failure_ends_the_chain` |
 | Live lifecycle owns the whole finite chain | `live_drain_follows_relative_redirect_through_the_same_driver`; `live_cancel_aborts_active_redirect_hop_without_application_completion` |
 
 Existing `tests/http_effects.rs` and `tests/http_response_pipeline.rs` retain

@@ -26,13 +26,9 @@ fn time_response(time: DateTime<Utc>) -> HttpResponse {
 
 fn failed_http_outcomes() -> Vec<EffectOutcome<HttpResponse, HttpError>> {
     vec![
-        EffectOutcome::Failed(EffectFailure::Error(HttpError::new(
-            HttpErrorKind::Transport,
-            "offline",
-        ))),
+        EffectOutcome::Failed(HttpError::new(HttpErrorKind::Transport, "offline")),
         EffectOutcome::Succeeded(http_response(503, "unavailable".to_owned())),
         EffectOutcome::Succeeded(http_response(200, "invalid JSON".to_owned())),
-        EffectOutcome::Failed(EffectFailure::Cancelled(CancelReason::Deadline)),
     ]
 }
 

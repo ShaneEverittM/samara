@@ -209,9 +209,9 @@ accept a stable mapper descriptor for richer diagnosis; the v0 structural trace 
 no such author requirement.
 
 Whenever an EffectOutcome can influence application behavior, its success or
-unsuccessful reason must be representable as a Component Message. EffectFailure
-distinguishes typed errors from explicit cancellation, including deadline
-cancellation (ADR-0020). Runtime
+error must be representable as a Component Message. A mechanism that cancels
+an effect, such as a deadline, adds its reason to the outcome where the
+Component asks for it (ADR-0025). Runtime
 diagnostics that cannot influence application decisions may remain out of band.
 
 ## Subscriptions

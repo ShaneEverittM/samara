@@ -49,7 +49,6 @@ fn http_descriptor_preserves_method_url_headers_and_owned_body() {
 enum SeenHttp {
     Response(HttpResponse),
     Error(HttpError),
-    Cancelled,
 }
 
 #[derive(Default)]
@@ -103,8 +102,7 @@ impl Component for HttpSequence {
             HttpMessage::Finished(outcome) => {
                 model.seen.push(match outcome {
                     EffectOutcome::Succeeded(response) => SeenHttp::Response(response),
-                    EffectOutcome::Failed(EffectFailure::Error(error)) => SeenHttp::Error(error),
-                    EffectOutcome::Failed(EffectFailure::Cancelled(_)) => SeenHttp::Cancelled,
+                    EffectOutcome::Failed(error) => SeenHttp::Error(error),
                 });
                 if let Some(request) = config.requests.get(model.seen.len()) {
                     Effect::perform(&config.http, request.clone()).producing(HttpMessage::Finished)

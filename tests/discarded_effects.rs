@@ -117,43 +117,6 @@ fn controlled_discarded_outcome_is_traced_without_scheduling_a_message() {
 }
 
 #[test]
-fn controlled_discarded_cancellation_is_traced_without_scheduling_a_message() {
-    let (program, probe) = gated_program();
-    let mut runtime = ControlledRuntime::builder(program)
-        .control_all()
-        .build()
-        .unwrap();
-
-    runtime.send(&probe, GateMessage::Start).unwrap();
-    runtime.run_until_idle().unwrap();
-    let pending = runtime.next_effect::<GateEffect>().unwrap();
-    runtime
-        .complete(
-            pending,
-            EffectOutcome::Failed(EffectFailure::Cancelled(CancelReason::Superseded)),
-        )
-        .unwrap();
-
-    assert_eq!(runtime.run_until_idle().unwrap().transitions, 0);
-    assert_eq!(runtime.pending_work(), PendingWork::default());
-    assert_eq!(
-        runtime
-            .trace()
-            .iter()
-            .filter(|record| matches!(
-                record.event,
-                TraceEvent::EffectOutcome {
-                    outcome: EffectOutcomeKind::Cancelled,
-                    ..
-                }
-            ))
-            .count(),
-        1
-    );
-    assert!(runtime.cancel().unwrap().is_clean());
-}
-
-#[test]
 fn discarded_outcome_dependency_is_validated_during_controlled_build() {
     let (program, _) = gated_program();
     let mut runtime = ControlledRuntime::builder(program)

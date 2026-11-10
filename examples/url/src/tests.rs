@@ -375,19 +375,12 @@ fn status_and_clear_through_stdin_have_repeatable_traces() -> Result<()> {
 }
 
 #[test]
-fn http_error_status_transport_failure_and_cancellation_remain_distinct() -> Result<()> {
+fn http_error_status_and_transport_failure_remain_distinct() -> Result<()> {
     for (outcome, expected) in [
         (response(StatusCode::NOT_FOUND), "404 Not Found"),
         (
-            EffectOutcome::Failed(EffectFailure::Error(HttpError::new(
-                HttpErrorKind::Transport,
-                "connection reset",
-            ))),
+            EffectOutcome::Failed(HttpError::new(HttpErrorKind::Transport, "connection reset")),
             "Check failed: HTTP Transport error: connection reset",
-        ),
-        (
-            EffectOutcome::Failed(EffectFailure::Cancelled(CancelReason::Deadline)),
-            "Canceled",
         ),
     ] {
         let (mut runtime, checker, _stdin) = fixture()?;

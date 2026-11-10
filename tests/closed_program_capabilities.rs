@@ -56,15 +56,8 @@ impl Component for EffectComponent {
         message: Self::Message,
     ) -> Command<Self::Message> {
         match message {
-            EffectMessage::Trigger => {
-                Effect::perform(&config.effect, LateEffect(41)).producing(|outcome| match outcome {
-                    EffectOutcome::Succeeded(value) => EffectMessage::Finished(value),
-                    EffectOutcome::Failed(EffectFailure::Error(never)) => match never {},
-                    EffectOutcome::Failed(EffectFailure::Cancelled(_)) => {
-                        EffectMessage::Finished(0)
-                    }
-                })
-            }
+            EffectMessage::Trigger => Effect::perform(&config.effect, LateEffect(41))
+                .producing(|EffectOutcome::Succeeded(value)| EffectMessage::Finished(value)),
             EffectMessage::Finished(value) => {
                 *model = Some(value);
                 Command::none()

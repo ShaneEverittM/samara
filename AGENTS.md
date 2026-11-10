@@ -20,8 +20,8 @@ This repository is in a documentation-first, acceptance-contract-gated implement
 
 ## Effect and Source Vocabulary
 - `EffectDescriptor` is an inert, typed description of one finite world-facing interaction.
-- `EffectOutcome` is the single terminal success or unsuccessful completion produced for one issued `EffectDescriptor`; `Failed` carries `EffectFailure::Error` or `EffectFailure::Cancelled` (ADR-0020).
-- `Error` names typed explanatory data; effect `Failure` means the operation did not produce a successful result, including explicit cancellation. Normal Source ending remains a normal terminal condition. Whole-scope shutdown cancellation manufactures no application outcome.
+- `EffectOutcome` is the single terminal completion produced for one issued `EffectDescriptor`: `Succeeded(output)` or `Failed(error)` with the Driver's typed error (ADR-0025). Nothing cancels a bare effect and tells the Component.
+- `Error` names typed explanatory data; effect `Failure` means the operation did not produce a successful result. Normal Source ending remains a normal terminal condition. Whole-scope shutdown cancellation manufactures no application outcome; a stopping Component is told through `Component::shutdown` (ADR-0024).
 - `SourceDescriptor` is an inert, typed, reconciliation-comparable description of ongoing event production.
 - `Subscription` is a Component's model-derived desire to maintain a `SourceDescriptor` under stable Component-local identity, together with its event-to-Message mapper.
 - `Source` is the runtime-scoped realization of a `SourceDescriptor` maintained for an active `Subscription`.

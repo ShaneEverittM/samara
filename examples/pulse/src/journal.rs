@@ -42,12 +42,7 @@ impl Component for Recorder {
                         reply,
                         match outcome {
                             EffectOutcome::Succeeded(contents) => Ok(tail(&contents, count)),
-                            EffectOutcome::Failed(EffectFailure::Error(_)) => {
-                                Err(Error::CouldNotReadJournal)
-                            }
-                            EffectOutcome::Failed(EffectFailure::Cancelled(_)) => {
-                                Err(Error::JournalReadCanceled)
-                            }
+                            EffectOutcome::Failed(_) => Err(Error::CouldNotReadJournal),
                         },
                     )
                 }),
@@ -69,9 +64,6 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 pub enum Error {
     #[error("Could not read from journal, effect failed")]
     CouldNotReadJournal,
-
-    #[error("could not read from journal, canceled")]
-    JournalReadCanceled,
 }
 
 // A marker is the Assembly, so `Recorder`, its Model, and its

@@ -278,7 +278,8 @@ Positions reached November 2026, not yet an ADR:
   reserved and unproduced today); item 8 extends `ShutdownReport`; the trace
   needs a shutdown event per Component.
 - **Cancellation should appear in an outcome type only where something that
-  cancels is present.** The live runtime has no source of per-effect
+  cancels is present.** Landed as [ADR-0025](../adr/0025-bare-effect-outcomes.md);
+  what follows is the reasoning as recorded at the time. The live runtime has no source of per-effect
   cancellation today; `EffectFailure::Cancelled` reaches a Component only
   from a controlled test. A bare effect's outcome could be success or its
   Driver's error, making `|EffectOutcome::Succeeded(t)| ..` irrefutable for

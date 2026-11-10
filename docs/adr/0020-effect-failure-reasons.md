@@ -1,6 +1,8 @@
 # ADR-0020: Effect Failure Reasons
 
-- Status: Accepted
+- Status: Accepted; the payload of `Failed` is amended by
+  [ADR-0025](0025-bare-effect-outcomes.md), which removes `EffectFailure`
+  and `CancelReason`.
 - Date: November 9, 2026
 - Deciders: Samara maintainers
 - Scope: Group effect errors and explicit cancellation under one unsuccessful

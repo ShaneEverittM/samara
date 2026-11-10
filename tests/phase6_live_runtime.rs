@@ -1448,16 +1448,11 @@ impl Component for QueryProbe {
                 ObserveQuery(QueryObservation::Succeeded(value)),
             )
             .producing(|_| QueryMessage::Observed),
-            QueryMessage::Outcome(EffectOutcome::Failed(EffectFailure::Error(error))) => {
-                Effect::perform(
-                    &config.observe,
-                    ObserveQuery(QueryObservation::Failed(error)),
-                )
-                .producing(|_| QueryMessage::Observed)
-            }
-            QueryMessage::Outcome(EffectOutcome::Failed(EffectFailure::Cancelled(_))) => {
-                panic!("normal live completion is not scope cancellation")
-            }
+            QueryMessage::Outcome(EffectOutcome::Failed(error)) => Effect::perform(
+                &config.observe,
+                ObserveQuery(QueryObservation::Failed(error)),
+            )
+            .producing(|_| QueryMessage::Observed),
             QueryMessage::Observed => Command::none(),
         }
     }
@@ -2056,12 +2051,7 @@ impl Component for IndependentProbe {
                 Effect::perform(&config.record, RecordOrder(label))
                     .producing(|_| IndependentMessage::Recorded)
             }
-            IndependentMessage::Completed(EffectOutcome::Failed(EffectFailure::Error(never))) => {
-                match never {}
-            }
-            IndependentMessage::Completed(EffectOutcome::Failed(EffectFailure::Cancelled(_))) => {
-                panic!("the gated effects complete normally")
-            }
+            IndependentMessage::Completed(EffectOutcome::Failed(never)) => match never {},
             IndependentMessage::Recorded => Command::none(),
         }
     }
@@ -2191,10 +2181,7 @@ async fn v5_live_and_controlled_boundaries_map_equivalent_observations() -> Resu
         let pending = controlled.next_effect::<Query>()?;
         let fail = pending.intent.fail;
         if fail {
-            controlled.complete(
-                pending,
-                EffectOutcome::Failed(EffectFailure::Error("expected failure")),
-            )?;
+            controlled.complete(pending, EffectOutcome::Failed("expected failure"))?;
         } else {
             controlled.complete(pending, EffectOutcome::Succeeded(7))?;
         }

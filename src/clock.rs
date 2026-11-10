@@ -12,8 +12,8 @@ use crate::{BoxFuture, EffectDescriptor, EffectDriver};
 
 /// Asks the host what time it is.
 ///
-/// Succeeds with a [`SystemTime`] and has no error payload. Explicit cancellation
-/// remains representable in its outcome. Supply [`SystemClockDriver`]
+/// Always succeeds with a [`SystemTime`]: its error type has no values, so a
+/// finisher can take the success directly. Supply [`SystemClockDriver`]
 /// at its position in [`RuntimeSetup::with_drivers`](crate::RuntimeSetup::with_drivers).
 ///
 /// ```
@@ -22,11 +22,7 @@ use crate::{BoxFuture, EffectDescriptor, EffectDriver};
 /// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<ReadSystemTime>,)>();
 /// let clock = declared_0;
 /// let command: Command<SystemTime> =
-///     Effect::perform(&clock, ReadSystemTime).producing(|outcome| match outcome {
-///         EffectOutcome::Succeeded(now) => now,
-///         EffectOutcome::Failed(EffectFailure::Error(never)) => match never {},
-///         EffectOutcome::Failed(EffectFailure::Cancelled(_)) => SystemTime::UNIX_EPOCH,
-///     });
+///     Effect::perform(&clock, ReadSystemTime).producing(|EffectOutcome::Succeeded(now)| now);
 /// assert!(command.effect_intent::<ReadSystemTime>().is_some());
 /// ```
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]

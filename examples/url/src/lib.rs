@@ -60,7 +60,6 @@ enum Message {
 enum CheckResult {
     Response(StatusCode),
     Error(String),
-    Canceled,
 }
 
 impl fmt::Display for CheckResult {
@@ -68,7 +67,6 @@ impl fmt::Display for CheckResult {
         match self {
             CheckResult::Response(code) => write!(f, "{code}"),
             CheckResult::Error(e) => write!(f, "Check failed: {e}"),
-            CheckResult::Canceled => write!(f, "Canceled"),
         }
     }
 }
@@ -249,10 +247,7 @@ impl Component for Checker {
 
                 let result = match &outcome {
                     EffectOutcome::Succeeded(response) => CheckResult::Response(response.status()),
-                    EffectOutcome::Failed(EffectFailure::Error(e)) => {
-                        CheckResult::Error(e.to_string())
-                    }
-                    EffectOutcome::Failed(EffectFailure::Cancelled(_)) => CheckResult::Canceled,
+                    EffectOutcome::Failed(e) => CheckResult::Error(e.to_string()),
                 };
                 *model = Status::Finished {
                     revision,

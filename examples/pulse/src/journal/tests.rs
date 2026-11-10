@@ -135,11 +135,7 @@ fn append_outcomes_are_discarded_without_automatic_retry() {
         FsErrorKind::PermissionDenied,
         "read-only fixture",
     );
-    for outcome in [
-        EffectOutcome::Succeeded(()),
-        EffectOutcome::Failed(EffectFailure::Error(failure)),
-        EffectOutcome::Failed(EffectFailure::Cancelled(CancelReason::Superseded)),
-    ] {
+    for outcome in [EffectOutcome::Succeeded(()), EffectOutcome::Failed(failure)] {
         runtime
             .send(&recorder, Message::Journal(transition()))
             .unwrap();
@@ -280,37 +276,27 @@ fn read_failures_reply_with_the_journal_domain_error() {
         FsErrorKind::PermissionDenied,
         "read denied by fixture",
     );
-    for (failure, expected_cancelled) in [
-        (EffectFailure::Error(failure), false),
-        (EffectFailure::Cancelled(CancelReason::Superseded), true),
-        (EffectFailure::Cancelled(CancelReason::Deadline), true),
-        (EffectFailure::Cancelled(CancelReason::Shutdown), true),
-    ] {
-        let (program, client, _, file) = program();
-        let mut runtime = ControlledRuntime::builder(program)
-            .control_all()
-            .build()
-            .unwrap();
-        runtime.send(&client, ClientMessage::Recent(3)).unwrap();
-        runtime.run_until_idle().unwrap();
-        let read = runtime.next_file_read(&file).unwrap();
-        runtime
-            .complete(read, EffectOutcome::Failed(failure))
-            .unwrap();
-        runtime.run_until_idle().unwrap();
+    let (program, client, _, file) = program();
+    let mut runtime = ControlledRuntime::builder(program)
+        .control_all()
+        .build()
+        .unwrap();
+    runtime.send(&client, ClientMessage::Recent(3)).unwrap();
+    runtime.run_until_idle().unwrap();
+    let read = runtime.next_file_read(&file).unwrap();
+    runtime
+        .complete(read, EffectOutcome::Failed(failure))
+        .unwrap();
+    runtime.run_until_idle().unwrap();
 
-        let replies = runtime.state(&client).unwrap();
-        let [(count, RequestOutcome::Replied(Err(error)))] = replies.as_slice() else {
-            panic!("expected one Journal error reply, got {replies:?}");
-        };
-        assert_eq!(*count, 3);
-        assert!(matches!(
-            (expected_cancelled, error),
-            (false, Error::CouldNotReadJournal) | (true, Error::JournalReadCanceled)
-        ));
-        assert_eq!(runtime.pending_work(), PendingWork::default());
-        assert!(runtime.cancel().unwrap().is_clean());
-    }
+    let replies = runtime.state(&client).unwrap();
+    let [(count, RequestOutcome::Replied(Err(error)))] = replies.as_slice() else {
+        panic!("expected one Journal error reply, got {replies:?}");
+    };
+    assert_eq!(*count, 3);
+    assert!(matches!(error, Error::CouldNotReadJournal));
+    assert_eq!(runtime.pending_work(), PendingWork::default());
+    assert!(runtime.cancel().unwrap().is_clean());
 }
 
 struct TestRoot(PathBuf);

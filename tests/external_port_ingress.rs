@@ -130,17 +130,14 @@ impl Component for Provider {
                     ),
                 ])
             }
-            ProviderMessage::Host(HostMessage::Held(value, reply_with)) => Effect::perform(
-                &config.await_release,
-                AwaitRelease(value),
-            )
-            .producing(move |outcome| match outcome {
-                EffectOutcome::Succeeded(value) => {
-                    ProviderMessage::CompleteDelayed { reply_with, value }
-                }
-                EffectOutcome::Failed(EffectFailure::Error(never)) => match never {},
-                EffectOutcome::Failed(EffectFailure::Cancelled(_)) => ProviderMessage::Signalled,
-            }),
+            ProviderMessage::Host(HostMessage::Held(value, reply_with)) => {
+                Effect::perform(&config.await_release, AwaitRelease(value)).producing(
+                    move |EffectOutcome::Succeeded(value)| ProviderMessage::CompleteDelayed {
+                        reply_with,
+                        value,
+                    },
+                )
+            }
             ProviderMessage::Host(HostMessage::Never(_reply_with)) => {
                 Effect::perform(&config.request_observed, RequestObserved)
                     .producing(|_| ProviderMessage::Signalled)

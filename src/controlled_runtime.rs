@@ -14,12 +14,12 @@ use std::{
 use crate::declarative_work::SubscriptionChange;
 use crate::{
     CapabilityToken, Command, CommandKind, Component, ComponentId, ComponentRef, EffectDescriptor,
-    EffectFailure, EffectOutcome, EffectOutcomeKind, ErasedRequestMapper, ErasedSourceEvent,
-    LogicalTime, MessageRoute, MessageTarget, PendingEffect, PendingWork, PortId, Program,
-    RequestOutcome, RequestOutcomeKind, RequestToken, RunReport, RuntimeError, ShutdownReport,
-    SourceCapability, SourceDescriptor, SourceEvent, SourcePlan, StreamDescriptor,
-    StreamSourceDescriptor, Subscription, SubscriptionAction, SubscriptionId, TraceCommandKind,
-    TraceEvent, TraceId, TraceRecord,
+    EffectOutcome, EffectOutcomeKind, ErasedRequestMapper, ErasedSourceEvent, LogicalTime,
+    MessageRoute, MessageTarget, PendingEffect, PendingWork, PortId, Program, RequestOutcome,
+    RequestOutcomeKind, RequestToken, RunReport, RuntimeError, ShutdownReport, SourceCapability,
+    SourceDescriptor, SourceEvent, SourcePlan, StreamDescriptor, StreamSourceDescriptor,
+    Subscription, SubscriptionAction, SubscriptionId, TraceCommandKind, TraceEvent, TraceId,
+    TraceRecord,
 };
 
 type ErasedValue = Box<dyn Any + Send>;
@@ -1417,8 +1417,7 @@ impl ControlledCore {
         let mut effect = self.effects.remove(index);
         let outcome_kind = match &outcome {
             EffectOutcome::Succeeded(_) => EffectOutcomeKind::Succeeded,
-            EffectOutcome::Failed(EffectFailure::Error(_)) => EffectOutcomeKind::Failed,
-            EffectOutcome::Failed(EffectFailure::Cancelled(_)) => EffectOutcomeKind::Cancelled,
+            EffectOutcome::Failed(_) => EffectOutcomeKind::Failed,
         };
         let outcome_trace = self.push_root(TraceEvent::EffectOutcome {
             effect: effect.request_trace,

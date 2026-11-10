@@ -251,12 +251,7 @@ impl Component for EffectComponent {
                 model.output = Some(output);
                 Command::none()
             }
-            EffectMessage::Finished(EffectOutcome::Failed(EffectFailure::Error(never))) => {
-                match never {}
-            }
-            EffectMessage::Finished(EffectOutcome::Failed(EffectFailure::Cancelled(_))) => {
-                Command::none()
-            }
+            EffectMessage::Finished(EffectOutcome::Failed(never)) => match never {},
         }
     }
 }
@@ -334,44 +329,6 @@ fn v3_controlled_effect_maps_exactly_once_without_live_driver() {
     assert!(runtime.trace().iter().any(|record| {
         record.cause == Some(outcome.id) && matches!(record.event, TraceEvent::Transition { .. })
     }));
-}
-
-#[test]
-fn v9_effect_cancellation_has_one_outcome() {
-    let mapper_calls = Arc::new(AtomicUsize::new(0));
-    let (program, component) = effect_program(mapper_calls.clone());
-    let mut runtime = ControlledRuntime::builder(program)
-        .control_all()
-        .build()
-        .unwrap();
-    runtime.send(&component, EffectMessage::Start).unwrap();
-    runtime.run_until_idle().unwrap();
-    let pending = runtime.next_effect::<ProbeEffect>().unwrap();
-
-    runtime
-        .complete(
-            pending,
-            EffectOutcome::Failed(EffectFailure::Cancelled(CancelReason::Shutdown)),
-        )
-        .unwrap();
-    runtime.run_until_idle().unwrap();
-
-    assert_eq!(mapper_calls.load(Ordering::SeqCst), 1);
-    assert_eq!(runtime.pending_work(), PendingWork::default());
-    assert_eq!(
-        runtime
-            .trace()
-            .iter()
-            .filter(|record| matches!(
-                record.event,
-                TraceEvent::EffectOutcome {
-                    outcome: EffectOutcomeKind::Cancelled,
-                    ..
-                }
-            ))
-            .count(),
-        1
-    );
 }
 
 // Missing-control rejection is a ControlledRuntimeSetup compile-fail contract.

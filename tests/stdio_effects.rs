@@ -33,7 +33,6 @@ impl EffectDriver<ObserveOutput> for OutputObserver {
 #[derive(Debug, Default, PartialEq, Eq)]
 struct OutputModel {
     succeeded: usize,
-    cancelled: usize,
 }
 
 enum OutputMessage {
@@ -77,19 +76,10 @@ impl Component for OutputProbe {
                     .producing(OutputMessage::Finished),
             ]),
             OutputMessage::Finished(outcome) => {
-                let succeeded = match outcome {
-                    EffectOutcome::Succeeded(()) => {
-                        model.succeeded += 1;
-                        true
-                    }
-                    EffectOutcome::Failed(EffectFailure::Error(never)) => match never {},
-                    EffectOutcome::Failed(EffectFailure::Cancelled(_)) => {
-                        model.cancelled += 1;
-                        false
-                    }
-                };
+                let EffectOutcome::Succeeded(()) = outcome;
+                model.succeeded += 1;
                 if let Some(observe) = &config.observe {
-                    Effect::perform(observe, ObserveOutput(succeeded))
+                    Effect::perform(observe, ObserveOutput(true))
                         .producing(|_| OutputMessage::Observed)
                 } else {
                     Command::none()
@@ -163,19 +153,13 @@ fn standard_output_effects_are_ordinary_controlled_boundaries() {
         .complete(stdout, EffectOutcome::Succeeded(()))
         .expect("stdout success accepted");
     runtime
-        .complete(
-            stderr,
-            EffectOutcome::Failed(EffectFailure::Cancelled(CancelReason::Superseded)),
-        )
-        .expect("stderr cancellation accepted");
+        .complete(stderr, EffectOutcome::Succeeded(()))
+        .expect("stderr success accepted");
     runtime.run_until_idle().expect("outcomes mapped");
 
     assert_eq!(
         runtime.state(&probe).expect("output model"),
-        &OutputModel {
-            succeeded: 1,
-            cancelled: 1,
-        }
+        &OutputModel { succeeded: 2 }
     );
     assert!(runtime.cancel().expect("clean controlled close").is_clean());
 }

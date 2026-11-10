@@ -490,12 +490,8 @@ impl Component for Telemetry {
                 model.stored += 1;
                 Command::none()
             }
-            TelemetryMessage::Stored(EffectOutcome::Failed(EffectFailure::Error(error))) => {
+            TelemetryMessage::Stored(EffectOutcome::Failed(error)) => {
                 model.last_failure = Some(error.0);
-                Command::none()
-            }
-            TelemetryMessage::Stored(EffectOutcome::Failed(EffectFailure::Cancelled(reason))) => {
-                model.last_failure = Some(format!("store cancelled: {reason:?}"));
                 Command::none()
             }
             TelemetryMessage::CheckHealth(probes) => {

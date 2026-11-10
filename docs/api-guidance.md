@@ -178,11 +178,11 @@ declaration tokens, not executing capabilities in this sense.
 
 An Error is typed data that explains what went wrong. Effect failure means
 that the operation did not produce its successful result. The outer
-`EffectOutcome::Failed(reason)` lets a caller forward unsuccessful completion
-to one handler; `EffectFailure::Error(error)` and
-`EffectFailure::Cancelled(reason)` let that handler distinguish why. The
-failure type has no output parameter, so different successful result types can
-share a handler. Domain mapping and retry decisions remain application policy.
+`EffectOutcome::Failed(error)` carries the Driver's typed error and nothing
+else: there is no cancellation case on a bare effect (ADR-0025). The error
+type has no output parameter, so different successful result types can share
+a handler, and when it has no values at all a finisher takes the success
+directly, `|EffectOutcome::Succeeded(now)| ..`. Domain mapping and retry decisions remain application policy.
 Normal Source ending is a normal terminal condition, and whole-scope
 cancellation still manufactures no application outcome
 ([ADR-0020](adr/0020-effect-failure-reasons.md)).

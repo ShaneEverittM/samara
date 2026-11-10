@@ -24,8 +24,7 @@ impl From<EffectOutcome<TimeResponse, HttpResponseError>> for HttpTimeMessage {
 
         Self::PollFinished(match outcome {
             Succeeded(response) => Ok(response.data.iso),
-            Failed(EffectFailure::Error(error)) => Err(GetTimeError::Response(error)),
-            Failed(EffectFailure::Cancelled(reason)) => Err(GetTimeError::Cancelled(reason)),
+            Failed(error) => Err(GetTimeError::Response(error)),
         })
     }
 }
@@ -271,9 +270,6 @@ impl Component for Cli {
 enum GetTimeError {
     #[error(transparent)]
     Response(#[from] HttpResponseError),
-
-    #[error("request was cancelled: {0:?}")]
-    Cancelled(CancelReason),
 }
 
 #[derive(Deserialize)]
