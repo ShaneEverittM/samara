@@ -162,6 +162,14 @@ The following evidence must pass before the Phase 2 audit:
 - `examples/framed_socket/src/main.rs` compiles the Layer/Driver, Port message enum,
   provider conversion, request-continuation, and subscription-replacement
   shapes. Its direct tests cover the pure decoder and command intent.
+- `tests/component_shutdown.rs` validates `Component::shutdown` (ADR-0024):
+  Drain stops Components in reverse registration order once the Program is
+  quiet and awaits finishing effects before the next stop; a finishing send
+  lands on a still-live peer as an ordinary transition; held reply tokens are
+  answered from `shutdown` and dropped ones reach their requester as
+  `ReplyAbandoned`; a message to a stopped Component is dropped and traced;
+  Cancel calls nothing; a Drain cut short names the Components not stopped;
+  and a live Drain completes while a provider holds a reply token.
 - `tests/addressing.rs` validates the one sending API (ADR-0016): a
   hand-written message enum with a reply-token variant, `target.send(..)` and
   `target.request(..)` through a Port resolved by its binding with the trace
@@ -487,10 +495,12 @@ The lifecycle and live-runtime suites cover the accepted contract:
 
 - `shutdown_grace_period_escalates_recurring_timer_and_joins` runs the host
   grace-period composition and checks zero owned work after escalation.
-- `shutdown_escalation_joins_pending_effect_without_mapping` and
-  `shutdown_escalation_closes_unanswered_request_without_mapping` prove that
-  cancelling observation preserves ownership for escalation and joined cleanup,
-  without synthesizing application outcomes.
+- `shutdown_escalation_joins_pending_effect_without_mapping` proves that
+  cancelling observation preserves ownership for escalation and joined
+  cleanup, without synthesizing application outcomes.
+  `drain_abandons_a_dropped_reply_token_and_tells_the_requester` proves the
+  ADR-0024 amendment: a dropped reply token no longer needs an escalation;
+  Drain completes and the requester hears one abandonment.
 - `shutdown_escalation_before_owner_poll_cannot_restart_work` verifies that
   Drain cannot weaken Cancel or start initial work after that cutoff.
 - `shutdown_requests_close_ingress_and_preserve_completed_result` and

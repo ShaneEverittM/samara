@@ -244,7 +244,9 @@ Positions reached November 2026, not yet an ADR:
   whose Commands either run (so it was a drain) or are discarded (so the
   transition was unobservable). "The program is stopping" is a fact about
   the Component, not about each effect it has in flight.
-- **Stopping is a `Component::shutdown` method, not a Message.** Sketch:
+- **Stopping is a `Component::shutdown` method, not a Message.** Landed as
+  [ADR-0024](../adr/0024-component-shutdown.md); the notes below are the
+  record of how it was decided. Sketch:
   `fn shutdown(config, capabilities, model: Self::Model) -> Command<NoMessage>`
   with a default of `Command::none()`. No Message variant to invent, nothing
   another Component can forge, the Model taken by value so held reply tokens

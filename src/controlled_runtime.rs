@@ -403,6 +403,7 @@ pub(crate) struct ControlledCore {
     sources: Vec<ActiveSource>,
     trace: Vec<TraceRecord>,
     fault: Option<RuntimeError>,
+    draining: bool,
 }
 
 impl ControlledCore {
@@ -421,6 +422,7 @@ impl ControlledCore {
             sources: Vec::new(),
             trace: Vec::new(),
             fault: None,
+            draining: false,
         };
         runtime.initialize();
         runtime
@@ -1461,7 +1463,13 @@ impl ControlledCore {
                 request.token.expire();
                 RequestOutcomeKind::TimedOut
             }
-            _ => unreachable!("request settlement only produces replies or timeouts"),
+            RequestOutcome::Failed(_) => {
+                request.token.expire();
+                RequestOutcomeKind::Abandoned
+            }
+            RequestOutcome::Cancelled => {
+                unreachable!("request settlement never produces Cancelled")
+            }
         };
         let trace = self.push_child(
             cause,
@@ -1616,6 +1624,19 @@ impl ControlledCore {
                 "Message target is absent or has a different Message type",
             ));
         };
+        if self.program.components[index].is_stopped() {
+            let dropped = self.push_child(
+                delivery_cause,
+                TraceEvent::MessageDropped {
+                    component: message.target.clone(),
+                    message_type: message.message_type_name,
+                },
+            );
+            // Dropping the message may drop the last copy of a reply token.
+            drop(message);
+            self.abandon_orphaned_requests(dropped)?;
+            return Ok(0);
+        }
         let command = {
             let kernel = &mut self.program.components[index];
             kernel
@@ -1652,22 +1673,35 @@ impl ControlledCore {
     pub(crate) fn run_until_idle(&mut self) -> Result<RunReport, RuntimeError> {
         self.ensure_not_faulted()?;
         let mut transitions = 0;
-        while let Some(work) = self.pop_next_due() {
-            transitions += match work.kind {
-                ScheduledKind::Message(message) => self.process_message(message)?,
-                ScheduledKind::SourceEvent(event) => self.process_source_event(event)?,
-                ScheduledKind::RequestDeadline { correlation } => {
-                    if let Some(index) = self
-                        .requests
-                        .iter()
-                        .position(|request| request.token.correlation == correlation)
-                    {
-                        let cause = self.requests[index].request_trace;
-                        self.complete_request(index, RequestOutcome::TimedOut, cause)?;
+        loop {
+            while let Some(work) = self.pop_next_due() {
+                transitions += match work.kind {
+                    ScheduledKind::Message(message) => self.process_message(message)?,
+                    ScheduledKind::SourceEvent(event) => self.process_source_event(event)?,
+                    ScheduledKind::RequestDeadline { correlation } => {
+                        if let Some(index) = self
+                            .requests
+                            .iter()
+                            .position(|request| request.token.correlation == correlation)
+                        {
+                            let cause = self.requests[index].request_trace;
+                            self.complete_request(index, RequestOutcome::TimedOut, cause)?;
+                        }
+                        0
                     }
-                    0
-                }
+                };
+                self.ensure_not_faulted()?;
+            }
+            // Drain: once nothing can progress on its own, stop the next
+            // Component and go round again for whatever its finishing work
+            // set in motion.
+            if !self.draining || !self.quiet_for_shutdown() {
+                break;
+            }
+            let Some(index) = self.next_to_stop() else {
+                break;
             };
+            self.stop_component(index)?;
             self.ensure_not_faulted()?;
         }
         let pending = self.pending_work();
@@ -1676,6 +1710,72 @@ impl ControlledCore {
             pending_now: pending.pending_now,
             pending_later: pending.pending_later,
         })
+    }
+
+    pub(crate) fn drain(&mut self) -> Result<RunReport, RuntimeError> {
+        self.ensure_not_faulted()?;
+        if !self.draining {
+            self.draining = true;
+            for source in &mut self.sources {
+                source.running = false;
+            }
+        }
+        self.run_until_idle()
+    }
+
+    /// No queued messages or source events, no effects in flight, no timers.
+    /// Outstanding requests and their deadlines do not count: a held request
+    /// is what a shutdown exists to resolve.
+    fn quiet_for_shutdown(&self) -> bool {
+        self.effects.is_empty()
+            && !self.scheduled.iter().any(|work| {
+                matches!(
+                    work.kind,
+                    ScheduledKind::Message(_) | ScheduledKind::SourceEvent(_)
+                )
+            })
+    }
+
+    /// The live Component registered latest, or `None` when all have stopped.
+    fn next_to_stop(&self) -> Option<usize> {
+        (0..self.program.components.len())
+            .filter(|index| !self.program.components[*index].is_stopped())
+            .max_by(|left, right| {
+                self.program.components[*left]
+                    .id()
+                    .cmp(self.program.components[*right].id())
+            })
+    }
+
+    fn stop_component(&mut self, index: usize) -> Result<(), RuntimeError> {
+        let component = self.program.components[index].id().clone();
+        let stopped = self.push_root(TraceEvent::ComponentShutdown {
+            component: component.clone(),
+        });
+        if let Some(command) = self.program.components[index].shutdown_erased() {
+            command.interpret(self, &component, stopped)?;
+        }
+        self.abandon_orphaned_requests(stopped)
+    }
+
+    /// During Drain, a request whose reply token no longer exists anywhere can
+    /// never be answered; tell its requester so.
+    fn abandon_orphaned_requests(&mut self, cause: TraceId) -> Result<(), RuntimeError> {
+        if !self.draining {
+            return Ok(());
+        }
+        while let Some(index) = self
+            .requests
+            .iter()
+            .position(|request| Arc::strong_count(&request.token) == 1)
+        {
+            self.complete_request(
+                index,
+                RequestOutcome::Failed(crate::RequestError::ReplyAbandoned),
+                cause,
+            )?;
+        }
+        Ok(())
     }
 
     pub(crate) fn advance(&mut self, duration: Duration) -> Result<RunReport, RuntimeError> {
@@ -1762,12 +1862,23 @@ impl ControlledCore {
         self.effects.clear();
         self.sources.clear();
         self.requests.clear();
+        let not_shut_down = if self.draining {
+            self.program
+                .components
+                .iter()
+                .filter(|component| !component.is_stopped())
+                .map(|component| component.id().clone())
+                .collect()
+        } else {
+            Vec::new()
+        };
         Ok(ShutdownReport {
             completed: 0,
             cancelled,
             remaining: 0,
             pending_now: 0,
             pending_later: 0,
+            not_shut_down,
         })
     }
 
@@ -1786,8 +1897,17 @@ impl ControlledCore {
             .find(|kernel| {
                 kernel.id() == component.id() && kernel.component_type_id() == TypeId::of::<C>()
             })
-            .and_then(|kernel| kernel.model_any().downcast_ref::<C::Model>())
             .ok_or_else(|| RuntimeError::harness("controlled state target type does not match"))
+            .and_then(|kernel| {
+                kernel
+                    .model_any()
+                    .ok_or_else(|| RuntimeError::harness("the component has shut down"))
+            })
+            .and_then(|model| {
+                model.downcast_ref::<C::Model>().ok_or_else(|| {
+                    RuntimeError::harness("controlled state target type does not match")
+                })
+            })
     }
 
     pub(crate) fn trace(&self) -> &[TraceRecord] {

@@ -801,6 +801,24 @@ pub trait Component: 'static {
     ) -> Subscriptions<Self::Message> {
         Subscriptions::none()
     }
+
+    /// Ends this component during [`Shutdown::Drain`] and returns its finishing work.
+    ///
+    /// Called once, after the Program has gone quiet, in reverse registration
+    /// order. The Model is taken by value: reply tokens it holds can be moved
+    /// out and answered. The returned commands can reply, send, and issue
+    /// effects whose outcome is discarded; they cannot start anything that
+    /// would come back, so shutdown always terminates. A reply token dropped
+    /// here is reported to its requester as
+    /// [`RequestError::ReplyAbandoned`]. Must be pure. [`Shutdown::Cancel`]
+    /// and a faulted runtime do not call it. The default does nothing.
+    fn shutdown(
+        _config: &Self::Config,
+        _capabilities: &Capabilities<Self::Requires>,
+        _model: Self::Model,
+    ) -> Command<NoMessage> {
+        Command::none()
+    }
 }
 
 /// The reply or timeout delivered to a request's caller.
@@ -5595,7 +5613,7 @@ impl<P: Send + 'static> PortHandle<P> {
     {
         match self.request_to_inner(request, None).await? {
             RequestOutcome::Replied(reply) => Ok(reply),
-            _ => unreachable!("unbounded host requests only complete with a reply"),
+            _ => Err(self.scope.request_ended_error()),
         }
     }
 
@@ -5807,7 +5825,7 @@ pub enum Shutdown {
 /// Successful shutdown guarantees zero remaining work. The completed and
 /// cancelled counts are diagnostics; their exact values can change between
 /// versions. See [`RuntimeTask`] for an example using [`Self::is_clean`].
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ShutdownReport {
     /// Work completed during shutdown.
     pub completed: usize,
@@ -5819,6 +5837,9 @@ pub struct ShutdownReport {
     pub pending_now: usize,
     /// Work still waiting for time or input after shutdown.
     pub pending_later: usize,
+    /// Components whose `shutdown` had not run when a Drain was cut short by
+    /// Cancel. Empty after a completed Drain and after a plain Cancel.
+    pub not_shut_down: Vec<ComponentId>,
 }
 
 impl ShutdownReport {
@@ -6067,6 +6088,18 @@ impl ControlledRuntime {
     /// See [`Self::advance`] for an example.
     pub fn advance_to_next(&mut self) -> Result<RunReport, RuntimeError> {
         self.core.advance_to_next()
+    }
+
+    /// Begins a controlled [`Shutdown::Drain`] and runs until nothing more can happen.
+    ///
+    /// Sources stop. Whenever the Program is quiet (no queued messages, effects,
+    /// or timers; outstanding requests do not count), the next Component in
+    /// reverse registration order has its [`Component::shutdown`] called and
+    /// its finishing work interpreted. If finishing effects are left pending,
+    /// complete them and call [`Self::run_until_idle`] to continue stopping.
+    /// Follow with [`Self::cancel`] to close the runtime and read the report.
+    pub fn drain(&mut self) -> Result<RunReport, RuntimeError> {
+        self.core.drain()
     }
 
     /// Stops the test runtime and cancels its remaining work.
@@ -6321,6 +6354,8 @@ pub enum RequestOutcomeKind {
     Replied,
     /// The request timed out.
     TimedOut,
+    /// The reply token ceased to exist during Drain without a reply.
+    Abandoned,
 }
 
 /// An event recorded during controlled execution.
@@ -6437,6 +6472,18 @@ pub enum TraceEvent {
         component: ComponentId,
         /// The reply's Rust type name.
         reply_type: &'static str,
+    },
+    /// A component's `shutdown` ran during Drain; its finishing work follows as children.
+    ComponentShutdown {
+        /// The component that stopped.
+        component: ComponentId,
+    },
+    /// A message addressed to a component that had already shut down was dropped.
+    MessageDropped {
+        /// The stopped component the message was addressed to.
+        component: ComponentId,
+        /// The message's Rust type name.
+        message_type: &'static str,
     },
     /// A timer became due and queued its message.
     TimerFired {

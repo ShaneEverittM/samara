@@ -405,6 +405,11 @@ an effect with `discard_outcome()`, and batches of those. It is what a
 `finish_with` continuation returns, which makes that continuation exactly
 one hop: it cannot start anything whose result would come back.
 
+**Component shutdown** — The single call to `Component::shutdown` that ends a
+Component during Drain: the Model is consumed and finishing commands are
+returned. Components stop in reverse registration order once the Program is
+quiet (ADR-0024). Not a Message, and not a reason on any effect outcome.
+
 **Request continuation** — The one-shot Message mapper passed to
 `Command::request(&target, ctor)`, `Message::from` when one reply has one meaning or a
 closure that captures domain context. A live host request has a waiter

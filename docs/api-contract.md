@@ -679,6 +679,31 @@ as amended by [ADR-0018](adr/0018-assemblies-export-a-connector.md) and
 - Removed: `Command::effect`, `effect_with`, `effect_discarding_outcome`,
   `send`, `request_to`, `request_to_timeout`, `reply`.
 
+## Accepted and Implemented Contract: Component Shutdown
+
+[ADR-0024](adr/0024-component-shutdown.md):
+
+- `Component::shutdown(config, capabilities, model) -> Command<NoMessage>`
+  takes the Model by value and returns finishing work only. The default does
+  nothing. It is pure.
+- Only Drain calls it. Stopping begins when no messages are queued and no
+  effects or timers are in flight; outstanding requests do not hold it back.
+  Components stop one at a time in reverse registration order, and the
+  runtime returns to that quiet condition between stops, so finishing sends
+  to still-live Components are delivered and handled normally.
+- After a Component has stopped, messages to it are dropped and traced.
+  During Drain, a request whose reply token no longer exists completes for
+  its requester with `RequestOutcome::Failed(RequestError::ReplyAbandoned)`;
+  a live host waiter receives a `RuntimeError`.
+- This amends the ADR-0006 and ADR-0007 statements above that an unanswered
+  request may keep Drain pending forever. Outside Drain a dropped token
+  still leaves its request pending.
+- A faulted runtime and Cancel call no `shutdown`. A Drain cut short by
+  Cancel lists the Components not stopped in `ShutdownReport::not_shut_down`.
+- `ControlledRuntime::drain` begins a controlled Drain; stopping continues
+  during `run_until_idle`. `TraceEvent::ComponentShutdown`,
+  `TraceEvent::MessageDropped`, and `RequestOutcomeKind::Abandoned` record it.
+
 ## Deliberately Unfrozen Surfaces
 
 The following decisions remain explicit gates or deferrals rather than

@@ -2284,6 +2284,12 @@ impl LiveCore {
                 "Message target is absent or has a different Message type",
             ));
         };
+        if self.program.components[index].is_stopped() {
+            // The Component has shut down. Dropping the message may drop the
+            // last copy of a reply token it carried.
+            drop(message);
+            return self.abandon_orphaned_requests();
+        }
         let command = catch_unwind(AssertUnwindSafe(|| {
             self.program.components[index].transition_erased(message.message)
         }))
@@ -2724,6 +2730,7 @@ impl LiveCore {
 
     fn drain_finished(&self) -> bool {
         self.draining
+            && self.next_to_stop().is_none()
             && self.effects.is_empty()
             && self.requests.is_empty()
             && self.timers.is_empty()
@@ -2738,7 +2745,78 @@ impl LiveCore {
             remaining: 0,
             pending_now: 0,
             pending_later: 0,
+            not_shut_down: Vec::new(),
         }
+    }
+
+    /// The report for a Cancel: if it cut a Drain short, the Components whose
+    /// `shutdown` had not yet run are named.
+    fn cancel_report(&self) -> ShutdownReport {
+        let mut report = Self::clean_report();
+        if self.draining {
+            report.not_shut_down = self
+                .program
+                .components
+                .iter()
+                .filter(|component| !component.is_stopped())
+                .map(|component| component.id().clone())
+                .collect();
+        }
+        report
+    }
+
+    /// Nothing can progress on its own: no events queued, no effects or
+    /// timers in flight, no runtime tasks. Outstanding requests do not count.
+    fn quiet_for_shutdown(&self) -> bool {
+        self.effects.is_empty()
+            && self.timers.is_empty()
+            && self.receiver.is_empty()
+            && self.tasks.is_empty()
+    }
+
+    /// The live Component registered latest, or `None` when all have stopped.
+    fn next_to_stop(&self) -> Option<usize> {
+        (0..self.program.components.len())
+            .filter(|index| !self.program.components[*index].is_stopped())
+            .max_by(|left, right| {
+                self.program.components[*left]
+                    .id()
+                    .cmp(self.program.components[*right].id())
+            })
+    }
+
+    fn stop_component(&mut self, index: usize) -> Result<(), RuntimeError> {
+        let component = self.program.components[index].id().clone();
+        let work = self.work();
+        let command = catch_unwind(AssertUnwindSafe(|| {
+            self.program.components[index].shutdown_erased()
+        }))
+        .map_err(|_| {
+            self.runtime_fault(component.clone(), None, work, "Component shutdown panicked")
+        })?;
+        if let Some(command) = command {
+            command.interpret_live(self, &component, work)?;
+        }
+        self.abandon_orphaned_requests()
+    }
+
+    /// During Drain, a request whose reply token no longer exists anywhere can
+    /// never be answered; tell its requester so.
+    fn abandon_orphaned_requests(&mut self) -> Result<(), RuntimeError> {
+        if !self.draining {
+            return Ok(());
+        }
+        while let Some(index) = self
+            .requests
+            .iter()
+            .position(|request| Arc::strong_count(&request.token) == 1)
+        {
+            self.complete_request(
+                index,
+                RequestOutcome::Failed(crate::RequestError::ReplyAbandoned),
+            )?;
+        }
+        Ok(())
     }
 
     fn retain_pre_cancel_effect_outcome(&mut self, event: LiveEvent) -> Result<(), RuntimeError> {
@@ -2811,9 +2889,10 @@ impl LiveCore {
             }
         }
 
+        let report = self.cancel_report();
         self.cleanup_abort().await;
         self.scope.close();
-        Ok(Self::clean_report())
+        Ok(report)
     }
 
     fn task_fault(&mut self, exit: TaskExit) -> Option<RuntimeError> {
@@ -2880,6 +2959,19 @@ impl LiveCore {
                 self.scope.fault(error.clone());
                 self.cleanup_abort().await;
                 return Err(error);
+            }
+            if self.draining
+                && self.quiet_for_shutdown()
+                && let Some(index) = self.next_to_stop()
+            {
+                // Drain has gone quiet: stop the next Component, then go round
+                // again for whatever its finishing work set in motion.
+                if let Err(error) = self.stop_component(index) {
+                    self.scope.fault(error.clone());
+                    self.cleanup_abort().await;
+                    return Err(error);
+                }
+                continue;
             }
             if self.drain_finished() {
                 self.sources.clear();
@@ -3381,6 +3473,7 @@ mod tests {
         assert!(core.effects.is_empty(), "post-cutoff Effect must not start");
         let model = core.program.components[index]
             .model_any()
+            .expect("inspected before shutdown")
             .downcast_ref::<bool>()
             .expect("typed cutoff Model");
         assert!(*model, "the already-running transition still committed");
@@ -3438,6 +3531,7 @@ mod tests {
         );
         let model = core.program.components[index]
             .model_any()
+            .expect("inspected before shutdown")
             .downcast_ref::<GenerationModel>()
             .expect("typed generation Model");
         assert_eq!(model.generation, 2);

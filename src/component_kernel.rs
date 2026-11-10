@@ -20,7 +20,7 @@ pub(crate) struct ComponentKernel<C: Component> {
     id: ComponentId,
     config: C::Config,
     capabilities: crate::Capabilities<C::Requires>,
-    model: C::Model,
+    model: Option<C::Model>,
     initial_command: Option<Command<C::Message>>,
     subscriptions: SubscriptionReconciler<C::Message>,
 }
@@ -38,7 +38,7 @@ impl<C: Component> ComponentKernel<C> {
             id,
             config,
             capabilities,
-            model,
+            model: Some(model),
             initial_command: Some(command),
             subscriptions,
         }
@@ -49,11 +49,22 @@ impl<C: Component> ComponentKernel<C> {
     }
 
     pub(crate) fn transition(&mut self, message: C::Message) -> Command<C::Message> {
-        C::update(&self.config, &self.capabilities, &mut self.model, message)
+        let model = self
+            .model
+            .as_mut()
+            .expect("a stopped Component receives no transitions");
+        C::update(&self.config, &self.capabilities, model, message)
     }
 
-    pub(crate) fn model(&self) -> &C::Model {
-        &self.model
+    pub(crate) fn model(&self) -> Option<&C::Model> {
+        self.model.as_ref()
+    }
+
+    /// Ends this Component: consumes its Model and returns its finishing work.
+    /// Returns `None` when it has already stopped.
+    pub(crate) fn shutdown(&mut self) -> Option<Command<C::Message>> {
+        let model = self.model.take()?;
+        Some(C::shutdown(&self.config, &self.capabilities, model).widen())
     }
 
     pub(crate) fn take_initial_command(&mut self) -> Option<Command<C::Message>> {
@@ -68,7 +79,10 @@ impl<C: Component> ComponentKernel<C> {
     pub(crate) fn reconcile_subscriptions(
         &mut self,
     ) -> Result<Vec<SubscriptionChange<C::Message>>, DuplicateSubscriptionIdError> {
-        let desired = C::subscriptions(&self.config, &self.capabilities, &self.model);
+        let desired = match &self.model {
+            Some(model) => C::subscriptions(&self.config, &self.capabilities, model),
+            None => crate::Subscriptions::none(),
+        };
         self.subscriptions.reconcile(desired)
     }
 }
@@ -100,7 +114,7 @@ impl<C: Component> SerializedComponent<C> {
         inspect: impl FnOnce(&C::Model) -> Output,
     ) -> Output {
         let kernel = self.kernel.lock().await;
-        inspect(kernel.model())
+        inspect(kernel.model().expect("inspected before shutdown"))
     }
 
     #[cfg(test)]
@@ -128,7 +142,9 @@ pub(crate) trait ErasedComponentKernel: Send {
     fn component_type_id(&self) -> TypeId;
     fn message_type_id(&self) -> TypeId;
     fn message_type_name(&self) -> &'static str;
-    fn model_any(&self) -> &dyn Any;
+    fn model_any(&self) -> Option<&dyn Any>;
+    fn is_stopped(&self) -> bool;
+    fn shutdown_erased(&mut self) -> Option<Box<dyn ErasedCommand>>;
     fn take_initial_command_erased(&mut self) -> Option<Box<dyn ErasedCommand>>;
     fn transition_erased(
         &mut self,
@@ -162,8 +178,16 @@ impl<C: Component> ErasedComponentKernel for ComponentKernel<C> {
         std::any::type_name::<C::Message>()
     }
 
-    fn model_any(&self) -> &dyn Any {
-        self.model()
+    fn model_any(&self) -> Option<&dyn Any> {
+        self.model().map(|model| model as &dyn Any)
+    }
+
+    fn is_stopped(&self) -> bool {
+        self.model.is_none()
+    }
+
+    fn shutdown_erased(&mut self) -> Option<Box<dyn ErasedCommand>> {
+        self.shutdown().map(erase_command)
     }
 
     fn take_initial_command_erased(&mut self) -> Option<Box<dyn ErasedCommand>> {
@@ -190,7 +214,8 @@ impl<C: Component> ErasedComponentKernel for ComponentKernel<C> {
         &self,
         program: &crate::Program,
     ) -> Result<(), crate::RuntimeError> {
-        let subscriptions = C::subscriptions(&self.config, &self.capabilities, &self.model);
+        let model = self.model.as_ref().expect("validated before shutdown");
+        let subscriptions = C::subscriptions(&self.config, &self.capabilities, model);
         crate::validate_initial_capabilities(
             program,
             &self.id,

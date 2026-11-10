@@ -1924,7 +1924,7 @@ async fn phase6_cancel_drops_unanswered_request_without_mapping() -> Result<(), 
 }
 
 #[tokio::test]
-async fn shutdown_escalation_closes_unanswered_request_without_mapping() -> Result<(), RuntimeError>
+async fn drain_abandons_a_dropped_reply_token_and_tells_the_requester() -> Result<(), RuntimeError>
 {
     let continuation_calls = Arc::new(AtomicUsize::new(0));
     let (program, requester) = echo_program(false, continuation_calls.clone());
@@ -1943,20 +1943,20 @@ async fn shutdown_escalation_closes_unanswered_request_without_mapping() -> Resu
     handle.send(EchoRequesterMessage::Start).await?;
     seen_rx.await.expect("provider accepted the Request");
 
+    // The provider dropped its reply token. Before ADR-0024 this Drain waited
+    // until a Cancel escalated it. Now Drain goes quiet, finds the token gone,
+    // and completes the request for its requester as abandoned.
     task.request_shutdown(Shutdown::Drain);
-    assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(5), task.run_forever())
-            .await
-            .is_err()
-    );
-    task.request_shutdown(Shutdown::Cancel);
     let report = tokio::time::timeout(std::time::Duration::from_secs(1), task.run_forever())
         .await
-        .expect("Cancel closes the unanswered Request")?;
-    assert_eq!(report.remaining, 0);
-    assert_eq!(report.pending_now, 0);
-    assert_eq!(report.pending_later, 0);
-    assert_eq!(continuation_calls.load(Ordering::SeqCst), 0);
+        .expect("Drain completes without an escalation")?;
+    assert!(report.is_clean());
+    assert!(report.not_shut_down.is_empty());
+    assert_eq!(
+        continuation_calls.load(Ordering::SeqCst),
+        1,
+        "the requester heard exactly one outcome, the abandonment"
+    );
     Ok(())
 }
 

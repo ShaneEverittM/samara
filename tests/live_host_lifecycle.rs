@@ -166,7 +166,7 @@ async fn shutdown_requests_close_ingress_and_preserve_completed_result() {
 
         for repeated in [Shutdown::Cancel, Shutdown::Drain] {
             task.request_shutdown(repeated);
-            assert_eq!(task.run_forever().await, Ok(report));
+            assert_eq!(task.run_forever().await, Ok(report.clone()));
         }
         assert_eq!(task.shutdown(Shutdown::Drain).await, Ok(report));
     }
