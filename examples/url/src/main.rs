@@ -5,9 +5,12 @@ async fn main() -> anyhow::Result<()> {
     let program = urlchecker::program()?;
 
     let runtime = Runtime::builder(program)
-        .bind_http()
-        .bind_stdio()
-        .bind_stdin()
+        .with_drivers((
+            samara::HttpDriver::new(),
+            samara::StdoutDriver::new(),
+            samara::StderrDriver::new(),
+            samara::StdinDriver,
+        ))
         .build()?;
 
     let mut task = runtime.spawn();

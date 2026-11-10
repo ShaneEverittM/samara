@@ -1,3 +1,8 @@
+type TestProgram = Program<(
+    samara::Effect<samara::HttpRequest>,
+    samara::Effect<ObserveHttp>,
+)>;
+
 use std::{convert::Infallible, time::Duration};
 
 use bytes::Bytes;
@@ -67,16 +72,21 @@ struct HttpSequenceConfig {
 }
 
 impl Component for HttpSequence {
+    type Requires = ();
     type Config = HttpSequenceConfig;
     type Model = HttpModel;
     type Message = HttpMessage;
 
-    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
+    fn init(
+        _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+    ) -> Init<Self::Model, Self::Message> {
         Init::new(HttpModel::default())
     }
 
     fn update(
         config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -93,8 +103,8 @@ impl Component for HttpSequence {
             HttpMessage::Finished(outcome) => {
                 model.seen.push(match outcome {
                     EffectOutcome::Succeeded(response) => SeenHttp::Response(response),
-                    EffectOutcome::Failed(error) => SeenHttp::Error(error),
-                    EffectOutcome::Cancelled(_) => SeenHttp::Cancelled,
+                    EffectOutcome::Failed(EffectFailure::Error(error)) => SeenHttp::Error(error),
+                    EffectOutcome::Failed(EffectFailure::Cancelled(_)) => SeenHttp::Cancelled,
                 });
                 if let Some(request) = config.requests.get(model.seen.len()) {
                     Command::effect_with(&config.http, request.clone(), HttpMessage::Finished)
@@ -131,18 +141,20 @@ impl EffectDriver<ObserveHttp> for HttpObserver {
     }
 }
 
-fn http_program(requests: Vec<HttpRequest>) -> (Program, ComponentRef<HttpSequence>) {
-    let mut builder = Program::builder();
-    let http = builder.effect::<HttpRequest>();
-    let observe = builder.effect::<ObserveHttp>();
-    let probe = builder.component::<HttpSequence>(
-        ComponentId::new("http-sequence"),
-        HttpSequenceConfig {
+fn http_program(requests: Vec<HttpRequest>) -> (TestProgram, ComponentRef<HttpSequence>) {
+    let (mut builder, (declared_0, declared_1)) =
+        samara::Program::builder::<(samara::Effect<HttpRequest>, samara::Effect<ObserveHttp>)>();
+    let http = declared_0;
+    let observe = declared_1;
+    let probe = builder
+        .component::<HttpSequence>(HttpSequenceConfig {
             http,
             observe,
             requests,
-        },
-    );
+        })
+        .name("http-sequence")
+        .finish()
+        .expect("component registration");
     (builder.build().expect("valid HTTP program"), probe)
 }
 
@@ -152,8 +164,7 @@ fn controlled_http_is_an_ordinary_typed_effect_boundary() {
         .with_body(Bytes::from_static(b"controlled"));
     let (program, probe) = http_program(vec![request]);
     let mut runtime = ControlledRuntime::builder(program)
-        .control_effect::<HttpRequest>()
-        .control_effect::<ObserveHttp>()
+        .control_all()
         .build()
         .expect("valid controlled HTTP behavior");
 
@@ -327,10 +338,12 @@ async fn live_http_preserves_raw_status_and_reuses_one_client_pool() {
     let (program, probe) = http_program(vec![first, second]);
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
     let runtime = Runtime::builder(program)
-        .bind_http()
-        .bind_effect::<ObserveHttp, _>(HttpObserver {
-            observations: observed,
-        })
+        .with_drivers((
+            samara::HttpDriver::new(),
+            HttpObserver {
+                observations: observed,
+            },
+        ))
         .build()
         .expect("valid live HTTP bindings");
     let handle = runtime.handle(&probe).unwrap();
@@ -411,10 +424,12 @@ async fn invalid_live_http_configuration_is_a_typed_effect_failure() {
     let (program, probe) = http_program(vec![HttpRequest::get("not a URL")]);
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
     let runtime = Runtime::builder(program)
-        .bind_http()
-        .bind_effect::<ObserveHttp, _>(HttpObserver {
-            observations: observed,
-        })
+        .with_drivers((
+            samara::HttpDriver::new(),
+            HttpObserver {
+                observations: observed,
+            },
+        ))
         .build()
         .unwrap();
     let handle = runtime.handle(&probe).unwrap();
@@ -447,10 +462,12 @@ async fn live_http_eof_is_a_typed_transport_failure() {
     let (program, probe) = http_program(vec![request]);
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
     let runtime = Runtime::builder(program)
-        .bind_http()
-        .bind_effect::<ObserveHttp, _>(HttpObserver {
-            observations: observed,
-        })
+        .with_drivers((
+            samara::HttpDriver::new(),
+            HttpObserver {
+                observations: observed,
+            },
+        ))
         .build()
         .unwrap();
     let handle = runtime.handle(&probe).unwrap();
@@ -489,12 +506,12 @@ impl EffectDriver<HttpRequest> for DuplicateHttpDriver {
 }
 
 #[test]
-fn bind_http_participates_in_normal_duplicate_binding_validation() {
-    let (program, _) = http_program(vec![HttpRequest::get("https://example.test")]);
+fn http_driver_tuple_rejects_duplicate_bindings() {
+    let (program, _) =
+        Program::builder::<(samara::Effect<HttpRequest>, samara::Effect<HttpRequest>)>();
     assert!(
-        Runtime::builder(program)
-            .bind_http()
-            .bind_effect::<HttpRequest, _>(DuplicateHttpDriver)
+        Runtime::builder(program.build().unwrap())
+            .with_drivers((samara::HttpDriver::new(), DuplicateHttpDriver))
             .build()
             .is_err()
     );

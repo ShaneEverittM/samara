@@ -29,16 +29,21 @@ mod journal_lib {
     }
 
     impl Component for Recorder {
+        type Requires = ();
         type Config = ();
         type Model = Vec<String>;
         type Message = RecorderMessage;
 
-        fn init(_: &()) -> Init<Vec<String>, RecorderMessage> {
+        fn init(
+            _: &(),
+            _: &samara::Capabilities<Self::Requires>,
+        ) -> Init<Vec<String>, RecorderMessage> {
             Init::new(Vec::new())
         }
 
         fn update(
             _: &(),
+            _: &samara::Capabilities<Self::Requires>,
             entries: &mut Vec<String>,
             RecorderMessage::Journal(message): RecorderMessage,
         ) -> Command<RecorderMessage> {
@@ -65,9 +70,17 @@ mod journal_lib {
         type Exports = ();
         type Requires = ();
 
-        fn install(program: &mut ProgramBuilder, _: ()) -> (Connector<JournalMessage>, ()) {
-            let recorder = program.component::<Recorder>(ComponentId::new("journal"), ());
-            (recorder.accepting(RecorderMessage::Journal), ())
+        fn install<R: Requirements>(
+            program: &mut ProgramBuilder<R>,
+            _: (),
+            _: Capabilities<Self::Requires>,
+        ) -> Result<(Connector<JournalMessage>, ()), ProgramBuildError> {
+            let recorder = program
+                .component::<Recorder>(())
+                .name("journal")
+                .finish()
+                .expect("component registration");
+            Ok((recorder.accepting(RecorderMessage::Journal), ()))
         }
     }
 }
@@ -103,16 +116,21 @@ enum MonitorMessage {
 }
 
 impl Component for Monitor {
+    type Requires = ();
     type Config = MonitorConfig;
     type Model = MonitorModel;
     type Message = MonitorMessage;
 
-    fn init(_: &MonitorConfig) -> Init<MonitorModel, MonitorMessage> {
+    fn init(
+        _: &MonitorConfig,
+        _: &samara::Capabilities<Self::Requires>,
+    ) -> Init<MonitorModel, MonitorMessage> {
         Init::new(MonitorModel::default())
     }
 
     fn update(
         config: &MonitorConfig,
+        _: &samara::Capabilities<Self::Requires>,
         model: &mut MonitorModel,
         message: MonitorMessage,
     ) -> Command<MonitorMessage> {
@@ -163,12 +181,18 @@ fn couple(message: AuditMessage) -> JournalMessage {
 }
 
 fn assemble() -> (Program, InstalledAssembly<Journal>, ComponentRef<Monitor>) {
-    let mut program = Program::builder();
+    let (mut program, ()) = samara::Program::builder::<()>();
     let audit = program.port::<AuditMessage>(PortId::new("audit"));
-    let journal = program.install::<Journal>(());
+    let journal = program
+        .install::<Journal>(())
+        .finish()
+        .expect("assembly installation");
     program.connect(&audit, &journal.connector().accepting(couple));
-    let monitor =
-        program.component::<Monitor>(ComponentId::new("monitor"), MonitorConfig { audit });
+    let monitor = program
+        .component::<Monitor>(MonitorConfig { audit })
+        .name("monitor")
+        .finish()
+        .expect("component registration");
     (
         program.build().expect("program assembles"),
         journal,
@@ -178,9 +202,9 @@ fn assemble() -> (Program, InstalledAssembly<Journal>, ComponentRef<Monitor>) {
 
 #[test]
 fn an_application_port_reaches_a_library_connector_through_one_coupling() {
-    let (program, journal, monitor) = assemble();
+    let (program, _journal, monitor) = assemble();
     let mut runtime = ControlledRuntime::builder(program)
-        .with_assembly(journal)
+        .control_all()
         .build()
         .expect("the library requires nothing");
 
@@ -202,10 +226,13 @@ fn an_application_port_reaches_a_library_connector_through_one_coupling() {
 
 #[test]
 fn connectors_are_inert_addresses_that_remember_only_what_they_accept() {
-    let mut program = Program::builder();
-    let journal = program.install::<Journal>(());
+    let (mut program, ()) = samara::Program::builder::<()>();
+    let journal = program
+        .install::<Journal>(())
+        .finish()
+        .expect("assembly installation");
     let connector: &Connector<JournalMessage> = journal.connector();
-    assert_eq!(connector.id(), &ComponentId::new("journal"));
+    assert_eq!(connector.id().name(), "journal");
     let shown = format!("{connector:?}");
     assert!(shown.contains("JournalMessage"), "{shown}");
     assert!(!shown.contains("Recorder"), "{shown}");
@@ -213,18 +240,24 @@ fn connectors_are_inert_addresses_that_remember_only_what_they_accept() {
     // A ComponentRef erases to a connector of its own message type through
     // `connector()`, which is what `connect` takes.
     let audit = program.port::<AuditMessage>(PortId::new("audit"));
-    let monitor =
-        program.component::<Monitor>(ComponentId::new("monitor"), MonitorConfig { audit });
+    let monitor = program
+        .component::<Monitor>(MonitorConfig { audit })
+        .name("monitor")
+        .finish()
+        .expect("component registration");
     let same: Connector<MonitorMessage> = monitor.connector();
     assert_eq!(same.id(), monitor.id());
 }
 
 #[test]
 fn a_connector_from_another_program_is_rejected_at_build() {
-    let mut other = Program::builder();
-    let foreign = other.install::<Journal>(());
+    let (mut other, ()) = samara::Program::builder::<()>();
+    let foreign = other
+        .install::<Journal>(())
+        .finish()
+        .expect("assembly installation");
 
-    let mut program = Program::builder();
+    let (mut program, ()) = samara::Program::builder::<()>();
     let audit = program.port::<AuditMessage>(PortId::new("audit"));
     program.connect(&audit, &foreign.connector().accepting(couple));
     assert!(
@@ -275,11 +308,15 @@ mod tally_lib {
     }
 
     impl Component for Counter {
+        type Requires = ();
         type Config = ();
         type Model = CounterModel;
         type Message = TallyMessage;
 
-        fn init(_: &()) -> Init<CounterModel, TallyMessage> {
+        fn init(
+            _: &(),
+            _: &samara::Capabilities<Self::Requires>,
+        ) -> Init<CounterModel, TallyMessage> {
             Init::new(CounterModel {
                 total: 0,
                 parked: Vec::new(),
@@ -288,6 +325,7 @@ mod tally_lib {
 
         fn update(
             _: &(),
+            _: &samara::Capabilities<Self::Requires>,
             model: &mut CounterModel,
             TallyMessage(inner): TallyMessage,
         ) -> Command<TallyMessage> {
@@ -313,9 +351,17 @@ mod tally_lib {
         type Exports = ();
         type Requires = ();
 
-        fn install(program: &mut ProgramBuilder, _: ()) -> (Connector<TallyMessage>, ()) {
-            let counter = program.component::<Counter>(ComponentId::new("tally"), ());
-            (counter.connector(), ())
+        fn install<R: Requirements>(
+            program: &mut ProgramBuilder<R>,
+            _: (),
+            _: Capabilities<Self::Requires>,
+        ) -> Result<(Connector<TallyMessage>, ()), ProgramBuildError> {
+            let counter = program
+                .component::<Counter>(())
+                .name("tally")
+                .finish()
+                .expect("component registration");
+            Ok((counter.connector(), ()))
         }
     }
 }
@@ -342,16 +388,21 @@ enum TellerMessage {
 }
 
 impl Component for Teller {
+    type Requires = ();
     type Config = TellerConfig;
     type Model = TellerModel;
     type Message = TellerMessage;
 
-    fn init(_: &TellerConfig) -> Init<TellerModel, TellerMessage> {
+    fn init(
+        _: &TellerConfig,
+        _: &samara::Capabilities<Self::Requires>,
+    ) -> Init<TellerModel, TellerMessage> {
         Init::new(TellerModel::default())
     }
 
     fn update(
         config: &TellerConfig,
+        _: &samara::Capabilities<Self::Requires>,
         model: &mut TellerModel,
         message: TellerMessage,
     ) -> Command<TellerMessage> {
@@ -384,15 +435,19 @@ impl Component for Teller {
 fn assemble_tally(
     patience: Option<Duration>,
 ) -> (Program, InstalledAssembly<Tally>, ComponentRef<Teller>) {
-    let mut program = Program::builder();
-    let tally = program.install::<Tally>(());
-    let teller = program.component::<Teller>(
-        ComponentId::new("teller"),
-        TellerConfig {
+    let (mut program, ()) = samara::Program::builder::<()>();
+    let tally = program
+        .install::<Tally>(())
+        .finish()
+        .expect("assembly installation");
+    let teller = program
+        .component::<Teller>(TellerConfig {
             tally: tally.connector().clone(),
             patience,
-        },
-    );
+        })
+        .name("teller")
+        .finish()
+        .expect("component registration");
     (program.build().expect("program assembles"), tally, teller)
 }
 
@@ -400,7 +455,7 @@ fn assemble_tally(
 fn a_component_sends_and_requests_through_a_connector_with_no_port_or_protocol() {
     let (program, tally, teller) = assemble_tally(None);
     let mut runtime = ControlledRuntime::builder(program)
-        .with_assembly(tally)
+        .control_all()
         .build()
         .expect("the library requires nothing");
 
@@ -434,7 +489,7 @@ fn a_component_sends_and_requests_through_a_connector_with_no_port_or_protocol()
             target_component: Some(target),
             target_port: None,
             ..
-        } if target == &ComponentId::new("tally")
+        } if target == tally.connector().id()
     ));
     assert!(runtime.cancel().expect("clean close").is_clean());
 }
@@ -442,9 +497,9 @@ fn a_component_sends_and_requests_through_a_connector_with_no_port_or_protocol()
 #[test]
 fn a_connector_request_times_out_exactly_like_a_port_request() {
     let patience = Duration::from_secs(1);
-    let (program, tally, teller) = assemble_tally(Some(patience));
+    let (program, _tally, teller) = assemble_tally(Some(patience));
     let mut runtime = ControlledRuntime::builder(program)
-        .with_assembly(tally)
+        .control_all()
         .build()
         .expect("the library requires nothing");
 
@@ -470,16 +525,21 @@ struct DirectMonitorConfig {
 }
 
 impl Component for DirectMonitor {
+    type Requires = ();
     type Config = DirectMonitorConfig;
     type Model = MonitorModel;
     type Message = MonitorMessage;
 
-    fn init(_: &DirectMonitorConfig) -> Init<MonitorModel, MonitorMessage> {
+    fn init(
+        _: &DirectMonitorConfig,
+        _: &samara::Capabilities<Self::Requires>,
+    ) -> Init<MonitorModel, MonitorMessage> {
         Init::new(MonitorModel::default())
     }
 
     fn update(
         config: &DirectMonitorConfig,
+        _: &samara::Capabilities<Self::Requires>,
         model: &mut MonitorModel,
         message: MonitorMessage,
     ) -> Command<MonitorMessage> {
@@ -510,8 +570,11 @@ impl Component for DirectMonitor {
 
 #[test]
 fn a_connector_is_adapted_to_the_holders_vocabulary_once_with_accepting() {
-    let mut program = Program::builder();
-    let journal = program.install::<Journal>(());
+    let (mut program, ()) = samara::Program::builder::<()>();
+    let journal = program
+        .install::<Journal>(())
+        .finish()
+        .expect("assembly installation");
     // Elm 0.16's `Signal.forwardTo`: the library's connector, speaking our language.
     let audit: Connector<AuditMessage> = journal.connector().accepting(couple);
     let shown = format!("{audit:?}");
@@ -520,10 +583,13 @@ fn a_connector_is_adapted_to_the_holders_vocabulary_once_with_accepting() {
         "{shown}"
     );
     let monitor = program
-        .component::<DirectMonitor>(ComponentId::new("monitor"), DirectMonitorConfig { audit });
+        .component::<DirectMonitor>(DirectMonitorConfig { audit })
+        .name("monitor")
+        .finish()
+        .expect("component registration");
     let program = program.build().expect("program assembles");
     let mut runtime = ControlledRuntime::builder(program)
-        .with_assembly(journal)
+        .control_all()
         .build()
         .expect("the library requires nothing");
 
@@ -546,11 +612,15 @@ fn a_connector_is_adapted_to_the_holders_vocabulary_once_with_accepting() {
 struct EagerTeller;
 
 impl Component for EagerTeller {
+    type Requires = ();
     type Config = Connector<TallyMessage>;
     type Model = ();
     type Message = TellerMessage;
 
-    fn init(tally: &Connector<TallyMessage>) -> Init<(), TellerMessage> {
+    fn init(
+        tally: &Connector<TallyMessage>,
+        _: &samara::Capabilities<Self::Requires>,
+    ) -> Init<(), TellerMessage> {
         Init::new(()).with_command(Command::request_to(
             tally,
             TallyMessage::total,
@@ -558,7 +628,12 @@ impl Component for EagerTeller {
         ))
     }
 
-    fn update(_: &Connector<TallyMessage>, _: &mut (), _: TellerMessage) -> Command<TellerMessage> {
+    fn update(
+        _: &Connector<TallyMessage>,
+        _: &samara::Capabilities<Self::Requires>,
+        _: &mut (),
+        _: TellerMessage,
+    ) -> Command<TellerMessage> {
         Command::none()
     }
 }
@@ -566,10 +641,17 @@ impl Component for EagerTeller {
 #[test]
 fn an_initial_request_to_a_foreign_connector_fails_both_profile_builds() {
     fn program() -> Program {
-        let mut other = Program::builder();
-        let foreign = other.install::<Tally>(());
-        let mut program = Program::builder();
-        program.component::<EagerTeller>(ComponentId::new("eager"), foreign.connector().clone());
+        let (mut other, ()) = samara::Program::builder::<()>();
+        let foreign = other
+            .install::<Tally>(())
+            .finish()
+            .expect("assembly installation");
+        let (mut program, ()) = samara::Program::builder::<()>();
+        program
+            .component::<EagerTeller>(foreign.connector().clone())
+            .name("eager")
+            .finish()
+            .expect("component registration");
         program
             .build()
             .expect("the hidden connector is ordinary Rust until a profile reads initial work")
@@ -582,6 +664,7 @@ fn an_initial_request_to_a_foreign_connector_fails_both_profile_builds() {
     assert!(live.to_string().contains("another Program"), "{live}");
 
     let controlled = ControlledRuntime::builder(program())
+        .control_all()
         .build()
         .err()
         .expect("initial foreign connector must fail controlled build");
@@ -593,8 +676,11 @@ fn an_initial_request_to_a_foreign_connector_fails_both_profile_builds() {
 
 #[test]
 fn a_connector_request_is_inspectable_without_a_runtime() {
-    let mut program = Program::builder();
-    let tally = program.install::<Tally>(());
+    let (mut program, ()) = samara::Program::builder::<()>();
+    let tally = program
+        .install::<Tally>(())
+        .finish()
+        .expect("assembly installation");
     let command: Command<TellerMessage> =
         Command::request_to(tally.connector(), TallyMessage::total, TellerMessage::Total);
     // The message is built with an inert reply token; the continuation runs on

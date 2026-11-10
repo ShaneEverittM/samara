@@ -1,3 +1,8 @@
+type TestProgram = Program<(
+    samara::Effect<samara::HttpRequest>,
+    samara::Effect<ObservePipelineResult>,
+)>;
+
 use std::{
     convert::Infallible,
     sync::{
@@ -33,8 +38,8 @@ fn json_command<T>() -> Command<EffectOutcome<T, HttpResponseError>>
 where
     T: serde::de::DeserializeOwned + Send + 'static,
 {
-    let mut program = Program::builder();
-    let http = program.effect::<HttpRequest>();
+    let (_program, (declared_0,)) = samara::Program::builder::<(samara::Effect<HttpRequest>,)>();
+    let http = declared_0;
     HttpRequest::get("https://example.test/value")
         .on_response()
         .json::<T>()
@@ -45,8 +50,8 @@ fn successful_json_command<T>() -> Command<EffectOutcome<T, HttpResponseError>>
 where
     T: serde::de::DeserializeOwned + Send + 'static,
 {
-    let mut program = Program::builder();
-    let http = program.effect::<HttpRequest>();
+    let (_program, (declared_0,)) = samara::Program::builder::<(samara::Effect<HttpRequest>,)>();
+    let http = declared_0;
     HttpRequest::get("https://example.test/value")
         .on_response()
         .require_success()
@@ -56,8 +61,8 @@ where
 
 #[test]
 fn http_response_pipeline_preserves_the_owned_raw_request_boundary() {
-    let mut program = Program::builder();
-    let http = program.effect::<HttpRequest>();
+    let (_program, (declared_0,)) = samara::Program::builder::<(samara::Effect<HttpRequest>,)>();
+    let http = declared_0;
     let command: Command<()> = HttpRequest::get("https://example.test/owned")
         .with_header(
             http::header::CONTENT_TYPE,
@@ -109,16 +114,21 @@ struct PipelineComponentConfig {
 }
 
 impl Component for PipelineComponent {
+    type Requires = ();
     type Config = PipelineComponentConfig;
     type Model = PipelineModel;
     type Message = PipelineMessage;
 
-    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
+    fn init(
+        _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+    ) -> Init<Self::Model, Self::Message> {
         Init::new(PipelineModel::default())
     }
 
     fn update(
         config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -131,15 +141,21 @@ impl Component for PipelineComponent {
             PipelineMessage::Finished(outcome) => {
                 let result = match outcome {
                     EffectOutcome::Succeeded(payload) => PipelineResult::Succeeded(payload.value),
-                    EffectOutcome::Failed(HttpResponseError::Http(error)) => {
+                    EffectOutcome::Failed(EffectFailure::Error(HttpResponseError::Http(error))) => {
                         PipelineResult::Http(error.kind())
                     }
-                    EffectOutcome::Failed(HttpResponseError::Status(error)) => {
-                        PipelineResult::Status(error.response().status())
+                    EffectOutcome::Failed(EffectFailure::Error(HttpResponseError::Status(
+                        error,
+                    ))) => PipelineResult::Status(error.response().status()),
+                    EffectOutcome::Failed(EffectFailure::Error(HttpResponseError::Json(_))) => {
+                        PipelineResult::Json
                     }
-                    EffectOutcome::Failed(HttpResponseError::Json(_)) => PipelineResult::Json,
-                    EffectOutcome::Failed(_) => PipelineResult::OtherResponseFailure,
-                    EffectOutcome::Cancelled(reason) => PipelineResult::Cancelled(reason),
+                    EffectOutcome::Failed(EffectFailure::Error(_)) => {
+                        PipelineResult::OtherResponseFailure
+                    }
+                    EffectOutcome::Failed(EffectFailure::Cancelled(reason)) => {
+                        PipelineResult::Cancelled(reason)
+                    }
                 };
                 model.result = Some(result.clone());
                 Command::effect_with(&config.observe, ObservePipelineResult(result), |_| {
@@ -159,18 +175,22 @@ impl EffectDescriptor for ObservePipelineResult {
     type Error = Infallible;
 }
 
-fn pipeline_program(url: impl Into<String>) -> (Program, ComponentRef<PipelineComponent>) {
-    let mut builder = Program::builder();
-    let http = builder.effect::<HttpRequest>();
-    let observe = builder.effect::<ObservePipelineResult>();
-    let component = builder.component::<PipelineComponent>(
-        ComponentId::new("http-pipeline"),
-        PipelineComponentConfig {
+fn pipeline_program(url: impl Into<String>) -> (TestProgram, ComponentRef<PipelineComponent>) {
+    let (mut builder, (declared_0, declared_1)) = samara::Program::builder::<(
+        samara::Effect<HttpRequest>,
+        samara::Effect<ObservePipelineResult>,
+    )>();
+    let http = declared_0;
+    let observe = declared_1;
+    let component = builder
+        .component::<PipelineComponent>(PipelineComponentConfig {
             http,
             observe,
             url: url.into(),
-        },
-    );
+        })
+        .name("http-pipeline")
+        .finish()
+        .expect("component registration");
     (builder.build().expect("valid pipeline program"), component)
 }
 
@@ -178,8 +198,7 @@ fn pipeline_program(url: impl Into<String>) -> (Program, ComponentRef<PipelineCo
 fn controlled_http_pipeline_intercepts_raw_request_and_decodes_2xx_json() {
     let (program, component) = pipeline_program("not a live URL");
     let mut runtime = ControlledRuntime::builder(program)
-        .control_effect::<HttpRequest>()
-        .control_effect::<ObservePipelineResult>()
+        .control_all()
         .build()
         .expect("controlled pipeline bindings");
 
@@ -250,7 +269,8 @@ fn require_success_rejects_before_json_decoding() {
         .unwrap();
     let outcome = invocation.map_outcome(EffectOutcome::Succeeded(expected.clone()));
 
-    let EffectOutcome::Failed(HttpResponseError::Status(error)) = outcome else {
+    let EffectOutcome::Failed(EffectFailure::Error(HttpResponseError::Status(error))) = outcome
+    else {
         panic!("non-2xx response did not fail status policy")
     };
     assert_eq!(REJECTED_DECODE_CALLS.load(Ordering::SeqCst), 0);
@@ -268,7 +288,8 @@ fn json_failure_retains_source_and_complete_response() {
         .unwrap();
     let outcome = invocation.map_outcome(EffectOutcome::Succeeded(expected.clone()));
 
-    let EffectOutcome::Failed(HttpResponseError::Json(error)) = outcome else {
+    let EffectOutcome::Failed(EffectFailure::Error(HttpResponseError::Json(error))) = outcome
+    else {
         panic!("invalid JSON did not produce a JSON response error")
     };
     assert!(error.source().is_syntax());
@@ -304,8 +325,11 @@ fn http_failure_and_cancellation_preserve_distinct_outcome_channels() {
         .into_effect::<HttpRequest>()
         .ok()
         .unwrap();
-    let outcome = invocation.map_outcome(EffectOutcome::Failed(expected.clone()));
-    let EffectOutcome::Failed(HttpResponseError::Http(actual)) = outcome else {
+    let outcome = invocation.map_outcome(EffectOutcome::Failed(EffectFailure::Error(
+        expected.clone(),
+    )));
+    let EffectOutcome::Failed(EffectFailure::Error(HttpResponseError::Http(actual))) = outcome
+    else {
         panic!("raw HTTP failure was not retained")
     };
     assert_eq!(actual, expected);
@@ -314,10 +338,12 @@ fn http_failure_and_cancellation_preserve_distinct_outcome_channels() {
         .into_effect::<HttpRequest>()
         .ok()
         .unwrap();
-    let outcome = invocation.map_outcome(EffectOutcome::Cancelled(CancelReason::Deadline));
+    let outcome = invocation.map_outcome(EffectOutcome::Failed(EffectFailure::Cancelled(
+        CancelReason::Deadline,
+    )));
     assert!(matches!(
         outcome,
-        EffectOutcome::Cancelled(CancelReason::Deadline)
+        EffectOutcome::Failed(EffectFailure::Cancelled(CancelReason::Deadline))
     ));
     assert_eq!(BYPASSED_DECODE_CALLS.load(Ordering::SeqCst), 0);
 }
@@ -339,8 +365,8 @@ impl<'de> Deserialize<'de> for OnceDecoded {
 
 #[test]
 fn http_pipeline_transforms_and_maps_at_most_once() {
-    let mut program = Program::builder();
-    let http = program.effect::<HttpRequest>();
+    let (_program, (declared_0,)) = samara::Program::builder::<(samara::Effect<HttpRequest>,)>();
+    let http = declared_0;
     ONCE_DECODE_CALLS.store(0, Ordering::SeqCst);
     let mapper_calls = Arc::new(AtomicUsize::new(0));
     let counted_mapper_calls = mapper_calls.clone();
@@ -370,8 +396,7 @@ fn http_pipeline_transforms_and_maps_at_most_once() {
 fn controlled_trace_records_raw_success_when_json_mapper_fails() {
     let (program, component) = pipeline_program("https://example.test/invalid");
     let mut runtime = ControlledRuntime::builder(program)
-        .control_effect::<HttpRequest>()
-        .control_effect::<ObservePipelineResult>()
+        .control_all()
         .build()
         .unwrap();
     runtime.send(&component, PipelineMessage::Start).unwrap();
@@ -458,8 +483,7 @@ async fn live_and_controlled_http_pipelines_produce_equivalent_component_results
     let controlled_result = {
         let (program, component) = pipeline_program("https://controlled.test/value");
         let mut runtime = ControlledRuntime::builder(program)
-            .control_effect::<HttpRequest>()
-            .control_effect::<ObservePipelineResult>()
+            .control_all()
             .build()
             .unwrap();
         runtime.send(&component, PipelineMessage::Start).unwrap();
@@ -486,8 +510,7 @@ async fn live_and_controlled_http_pipelines_produce_equivalent_component_results
     let (program, component) = pipeline_program(format!("http://{endpoint}/value"));
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
     let runtime = Runtime::builder(program)
-        .bind_http()
-        .bind_effect::<ObservePipelineResult, _>(PipelineObserver { observed })
+        .with_drivers((samara::HttpDriver::new(), PipelineObserver { observed }))
         .build()
         .unwrap();
     let handle = runtime.handle(&component).unwrap();

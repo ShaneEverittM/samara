@@ -14,12 +14,12 @@ use std::{
 use crate::declarative_work::SubscriptionChange;
 use crate::{
     CapabilityToken, Command, CommandKind, Component, ComponentId, ComponentRef, EffectDescriptor,
-    EffectOutcome, EffectOutcomeKind, ErasedRequestMapper, ErasedSourceEvent, LogicalTime,
-    MessageRoute, MessageTarget, PendingEffect, PendingWork, PortId, Program, RequestOutcome,
-    RequestOutcomeKind, RequestToken, RunReport, RuntimeError, ShutdownReport, SourceCapability,
-    SourceDescriptor, SourceEvent, SourcePlan, StreamDescriptor, StreamSourceDescriptor,
-    Subscription, SubscriptionAction, SubscriptionId, TraceCommandKind, TraceEvent, TraceId,
-    TraceRecord,
+    EffectFailure, EffectOutcome, EffectOutcomeKind, ErasedRequestMapper, ErasedSourceEvent,
+    LogicalTime, MessageRoute, MessageTarget, PendingEffect, PendingWork, PortId, Program,
+    RequestOutcome, RequestOutcomeKind, RequestToken, RunReport, RuntimeError, ShutdownReport,
+    SourceCapability, SourceDescriptor, SourceEvent, SourcePlan, StreamDescriptor,
+    StreamSourceDescriptor, Subscription, SubscriptionAction, SubscriptionId, TraceCommandKind,
+    TraceEvent, TraceId, TraceRecord,
 };
 
 type ErasedValue = Box<dyn Any + Send>;
@@ -241,6 +241,7 @@ struct ScheduledWork {
 
 struct PendingEffectEntry {
     id: u64,
+    capability: CapabilityToken,
     component: ComponentId,
     descriptor_type: TypeId,
     descriptor_type_name: &'static str,
@@ -266,6 +267,7 @@ struct OutstandingRequest {
 /// Exact and type-wide controlled behavior selected during assembly.
 pub(crate) struct ControlledBindings {
     pub(crate) effects: HashSet<TypeId>,
+    pub(crate) exact_effects: Vec<(CapabilityToken, TypeId)>,
     pub(crate) sources: HashSet<TypeId>,
     pub(crate) exact_sources: Vec<CapabilityToken>,
 }
@@ -274,12 +276,37 @@ impl ControlledBindings {
     pub(crate) fn new() -> Self {
         Self {
             effects: HashSet::new(),
+            exact_effects: Vec::new(),
             sources: HashSet::new(),
             exact_sources: Vec::new(),
         }
     }
 
     pub(crate) fn validate(&self, program: &Program) -> Result<(), RuntimeError> {
+        for (index, (capability, descriptor)) in self.exact_effects.iter().enumerate() {
+            if !capability.belongs_to(&program.program) {
+                return Err(RuntimeError::harness(
+                    "exact controlled Effect binding uses a capability from another Program",
+                ));
+            }
+            if !program
+                .effect_requirement(capability, *descriptor)
+                .is_some_and(|requirement| requirement.exact)
+            {
+                return Err(RuntimeError::harness(
+                    "exact controlled Effect binding has no matching resource operation declaration",
+                ));
+            }
+            if self.effects.contains(descriptor)
+                || self.exact_effects[index + 1..]
+                    .iter()
+                    .any(|(other, kind)| kind == descriptor && other.same_as(capability))
+            {
+                return Err(RuntimeError::harness(
+                    "duplicate or ambiguous exact controlled Effect binding",
+                ));
+            }
+        }
         for (index, capability) in self.exact_sources.iter().enumerate() {
             if !capability.belongs_to(&program.program) {
                 return Err(RuntimeError::harness(
@@ -318,7 +345,15 @@ impl ControlledBindings {
         }
 
         for requirement in &program.effect_requirements {
-            if !self.effects.contains(&requirement.descriptor_type) {
+            let controlled = if requirement.exact {
+                self.exact_effects.iter().any(|(capability, descriptor)| {
+                    capability.same_as(&requirement.token)
+                        && *descriptor == requirement.descriptor_type
+                })
+            } else {
+                self.effects.contains(&requirement.descriptor_type)
+            };
+            if !controlled {
                 return Err(RuntimeError::harness(format!(
                     "declared Effect capability for {} has no controlled behavior",
                     requirement.descriptor_type_name
@@ -339,6 +374,14 @@ impl ControlledBindings {
             }
         }
         Ok(())
+    }
+
+    fn controls_effect(&self, capability: &CapabilityToken, descriptor: TypeId) -> bool {
+        self.effects.contains(&descriptor)
+            || self
+                .exact_effects
+                .iter()
+                .any(|(bound, kind)| bound.same_as(capability) && *kind == descriptor)
     }
 }
 
@@ -410,7 +453,7 @@ impl ControlledCore {
                         component,
                         None,
                         initialization,
-                        format!("duplicate desired Subscription identity {duplicate:?}"),
+                        duplicate.duplicate_message(),
                     );
                     break;
                 }
@@ -594,10 +637,9 @@ impl ControlledCore {
     fn apply_subscription_changes(
         &mut self,
         component: &ComponentId,
-        mut changes: Vec<ErasedSubscriptionChange>,
+        changes: Vec<ErasedSubscriptionChange>,
         cause: TraceId,
     ) -> Result<(), RuntimeError> {
-        changes.sort_by(|left, right| left.id().cmp(right.id()));
         for change in changes {
             match change {
                 ErasedSubscriptionChange::Start(subscription) => {
@@ -725,7 +767,10 @@ impl ControlledCore {
                             "Effect capability belongs to another Program",
                         ));
                     }
-                    if !self.bindings.effects.contains(&descriptor_type) {
+                    if !self
+                        .bindings
+                        .controls_effect(command.capability(), descriptor_type)
+                    {
                         return Err(self.set_fault(
                             component.clone(),
                             Some(descriptor_type_name),
@@ -733,6 +778,7 @@ impl ControlledCore {
                             "missing controlled terminal Effect behavior",
                         ));
                     }
+                    let capability = command.capability().clone();
                     let (descriptor, mapper) = command.into_parts();
                     let mapper: Option<ErasedMessageMapper> = mapper.map(|mapper| {
                         Box::new(move |outcome| erase_effect_continuation(mapper(outcome)))
@@ -742,6 +788,7 @@ impl ControlledCore {
                     self.next_effect += 1;
                     self.effects.push(PendingEffectEntry {
                         id,
+                        capability,
                         component: component.clone(),
                         descriptor_type,
                         descriptor_type_name,
@@ -1253,6 +1300,11 @@ impl ControlledCore {
         S: SourceDescriptor,
     {
         self.ensure_not_faulted()?;
+        if !id.belongs_to(&self.program.program) {
+            return Err(RuntimeError::harness(
+                "controlled Source selector belongs to another Program",
+            ));
+        }
         if !Arc::ptr_eq(&component.program, &self.program.program) {
             return Err(RuntimeError::harness(
                 "controlled Source target is not part of this Program",
@@ -1275,6 +1327,11 @@ impl ControlledCore {
         C: Component,
         S: SourceDescriptor,
     {
+        if !id.belongs_to(&self.program.program) {
+            return Err(RuntimeError::harness(
+                "controlled Source selector belongs to another Program",
+            ));
+        }
         if !Arc::ptr_eq(&component.program, &self.program.program) {
             return Err(RuntimeError::harness(
                 "controlled Source target is not part of this Program",
@@ -1297,9 +1354,23 @@ impl ControlledCore {
     pub(crate) fn next_effect<E: EffectDescriptor>(
         &mut self,
     ) -> Result<PendingEffect<E>, RuntimeError> {
+        self.next_effect_for(None)
+    }
+
+    pub(crate) fn next_effect_for<E: EffectDescriptor>(
+        &mut self,
+        capability: Option<&CapabilityToken>,
+    ) -> Result<PendingEffect<E>, RuntimeError> {
         self.ensure_not_faulted()?;
+        if capability.is_some_and(|token| !self.program.declares_effect(token, TypeId::of::<E>())) {
+            return Err(RuntimeError::harness(
+                "Effect selector is foreign or does not declare the requested operation",
+            ));
+        }
         let Some(index) = self.effects.iter().position(|effect| {
-            effect.descriptor_type == TypeId::of::<E>() && effect.descriptor.is_some()
+            effect.descriptor_type == TypeId::of::<E>()
+                && effect.descriptor.is_some()
+                && capability.is_none_or(|token| effect.capability.same_as(token))
         }) else {
             return Err(RuntimeError::harness(
                 "no pending effect of the requested descriptor type",
@@ -1341,8 +1412,8 @@ impl ControlledCore {
         let mut effect = self.effects.remove(index);
         let outcome_kind = match &outcome {
             EffectOutcome::Succeeded(_) => EffectOutcomeKind::Succeeded,
-            EffectOutcome::Failed(_) => EffectOutcomeKind::Failed,
-            EffectOutcome::Cancelled(_) => EffectOutcomeKind::Cancelled,
+            EffectOutcome::Failed(EffectFailure::Error(_)) => EffectOutcomeKind::Failed,
+            EffectOutcome::Failed(EffectFailure::Cancelled(_)) => EffectOutcomeKind::Cancelled,
         };
         let outcome_trace = self.push_root(TraceEvent::EffectOutcome {
             effect: effect.request_trace,
@@ -1560,7 +1631,7 @@ impl ControlledCore {
                     message.target,
                     None,
                     transition,
-                    format!("duplicate desired Subscription identity {duplicate:?}"),
+                    duplicate.duplicate_message(),
                 ));
             }
         };

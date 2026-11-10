@@ -30,6 +30,7 @@ The earlier Actor proof of concept remains available in Git history at commit
 - [Shutdown escalation ADR](docs/adr/0010-shutdown-escalation.md)
 - [Request timeouts ADR](docs/adr/0011-request-timeouts.md)
 - [HTTP redirect Layer ADR](docs/adr/0012-http-redirect-layer.md)
+- [Typed Program requirements ADR](docs/adr/0019-typed-program-requirements.md)
 - [Architecture test strategy](docs/testing/architecture-test-strategy.md)
 - [V1-V11 acceptance matrix](docs/testing/v0-acceptance-matrix.md)
 - [Goal-mode implementation checklist](docs/goal-mode-checklist.md)

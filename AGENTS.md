@@ -7,8 +7,8 @@ This repository is in a documentation-first, acceptance-contract-gated implement
 - `Model` is the single source of truth.
 - `Message` is the only path for state transitions.
 - The semantic transition `Model + Message -> Model + Commands` is pure,
-  deterministic, and side effect free. The Rust spelling (ADR-0013) is
-  `update(&Config, &mut Model, Message) -> Command<Message>`, where `Config` is
+  deterministic, and side effect free. The Rust spelling (ADR-0019) is
+  `update(&Config, &Capabilities<Requires>, &mut Model, Message) -> Command<Message>`, where `Config` is
   the Component's immutable wiring and the implementing type is only a name
   for the kind; in-place mutation is exclusively owned and one composable
   Command represents zero or more intents.
@@ -20,8 +20,8 @@ This repository is in a documentation-first, acceptance-contract-gated implement
 
 ## Effect and Source Vocabulary
 - `EffectDescriptor` is an inert, typed description of one finite world-facing interaction.
-- `EffectOutcome` is the single terminal success, failure, or cancellation produced for one issued `EffectDescriptor`.
-- `Error` names typed explanatory data; `Failure` names the semantic occurrence carrying it. Normal ending and cancellation are terminal conditions, not failures.
+- `EffectOutcome` is the single terminal success or unsuccessful completion produced for one issued `EffectDescriptor`; `Failed` carries `EffectFailure::Error` or `EffectFailure::Cancelled` (ADR-0020).
+- `Error` names typed explanatory data; effect `Failure` means the operation did not produce a successful result, including explicit cancellation. Normal Source ending remains a normal terminal condition. Whole-scope shutdown cancellation manufactures no application outcome.
 - `SourceDescriptor` is an inert, typed, reconciliation-comparable description of ongoing event production.
 - `Subscription` is a Component's model-derived desire to maintain a `SourceDescriptor` under stable Component-local identity, together with its event-to-Message mapper.
 - `Source` is the runtime-scoped realization of a `SourceDescriptor` maintained for an active `Subscription`.

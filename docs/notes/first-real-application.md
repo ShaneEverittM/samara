@@ -44,7 +44,6 @@ instead be a natural Subscription:
 ```rust,ignore
 Subscription::source_with(
     &self.interval,
-    SubscriptionId::new("refresh-time"),
     Interval::every(Duration::from_secs(1)),
     |_| Message::RefreshDue,
 )

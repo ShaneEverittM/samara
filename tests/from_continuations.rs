@@ -39,8 +39,8 @@ impl From<EffectOutcome<u64, Infallible>> for EffectMessage {
 
 #[test]
 fn effect_default_uses_from_and_effect_with_preserves_context() {
-    let mut program = Program::builder();
-    let probe = program.effect::<ProbeEffect>();
+    let (_program, (declared_0,)) = samara::Program::builder::<(samara::Effect<ProbeEffect>,)>();
+    let probe = declared_0;
     let default: Command<EffectMessage> = Command::effect(&probe, ProbeEffect);
     assert_eq!(
         default
@@ -53,10 +53,14 @@ fn effect_default_uses_from_and_effect_with_preserves_context() {
     let cancelled: Command<EffectMessage> = Command::effect(&probe, ProbeEffect);
     assert_eq!(
         cancelled
-            .map_effect_outcome::<ProbeEffect>(EffectOutcome::Cancelled(CancelReason::Deadline))
+            .map_effect_outcome::<ProbeEffect>(EffectOutcome::Failed(EffectFailure::Cancelled(
+                CancelReason::Deadline
+            )))
             .ok()
             .expect("cancelled default effect command"),
-        EffectMessage::Canonical(EffectOutcome::Cancelled(CancelReason::Deadline))
+        EffectMessage::Canonical(EffectOutcome::Failed(EffectFailure::Cancelled(
+            CancelReason::Deadline
+        )))
     );
 
     let context = "secondary read";
@@ -102,11 +106,12 @@ impl From<SourceEvent<u64, Infallible>> for SourceMessage {
 
 #[test]
 fn source_default_is_reusable_and_source_with_preserves_context() {
-    let mut program = Program::builder();
-    let source = program.source::<StreamDescriptor<u64>>();
+    let (_program, (declared_0,)) =
+        samara::Program::builder::<(samara::Source<StreamDescriptor<u64>>,)>();
+    let source = declared_0;
     let descriptor = StreamDescriptor::<u64>::named("from/default");
     let default: Subscription<SourceMessage> =
-        Subscription::source(&source, SubscriptionId::new("default"), descriptor);
+        Subscription::source(&source, descriptor).key("default");
     assert_eq!(
         default
             .map_source_event::<StreamDescriptor<u64>>(SourceEvent::Item(1))
@@ -123,10 +128,10 @@ fn source_default_is_reusable_and_source_with_preserves_context() {
     let context = "telemetry";
     let explicit = Subscription::source_with(
         &source,
-        SubscriptionId::new("explicit"),
         StreamDescriptor::<u64>::named("from/explicit"),
         move |event| SourceMessage::Explicit { context, event },
-    );
+    )
+    .key("explicit");
     assert_eq!(
         explicit
             .map_source_event::<StreamDescriptor<u64>>(SourceEvent::Item(3))
@@ -165,8 +170,8 @@ fn http_response(body: &'static [u8]) -> HttpResponse {
 
 #[test]
 fn http_pipeline_default_uses_from_and_into_command_with_is_explicit() {
-    let mut program = Program::builder();
-    let http = program.effect::<HttpRequest>();
+    let (_program, (declared_0,)) = samara::Program::builder::<(samara::Effect<HttpRequest>,)>();
+    let http = declared_0;
     let default: Command<HttpMessage> = HttpRequest::get("https://example.test/default")
         .on_response()
         .json::<Payload>()
@@ -210,16 +215,21 @@ impl From<EchoProtocolMessage> for ProviderMessage {
 struct EchoProvider;
 
 impl Component for EchoProvider {
+    type Requires = ();
     type Config = ();
     type Model = ();
     type Message = ProviderMessage;
 
-    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
+    fn init(
+        _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+    ) -> Init<Self::Model, Self::Message> {
         Init::new(())
     }
 
     fn update(
         _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
         _model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -257,16 +267,21 @@ struct RequesterConfig {
 }
 
 impl Component for Requester {
+    type Requires = ();
     type Config = RequesterConfig;
     type Model = RequesterModel;
     type Message = RequesterMessage;
 
-    fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
+    fn init(
+        _config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
+    ) -> Init<Self::Model, Self::Message> {
         Init::new(RequesterModel::default())
     }
 
     fn update(
         config: &Self::Config,
+        _: &samara::Capabilities<Self::Requires>,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -300,15 +315,21 @@ impl Component for Requester {
 
 #[test]
 fn request_to_with_message_from_uses_from_and_a_closure_preserves_context() {
-    let mut builder = Program::builder();
+    let (mut builder, ()) = samara::Program::builder::<()>();
     let echo = builder.port::<EchoProtocolMessage>(PortId::new("echo"));
-    let provider = builder.component::<EchoProvider>(ComponentId::new("provider"), ());
+    let provider = builder
+        .component::<EchoProvider>(())
+        .name("provider")
+        .finish()
+        .expect("component registration");
     builder.connect(&echo, &provider.connector());
-    let requester = builder.component::<Requester>(
-        ComponentId::new("requester"),
-        RequesterConfig { echo: echo.clone() },
-    );
+    let requester = builder
+        .component::<Requester>(RequesterConfig { echo: echo.clone() })
+        .name("requester")
+        .finish()
+        .expect("component registration");
     let mut runtime = ControlledRuntime::builder(builder.build().unwrap())
+        .control_all()
         .build()
         .unwrap();
 

@@ -1,61 +1,95 @@
+use bytes::Bytes;
 use samara::prelude::*;
 
-/// Where the recorder appends, relative to the root the host binds.
-pub const JOURNAL_FILE: &str = "pulse.journal";
-
-/// The journal's public vocabulary: what the Assembly's `Connector` accepts.
-#[derive(Debug)]
-pub enum JournalMessage {
-    /// Records one confirmed transition.
-    Transition {
-        name: String,
-        from: String,
-        to: String,
-    },
-    /// Asks for the most recent `count` recorded transitions.
-    Recent {
-        count: usize,
-        reply_with: ReplyWith<Vec<String>>,
-    },
-}
-
-/// Applies the hold policy and records confirmed transitions.
+/// Records confirmed transitions through the declared filesystem capability.
 struct Recorder;
 
 enum Message {
     Journal(JournalMessage),
+    SendTailToClient {
+        contents: Bytes,
+        count: usize,
+        reply: ReplyWith<Result<Vec<String>>>,
+    },
+    TellClientRecentFailed {
+        error: EffectFailure<FsError>,
+        reply: ReplyWith<Result<Vec<String>>>,
+    },
 }
 
-enum Model {
-    Idle,
-}
-
-/// The capabilities one Recorder is wired with.
-struct RecorderConfig {
-    append: EffectCapability<AppendToFile>,
-    clock: EffectCapability<ReadSystemTime>,
-}
+#[derive(Default, Debug)]
+struct Model;
 
 impl Component for Recorder {
-    type Config = RecorderConfig;
+    type Requires = (File<ReadAppend>, Effect<ReadSystemTime>);
+    type Config = ();
     type Model = Model;
     type Message = Message;
 
-    fn init(_: &RecorderConfig) -> Init<Model, Message> {
-        Init::new(Model::Idle)
+    fn init(_: &(), _: &Capabilities<Self::Requires>) -> Init<Model, Message> {
+        Init::default()
     }
 
-    fn update(config: &RecorderConfig, model: &mut Model, message: Message) -> Command<Message> {
+    fn update(
+        _: &(),
+        (file, _clock): &Capabilities<Self::Requires>,
+        _: &mut Model,
+        message: Message,
+    ) -> Command<Message> {
         match message {
-            Message::Journal(journal) => match (model, journal) {
-                (Model::Idle, JournalMessage::Transition { name, from, to }) => {
-                    let _ = (&config.append, &config.clock, name, from, to);
-                    todo!()
-                }
-                (Model::Idle, JournalMessage::Recent { .. }) => todo!(),
-            },
+            // Log the transition to the journal.
+            Message::Journal(JournalMessage::Transition { name, from, to }) => file
+                .append_line(format!("{name}: {from} -> {to}"))
+                .discard_outcome(),
+
+            // Dispatch a tail of the journal.
+            Message::Journal(JournalMessage::Recent { count, reply }) => {
+                file.read().into_command_with(move |result| match result {
+                    EffectOutcome::Succeeded(contents) => Message::SendTailToClient {
+                        contents,
+                        count,
+                        reply,
+                    },
+                    EffectOutcome::Failed(error) => {
+                        Message::TellClientRecentFailed { error, reply }
+                    }
+                })
+            }
+
+            // The tail request above completed, parse and give the results to the caller.
+            Message::SendTailToClient {
+                contents,
+                count,
+                reply,
+            } => {
+                let text = str::from_utf8(contents.as_ref()).expect("Invalid UTF-8");
+                let mut lines: Vec<_> = text.lines().rev().take(count).map(String::from).collect();
+                lines.reverse();
+
+                Command::reply(reply, Ok(lines))
+            }
+
+            // The tail request failed.
+            Message::TellClientRecentFailed { error, reply } => {
+                let error = match error {
+                    EffectFailure::Error(_) => Error::CouldNotReadJournal,
+                    EffectFailure::Cancelled(_) => Error::JournalReadCanceled,
+                };
+                Command::reply(reply, Err(error))
+            }
         }
     }
+}
+
+pub type Result<T, E = Error> = std::result::Result<T, E>;
+
+#[derive(thiserror::Error, Debug)]
+pub enum Error {
+    #[error("Could not read from journal, effect failed")]
+    CouldNotReadJournal,
+
+    #[error("could not read from journal, canceled")]
+    JournalReadCanceled,
 }
 
 // A marker is the Assembly, so `Recorder`, its Model, and its
@@ -64,38 +98,43 @@ impl Component for Recorder {
 /// The Assembly's public name; its Connector accepts `JournalMessage`.
 pub struct Journal;
 
+/// The journal's public vocabulary, accepted by the Assembly's Connector.
+#[derive(Debug)]
+pub enum JournalMessage {
+    /// Records one confirmed transition.
+    Transition {
+        name: String,
+        from: String,
+        to: String,
+    },
+    /// Reads up to `count` trailing lines from the returned file contents.
+    ///
+    /// Concurrent appends may or may not be reflected; an unterminated last
+    /// line is included. Read errors and cancellation become Journal errors.
+    Recent {
+        count: usize,
+        reply: ReplyWith<Result<Vec<String>>>,
+    },
+}
+
 impl Assembly for Journal {
     type Config = ();
     type Accepts = JournalMessage;
     type Exports = ();
-    type Requires = (Effect<AppendToFile>, Effect<ReadSystemTime>);
+    type Requires = (File<ReadAppend>, Effect<ReadSystemTime>);
 
-    fn install(program: &mut ProgramBuilder, _: Self::Config) -> (Connector<JournalMessage>, ()) {
-        // Register the effects, so the Runtime is prepared
-        // to service them, and so the user can supply drivers.
-        let append = program.effect::<AppendToFile>();
-        let clock = program.effect::<ReadSystemTime>();
-
-        // Install the Component, so the Runtime will run it.
-        let recorder = program.component::<Recorder>(
-            ComponentId::new("journal"),
-            RecorderConfig { append, clock },
-        );
-
-        // Wrap the Component with a Connector to hide the implementation.
-        (recorder.accepting(Message::Journal), ())
+    fn install<R: Requirements>(
+        program: &mut ProgramBuilder<R>,
+        _: Self::Config,
+        capabilities: Capabilities<Self::Requires>,
+    ) -> Result<(Connector<JournalMessage>, ()), ProgramBuildError> {
+        let recorder = program
+            .component::<Recorder>(())
+            .with_capabilities(capabilities)
+            .finish()?;
+        Ok((recorder.accepting(Message::Journal), ()))
     }
 }
 
-// In a "real" library, this would be behind feature flags and would
-// transitively enable Samara features for filesystem and time.
-// Additionally, an Assembly need not provide these if the user
-// wants to ship their own. The only concern is good documentation
-// on the contract of the Effects we use.
-impl VendorsDrivers for Journal {
-    type Drivers = (FsDriver, SystemClockDriver);
-
-    fn vendor() -> Self::Drivers {
-        (FsDriver::new("."), SystemClockDriver)
-    }
-}
+#[cfg(test)]
+mod tests;

@@ -12,20 +12,20 @@ use crate::{BoxFuture, EffectDescriptor, EffectDriver};
 
 /// Asks the host what time it is.
 ///
-/// Succeeds with a [`SystemTime`] and cannot fail. Bind it live with
-/// [`RuntimeBuilder::bind_system_time`](crate::RuntimeBuilder::bind_system_time)
-/// or pass [`SystemClockDriver`] in `and_drivers` where an Assembly's `Requires` lists it.
+/// Succeeds with a [`SystemTime`] and has no error payload. Explicit cancellation
+/// remains representable in its outcome. Supply [`SystemClockDriver`]
+/// at its position in [`RuntimeSetup::with_drivers`](crate::RuntimeSetup::with_drivers).
 ///
 /// ```
 /// use samara::prelude::*;
 /// use std::time::SystemTime;
-/// let mut program = Program::builder();
-/// let clock = program.effect::<ReadSystemTime>();
+/// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<ReadSystemTime>,)>();
+/// let clock = declared_0;
 /// let command: Command<SystemTime> =
 ///     Command::effect_with(&clock, ReadSystemTime, |outcome| match outcome {
 ///         EffectOutcome::Succeeded(now) => now,
-///         EffectOutcome::Failed(never) => match never {},
-///         EffectOutcome::Cancelled(_) => SystemTime::UNIX_EPOCH,
+///         EffectOutcome::Failed(EffectFailure::Error(never)) => match never {},
+///         EffectOutcome::Failed(EffectFailure::Cancelled(_)) => SystemTime::UNIX_EPOCH,
 ///     });
 /// assert!(command.effect_intent::<ReadSystemTime>().is_some());
 /// ```

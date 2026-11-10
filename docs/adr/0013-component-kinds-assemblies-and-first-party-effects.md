@@ -8,6 +8,15 @@
 - Scope: The `Component` trait signature, the reuse unit (`Assembly`), Port
   binding conversion, and first-party clock and filesystem effects
 
+> Runtime construction amendment (November 9, 2026):
+> [ADR-0019](0019-typed-program-requirements.md) supplies capabilities separately
+> from Config and replaces incremental binding with `with_drivers` tuples.
+> `SystemClockDriver` and `FsDriver` remain the first-party implementations;
+> binding examples below retain the historical API.
+
+ADR-0021 amends Component registration to `component::<C>(config)` with an
+optional diagnostic `.name(...)`; Component identity is issued by the builder.
+
 ## Context
 
 Three pressures from the `examples/pulse` developer-experience trial met in
@@ -49,7 +58,7 @@ pub trait Component: 'static {
 The implementing type is only a name for the kind and is never stored. Its
 wiring (capabilities, Ports, settings) is `Config`, supplied at registration
 and held by the kernel; its behavioral state is `Model`. Registration names
-the kind explicitly, `component::<Recorder>(id, config)`, because `C` cannot
+the kind explicitly, `component::<Recorder>(config)`, because `C` cannot
 be inferred from `C::Config`. Dynamic dispatch over `Component` is not
 supported; it was already unreachable in practice, since the trait's
 associated types have no defaults, and Ports are the dispatch mechanism.

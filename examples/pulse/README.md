@@ -64,16 +64,24 @@ forces policy into the Driver instead of the Component.
   the journal confirms the transition, so the journal asks for it with the
   first-party `ReadSystemTime` effect (ADR-0013) instead of carrying it in
   the message.
-- The hand-written `AppendLine` effect and Driver became the first-party
-  `AppendToFile` and `FsDriver` behind the `fs` feature (ADR-0013); the
-  journal vendors them through `VendorsDrivers`.
+- The hand-written `AppendLine` effect and Driver became first-party
+  filesystem effects (ADR-0013) and then a permission-typed file resource
+  capability, `File<ReadAppend>`, bound to one exact file by the host
+  (ADR-0022). The journal appends and reads through that capability.
 - "A reusable library-style Component" became an `Assembly` (ADR-0013, 0018):
   `Journal` exports a `Connector<JournalMessage>` and declares no Port. The
-  host cuts its own Port for Monitor, or hands Monitor the Connector.
+  host hands Monitor the Connector.
 - `protocol!` and the request trait are gone (ADR-0015, 0016). The vocabulary
-  is the hand-written `JournalMessage` enum, with `Recent { count, reply_with }`.
+  is the hand-written `JournalMessage` enum; `Recent` replies with a
+  `Result`, since reads can fail (ADR-0020).
+- Capabilities moved out of Component configuration into
+  `Component::Requires`, typed on the Program (ADR-0019), so a host that
+  forgets a driver fails to compile rather than at `build()`. Component names
+  are optional diagnostics (ADR-0021).
 
 ## Status
 
-The journal's `update` is still `todo!()` and Monitor is not written. The
-exercise is paused where the journal's own logic begins.
+The journal appends transitions and answers `Recent` from the file's
+contents. Monitor exists in `main.rs` as a sketch wired to stdin and stdout;
+the targets, polling, hold policy, and the console commands are not yet
+written.

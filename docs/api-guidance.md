@@ -109,9 +109,9 @@ should become a Component.
 
 
 The `Model` contains mutable behavioral state. `Component::Config` holds
-immutable logical configuration and wiring, such as Ports, EffectCapabilities,
-SourceCapabilities, and SourceDescriptors. Component functions receive it as
-`&Config`; after registration, the configuration is observationally
+immutable settings and connections, such as Ports and SourceDescriptors.
+The kernel stores `Capabilities<Component::Requires>` separately and passes
+it by shared reference alongside `&Config`; after registration, the configuration is observationally
 immutable. The type implementing `Component` is only a name for the kind and
 holds nothing. Behaviorally relevant mutation belongs in the Model rather
 than behind interior mutability in the configuration.
@@ -176,12 +176,16 @@ declaration tokens, not executing capabilities in this sense.
 ### Why Distinguish Error Data from Failure?
 
 
-An Error is typed data that explains what went wrong. A failure is the semantic
-occurrence in which an operation did not complete as intended and may carry
-that Error. This produces natural Rust names such as `TcpError` and
-`EffectOutcome::Failed(error)` without using *failure* for every terminal
-condition. Normal Source ending and cancellation are terminal, but neither is
-automatically a failure.
+An Error is typed data that explains what went wrong. Effect failure means
+that the operation did not produce its successful result. The outer
+`EffectOutcome::Failed(reason)` lets a caller forward unsuccessful completion
+to one handler; `EffectFailure::Error(error)` and
+`EffectFailure::Cancelled(reason)` let that handler distinguish why. The
+failure type has no output parameter, so different successful result types can
+share a handler. Domain mapping and retry decisions remain application policy.
+Normal Source ending is a normal terminal condition, and whole-scope
+cancellation still manufactures no application outcome
+([ADR-0020](adr/0020-effect-failure-reasons.md)).
 
 ## Effects, Layers, and Drivers
 
@@ -205,33 +209,82 @@ A descriptor answers *what should happen this time*. A capability answers
 lets descriptor payloads remain Model-derived while making the Program's
 complete world boundary knowable before execution.
 
-`ProgramBuilder::effect::<D>()` returns `EffectCapability<D>`, and
-`ProgramBuilder::source::<S>()` returns `SourceCapability<S>`.
-
-Assembly therefore declares and obtains each capability once:
+Declare the complete shape once, obtaining both the typed builder and its
+capability values ([ADR-0019](adr/0019-typed-program-requirements.md)):
 
 ```rust,ignore
-let http = program.effect::<HttpRequest>();
-let input = program.source::<StreamDescriptor<Input>>();
-program.component(ComponentId::new("worker"), Worker { http, input });
+type World = (Effect<HttpRequest>, Source<StreamDescriptor<Input>>);
+let (mut program, (http, input)) = Program::builder::<World>();
+let worker = program.component::<Worker>(settings)
+    .with_capabilities((http, input))
+    .finish()?;
+let program: Program<World> = program.build()?;
 ```
 
-Every issuance site then names the stored capability. This adds one explicit
-field, assembly declaration, and borrowed argument per logical dependency, but
-it avoids a separate `uses_effect` manifest that can drift from actual code.
-The capability performs no I/O and exposes no runtime context, so transition
-purity is unchanged.
+`Worker::Requires` determines its expected capability tuple. Every callback
+receives that tuple separately from Config, and every issuance site names the
+corresponding capability. Cloning one capability shares a declared boundary
+without adding another driver obligation. The values perform no I/O.
 
-`ProgramBuilder::build()` closes the declared capability set. Both profile
-builders validate every declaration before execution, including dependencies
-used only in later branches. A raw descriptor deliberately cannot construct a
-Command or Subscription. This is the cost of turning missing legitimate
-bindings into synchronous assembly errors rather than late runtime surprises.
+Live execution uses `with_drivers((HttpDriver::new(), MpscReceiver::new(receiver)))`.
+Controlled execution uses `control_all()`, deriving all controls from the Program
+while retaining exact resource identities. Both then call `build()`. Missing or
+wrong tuples fail compilation; both profiles retain value-level validation.
+For a type-wide source Driver, use `DrivenSource::new(driver)`. The wrapper
+keeps source Driver selection distinct from exact receiver binding under Rust's
+trait coherence rules. Built-in source Layers execute in both profiles.
+`with_drivers` is the only public live binding operation; its returned builder
+validates the completed bindings with `build()`.
 
 The closed set does not mean Samara reflects over Component fields or predicts
 every message edge. Deliberately hiding a foreign capability remains a user
 conformance violation; Samara faults before terminal behavior when that value
 becomes observable.
+
+### How Do Reads and Appends Share One File?
+
+Declare `File<ReadAppend>` when operations must target the same file
+([ADR-0022](adr/0022-file-resource-capabilities.md)):
+
+```rust,ignore
+type Requires = (File<ReadAppend>, Effect<ReadSystemTime>);
+
+// In update, using the supplied file capability:
+let append = file.append_line(format!("{name}: {from} -> {to}")).discard_outcome();
+let read = file.read().into_command_with(Message::ReadCompleted);
+
+// The host binds the target once:
+Runtime::builder(program)
+    .with_drivers((FileDriver::new("./data/pulse.journal"), SystemClockDriver))
+    .build()?;
+```
+
+A read completes with `Bytes`;
+an append completes with `()`, both using `FsError`. Constructing a file
+operation is inert. `ReadOnly` and `AppendOnly` restrict the available methods;
+`file.read_only()` and `file.append_only()` share narrower authority over the
+same resource. Two `File<ReadAppend>` positions can bind different targets
+without inventing names or Rust marker types for the files.
+
+For whole-file writes, use `File<WriteOnly>` or `File<ReadWrite>`:
+
+```rust,ignore
+file.replace_text(serialized_state).into_command_with(Message::Saved)
+```
+
+Both permit replacement and append; `ReadWrite` also permits reading.
+Replacement returns `()` or `FsError` and uses the existing atomic
+temporary-file-and-rename mechanism. `replace_bytes` accepts binary contents.
+`file.write_only()` and `file.read_append()` remove authority while retaining
+the same target. `AppendOnly` and `ReadAppend` cannot replace contents.
+
+Controlled tests select pending operations with `next_file_read(&file)` or
+`next_file_append(&file)`, or select replacements with `next_file_replace(&file)`,
+then complete their typed outcomes. They need no
+path or live Driver. Sharing a target does not order independent effects;
+wait for an append's outcome before issuing a read when that order matters.
+Path-based descriptors with `FsDriver::new(root)` remain available when a
+Component needs to choose relative filenames within a directory.
 
 ### When Should an Effect Discard Its Outcome?
 
@@ -414,8 +467,8 @@ Concrete inert types should not use `Source`, which is reserved for the running
 realization. `StreamDescriptor<T>` uses the otherwise optional `Descriptor`
 suffix because plain `Stream` could be mistaken for that running realization.
 It names the logical stream independently of how the world realizes it;
-adapter-specific assembly methods such as `bind_mpsc(&capability, receiver)`
-name the Tokio mechanism and exact logical boundary. The capability may be
+`MpscReceiver::new(receiver)` in the runtime's `with_drivers` tuple names the
+Tokio mechanism and selects the exact capability at its position. The capability may be
 `SourceCapability<StreamDescriptor<T>>` or a built-in composition whose
 terminal descriptor is `StreamDescriptor<T>`; callers declare and thread only
 the application-visible composed capability.
@@ -445,9 +498,8 @@ apply downstream policy only after a complete line has been acquired.
 
 Process stdin is one concrete resource, not an implementation that can realize
 arbitrarily many independent descriptors. Unix live assembly therefore uses
-`bind_stdin()` to discover the sole declared capability whose terminal
-descriptor is `StdinLines` and bind it exactly. Zero or multiple matching
-declarations fail live build. The capability may expose `StdinLines` directly or
+`StdinDriver` in the `with_drivers` tuple to select an exact capability whose
+terminal descriptor is `StdinLines`. The capability may expose `StdinLines` directly or
 place built-in Layers such as `Framed<StdinLines, D>` above it. A second
 binding fails assembly, and concurrent realization faults instead of racing,
 load-balancing, or broadcasting lines. First-party bindings in separate
@@ -771,42 +823,36 @@ that defense-in-depth fault does not add a dynamic dependency to the Program.
 
 ### How Does a Library Declare What It Needs?
 
-The unit of reuse is an Assembly, not a Component. A library ships a type
-implementing `Assembly`; its `install` declares one or more Components and
-their Effect and Source capabilities into the caller's `ProgramBuilder` and
-returns the Assembly's address, a `Connector` accepting `Assembly::Accepts`,
-plus any other `Exports`, often none. It declares no Ports: the host names
-its own and connects the Connector to them, or holds the Connector directly
-(ADR-0018). The Component types, their `ComponentId`s, and their capabilities
-stay private as a consequence: nothing in the public surface needs them.
+A library ships a type implementing `Assembly`. Its `install` registers one
+or more Components in the caller's `ProgramBuilder<R>`, using the capabilities
+the caller supplies, and returns a `Connector<Accepts>` plus other `Exports`.
+The host owns Port naming and connection. Internal Component kinds, Models,
+Messages and identities can remain private (ADR-0018 and ADR-0019).
 
-"What it needs" is two questions at two scales, and the API keeps them apart:
+| Scope | Declaration | Supplied by |
+| --- | --- | --- |
+| Component settings and connections | `Component::Config` | Its assembler |
+| Component world dependencies | `Component::Requires` | Its assembler's capability tuple |
+| Assembly world dependencies | `Assembly::Requires` | The enclosing Program's capability tuple |
+| Complete runtime world | `Program<R>` | `with_drivers(drivers)` live, `control_all()` controlled |
 
-| Scale | Who asks | Declared as | Answered by |
-| --- | --- | --- | --- |
-| Wiring | A Component, of its assembler | `Component::Config`: the capability tokens, Ports, and settings one instance is built with | `install`, which issues the tokens and registers the Component |
-| World boundaries | An Assembly, of its host | `Assembly::Requires`: a type-level list of `Effect<D>` and `Source<S>` markers | The host, which drives each entry live or lets the harness take it controlled |
+`program.install::<A>(config).with_capabilities(caps).finish()?` returns
+`InstalledAssembly<A>` holding only the Connector and exports. The Program
+carries binding obligations into runtime setup, so no Assembly token must be
+passed separately. Driver tuples match the Program's requirement shape and
+incomplete runtime setup has no `build` method. Exact resource positions retain
+their capability identities; controlled execution constructs no live Driver.
 
-`install` binds no Drivers. Assembly is shared by live and controlled
-execution, binding is an execution-profile decision, and controlled execution
-must never run a live Driver. `ProgramBuilder::install` returns an
-`InstalledAssembly<A>` token holding the Connector and exports. A live host writes
-`with_assembly(installed).and_drivers(drivers)`, where `drivers` is any
-`EffectDriver` or `SourceDriver` for a single requirement or a tuple matching
-the requirement tuple position by position; no boxing and no bindings struct.
-A controlled test writes `with_assembly(installed)` and is done, because a
-controlled binding carries no information beyond the descriptor type, which
-`Requires` already names. The token is `must_use`, the `WithAssembly` step
-offers nothing but `and_drivers`, and `Requires` belongs to the Assembly, so
-a mismatched driver is a compile error naming the expected `Effect<D>`, a
-forgotten `and_drivers` leaves no builder to call `build()` on, and a
-`Requires` that disagrees with `install` fails `build()` on both profiles.
-
-An Assembly may also vendor drivers. Implementing `VendorsDrivers` names a
-concrete tuple satisfying `Requires` and constructs it; hosts call
-`and_its_vendored_drivers()` or ignore it. A library normally feature-gates
-that impl so consumers bringing their own Drivers do not pay for the vendored
-ones; the Assembly, its exports, and its `Requires` stay unconditional.
+Assemblies may implement `VendorsDrivers` to supply a concrete tuple through
+`A::drivers(driver_config)`. `VendorsDrivers::DriverConfig` contains live
+implementation settings, such as a filesystem root; `Assembly::Config` contains
+logical settings, such as a history limit. These are separate types, and
+the Program does not retain driver config. Use `DriverConfig = ()` for vendors
+without settings. The host can use the returned tuple at a matching position
+in the Program's driver tuple. Libraries normally feature-gate this implementation;
+the Assembly and its requirement shape remain available without live drivers.
+Assemblies that only need standard Drivers can omit `VendorsDrivers`; their
+hosts supply constructors such as `FileDriver::new(path)` directly in the tuple.
 
 Implement `Assembly` on a public marker struct, not on a Component.
 `Component`'s associated types are part of its public interface, so a public
@@ -829,11 +875,11 @@ Application-level controlled tests reach the Assembly through the Components
 that use its Port. A Port-level controlled ingress would let callers test an
 Assembly they do not own and is tracked in the follow-ups.
 
-The gap between `install` and `and_drivers` is deliberate. A Program is
+The gap between `install` and `with_drivers` is deliberate. A Program is
 profile-neutral and one assembly serves both builders, so binding cannot live
-in `install` without merging the two. The `InstalledAssembly` token and the
-`WithAssembly` step are the typed bridge across that gap. See the
-[Assembly design note](notes/assembly-design.md).
+in `install` without merging the two. `Program<R>` carries the complete
+requirements across that gap; `InstalledAssembly` holds the Connector and
+exports. See [ADR-0019](adr/0019-typed-program-requirements.md).
 
 ## Live and controlled execution
 
@@ -945,3 +991,38 @@ ADR-0005 additionally freezes only its narrow raw, pooled, no-redirect,
 no-retry HTTP Effect; it does not settle higher-level endpoint or client policy.
 Those choices should follow the guidance above rather than being inferred from
 the first implementation.
+
+## Component names and subscription keys
+
+Component registration needs only configuration. The builder issues an opaque
+identity and returns the typed address. Optional `.name("Primary worker")`
+improves diagnostics; duplicate names are allowed, and names do not affect
+routing or controlled execution order. Repeated Assembly installations need no
+coordination of private Component names.
+
+Subscriptions normally need only a capability, descriptor, and mapper:
+
+```rust,ignore
+Subscription::source_with(&input, StdinLines::new(), Message::Input)
+```
+
+This uses the capability's stable slot within the Component. Configuration
+changes replace the input, mapper-only changes retain it, and omission cancels
+it. For multiple inputs through one capability, use a domain key:
+
+```rust,ignore
+Subscription::source_with(&tcp, descriptor, Message::Network).key(peer.id)
+```
+
+Keys preserve their Rust type and value and are unique within a Component. They
+are independent of list position and can preserve identity across a capability
+change. An ambiguous default slot or duplicate explicit key is an error.
+Controlled `emit_source`, `source_descriptor`, and direct `Subscriptions::find`
+accept the capability for a default slot or `SubscriptionId::key(peer.id)` for
+an explicit key. Keep the capability alongside the ComponentRef in test fixtures.
+
+Initial controlled work follows successful registration order. Subscription
+lifecycle work follows deterministic declaration order, with removed slots
+following in their prior retained order. These are reproducibility rules, not
+ordering guarantees between independent live events. See
+[ADR-0021](adr/0021-implicit-identities-and-diagnostic-names.md).

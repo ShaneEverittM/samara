@@ -7,7 +7,6 @@
 
 use std::{
     any::{Any, TypeId},
-    collections::HashSet,
     convert::Infallible,
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{Arc, Mutex, MutexGuard},
@@ -46,9 +45,9 @@ use crate::controlled_runtime::{
 };
 use crate::{
     BoxFuture, CapabilityToken, Command, CommandKind, ComponentId, DriverStopped, EffectDescriptor,
-    EffectDriver, EffectOutcome, ErasedRequestMapper, ErasedSourceEvent, HttpError, HttpRequest,
-    HttpResponse, MessageRoute, MessageTarget, Port, PortId, PrintStderr, PrintStdout, Program,
-    ReplyWith, RequestOutcome, RequestToken, RuntimeError, Shutdown, ShutdownReport,
+    EffectDriver, EffectFailure, EffectOutcome, ErasedRequestMapper, ErasedSourceEvent, HttpError,
+    HttpRequest, HttpResponse, MessageRoute, MessageTarget, Port, PortId, PrintStderr, PrintStdout,
+    Program, ReplyWith, RequestOutcome, RequestToken, RuntimeError, Shutdown, ShutdownReport,
     SourceCapability, SourceDescriptor, SourceDriver, SourceEvent, SourcePlan, SourceRequirement,
     SourceSink, StreamDescriptor, StreamSourceDescriptor, SubscriptionId, TcpBytes, TcpError,
     TraceId,
@@ -73,10 +72,24 @@ pub(crate) trait ErasedEffectBinding: Send + Sync {
     fn descriptor_type(&self) -> TypeId;
     fn descriptor_type_name(&self) -> &'static str;
     fn execute(&self, descriptor: ErasedValue) -> BoxFuture<ErasedValue>;
+    fn exact_capability(&self) -> Option<&CapabilityToken>;
+
+    fn matches(&self, capability: &CapabilityToken, descriptor: TypeId) -> bool {
+        self.descriptor_type() == descriptor
+            && self
+                .exact_capability()
+                .is_none_or(|bound| bound.same_as(capability))
+    }
+
+    fn satisfies(&self, requirement: &crate::EffectRequirement) -> bool {
+        self.exact_capability().is_some() == requirement.exact
+            && self.matches(&requirement.token, requirement.descriptor_type)
+    }
 }
 
 struct TypedEffectBinding<D, Driver> {
     driver: Driver,
+    capability: Option<CapabilityToken>,
     marker: std::marker::PhantomData<fn() -> D>,
 }
 
@@ -85,6 +98,10 @@ where
     D: EffectDescriptor,
     Driver: EffectDriver<D>,
 {
+    fn exact_capability(&self) -> Option<&CapabilityToken> {
+        self.capability.as_ref()
+    }
+
     fn descriptor_type(&self) -> TypeId {
         TypeId::of::<D>()
     }
@@ -101,7 +118,9 @@ where
         Box::pin(async move {
             let outcome = match future.await {
                 Ok(output) => EffectOutcome::<D::Output, D::Error>::Succeeded(output),
-                Err(error) => EffectOutcome::<D::Output, D::Error>::Failed(error),
+                Err(error) => {
+                    EffectOutcome::<D::Output, D::Error>::Failed(EffectFailure::Error(error))
+                }
             };
             Box::new(outcome) as ErasedValue
         })
@@ -772,14 +791,30 @@ async fn run_stdin_reader(
     }
 }
 
-struct TokioTcpDriver;
+/// Terminal Tokio TCP source Driver.
+///
+/// Supply `DrivenSource::new(TcpDriver)` through
+/// [`RuntimeSetup::with_drivers`](crate::RuntimeSetup::with_drivers).
+/// Each input connects once to its configured IP address and port. No DNS,
+/// retry, or reconnect is performed; see [`TcpBytes`] for the descriptor.
+pub struct TokioTcpDriver;
 
-struct TokioHttpDriver {
+/// Terminal HTTP Driver with a shared connection pool.
+///
+/// Supply [`HttpDriver::new`](Self::new) through
+/// [`RuntimeSetup::with_drivers`](crate::RuntimeSetup::with_drivers).
+/// Each effect makes one request and buffers the response, returning every
+/// HTTP status. The Driver performs no retries, redirects, proxy discovery,
+/// or decompression, and imposes no request timeout or body-size limit.
+/// It supplies `Accept: */*` when no Accept header is present. Use
+/// [`HttpResponsePipeline`](crate::HttpResponsePipeline) for response policy.
+pub struct TokioHttpDriver {
     client: Result<reqwest::Client, HttpError>,
 }
 
 impl TokioHttpDriver {
-    fn new() -> Self {
+    /// Constructs the first-party Driver.
+    pub fn new() -> Self {
         let builder = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .retry(reqwest::retry::never())
@@ -832,12 +867,20 @@ impl EffectDriver<HttpRequest> for TokioHttpDriver {
     }
 }
 
-struct TokioPrintStdoutDriver {
+/// Serialized standard-output Driver.
+///
+/// Supply this Driver through
+/// [`RuntimeSetup::with_drivers`](crate::RuntimeSetup::with_drivers).
+/// Each effect attempts to write all text and flush stdout, ignoring I/O errors.
+/// Writes through this binding do not interleave. Independent commands, other
+/// bindings, and direct process writes have no ordering guarantee.
+pub struct TokioPrintStdoutDriver {
     output: Arc<tokio::sync::Mutex<tokio::io::Stdout>>,
 }
 
 impl TokioPrintStdoutDriver {
-    fn new() -> Self {
+    /// Constructs the first-party Driver.
+    pub fn new() -> Self {
         Self {
             output: Arc::new(tokio::sync::Mutex::new(tokio::io::stdout())),
         }
@@ -852,12 +895,20 @@ impl EffectDriver<PrintStdout> for TokioPrintStdoutDriver {
     }
 }
 
-struct TokioPrintStderrDriver {
+/// Serialized standard-error Driver.
+///
+/// Supply this Driver through
+/// [`RuntimeSetup::with_drivers`](crate::RuntimeSetup::with_drivers).
+/// Each effect attempts to write all text and flush stderr, ignoring I/O errors.
+/// Writes through this binding do not interleave. Independent commands, other
+/// bindings, and direct process writes have no ordering guarantee.
+pub struct TokioPrintStderrDriver {
     output: Arc<tokio::sync::Mutex<tokio::io::Stderr>>,
 }
 
 impl TokioPrintStderrDriver {
-    fn new() -> Self {
+    /// Constructs the first-party Driver.
+    pub fn new() -> Self {
         Self {
             output: Arc::new(tokio::sync::Mutex::new(tokio::io::stderr())),
         }
@@ -939,8 +990,6 @@ impl SourceDriver<TcpBytes> for TokioTcpDriver {
 pub(crate) struct LiveBindings {
     effects: Vec<Arc<dyn ErasedEffectBinding>>,
     sources: Vec<Arc<dyn ErasedSourceBinding>>,
-    #[cfg(unix)]
-    stdin_requests: u8,
 }
 
 impl LiveBindings {
@@ -948,8 +997,6 @@ impl LiveBindings {
         Self {
             effects: Vec::new(),
             sources: Vec::new(),
-            #[cfg(unix)]
-            stdin_requests: 0,
         }
     }
 
@@ -960,6 +1007,20 @@ impl LiveBindings {
     {
         self.effects.push(Arc::new(TypedEffectBinding::<D, Driver> {
             driver,
+            capability: None,
+            marker: std::marker::PhantomData,
+        }));
+    }
+
+    #[cfg(feature = "fs")]
+    pub(crate) fn bind_exact_effect<D: EffectDescriptor, Driver: EffectDriver<D>>(
+        &mut self,
+        capability: &CapabilityToken,
+        driver: Driver,
+    ) {
+        self.effects.push(Arc::new(TypedEffectBinding::<D, Driver> {
+            driver,
+            capability: Some(capability.clone()),
             marker: std::marker::PhantomData,
         }));
     }
@@ -989,61 +1050,44 @@ impl LiveBindings {
     }
 
     #[cfg(unix)]
-    pub(crate) fn bind_stdin(&mut self) {
-        self.stdin_requests = self.stdin_requests.saturating_add(1);
-    }
-
-    #[cfg(unix)]
-    fn resolve_stdin(&mut self, program: &Program) -> Result<(), RuntimeError> {
-        match self.stdin_requests {
-            0 => return Ok(()),
-            1 => {}
-            _ => return Err(RuntimeError::harness("duplicate live stdin binding")),
-        }
-        let mut candidates = program
-            .source_requirements
-            .iter()
-            .filter(|requirement| requirement.terminal_type == TypeId::of::<StdinLines>());
-        let capability = candidates.next().ok_or_else(|| {
-            RuntimeError::harness("bind_stdin() has no declared stdin capability")
-        })?;
-        if candidates.next().is_some() {
-            return Err(RuntimeError::harness(
-                "bind_stdin() has multiple declared stdin capabilities; expected exactly one",
-            ));
-        }
+    pub(crate) fn bind_stdin_capability<S: SourceDescriptor<Terminal = StdinLines>>(
+        &mut self,
+        capability: &SourceCapability<S>,
+    ) {
         self.sources.push(Arc::new(StdinBinding {
             capability: capability.token.clone(),
             active: process_stdin_lease(),
         }));
-        self.stdin_requests = 0;
-        Ok(())
-    }
-
-    pub(crate) fn bind_tcp(&mut self) {
-        self.bind_source::<TcpBytes, _>(TokioTcpDriver);
-    }
-
-    pub(crate) fn bind_http(&mut self) {
-        self.bind_effect::<HttpRequest, _>(TokioHttpDriver::new());
-    }
-
-    pub(crate) fn bind_stdio(&mut self) {
-        self.bind_effect::<PrintStdout, _>(TokioPrintStdoutDriver::new());
-        self.bind_effect::<PrintStderr, _>(TokioPrintStderrDriver::new());
     }
 
     pub(crate) fn validate(&mut self, program: &Program) -> Result<(), RuntimeError> {
-        #[cfg(unix)]
-        self.resolve_stdin(program)?;
-
-        let mut effect_types = HashSet::new();
-        for binding in &self.effects {
-            if !effect_types.insert(binding.descriptor_type()) {
+        for (index, binding) in self.effects.iter().enumerate() {
+            if self.effects[index + 1..].iter().any(|other| {
+                binding.descriptor_type() == other.descriptor_type()
+                    && match (binding.exact_capability(), other.exact_capability()) {
+                        (Some(left), Some(right)) => left.same_as(right),
+                        _ => true,
+                    }
+            }) {
                 return Err(RuntimeError::harness(format!(
-                    "duplicate live Effect binding for {}",
+                    "duplicate or ambiguous live Effect binding for {}",
                     binding.descriptor_type_name()
                 )));
+            }
+            if let Some(capability) = binding.exact_capability() {
+                if !capability.belongs_to(&program.program) {
+                    return Err(RuntimeError::harness(
+                        "exact live Effect binding uses a capability from another Program",
+                    ));
+                }
+                if !program
+                    .effect_requirement(capability, binding.descriptor_type())
+                    .is_some_and(|requirement| requirement.exact)
+                {
+                    return Err(RuntimeError::harness(
+                        "exact live Effect binding has no matching resource operation declaration",
+                    ));
+                }
             }
         }
         for (index, binding) in self.sources.iter().enumerate() {
@@ -1088,7 +1132,7 @@ impl LiveBindings {
             let count = self
                 .effects
                 .iter()
-                .filter(|binding| binding.descriptor_type() == requirement.descriptor_type)
+                .filter(|binding| binding.satisfies(requirement))
                 .count();
             if count != 1 {
                 return Err(RuntimeError::harness(format!(
@@ -1113,10 +1157,14 @@ impl LiveBindings {
         Ok(())
     }
 
-    fn effect(&self, descriptor_type: TypeId) -> Option<Arc<dyn ErasedEffectBinding>> {
+    fn effect(
+        &self,
+        capability: &CapabilityToken,
+        descriptor_type: TypeId,
+    ) -> Option<Arc<dyn ErasedEffectBinding>> {
         self.effects
             .iter()
-            .find(|binding| binding.descriptor_type() == descriptor_type)
+            .find(|binding| binding.matches(capability, descriptor_type))
             .cloned()
     }
 
@@ -1713,12 +1761,7 @@ impl LiveCore {
                 )
             };
             let changes = changes.map_err(|duplicate| {
-                self.runtime_fault(
-                    component.clone(),
-                    None,
-                    work,
-                    format!("duplicate desired Subscription identity {duplicate:?}"),
-                )
+                self.runtime_fault(component.clone(), None, work, duplicate.duplicate_message())
             })?;
             if self.scope.is_cancelling() {
                 return Ok(());
@@ -1840,10 +1883,9 @@ impl LiveCore {
     fn apply_subscription_changes(
         &mut self,
         component: &ComponentId,
-        mut changes: Vec<ErasedSubscriptionChange>,
+        changes: Vec<ErasedSubscriptionChange>,
         work: TraceId,
     ) -> Result<(), RuntimeError> {
-        changes.sort_by(|left, right| left.id().cmp(right.id()));
         for change in changes {
             self.observe_drain_cutoff()?;
             match change {
@@ -1917,14 +1959,17 @@ impl LiveCore {
                             "Effect capability belongs to another Program",
                         ));
                     }
-                    let binding = self.bindings.effect(descriptor_type).ok_or_else(|| {
-                        self.runtime_fault(
-                            component.clone(),
-                            Some(descriptor_type_name),
-                            work,
-                            "missing live terminal Effect binding",
-                        )
-                    })?;
+                    let binding = self
+                        .bindings
+                        .effect(command.capability(), descriptor_type)
+                        .ok_or_else(|| {
+                            self.runtime_fault(
+                                component.clone(),
+                                Some(descriptor_type_name),
+                                work,
+                                "missing live terminal Effect binding",
+                            )
+                        })?;
                     let (descriptor, mapper) = command.into_parts();
                     let mapper: Option<ErasedMessageMapper> = mapper.map(|mapper| {
                         Box::new(move |outcome| erase_effect_continuation(mapper(outcome)))
@@ -2276,12 +2321,7 @@ impl LiveCore {
         let changes = self.program.components[index]
             .reconcile_subscriptions_erased()
             .map_err(|duplicate| {
-                self.runtime_fault(
-                    target.clone(),
-                    None,
-                    work,
-                    format!("duplicate desired Subscription identity {duplicate:?}"),
-                )
+                self.runtime_fault(target.clone(), None, work, duplicate.duplicate_message())
             })?;
         if self.scope.is_cancelling() {
             return Ok(());
@@ -2403,7 +2443,7 @@ impl LiveCore {
                 let protocol_type = send.protocol_type();
                 if !Arc::ptr_eq(send.port_program(), &self.program.program) {
                     return Err(self.runtime_fault(
-                        ComponentId::new("<external-port>"),
+                        ComponentId::external_port(),
                         None,
                         work,
                         "send Port belongs to another Program",
@@ -2411,7 +2451,7 @@ impl LiveCore {
                 }
                 let Some(binding_index) = self.binding_index(protocol_type, &port) else {
                     return Err(self.runtime_fault(
-                        ComponentId::new("<external-port>"),
+                        ComponentId::external_port(),
                         None,
                         work,
                         "send Port has no runtime binding",
@@ -2465,7 +2505,7 @@ impl LiveCore {
                 let protocol_type = request.protocol_type();
                 if !Arc::ptr_eq(request.port_program(), &self.program.program) {
                     return Err(self.runtime_fault(
-                        ComponentId::new("<external-port>"),
+                        ComponentId::external_port(),
                         None,
                         work,
                         "request Port belongs to another Program",
@@ -2473,7 +2513,7 @@ impl LiveCore {
                 }
                 let Some(binding_index) = self.binding_index(protocol_type, &port) else {
                     return Err(self.runtime_fault(
-                        ComponentId::new("<external-port>"),
+                        ComponentId::external_port(),
                         None,
                         work,
                         "request Port has no runtime binding",
@@ -2492,7 +2532,7 @@ impl LiveCore {
                 let reply_type = request.reply_type();
                 let deadline = request.deadline();
                 let token = RequestToken::new(correlation, self.program.program.clone());
-                let owner = ComponentId::new("<external-port>");
+                let owner = ComponentId::external_port();
                 let deadline_task =
                     self.schedule_request_deadline(correlation, deadline, &owner, work);
                 let (conversion, completion) = request.into_conversion();
@@ -2739,7 +2779,7 @@ impl LiveCore {
                 Err(_) => {
                     let work = self.work();
                     let error = self.runtime_fault(
-                        ComponentId::new("<runtime>"),
+                        ComponentId::runtime(),
                         None,
                         work,
                         "runtime-owned task failed outside Driver supervision",
@@ -2854,7 +2894,7 @@ impl LiveCore {
                         Some(Err(_)) => {
                             let work = self.work();
                             let error = self.runtime_fault(
-                                ComponentId::new("<runtime>"),
+                                ComponentId::runtime(),
                                 None,
                                 work,
                                 "runtime-owned task failed outside Driver supervision",
@@ -2870,7 +2910,7 @@ impl LiveCore {
                     let Some(event) = event else {
                         let work = self.work();
                         let error = self.runtime_fault(
-                            ComponentId::new("<runtime>"),
+                            ComponentId::runtime(),
                             None,
                             work,
                             "live runtime event channel closed unexpectedly",
@@ -2916,43 +2956,29 @@ impl LiveCore {
     }
 }
 
-/// Creates a first-party exact one-shot mpsc binding.
-pub(crate) fn bind_mpsc<S>(
-    bindings: &mut LiveBindings,
-    capability: &SourceCapability<S>,
-    receiver: mpsc::Receiver<S::StreamItem>,
-) where
-    S: StreamSourceDescriptor,
-{
-    bindings.bind_mpsc(capability, receiver);
-}
-
-/// Requests the first-party stdin binding, resolved during live build.
-#[cfg(unix)]
-pub(crate) fn bind_stdin(bindings: &mut LiveBindings) {
-    bindings.bind_stdin();
-}
-
-/// Registers the first-party Tokio TCP terminal Driver.
-pub(crate) fn bind_tcp(bindings: &mut LiveBindings) {
-    bindings.bind_tcp();
-}
-
-/// Registers the first-party pooled HTTP terminal Driver.
-pub(crate) fn bind_http(bindings: &mut LiveBindings) {
-    bindings.bind_http();
-}
-
-/// Registers the first-party Tokio standard-output terminal Drivers.
-pub(crate) fn bind_stdio(bindings: &mut LiveBindings) {
-    bindings.bind_stdio();
-}
-
 /// Proves the first-party descriptor's item type without exposing machinery.
 fn _tcp_item_is_bytes(_: SourceEvent<Bytes, TcpError>) {}
 
 /// Marker used only to keep exhaustive type relationships explicit.
 fn _stream_error_is_infallible<T>(_: SourceEvent<T, Infallible>) {}
+
+impl Default for TokioHttpDriver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Default for TokioPrintStdoutDriver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Default for TokioPrintStderrDriver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -2976,6 +3002,19 @@ mod tests {
         Subscriptions,
     };
 
+    #[test]
+    fn exact_stream_binding_rejects_a_foreign_capability_during_build() {
+        let (_, (foreign,)) = Program::builder::<(crate::Source<StreamDescriptor<u64>>,)>();
+        let (owner, _) = Program::builder::<(crate::Source<StreamDescriptor<u64>>,)>();
+        let mut runtime = crate::Runtime::builder(owner.build().unwrap())
+            .with_drivers((crate::MpscReceiver::new(mpsc::channel(1).1),));
+        // Exercise the registry's defense directly: public tuples select their
+        // exact capability from the owning Program and cannot import a foreign one.
+        runtime.bindings.bind_mpsc(&foreign, mpsc::channel(1).1);
+        let error = runtime.build().err().expect("foreign capability rejected");
+        assert!(error.to_string().contains("another Program"));
+    }
+
     #[derive(Debug)]
     struct CutoffIntent;
 
@@ -2996,16 +3035,21 @@ mod tests {
     }
 
     impl Component for CutoffComponent {
+        type Requires = ();
         type Config = CutoffComponentConfig;
         type Model = bool;
         type Message = CutoffMessage;
 
-        fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
+        fn init(
+            _config: &Self::Config,
+            _: &crate::Capabilities<Self::Requires>,
+        ) -> Init<Self::Model, Self::Message> {
             Init::new(false)
         }
 
         fn update(
             config: &Self::Config,
+            _: &crate::Capabilities<Self::Requires>,
             started: &mut Self::Model,
             message: Self::Message,
         ) -> Command<Self::Message> {
@@ -3023,6 +3067,7 @@ mod tests {
     struct GenerationSource(u8);
 
     impl SourceDescriptor for GenerationSource {
+        type Terminal = Self;
         type Item = u64;
         type Error = Infallible;
     }
@@ -3045,11 +3090,15 @@ mod tests {
     }
 
     impl Component for GenerationComponent {
+        type Requires = ();
         type Config = GenerationComponentConfig;
         type Model = GenerationModel;
         type Message = GenerationMessage;
 
-        fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
+        fn init(
+            _config: &Self::Config,
+            _: &crate::Capabilities<Self::Requires>,
+        ) -> Init<Self::Model, Self::Message> {
             Init::new(GenerationModel {
                 generation: 1,
                 items: Vec::new(),
@@ -3058,6 +3107,7 @@ mod tests {
 
         fn update(
             _config: &Self::Config,
+            _: &crate::Capabilities<Self::Requires>,
             model: &mut Self::Model,
             message: Self::Message,
         ) -> Command<Self::Message> {
@@ -3072,14 +3122,17 @@ mod tests {
 
         fn subscriptions(
             config: &Self::Config,
+            _: &crate::Capabilities<Self::Requires>,
             model: &Self::Model,
         ) -> Subscriptions<Self::Message> {
-            Subscriptions::one(Subscription::source_with(
-                &config.source,
-                SubscriptionId::new("generation"),
-                GenerationSource(model.generation),
-                GenerationMessage::Event,
-            ))
+            Subscriptions::one(
+                Subscription::source_with(
+                    &config.source,
+                    GenerationSource(model.generation),
+                    GenerationMessage::Event,
+                )
+                .key("generation"),
+            )
         }
     }
 
@@ -3134,16 +3187,21 @@ mod tests {
     }
 
     impl Component for FramedDrainComponent {
+        type Requires = ();
         type Config = FramedDrainComponentConfig;
         type Model = ();
         type Message = SourceEvent<u64, FramedError<Infallible, &'static str>>;
 
-        fn init(_config: &Self::Config) -> Init<Self::Model, Self::Message> {
+        fn init(
+            _config: &Self::Config,
+            _: &crate::Capabilities<Self::Requires>,
+        ) -> Init<Self::Model, Self::Message> {
             Init::new(())
         }
 
         fn update(
             _config: &Self::Config,
+            _: &crate::Capabilities<Self::Requires>,
             _model: &mut Self::Model,
             _message: Self::Message,
         ) -> Command<Self::Message> {
@@ -3152,14 +3210,17 @@ mod tests {
 
         fn subscriptions(
             config: &Self::Config,
+            _: &crate::Capabilities<Self::Requires>,
             _model: &Self::Model,
         ) -> Subscriptions<Self::Message> {
-            Subscriptions::one(Subscription::source_with(
-                &config.source,
-                SubscriptionId::new("framed-drain"),
-                Framed::new(GenerationSource(1), config.decoder.clone()),
-                std::convert::identity,
-            ))
+            Subscriptions::one(
+                Subscription::source_with(
+                    &config.source,
+                    Framed::new(GenerationSource(1), config.decoder.clone()),
+                    std::convert::identity,
+                )
+                .key("framed-drain"),
+            )
         }
     }
 
@@ -3203,12 +3264,14 @@ mod tests {
     }
 
     fn generation_core() -> GenerationFixture {
-        let mut builder = Program::builder();
-        let source = builder.source::<GenerationSource>();
-        let component = builder.component::<GenerationComponent>(
-            ComponentId::new("generation"),
-            GenerationComponentConfig { source },
-        );
+        let (mut builder, (declared_0,)) =
+            crate::Program::builder::<(crate::Source<GenerationSource>,)>();
+        let source = declared_0;
+        let component = builder
+            .component::<GenerationComponent>(GenerationComponentConfig { source })
+            .name("generation")
+            .finish()
+            .expect("component registration");
         let program = builder.build().expect("valid generation Program");
         let id = component.id().clone();
         let sinks = Arc::new(Mutex::new(Vec::new()));
@@ -3218,7 +3281,7 @@ mod tests {
         });
         let (sender, receiver) = mpsc::unbounded_channel();
         let scope = Arc::new(LiveScope::new(sender));
-        let mut core = LiveCore::new(program, bindings, scope.clone(), receiver);
+        let mut core = LiveCore::new(program.erase(), bindings, scope.clone(), receiver);
         let index = core
             .component_index(&id, TypeId::of::<GenerationMessage>())
             .expect("registered generation Component");
@@ -3272,17 +3335,24 @@ mod tests {
 
     #[tokio::test]
     async fn phase6_cancel_cutoff_starts_no_work_from_a_committed_transition() {
-        let mut builder = Program::builder();
-        let effect = builder.effect::<CutoffIntent>();
-        let component = builder.component::<CutoffComponent>(
-            ComponentId::new("cancel-cutoff"),
-            CutoffComponentConfig { effect },
-        );
+        let (mut builder, (declared_0,)) =
+            crate::Program::builder::<(crate::Effect<CutoffIntent>,)>();
+        let effect = declared_0;
+        let component = builder
+            .component::<CutoffComponent>(CutoffComponentConfig { effect })
+            .name("cancel-cutoff")
+            .finish()
+            .expect("component registration");
         let program = builder.build().expect("valid cutoff Program");
         let id = component.id().clone();
         let (sender, receiver) = mpsc::unbounded_channel();
         let scope = Arc::new(LiveScope::new(sender));
-        let mut core = LiveCore::new(program, LiveBindings::new(), scope.clone(), receiver);
+        let mut core = LiveCore::new(
+            program.erase(),
+            LiveBindings::new(),
+            scope.clone(),
+            receiver,
+        );
         let index = core
             .component_index(&id, TypeId::of::<CutoffMessage>())
             .expect("registered cutoff Component");
@@ -3403,17 +3473,20 @@ mod tests {
     #[tokio::test]
     async fn phase6_drain_does_not_finalize_after_an_earlier_decode_failure() {
         let finish_calls = Arc::new(AtomicUsize::new(0));
-        let mut builder = Program::builder();
-        let source = builder.source::<Framed<GenerationSource, DrainFailDecoder>>();
-        let _ = builder.component::<FramedDrainComponent>(
-            ComponentId::new("framed-drain"),
-            FramedDrainComponentConfig {
+        let (mut builder, (declared_0,)) = crate::Program::builder::<(
+            crate::Source<Framed<GenerationSource, DrainFailDecoder>>,
+        )>();
+        let source = declared_0;
+        let _ = builder
+            .component::<FramedDrainComponent>(FramedDrainComponentConfig {
                 source,
                 decoder: DrainFailDecoder {
                     finish_calls: finish_calls.clone(),
                 },
-            },
-        );
+            })
+            .name("framed-drain")
+            .finish()
+            .expect("component registration");
         let program = builder.build().expect("valid framed Drain Program");
         let sinks = Arc::new(Mutex::new(Vec::new()));
         let mut bindings = LiveBindings::new();
@@ -3422,7 +3495,7 @@ mod tests {
         });
         let (sender, receiver) = mpsc::unbounded_channel();
         let scope = Arc::new(LiveScope::new(sender));
-        let mut core = LiveCore::new(program, bindings, scope.clone(), receiver);
+        let mut core = LiveCore::new(program.erase(), bindings, scope.clone(), receiver);
         core.initialize().expect("framed Source activates");
         let sink = lock(&sinks)
             .first()
@@ -3463,12 +3536,14 @@ mod tests {
 
     #[tokio::test]
     async fn phase6_drain_preserves_a_source_panic_completed_before_cutoff() {
-        let mut builder = Program::builder();
-        let source = builder.source::<GenerationSource>();
-        let component = builder.component::<GenerationComponent>(
-            ComponentId::new("drain-panic"),
-            GenerationComponentConfig { source },
-        );
+        let (mut builder, (declared_0,)) =
+            crate::Program::builder::<(crate::Source<GenerationSource>,)>();
+        let source = declared_0;
+        let component = builder
+            .component::<GenerationComponent>(GenerationComponentConfig { source })
+            .name("drain-panic")
+            .finish()
+            .expect("component registration");
         let program = builder.build().expect("valid Source panic Program");
         let (entered, entered_rx) = tokio::sync::oneshot::channel();
         let mut bindings = LiveBindings::new();
@@ -3477,7 +3552,7 @@ mod tests {
         });
         let (sender, receiver) = mpsc::unbounded_channel();
         let scope = Arc::new(LiveScope::new(sender));
-        let mut core = LiveCore::new(program, bindings, scope.clone(), receiver);
+        let mut core = LiveCore::new(program.erase(), bindings, scope.clone(), receiver);
         core.initialize().expect("Source task starts");
         entered_rx
             .await
@@ -3507,12 +3582,14 @@ mod tests {
     #[tokio::test]
     async fn shutdown_escalation_preserves_source_fault_completed_before_cancel() {
         for observe_drain in [false, true] {
-            let mut builder = Program::builder();
-            let source = builder.source::<GenerationSource>();
-            let component = builder.component::<GenerationComponent>(
-                ComponentId::new("escalation-panic"),
-                GenerationComponentConfig { source },
-            );
+            let (mut builder, (declared_0,)) =
+                crate::Program::builder::<(crate::Source<GenerationSource>,)>();
+            let source = declared_0;
+            let component = builder
+                .component::<GenerationComponent>(GenerationComponentConfig { source })
+                .name("escalation-panic")
+                .finish()
+                .expect("component registration");
             let (entered, entered_rx) = tokio::sync::oneshot::channel();
             let mut bindings = LiveBindings::new();
             bindings.bind_source::<GenerationSource, _>(PanickingSourceAtCutoff {
@@ -3521,7 +3598,7 @@ mod tests {
             let (sender, receiver) = mpsc::unbounded_channel();
             let scope = Arc::new(LiveScope::new(sender));
             let mut core = LiveCore::new(
-                builder.build().expect("valid program"),
+                builder.build().expect("valid program").erase(),
                 bindings,
                 scope.clone(),
                 receiver,
@@ -3559,11 +3636,12 @@ mod tests {
     async fn phase6_timer_task_panic_is_a_runtime_fault() {
         let (sender, receiver) = mpsc::unbounded_channel();
         let scope = Arc::new(LiveScope::new(sender));
-        let program = Program::builder()
+        let program = Program::builder::<()>()
+            .0
             .build()
             .expect("empty timer test Program");
         let mut core = LiveCore::new(program, LiveBindings::new(), scope, receiver);
-        let component = ComponentId::new("timer-owner");
+        let component = ComponentId::new(0, "timer-owner");
         let work = TraceId(17);
         core.spawn_owned(
             TaskContext::Timer {
@@ -3627,8 +3705,8 @@ mod tests {
             scope,
             gate: Arc::new(SourceGate::new()),
             stamp: SourceStamp {
-                component: ComponentId::new("tcp-read-error"),
-                subscription: SubscriptionId::new("tcp"),
+                component: ComponentId::new(0, "tcp-read-error"),
+                subscription: SubscriptionId::key("tcp"),
                 generation: 1,
             },
             terminal_type: TypeId::of::<TcpBytes>(),
@@ -3656,14 +3734,15 @@ mod tests {
     async fn phase6_cancel_maps_only_effect_outcomes_accepted_before_cutoff() {
         let (sender, receiver) = mpsc::unbounded_channel();
         let scope = Arc::new(LiveScope::new(sender));
-        let program = crate::Program::builder()
+        let program = crate::Program::builder::<()>()
+            .0
             .build()
             .expect("empty test Program is valid");
         let mut core = LiveCore::new(program, LiveBindings::new(), scope.clone(), receiver);
         let task = core.spawn_owned(
             TaskContext::Effect {
                 id: 7,
-                component: ComponentId::new("cancel-race"),
+                component: ComponentId::new(0, "cancel-race"),
                 descriptor_type: "CancelRaceEffect",
                 work: TraceId(0),
             },
@@ -3673,7 +3752,7 @@ mod tests {
         let calls = mapper_calls.clone();
         core.effects.push(PendingEffect {
             id: 7,
-            component: ComponentId::new("cancel-race"),
+            component: ComponentId::new(0, "cancel-race"),
             descriptor_type_name: "CancelRaceEffect",
             mapper: Some(Box::new(move |_| {
                 calls.fetch_add(1, Ordering::SeqCst);
@@ -3688,7 +3767,7 @@ mod tests {
         // application driving. The real Effect result behind it was accepted
         // first, so its one-shot mapper must nevertheless be consumed once.
         assert!(scope.accept_finite(LiveEvent::Message(QueuedMessage {
-            target: ComponentId::new("must-not-drive"),
+            target: ComponentId::new(0, "must-not-drive"),
             target_message_type: TypeId::of::<()>(),
             message_type_name: std::any::type_name::<()>(),
             message: Box::new(()),
@@ -3744,7 +3823,7 @@ mod tests {
 
     #[tokio::test]
     async fn phase6_mpsc_receiver_is_consumed_at_activation_not_first_poll() {
-        let mut builder = crate::Program::builder();
+        let mut builder = crate::Program::builder::<()>().0;
         let capability = builder.source::<StreamDescriptor<u8>>();
         let descriptor = StreamDescriptor::<u8>::named("activation/one-shot");
         let (_sender, receiver) = mpsc::channel::<u8>(1);
@@ -3759,8 +3838,8 @@ mod tests {
                 scope: scope.clone(),
                 gate: Arc::new(SourceGate::new()),
                 stamp: SourceStamp {
-                    component: ComponentId::new("one-shot"),
-                    subscription: SubscriptionId::new("stream"),
+                    component: ComponentId::new(0, "one-shot"),
+                    subscription: SubscriptionId::key("stream"),
                     generation,
                 },
                 terminal_type: TypeId::of::<StreamDescriptor<u8>>(),
@@ -3786,8 +3865,8 @@ mod tests {
             scope,
             gate: Arc::new(SourceGate::new()),
             stamp: SourceStamp {
-                component: ComponentId::new("source-fifo"),
-                subscription: SubscriptionId::new("stream"),
+                component: ComponentId::new(0, "source-fifo"),
+                subscription: SubscriptionId::key("stream"),
                 generation: 1,
             },
             terminal_type: TypeId::of::<StreamDescriptor<u8>>(),
@@ -3832,8 +3911,8 @@ mod tests {
             scope,
             gate: Arc::new(SourceGate::new()),
             stamp: SourceStamp {
-                component: ComponentId::new("stdin-reader"),
-                subscription: SubscriptionId::new("stdin"),
+                component: ComponentId::new(0, "stdin-reader"),
+                subscription: SubscriptionId::key("stdin"),
                 generation: 1,
             },
             terminal_type: TypeId::of::<StdinLines>(),
@@ -4039,7 +4118,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn stdin_binding_rejects_concurrent_then_allows_sequential_realization() {
-        let mut builder = crate::Program::builder();
+        let mut builder = crate::Program::builder::<()>().0;
         let capability = builder.source::<StdinLines>();
         let active = Arc::new(AtomicBool::new(false));
         let binding = StdinBinding {
