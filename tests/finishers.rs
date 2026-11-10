@@ -318,7 +318,7 @@ fn inspectors_see_builder_commands_and_skip_finishing_requests() {
 
     let asked: Command<ClientMessage> = gauge.request(GaugeMessage::Read).into_command();
     let intent = asked
-        .into_request_to::<GaugeMessage>()
+        .into_request::<GaugeMessage>()
         .ok()
         .expect("a Message-producing request is inspectable");
     assert!(matches!(intent.message, GaugeMessage::Read(_)));
@@ -332,7 +332,7 @@ fn inspectors_see_builder_commands_and_skip_finishing_requests() {
     let finishing: Command<ClientMessage> = gauge
         .request(GaugeMessage::Read)
         .finish_with(|_| Command::none());
-    assert!(finishing.into_request_to::<GaugeMessage>().is_err());
+    assert!(finishing.into_request::<GaugeMessage>().is_err());
 }
 
 struct FixedProbe(u64);

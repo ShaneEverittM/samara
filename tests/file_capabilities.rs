@@ -52,16 +52,13 @@ impl Component for Writer {
         message: Message,
     ) -> Command<Message> {
         match message {
-            Message::Start => file.append_line(*text).into_command_with(Message::Appended),
-            Message::Appended(EffectOutcome::Succeeded(())) => {
-                file.read().into_command_with(Message::Read)
-            }
+            Message::Start => file.append_line(*text).producing(Message::Appended),
+            Message::Appended(EffectOutcome::Succeeded(())) => file.read().producing(Message::Read),
             Message::Read(EffectOutcome::Succeeded(contents)) => {
                 *model = contents;
-                Command::effect_discarding_outcome(
-                    report,
-                    Report(String::from_utf8(model.to_vec()).unwrap()),
-                )
+                report
+                    .perform(Report(String::from_utf8(model.to_vec()).unwrap()))
+                    .discard_outcome()
             }
             Message::Appended(EffectOutcome::Failed(_))
             | Message::Read(EffectOutcome::Failed(_)) => Command::none(),
@@ -433,14 +430,14 @@ impl Component for HiddenFile {
     type Message = bool;
     fn init(config: &Self::Config, _: &()) -> Init<(), bool> {
         Init::new(()).with_command(if config.1 {
-            config.0.read().into_command_with(|_| false)
+            config.0.read().producing(|_| false)
         } else {
             Command::none()
         })
     }
     fn update(config: &Self::Config, _: &(), _: &mut (), start: bool) -> Command<bool> {
         if start {
-            config.0.read().into_command_with(|_| false)
+            config.0.read().producing(|_| false)
         } else {
             Command::none()
         }

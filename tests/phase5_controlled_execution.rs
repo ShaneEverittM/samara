@@ -242,10 +242,13 @@ impl Component for EffectComponent {
             EffectMessage::Start => {
                 model.starts += 1;
                 let mapper_calls = config.mapper_calls.clone();
-                Command::effect_with(&config.effect, ProbeEffect(41), move |outcome| {
-                    mapper_calls.fetch_add(1, Ordering::SeqCst);
-                    EffectMessage::Finished(outcome)
-                })
+                config
+                    .effect
+                    .perform(ProbeEffect(41))
+                    .producing(move |outcome| {
+                        mapper_calls.fetch_add(1, Ordering::SeqCst);
+                        EffectMessage::Finished(outcome)
+                    })
             }
             EffectMessage::Finished(EffectOutcome::Succeeded(output)) => {
                 model.output = Some(output);
@@ -1171,7 +1174,7 @@ impl Component for Forwarder {
         _model: &mut Self::Model,
         _message: Self::Message,
     ) -> Command<Self::Message> {
-        Command::send(&config.target, TimerMessage::Mark("direct-send"))
+        config.target.send(TimerMessage::Mark("direct-send"))
     }
 }
 
@@ -1349,12 +1352,14 @@ impl Component for OwnershipComponent {
     ) -> Command<Self::Message> {
         match message {
             OwnershipMessage::Kick => Command::batch([
-                Command::effect_with(&config.effect, ProbeEffect(1), OwnershipMessage::Effect),
-                Command::request_to(
-                    &config.port,
-                    |reply_with| EchoProtocolMessage::Echo(1, reply_with),
-                    OwnershipMessage::Request,
-                ),
+                config
+                    .effect
+                    .perform(ProbeEffect(1))
+                    .producing(OwnershipMessage::Effect),
+                config
+                    .port
+                    .request(|reply_with| EchoProtocolMessage::Echo(1, reply_with))
+                    .producing(OwnershipMessage::Request),
             ]),
             OwnershipMessage::Effect(outcome) => {
                 let _ = outcome;
@@ -1596,7 +1601,7 @@ impl Component for EchoProvider {
     ) -> Command<Self::Message> {
         let EchoProviderMessage::Protocol(EchoProtocolMessage::Echo(value, reply_with)) = message;
         if config.reply {
-            Command::reply(reply_with, value)
+            reply_with.with(value)
         } else {
             let _unanswered = reply_with;
             Command::none()
@@ -1644,11 +1649,10 @@ impl Component for EchoRequester {
     ) -> Command<Self::Message> {
         match message {
             EchoRequesterMessage::Start => Command::batch((0..config.requests).map(|slot| {
-                Command::request_to(
-                    &config.port,
-                    |reply_with| EchoProtocolMessage::Echo(7, reply_with),
-                    move |outcome| EchoRequesterMessage::Replied { slot, outcome },
-                )
+                config
+                    .port
+                    .request(|reply_with| EchoProtocolMessage::Echo(7, reply_with))
+                    .producing(move |outcome| EchoRequesterMessage::Replied { slot, outcome })
             })),
             EchoRequesterMessage::Replied {
                 slot,

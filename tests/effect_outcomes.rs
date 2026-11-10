@@ -53,16 +53,18 @@ impl Component for Reader {
     ) -> Command<Message> {
         let observed = match message {
             Message::Read => {
-                return Command::effect_with(read, ReadText, |outcome| match outcome {
+                return read.perform(ReadText).producing(|outcome| match outcome {
                     EffectOutcome::Succeeded(text) => Message::Text(text),
                     EffectOutcome::Failed(reason) => Message::Failed(reason),
                 });
             }
             Message::Count => {
-                return Command::effect_with(count, CountBytes, |outcome| match outcome {
-                    EffectOutcome::Succeeded(count) => Message::Counted(count),
-                    EffectOutcome::Failed(reason) => Message::Failed(reason),
-                });
+                return count
+                    .perform(CountBytes)
+                    .producing(|outcome| match outcome {
+                        EffectOutcome::Succeeded(count) => Message::Counted(count),
+                        EffectOutcome::Failed(reason) => Message::Failed(reason),
+                    });
             }
             Message::Text(text) => Observation::Text(text),
             Message::Counted(count) => Observation::Count(count),

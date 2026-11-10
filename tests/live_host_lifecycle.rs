@@ -40,9 +40,10 @@ impl Component for FaultProbe {
         message: Self::Message,
     ) -> Command<Self::Message> {
         match message {
-            FaultMessage::Trigger => {
-                Command::effect_discarding_outcome(&config.effect, DynamicallyReachedEffect)
-            }
+            FaultMessage::Trigger => config
+                .effect
+                .perform(DynamicallyReachedEffect)
+                .discard_outcome(),
         }
     }
 }

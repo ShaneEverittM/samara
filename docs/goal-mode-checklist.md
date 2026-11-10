@@ -31,6 +31,7 @@ Governing documents:
 - [ADR-0015: Ports, Connectors, and the Message Type](adr/0015-ports-connectors-and-the-message-type.md)
 - [ADR-0016: One Sending API](adr/0016-one-sending-api.md)
 - [ADR-0018: Assemblies Export a Connector](adr/0018-assemblies-export-a-connector.md)
+- [ADR-0023: Boundary Work Builders and Finishers](adr/0023-boundary-work-builders-and-finishers.md)
 - [Architecture Test Strategy](testing/architecture-test-strategy.md)
 - [v0 Acceptance Matrix](testing/v0-acceptance-matrix.md)
 
@@ -159,7 +160,7 @@ at runtime, recorded so 0.2 and 0.3 start from a list rather than a profile:
 - Every Port binding carries a boxed conversion, including `connect`'s
   `From` (one allocation at assembly, one indirect call per delivered
   message).
-- `Command::send` erases its target into a `Connector` so one constructor serves
+- `target.send(..)` erases its target into a `Connector` so one constructor serves
   `ComponentRef` and `Connector` targets: one `Arc` allocation per send Command
   when the target is a `ComponentRef`, none beyond the clone when a `Connector`
   is held in `Config` (ADR-0014).

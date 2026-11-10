@@ -137,7 +137,7 @@ Each row of the traceability table below cites the evidence for one of them.
 | --- | --- | --- | --- |
 | V1 Repeatable Component Transition | `v1_same_input_produces_equivalent_model_and_command_intent`; `v1_update_has_no_runtime_capability`; `v3_effect_command_exposes_descriptor_and_maps_one_outcome`; `v5_live_and_controlled_boundaries_map_equivalent_observations`; `Component` compile-fail doctest | Direct-transition, typed-intent, controlled mapper, and compile-contract evidence are active. Phase 6 repeats outcome mapping through live Drivers. | Phase 3, completed controlled in Phase 5 and repeated live in Phase 6 |
 | V2 Isolated State Ownership | `v2_same_component_transitions_never_overlap`; `phase6_live_ingress_serializes_component_transitions`; `v2_cross_component_interaction_reenters_as_message`; `v2_protocol_message_remains_distinct_from_provider_message`; `ComponentHandle` and `PortHandle` compile-fail doctests | Component/handle type separation, controlled delivery, and Protocol conversion are active. Phase 6 repeats serialization through admitted live Component and provider-neutral Port ingress. | Phase 3 and Phase 5; accepted live in Phase 6, including Port ingress |
-| V3 Interceptable Effect Descriptor | `v3_effect_command_exposes_typed_descriptor`; `v3_effect_command_exposes_descriptor_and_maps_one_outcome`; `v3_controlled_effect_maps_exactly_once_without_live_driver`; `controlled_discarded_outcome_is_traced_without_scheduling_a_message`; `Command::effect_with` and `EffectCapability` compile-fail doctests | Typed descriptor and capability inspection, compile-fail API constraints, and controlled interpretation are active. Live Driver interpretation is implemented for Phase 6. | Phase 4, completed controlled in Phase 5 and implemented live in Phase 6, extended by ADR-0008 |
+| V3 Interceptable Effect Descriptor | `v3_effect_command_exposes_typed_descriptor`; `v3_effect_command_exposes_descriptor_and_maps_one_outcome`; `v3_controlled_effect_maps_exactly_once_without_live_driver`; `controlled_discarded_outcome_is_traced_without_scheduling_a_message`; `.producing(map)` and `EffectCapability` compile-fail doctests | Typed descriptor and capability inspection, compile-fail API constraints, and controlled interpretation are active. Live Driver interpretation is implemented for Phase 6. | Phase 4, completed controlled in Phase 5 and implemented live in Phase 6, extended by ADR-0008 |
 | V4 Declarative Subscription Lifecycle | `v4_subscription_separates_component_identity_from_source_descriptor`; `v4_component_kernel_reconciles_the_committed_model_projection`; `v4_new_equal_changed_and_removed_descriptors_reconcile_lifecycle`; `phase6_source_cutover_suppresses_late_terminal`; `v4_equal_descriptor_retains_source_and_adopts_latest_mapper`; `v4_equal_descriptor_with_another_capability_replaces_source`; `v4_replaced_generation_discards_stale_work`; `v4_composed_source_plan_reaches_terminal_controlled_behavior`; `composed_source_capability_declares_only_its_terminal_requirement`; `v4_source_event_mapper_is_reusable_before_delivery`; `controlled_stdin_delivers_lines_and_normal_eof`; `controlled_stdin_delivers_typed_failure_without_live_fallback`; `phase6_tcp_failure_is_constructible_and_scriptable_in_controlled_execution` | Projection, capability-aware reconciliation, retained-mapper, hard-cutover, SourcePlan, and controlled lifecycle behavior are active. Start, replacement, and removal are exercised by reconciliation and live cutover tests; reusable mappers and typed failures enter through controlled Sources. ADR-0004's live terminal-arbitration and cancellation evidence is implemented. | Phase 4 and Phase 5; implemented live in Phase 6 and extended by ADR-0008 |
 | V5 Live and Controlled Program Parity | `v5_live_and_controlled_boundaries_map_equivalent_observations`; `live_and_controlled_http_pipelines_produce_equivalent_component_results`; `controlled_stream_updates_the_same_program` with `v11_minimal_component_runs_with_live_mpsc`; `controlled_reference_program_runs_end_to_end` with `live_reference_program_runs_end_to_end` in `api_pressure` and `framed_socket` | The reference examples declare one closed Program capability set and build both profiles from one `program` factory with the same Component configuration. Behavioral parity evidence is implemented under ADR-0004. | Phase 6, extended by ADR-0008 |
 | V6 Program-Wide Controlled Determinism | `v6_identical_controlled_runs_have_equal_structural_trace_and_final_state`; `v6_equal_final_state_with_different_structural_trace_is_not_equivalent`; `v3_effect_command_exposes_typed_descriptor`; `http_descriptor_preserves_method_url_headers_and_owned_body` | ADR-0003 defines structural trace equivalence and keeps typed domain-payload comparison in direct intent tests rather than requiring generic trace payload capture. | Phase 5 |
@@ -163,10 +163,10 @@ The following evidence must pass before the Phase 2 audit:
   provider conversion, request-continuation, and subscription-replacement
   shapes. Its direct tests cover the pure decoder and command intent.
 - `tests/addressing.rs` validates the one sending API (ADR-0016): a
-  hand-written message enum with a reply-token variant, `Command::send` and
-  `Command::request_to` through a Port resolved by its binding with the trace
+  hand-written message enum with a reply-token variant, `target.send(..)` and
+  `target.request(..)` through a Port resolved by its binding with the trace
   recording a Send against the Port, a Port request timing out under ADR-0011
-  rules, `into_request_to` inspecting a request without a runtime including
+  rules, `into_request` inspecting a request without a runtime including
   its two refusal cases, an initial send to a foreign Port failing both
   profile builds, and `PortHandle::send`, `request_to`, and
   `request_to_timeout` live.
@@ -196,10 +196,10 @@ The following evidence must pass before the Phase 2 audit:
   remembers only the Message type it accepts, and a Connector from another Program
   fails `build()`. As an address: a library written the Elm way (opaque
   Message, constructor functions, no public enum) is driven through
-  `Command::send` and `Command::request_to` alone, a Connector request times out
+  `target.send(..)` and `target.request(..)` alone, a Connector request times out
   under ADR-0011 rules, `Connector::accepting` adapts a library Connector to the
   holder's vocabulary, an initial request to a foreign Connector fails both
-  profile builds, and `into_request_to` inspects a Connector request without a
+  profile builds, and `into_request` inspects a Connector request without a
   runtime.
 - `tests/fs_effects.rs` (feature `fs`, provisional under ADR-0013) validates
   the filesystem effects as ordinary controlled boundaries asserted by

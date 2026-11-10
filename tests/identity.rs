@@ -337,7 +337,7 @@ impl Component for Mirror {
         event: Self::Message,
     ) -> Command<Self::Message> {
         match event {
-            SourceEvent::Item(value) => Command::effect_discarding_outcome(&caps.1, Report(value)),
+            SourceEvent::Item(value) => caps.1.perform(Report(value)).discard_outcome(),
             _ => Command::none(),
         }
     }

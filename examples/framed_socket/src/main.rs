@@ -308,13 +308,10 @@ impl Component for Health {
                 // `ReplyWith` identifies this dynamic request. The provider
                 // returns a typed reply intent without inspecting correlation
                 // IDs or sending directly from async code.
-                Command::reply(
-                    reply_with,
-                    HealthSnapshot {
-                        status: model.status.clone(),
-                        frames_seen: model.frames_seen,
-                    },
-                )
+                reply_with.with(HealthSnapshot {
+                    status: model.status.clone(),
+                    frames_seen: model.frames_seen,
+                })
             }
         }
     }
@@ -452,28 +449,26 @@ impl Component for Telemetry {
                 // below; the runtime performs the actual start or replacement.
                 model.desired = Some(config.clone());
                 model.last_failure = None;
-                Command::send(
-                    &telemetry.health,
-                    HealthProtocolMessage::Connecting(config.endpoint),
-                )
+                telemetry
+                    .health
+                    .send(HealthProtocolMessage::Connecting(config.endpoint))
             }
             TelemetryMessage::Disconnect => {
                 // Removing desire is enough. Reconciliation and cancellation
                 // are runtime work, not reducer-side effects.
                 model.desired = None;
-                Command::send(&telemetry.health, HealthProtocolMessage::Disconnected)
+                telemetry.health.send(HealthProtocolMessage::Disconnected)
             }
             TelemetryMessage::Socket(SourceEvent::Item(frame)) => {
                 model.received += 1;
                 // One transition can declare independent intents without
                 // performing either operation inline.
                 Command::batch([
-                    Command::send(&telemetry.health, HealthProtocolMessage::FrameSeen),
-                    Command::effect_with(
-                        &capabilities.0,
-                        StoreFrame { frame },
-                        TelemetryMessage::Stored,
-                    ),
+                    telemetry.health.send(HealthProtocolMessage::FrameSeen),
+                    capabilities
+                        .0
+                        .perform(StoreFrame { frame })
+                        .producing(TelemetryMessage::Stored),
                 ])
             }
             TelemetryMessage::Socket(SourceEvent::Failed(error)) => {
@@ -482,11 +477,11 @@ impl Component for Telemetry {
                 model.desired = None;
                 let error = format!("{error:?}");
                 model.last_failure = Some(error.clone());
-                Command::send(&telemetry.health, HealthProtocolMessage::Failed(error))
+                telemetry.health.send(HealthProtocolMessage::Failed(error))
             }
             TelemetryMessage::Socket(SourceEvent::Ended) => {
                 model.desired = None;
-                Command::send(&telemetry.health, HealthProtocolMessage::Disconnected)
+                telemetry.health.send(HealthProtocolMessage::Disconnected)
             }
             TelemetryMessage::Stored(EffectOutcome::Succeeded(_frame_id)) => {
                 // Async completion re-enters the Component only as a Message.
@@ -506,11 +501,10 @@ impl Component for Telemetry {
                 // order is intentionally not assumed; each pure mapper captures
                 // the domain key needed to interpret its eventual reply.
                 Command::batch(probes.map(|probe| {
-                    Command::request_to(
-                        &telemetry.health,
-                        HealthProtocolMessage::Read,
-                        health_checked(probe),
-                    )
+                    telemetry
+                        .health
+                        .request(HealthProtocolMessage::Read)
+                        .producing(health_checked(probe))
                 }))
             }
             TelemetryMessage::HealthChecked { probe, event } => {

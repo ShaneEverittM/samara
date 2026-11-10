@@ -174,16 +174,10 @@ pub mod prelude {
 #[macro_export]
 macro_rules! print {
     ($capability:expr) => {
-        $crate::Command::effect_discarding_outcome(
-            $capability,
-            $crate::PrintStdout::text(::std::string::String::new()),
-        )
+        ($capability).perform($crate::PrintStdout::text(::std::string::String::new())).discard_outcome()
     };
     ($capability:expr, $($argument:tt)+) => {
-        $crate::Command::effect_discarding_outcome(
-            $capability,
-            $crate::PrintStdout::text(::std::format!($($argument)+))
-        )
+        ($capability).perform($crate::PrintStdout::text(::std::format!($($argument)+))).discard_outcome()
     };
 }
 
@@ -203,16 +197,10 @@ macro_rules! print {
 #[macro_export]
 macro_rules! println {
     ($capability:expr) => {
-        $crate::Command::effect_discarding_outcome(
-            $capability,
-            $crate::PrintStdout::line(::std::string::String::new()),
-        )
+        ($capability).perform($crate::PrintStdout::line(::std::string::String::new())).discard_outcome()
     };
     ($capability:expr, $($argument:tt)+) => {
-        $crate::Command::effect_discarding_outcome(
-            $capability,
-            $crate::PrintStdout::line(::std::format!($($argument)+))
-        )
+        ($capability).perform($crate::PrintStdout::line(::std::format!($($argument)+))).discard_outcome()
     };
 }
 
@@ -232,16 +220,10 @@ macro_rules! println {
 #[macro_export]
 macro_rules! eprint {
     ($capability:expr) => {
-        $crate::Command::effect_discarding_outcome(
-            $capability,
-            $crate::PrintStderr::text(::std::string::String::new()),
-        )
+        ($capability).perform($crate::PrintStderr::text(::std::string::String::new())).discard_outcome()
     };
     ($capability:expr, $($argument:tt)+) => {
-        $crate::Command::effect_discarding_outcome(
-            $capability,
-            $crate::PrintStderr::text(::std::format!($($argument)+))
-        )
+        ($capability).perform($crate::PrintStderr::text(::std::format!($($argument)+))).discard_outcome()
     };
 }
 
@@ -261,16 +243,10 @@ macro_rules! eprint {
 #[macro_export]
 macro_rules! eprintln {
     ($capability:expr) => {
-        $crate::Command::effect_discarding_outcome(
-            $capability,
-            $crate::PrintStderr::line(::std::string::String::new()),
-        )
+        ($capability).perform($crate::PrintStderr::line(::std::string::String::new())).discard_outcome()
     };
     ($capability:expr, $($argument:tt)+) => {
-        $crate::Command::effect_discarding_outcome(
-            $capability,
-            $crate::PrintStderr::line(::std::format!($($argument)+))
-        )
+        ($capability).perform($crate::PrintStderr::line(::std::format!($($argument)+))).discard_outcome()
     };
 }
 
@@ -320,9 +296,9 @@ impl PortId {
 /// }
 /// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<ReadFile>,)>();
 /// let files = declared_0;
-/// let command: Command<_> = Command::effect_with(
-///     &files, ReadFile { path: "settings.txt".into() }, |outcome| outcome,
-/// );
+/// let command: Command<_> = files
+///     .perform(ReadFile { path: "settings.txt".into() })
+///     .producing(|outcome| outcome);
 /// assert_eq!(command.effect_intent::<ReadFile>().unwrap().path, "settings.txt");
 /// ```
 pub trait EffectDescriptor: Send + 'static {
@@ -830,7 +806,7 @@ pub trait Component: 'static {
 
 /// The reply or timeout delivered to a request's caller.
 ///
-/// Requests have no timeout unless you use [`Command::request_to_timeout`] or
+/// Requests have no timeout unless you use [`RequestBuilder::timeout`] or
 /// [`PortHandle::request_to_timeout`]. A timeout leaves the provider's work running
 /// and discards its later reply. Runtime cancellation does not send this value
 /// to a component. `Failed` and `Cancelled` are not produced by the built-in
@@ -871,7 +847,7 @@ pub enum RequestError {
 
 /// The token a provider uses to reply to a request.
 ///
-/// Pass it to [`Command::reply`]. It cannot be cloned or created by application
+/// Pass it to [`ReplyWith::with`]. It cannot be cloned or created by application
 /// code, so each request can be answered at most once. Dropping it does not cancel
 /// the request: the caller keeps waiting until its timeout or runtime shutdown.
 /// An unanswered request without a timeout can keep [`Shutdown::Drain`] waiting.
@@ -891,7 +867,7 @@ pub enum RequestError {
 /// ```
 ///
 /// </details>
-#[must_use = "a ReplyWith must be consumed by Command::reply"]
+#[must_use = "a ReplyWith must be consumed by `with`"]
 pub struct ReplyWith<Reply> {
     token: Arc<RequestToken>,
     marker: PhantomData<fn(Reply)>,
@@ -1258,7 +1234,7 @@ struct Reply<Reply> {
 /// use samara::prelude::*;
 /// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<PrintStdout>,)>();
 /// let output = declared_0;
-/// let command = Command::effect_with(&output, PrintStdout::line("ready"), |outcome| outcome);
+/// let command = output.perform(PrintStdout::line("ready")).producing(|outcome| outcome);
 /// let invocation = command.into_effect::<PrintStdout>().ok().unwrap();
 /// assert_eq!(invocation.descriptor().as_str(), "ready\n");
 /// assert!(matches!(invocation.map_outcome(EffectOutcome::Succeeded(())),
@@ -1300,7 +1276,7 @@ where
     ///
     /// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<Read>,)>();
     /// let read = declared_0;
-    /// let invocation = Command::effect_with(&read, Read, |_| ())
+    /// let invocation = read.perform(Read).producing(|_| ())
     ///     .into_effect::<Read>()
     ///     .ok()
     ///     .unwrap();
@@ -1318,7 +1294,7 @@ where
     }
 }
 
-/// A [`Command::request_to`] extracted for a unit test by [`Command::into_request_to`].
+/// A [`Addressable::request`] extracted for a unit test by [`Command::into_request`].
 ///
 /// `message` is what the constructor built; its reply token is inert and cannot
 /// deliver a reply. [`Self::reply`] runs the command's continuation on an
@@ -1401,7 +1377,7 @@ where
 /// I/O and state changes; handle the message in `update`. Commands cannot be
 /// cloned or compared because they can own these mappers. Test their contents
 /// with methods such as [`Self::effect_intent`], [`Self::send_intents`], and
-/// [`Self::into_request_to`].
+/// [`Self::into_request`].
 ///
 /// <details>
 /// <summary>Compile-time checks</summary>
@@ -1434,217 +1410,6 @@ impl<Message> Command<Message> {
     /// Returns a command that does nothing.
     pub fn none() -> Self {
         Self(CommandKind::None)
-    }
-
-    /// Requests an effect and converts its result with `Message::from`.
-    ///
-    /// The capability must come from the component's Program. Use
-    /// [`Self::effect_with`] to choose the message conversion at the call site.
-    ///
-    /// ```
-    /// use samara::prelude::*;
-    /// enum Message { Printed(EffectOutcome<(), std::convert::Infallible>) }
-    /// impl From<EffectOutcome<(), std::convert::Infallible>> for Message {
-    ///     fn from(outcome: EffectOutcome<(), std::convert::Infallible>) -> Self {
-    ///         Self::Printed(outcome)
-    ///     }
-    /// }
-    /// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<PrintStdout>,)>();
-    /// let output = declared_0;
-    /// let command: Command<Message> = Command::effect(&output, PrintStdout::line("ready"));
-    /// ```
-    pub fn effect<E>(capability: &EffectCapability<E>, effect: E) -> Self
-    where
-        Message: From<EffectOutcome<E::Output, E::Error>> + Send + 'static,
-        E: EffectDescriptor,
-    {
-        Self::effect_with(capability, effect, Message::from)
-    }
-
-    /// Requests an effect and maps its result to a message.
-    ///
-    /// `map` runs at most once and may capture values such as a request ID. It must
-    /// not perform I/O or change application state. Runtime cancellation drops the
-    /// mapper without calling it. The capability must come from the same Program.
-    ///
-    /// ```
-    /// use samara::prelude::*;
-    /// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<HttpRequest>,)>();
-    /// let http = declared_0;
-    /// let revision = 3;
-    /// let command = Command::effect_with(
-    ///     &http, HttpRequest::get("https://example.test/"),
-    ///     move |outcome| (revision, outcome),
-    /// );
-    /// assert_eq!(command.effect_intent::<HttpRequest>().unwrap().url(), "https://example.test/");
-    /// ```
-    ///
-    /// Controlled tests inspect the request with [`ControlledRuntime::next_effect`]
-    /// and provide its result with [`ControlledRuntime::complete`].
-    ///
-    /// <details>
-    /// <summary>Compile-time checks</summary>
-    ///
-    /// ```compile_fail
-    /// use samara::{Command, EffectDescriptor, Program};
-    ///
-    /// struct Read;
-    /// impl EffectDescriptor for Read {
-    ///     type Output = ();
-    ///     type Error = ();
-    /// }
-    /// struct HiddenWork;
-    /// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<Read>,)>();
-    /// let read = declared_0;
-    /// let _: Command<()> = Command::effect_with(&read, HiddenWork, |_| ());
-    /// ```
-    ///
-    /// ```compile_fail
-    /// use samara::{Command, EffectDescriptor, Program};
-    ///
-    /// struct Read;
-    /// impl EffectDescriptor for Read {
-    ///     type Output = ();
-    ///     type Error = ();
-    /// }
-    ///
-    /// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<Read>,)>();
-    /// let read = declared_0;
-    /// let _: Command<()> = Command::effect_with(&read, Read, |_| async {});
-    /// ```
-    ///
-    /// </details>
-    pub fn effect_with<E, Map>(capability: &EffectCapability<E>, effect: E, map: Map) -> Self
-    where
-        Message: Send + 'static,
-        E: EffectDescriptor,
-        Map: FnOnce(EffectOutcome<E::Output, E::Error>) -> Message + Send + 'static,
-    {
-        capability.perform(effect).producing(map)
-    }
-
-    /// Requests an effect without sending its result to the component.
-    ///
-    /// Samara still tracks the work: Drain waits for it, Cancel aborts it, and
-    /// controlled tests must complete or cancel it.
-    ///
-    /// ```
-    /// use samara::prelude::*;
-    /// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<PrintStdout>,)>();
-    /// let output = declared_0;
-    /// let command: Command<()> = Command::effect_discarding_outcome(&output, PrintStdout::line("ready"));
-    /// assert_eq!(command.effect_intent::<PrintStdout>().unwrap().as_str(), "ready\n");
-    /// ```
-    pub fn effect_discarding_outcome<E>(capability: &EffectCapability<E>, effect: E) -> Self
-    where
-        E: EffectDescriptor,
-    {
-        capability.perform(effect).discard_outcome()
-    }
-
-    /// Queues a message for a [`Port`], a [`Connector`], or a [`ComponentRef`].
-    ///
-    /// The target handles it after the current update returns. No delivery result
-    /// is sent back; a routing error faults the runtime. A Port in your own
-    /// vocabulary reaches whichever provider assembly connected; a Connector or
-    /// ComponentRef names its provider directly. See [`Addressable`].
-    ///
-    /// ```
-    /// use samara::{Command, Component, ComponentRef, Connector, Port};
-    /// fn forward<C: Component>(target: ComponentRef<C>, message: C::Message) -> Command<()> {
-    ///     Command::send(&target, message)
-    /// }
-    /// fn through_port<M: Send + 'static>(port: Port<M>, message: M) -> Command<()> {
-    ///     Command::send(&port, message)
-    /// }
-    /// fn to_connector<M: Send + 'static>(target: Connector<M>, message: M) -> Command<()> {
-    ///     Command::send(&target, message)
-    /// }
-    /// ```
-    pub fn send<T>(target: &T, message: T::Message) -> Self
-    where
-        T: Addressable,
-    {
-        Self(CommandKind::Send(Box::new(SendTo {
-            address: target.to_address(),
-            message,
-        })))
-    }
-
-    /// Sends a request to a [`Port`], [`Connector`], or [`ComponentRef`] and maps its reply to a message.
-    ///
-    /// `request` is a constructor that takes the reply token, such as
-    /// `TallyMessage::total` or `|reply_with| LedgerMessage::Total(reply_with)`; its
-    /// `ReplyWith<R>` parameter fixes the reply type, and `map` must accept
-    /// `RequestOutcome<R>`. The pairing of request and reply lives in the
-    /// constructor's signature, so no request trait is needed. Both functions
-    /// must be pure. There is no timeout; see [`Self::request_to_timeout`]. Inspect
-    /// the result in a unit test with [`Self::into_request_to`].
-    ///
-    /// ```
-    /// use samara::prelude::*;
-    /// // A library's opaque message with a published request constructor.
-    /// pub struct TallyMessage(Inner);
-    /// enum Inner { Total(ReplyWith<u64>) }
-    /// impl TallyMessage { pub fn total(reply_with: ReplyWith<u64>) -> Self { Self(Inner::Total(reply_with)) } }
-    /// # struct Tally;
-    /// # impl Component for Tally {
-    ///     type Requires = ();
-    /// #     type Config = (); type Model = u64; type Message = TallyMessage;
-    /// #     fn init(_: &(), _: &samara::Capabilities<Self::Requires>) -> Init<u64, TallyMessage> { Init::new(0) }
-    /// #     fn update(_: &(), _: &samara::Capabilities<Self::Requires>, total: &mut u64, TallyMessage(Inner::Total(reply_with)): TallyMessage) -> Command<TallyMessage> {
-    /// #         Command::reply(reply_with, *total)
-    /// #     }
-    /// # }
-    /// let (mut program, ()) = samara::Program::builder::<()>();
-    /// let tally: Connector<TallyMessage> = program.component::<Tally>(()).finish().expect("component registration").connector();
-    /// let command: Command<RequestOutcome<u64>> =
-    ///     Command::request_to(&tally, TallyMessage::total, |outcome| outcome);
-    /// # let _ = command;
-    /// ```
-    pub fn request_to<T, R, Build, Map>(target: &T, request: Build, map: Map) -> Self
-    where
-        Message: Send + 'static,
-        T: Addressable,
-        R: Send + 'static,
-        Build: FnOnce(ReplyWith<R>) -> T::Message + Send + 'static,
-        Map: FnOnce(RequestOutcome<R>) -> Message + Send + 'static,
-    {
-        target.request(request).producing(map)
-    }
-
-    /// Sends a request to a [`Port`], [`Connector`], or [`ComponentRef`] with a timeout.
-    ///
-    /// The deadline starts when Samara runs the command. A reply must be processed
-    /// before the deadline; a zero timeout always expires. On expiry, the caller gets
-    /// [`RequestOutcome::TimedOut`], the provider keeps running, and later replies are
-    /// ignored. Live execution uses Tokio time; controlled tests advance time themselves.
-    pub fn request_to_timeout<T, R, Build, Map>(
-        target: &T,
-        request: Build,
-        timeout: Duration,
-        map: Map,
-    ) -> Self
-    where
-        Message: Send + 'static,
-        T: Addressable,
-        R: Send + 'static,
-        Build: FnOnce(ReplyWith<R>) -> T::Message + Send + 'static,
-        Map: FnOnce(RequestOutcome<R>) -> Message + Send + 'static,
-    {
-        target.request(request).timeout(timeout).producing(map)
-    }
-
-    /// Replies to a request using its reply token.
-    ///
-    /// The token is consumed, so the same request cannot be answered twice. Delivery
-    /// happens after the provider's update returns. A reply after the caller's timeout
-    /// is ignored. See [`ProgramBuilder::connect`] for an example.
-    pub fn reply<ReplyValue>(reply_with: ReplyWith<ReplyValue>, reply: ReplyValue) -> Self
-    where
-        ReplyValue: Send + 'static,
-    {
-        Self(CommandKind::Reply(Box::new(Reply { reply_with, reply })))
     }
 
     /// Schedules a message for this component after `delay`.
@@ -1680,7 +1445,7 @@ impl<Message> Command<Message> {
 
     /// Returns the first effect descriptor of type `E`, searching inside batches.
     ///
-    /// Useful for testing an update without running I/O. See [`Self::effect_with`].
+    /// Useful for testing an update without running I/O. See [`EffectBuilder::producing`].
     pub fn effect_intent<E: EffectDescriptor>(&self) -> Option<&E> {
         self.effect_intents::<E>().into_iter().next()
     }
@@ -1781,8 +1546,8 @@ impl<Message> Command<Message> {
     /// let (mut program, ()) = samara::Program::builder::<()>();
     /// let ledger = program.port::<LedgerMessage>(PortId::new("ledger"));
     /// let command: Command<()> = Command::batch([
-    ///     Command::send(&ledger, LedgerMessage::Add(2)),
-    ///     Command::send(&ledger, LedgerMessage::Add(3)),
+    ///     ledger.send(LedgerMessage::Add(2)),
+    ///     ledger.send(LedgerMessage::Add(3)),
     /// ]);
     /// assert_eq!(command.send_intents::<LedgerMessage>(), [&LedgerMessage::Add(2), &LedgerMessage::Add(3)]);
     /// ```
@@ -1812,7 +1577,7 @@ impl<Message> Command<Message> {
         }
     }
 
-    /// Extracts a [`Self::request_to`] command for a unit test.
+    /// Extracts a [`Addressable::request`] command for a unit test.
     ///
     /// Returns the message the constructor built, with an inert reply token that
     /// no runtime will honor, and a [`RequestIntent`] that maps a chosen
@@ -1826,12 +1591,12 @@ impl<Message> Command<Message> {
     /// enum ClerkMessage { Total(RequestOutcome<u64>) }
     /// let (mut program, ()) = samara::Program::builder::<()>();
     /// let ledger = program.port::<LedgerMessage>(PortId::new("ledger"));
-    /// let command = Command::request_to(&ledger, LedgerMessage::Total, ClerkMessage::Total);
-    /// let intent = command.into_request_to::<LedgerMessage>().ok().expect("a request to the ledger");
+    /// let command = ledger.request(LedgerMessage::Total).producing(ClerkMessage::Total);
+    /// let intent = command.into_request::<LedgerMessage>().ok().expect("a request to the ledger");
     /// assert!(matches!(intent.message, LedgerMessage::Total(_)));
     /// assert!(matches!(intent.reply(RequestOutcome::Replied(5u64)), ClerkMessage::Total(RequestOutcome::Replied(5))));
     /// ```
-    pub fn into_request_to<M>(self) -> Result<RequestIntent<M, Message>, Self>
+    pub fn into_request<M>(self) -> Result<RequestIntent<M, Message>, Self>
     where
         Message: Send + 'static,
         M: Send + 'static,
@@ -2912,9 +2677,9 @@ where
                 limit,
                 Box::new(move |outcome| map(transform(outcome))),
             ),
-            None => {
-                Command::effect_with(capability, request, move |outcome| map(transform(outcome)))
-            }
+            None => capability
+                .perform(request)
+                .producing(move |outcome| map(transform(outcome))),
         }
     }
 }
@@ -3626,14 +3391,14 @@ where
 /// Permission to request an effect type within a Program.
 ///
 /// Obtain it from [`Program::builder`] using an [`Effect`] requirement, then pass
-/// it to [`Command::effect`] or [`Command::effect_with`]. Cloning shares permission
+/// it to [`EffectCapability::perform`] or [`EffectBuilder::producing`]. Cloning shares permission
 /// within the same program; using it in a different program is an error.
 ///
 /// ```
 /// use samara::prelude::*;
 /// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<HttpRequest>,)>();
 /// let http = declared_0;
-/// let command = Command::effect_with(&http, HttpRequest::get("https://example.test/"), |outcome| outcome);
+/// let command = http.perform(HttpRequest::get("https://example.test/")).producing(|outcome| outcome);
 /// ```
 ///
 /// The runtime builder requires a driver or test control for every declared
@@ -3651,7 +3416,8 @@ where
 ///     type Error = ();
 /// }
 ///
-/// let _: Command<()> = Command::effect_with(Read, |_| ());
+/// // A descriptor alone cannot be issued; only a capability can perform it.
+/// let _: Command<()> = Read.producing(|_| ());
 /// ```
 ///
 /// </details>
@@ -3741,8 +3507,8 @@ impl<S: SourceDescriptor> fmt::Debug for SourceCapability<S> {
 ///
 /// The application declares the message enum in its own vocabulary, creates the
 /// Port with [`ProgramBuilder::port`], and connects a provider with
-/// [`ProgramBuilder::connect`]. Components use it with [`Command::send`] and
-/// [`Command::request_to`]. Code outside the program uses a [`PortHandle`] instead.
+/// [`ProgramBuilder::connect`]. Components use it with [`Addressable::send`] and
+/// [`Addressable::request`]. Code outside the program uses a [`PortHandle`] instead.
 /// The provider-owned counterpart, an address a Component hands out itself,
 /// is [`Connector`].
 ///
@@ -3795,7 +3561,7 @@ impl<P: Send + 'static> fmt::Debug for Port<P> {
 
 /// Identifies a registered component without giving access to its state.
 ///
-/// Returned by [`ProgramBuilder::component`]. Use it with [`Command::send`] for
+/// Returned by [`ProgramBuilder::component`]. Use it with [`Addressable::send`] for
 /// component-to-component delivery, [`Runtime::handle`] for an external sender,
 /// or [`ControlledRuntime::state`] to inspect state in tests.
 ///
@@ -4127,16 +3893,6 @@ impl<D: EffectDescriptor> EffectBuilder<D> {
         self.producing(Message::from)
     }
 
-    /// The earlier name of [`Self::producing`]; removed once call sites migrate.
-    #[doc(hidden)]
-    pub fn into_command_with<Message, Map>(self, map: Map) -> Command<Message>
-    where
-        Message: Deliverable,
-        Map: FnOnce(EffectOutcome<D::Output, D::Error>) -> Message + Send + 'static,
-    {
-        self.producing(map)
-    }
-
     /// Issues the effect and finishes with commands that produce no Message.
     ///
     /// `finish` receives the outcome and returns work that ends here: a reply,
@@ -4295,8 +4051,8 @@ impl<Reply: Send + 'static> ReplyWith<Reply> {
 /// Something a Command can be addressed to: a [`Port`], a [`Connector`], or a
 /// [`ComponentRef`].
 ///
-/// [`Command::send`], [`Command::request_to`], and
-/// [`Command::request_to_timeout`] accept any of the three and deliver a value
+/// [`Addressable::send`], [`Addressable::request`], and
+/// [`RequestBuilder::timeout`] accept any of the three and deliver a value
 /// of `Message`. A Port resolves to its provider through the binding at
 /// interpretation; a Connector and a ComponentRef already name the provider.
 /// Applications do not implement it.
@@ -5057,7 +4813,7 @@ impl<R: Requirements> ProgramBuilder<R> {
     ///     fn init(_: &(), _: &samara::Capabilities<Self::Requires>) -> Init<u64, CounterMessage> { Init::new(42) }
     ///     fn update(_: &(), _: &samara::Capabilities<Self::Requires>, count: &mut u64, message: CounterMessage) -> Command<CounterMessage> {
     ///         match message {
-    ///             CounterMessage::Count(CountMessage::Read(reply_with)) => Command::reply(reply_with, *count),
+    ///             CounterMessage::Count(CountMessage::Read(reply_with)) => reply_with.with(*count),
     ///             CounterMessage::Tick => { *count += 1; Command::none() }
     ///         }
     ///     }
@@ -5072,7 +4828,7 @@ impl<R: Requirements> ProgramBuilder<R> {
     ///     type Model = Option<u64>;
     ///     type Message = RequestOutcome<u64>;
     ///     fn init(config: &Self::Config, _: &samara::Capabilities<Self::Requires>) -> Init<Self::Model, Self::Message> {
-    ///         Init::default().with_command(Command::request_to(&config.counter, CountMessage::Read, |outcome| outcome))
+    ///         Init::default().with_command(config.counter.request(CountMessage::Read).producing(|outcome| outcome))
     ///     }
     ///     fn update(_config: &Self::Config, _: &samara::Capabilities<Self::Requires>, value: &mut Option<u64>, reply: Self::Message) -> Command<Self::Message> {
     ///         if let RequestOutcome::Replied(count) = reply { *value = Some(count); }
@@ -5708,7 +5464,7 @@ impl<C: Component> ComponentHandle<C> {
 ///     fn init(_config: &Self::Config, _: &samara::Capabilities<Self::Requires>) -> Init<u64, CountMessage> { Init::new(42) }
 ///     fn update(_config: &Self::Config, _: &samara::Capabilities<Self::Requires>, count: &mut u64, message: CountMessage) -> Command<CountMessage> {
 ///         match message {
-///             CountMessage::Read(reply_with) => Command::reply(reply_with, *count),
+///             CountMessage::Read(reply_with) => reply_with.with(*count),
 ///         }
 ///     }
 /// }
@@ -5747,7 +5503,7 @@ impl<C: Component> ComponentHandle<C> {
 /// enum ExampleMessage { Notified }
 ///
 /// fn misuse(handle: PortHandle<ExampleMessage>) -> Command<()> {
-///     Command::send(&handle, ExampleMessage::Notified)
+///     handle.send(ExampleMessage::Notified)
 /// }
 /// ```
 ///
@@ -5807,7 +5563,7 @@ impl<P: Send + 'static> PortHandle<P> {
     /// Sends a request built from its reply token and waits for the reply.
     ///
     /// `request` is a constructor taking `ReplyWith<R>`, as for
-    /// [`Command::request_to`]; the awaited value is `R`. Dropping this future
+    /// [`Addressable::request`]; the awaited value is `R`. Dropping this future
     /// after sending stops waiting but does not cancel the provider's work. An
     /// unanswered request can keep Drain waiting; see
     /// [`Self::request_to_timeout`].
@@ -6086,9 +5842,9 @@ pub struct ControlledRuntimeBuilder {
 ///     type Model = Option<StatusCode>;
 ///     type Message = EffectOutcome<HttpResponse, HttpError>;
 ///     fn init(_config: &Self::Config, capabilities: &Capabilities<Self::Requires>) -> Init<Self::Model, Self::Message> {
-///         Init::default().with_command(Command::effect(
-///             &capabilities.0, HttpRequest::get("https://example.test/health"),
-///         ))
+///         Init::default().with_command(
+///             capabilities.0.perform(HttpRequest::get("https://example.test/health")).into_command(),
+///         )
 ///     }
 ///     fn update(_config: &Self::Config, capabilities: &Capabilities<Self::Requires>, status: &mut Self::Model, outcome: Self::Message) -> Command<Self::Message> {
 ///         if let EffectOutcome::Succeeded(response) = outcome {
@@ -6786,7 +6542,7 @@ mod request_authority_tests {
             _: &mut (),
             reply_with: Self::Message,
         ) -> Command<Self::Message> {
-            Command::reply(reply_with, 7)
+            reply_with.with(7)
         }
     }
 

@@ -17,7 +17,7 @@ enum ProbeProtocolMessage {
     },
 }
 
-/// The request constructor `Command::request_to*` and
+/// The request constructor `target.request(..)` and
 /// `PortHandle::request_to*` take.
 fn ask(
     value: u64,
@@ -71,12 +71,12 @@ impl Component for Provider {
                 assert_ne!(value, u64::MAX, "provider fault fixture");
                 seen.push(value);
                 match delay {
-                    Some(Duration::ZERO) => Command::reply(reply_with, value),
+                    Some(Duration::ZERO) => reply_with.with(value),
                     Some(delay) => Command::after(delay, ProviderMessage::Reply(reply_with, value)),
                     None => Command::none(),
                 }
             }
-            ProviderMessage::Reply(reply_with, value) => Command::reply(reply_with, value),
+            ProviderMessage::Reply(reply_with, value) => reply_with.with(value),
         }
     }
 }
@@ -141,30 +141,29 @@ impl Component for Requester {
                 timeout,
                 key,
             } => match (timeout, key) {
-                (Some(timeout), Some(key)) => Command::request_to_timeout(
-                    &config.port,
-                    ask(value, delay),
-                    timeout,
-                    move |outcome| {
+                (Some(timeout), Some(key)) => config
+                    .port
+                    .request(ask(value, delay))
+                    .timeout(timeout)
+                    .producing(move |outcome| {
                         RequesterMessage::Outcome(Observation {
                             key: Some(key),
                             outcome,
                         })
-                    },
-                ),
-                (Some(timeout), None) => Command::request_to_timeout(
-                    &config.port,
-                    ask(value, delay),
-                    timeout,
-                    RequesterMessage::from,
-                ),
-                (None, _) => {
-                    Command::request_to(&config.port, ask(value, delay), RequesterMessage::from)
-                }
+                    }),
+                (Some(timeout), None) => config
+                    .port
+                    .request(ask(value, delay))
+                    .timeout(timeout)
+                    .producing(RequesterMessage::from),
+                (None, _) => config
+                    .port
+                    .request(ask(value, delay))
+                    .producing(RequesterMessage::from),
             },
             RequesterMessage::Outcome(observation) => {
                 model.push(observation.clone());
-                Command::effect_discarding_outcome(&config.observe, observation)
+                config.observe.perform(observation).discard_outcome()
             }
         }
     }

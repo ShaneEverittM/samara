@@ -87,47 +87,47 @@ impl Component for Walker {
         let next = |model: &mut WalkerModel| -> Command<WalkerMessage> {
             model.step += 1;
             match model.step {
-                1 => Command::effect_with(
-                    &config.append,
-                    AppendToFile::line(FILE, "first"),
-                    WalkerMessage::Wrote,
-                ),
-                2 => Command::effect_with(
-                    &config.append,
-                    AppendToFile::line(FILE, "second"),
-                    WalkerMessage::Wrote,
-                ),
-                3 | 5 | 7 => {
-                    Command::effect_with(&config.read, ReadFile::new(FILE), WalkerMessage::Read)
-                }
-                4 => Command::effect_with(
-                    &config.replace,
-                    ReplaceFile::text(FILE, "replaced"),
-                    WalkerMessage::Wrote,
-                ),
-                6 => Command::effect_with(
-                    &config.remove,
-                    RemoveFile::new(FILE),
-                    WalkerMessage::Wrote,
-                ),
-                _ => Command::effect_with(&config.report, Report("done".into()), |_| {
-                    WalkerMessage::Reported
-                }),
+                1 => config
+                    .append
+                    .perform(AppendToFile::line(FILE, "first"))
+                    .producing(WalkerMessage::Wrote),
+                2 => config
+                    .append
+                    .perform(AppendToFile::line(FILE, "second"))
+                    .producing(WalkerMessage::Wrote),
+                3 | 5 | 7 => config
+                    .read
+                    .perform(ReadFile::new(FILE))
+                    .producing(WalkerMessage::Read),
+                4 => config
+                    .replace
+                    .perform(ReplaceFile::text(FILE, "replaced"))
+                    .producing(WalkerMessage::Wrote),
+                6 => config
+                    .remove
+                    .perform(RemoveFile::new(FILE))
+                    .producing(WalkerMessage::Wrote),
+                _ => config
+                    .report
+                    .perform(Report("done".into()))
+                    .producing(|_| WalkerMessage::Reported),
             }
         };
         match message {
             WalkerMessage::Start => next(model),
-            WalkerMessage::Escape => Command::effect_with(
-                &config.append,
-                AppendToFile::line("../escape.log", "nope"),
-                WalkerMessage::Wrote,
-            ),
+            WalkerMessage::Escape => config
+                .append
+                .perform(AppendToFile::line("../escape.log", "nope"))
+                .producing(WalkerMessage::Wrote),
             WalkerMessage::Wrote(EffectOutcome::Succeeded(())) => next(model),
             WalkerMessage::Read(EffectOutcome::Succeeded(bytes)) => {
                 let text = String::from_utf8_lossy(&bytes).into_owned();
                 model.seen.push(text.clone());
                 Command::batch([
-                    Command::effect_with(&config.report, Report(text), |_| WalkerMessage::Reported),
+                    config
+                        .report
+                        .perform(Report(text))
+                        .producing(|_| WalkerMessage::Reported),
                     next(model),
                 ])
             }
@@ -138,7 +138,10 @@ impl Component for Walker {
                     .push((error.operation(), error.kind(), error.path().to_path_buf()));
                 let line = format!("{:?} {:?}", error.operation(), error.kind());
                 Command::batch([
-                    Command::effect_with(&config.report, Report(line), |_| WalkerMessage::Reported),
+                    config
+                        .report
+                        .perform(Report(line))
+                        .producing(|_| WalkerMessage::Reported),
                     if model.step == 7 {
                         next(model)
                     } else {

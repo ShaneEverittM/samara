@@ -3063,7 +3063,10 @@ mod tests {
             match message {
                 CutoffMessage::Start => {
                     *started = true;
-                    Command::effect_with(&config.effect, CutoffIntent, |_| CutoffMessage::Outcome)
+                    config
+                        .effect
+                        .perform(CutoffIntent)
+                        .producing(|_| CutoffMessage::Outcome)
                 }
                 CutoffMessage::Outcome => Command::none(),
             }

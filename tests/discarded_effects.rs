@@ -203,7 +203,7 @@ impl Component for GateProbe {
         message: Self::Message,
     ) -> Command<Self::Message> {
         match message {
-            GateMessage::Start => Command::effect_discarding_outcome(&config.effect, GateEffect),
+            GateMessage::Start => config.effect.perform(GateEffect).discard_outcome(),
             GateMessage::Noop => Command::none(),
         }
     }

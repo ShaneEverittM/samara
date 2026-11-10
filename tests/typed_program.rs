@@ -36,7 +36,7 @@ impl Component for Reader {
             model.push(value);
             Command::none()
         } else {
-            Command::effect_with(read, Read, |outcome| match outcome {
+            read.perform(Read).producing(|outcome| match outcome {
                 EffectOutcome::Succeeded(value) => Some(value),
                 _ => None,
             })

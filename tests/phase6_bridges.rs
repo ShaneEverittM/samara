@@ -76,18 +76,16 @@ impl Component for StreamProbe {
         message: Self::Message,
     ) -> Command<Self::Message> {
         match message {
-            StreamMessage::Event(SourceEvent::Item(value)) => Command::effect_with(
-                &config.observe,
-                ObserveStream(StreamObservation::Item(value)),
-                |_| StreamMessage::Observed,
-            ),
+            StreamMessage::Event(SourceEvent::Item(value)) => config
+                .observe
+                .perform(ObserveStream(StreamObservation::Item(value)))
+                .producing(|_| StreamMessage::Observed),
             StreamMessage::Event(SourceEvent::Ended) => {
                 model.desired = false;
-                Command::effect_with(
-                    &config.observe,
-                    ObserveStream(StreamObservation::Ended),
-                    |_| StreamMessage::Observed,
-                )
+                config
+                    .observe
+                    .perform(ObserveStream(StreamObservation::Ended))
+                    .producing(|_| StreamMessage::Observed)
             }
             StreamMessage::Event(SourceEvent::Failed(never)) => match never {},
             StreamMessage::Reopen => {
@@ -329,9 +327,10 @@ impl Component for TcpProbe {
             }
             TcpMessage::Observed => return Command::none(),
         };
-        Command::effect_with(&config.observe, ObserveTcp(observation), |_| {
-            TcpMessage::Observed
-        })
+        config
+            .observe
+            .perform(ObserveTcp(observation))
+            .producing(|_| TcpMessage::Observed)
     }
 
     fn subscriptions(

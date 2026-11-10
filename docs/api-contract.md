@@ -112,7 +112,7 @@ particular:
 
 - EffectDescriptors remain separately interceptable from their pure one-shot
   message mappers and need not be `Clone` or comparable.
-- `Command::effect_discarding_outcome` removes only the application Message
+- `.discard_outcome()` removes only the application Message
   continuation. The effect remains a runtime-owned, controllable, traceable
   finite obligation subject to ordinary Drain, Cancel, and fault behavior.
 - Each Command occurrence is distinct even when descriptor values look equal.
@@ -127,12 +127,12 @@ The July 25 API revision adopts one consistent continuation convention without
 changing these lifecycle semantics or the concrete
 `Component::update(...) -> Command<Message>` boundary:
 
-- `Command::effect(&capability, effect)`,
+- `capability.perform(effect).into_command()`,
   `Subscription::source(&capability, descriptor)`, and
   `HttpResponsePipeline::into_command(&capability)` use the standard
   `Message: From<BoundaryValue>` conversion as their default mapper.
 - Their `effect_with`, `source_with`, and `into_command_with` counterparts
-  accept an explicit pure mapper. `Command::request_to` always takes the
+  accept an explicit pure mapper. `target.request(..)` always takes the
   mapper explicitly; `Message::from` is the canonical argument (ADR-0016).
 - The default is appropriate only when one boundary type has one canonical
   Message meaning. Captured domain correlation or call-site-specific meaning
@@ -253,7 +253,7 @@ boundary to provider-neutral Ports:
 - Successful send means accepted for runtime-managed conversion and delivery,
   not that the provider transition completed.
 - An admitted host request uses the same Port binding, message variant,
-  opaque correlation, and `ReplyWith` path as `Command::request_to`, but its
+  opaque correlation, and `ReplyWith` path as `target.request(..)`, but its
   awaited success is `R` directly. It creates neither a requester Component
   Message nor `RequestOutcome::Replied`.
 - Drain closes new Port ingress and retains admitted Notifications, Requests,
@@ -277,7 +277,7 @@ remain deferred.
 ## Accepted and Implemented Contract: Request Timeouts
 
 [ADR-0011](adr/0011-request-timeouts.md) adds opt-in request deadlines, now
-spelled `Command::request_to_timeout` and `PortHandle::request_to_timeout`
+spelled `target.request(..).timeout(..)` and `PortHandle::request_to_timeout`
 (ADR-0016). `request_to` remains unbounded.
 
 - Component durations start at Command interpretation; host durations start at
@@ -377,7 +377,7 @@ The root-qualified `samara::print!`, `samara::println!`, `samara::eprint!`, and
 `samara::eprintln!` macros take the matching `EffectCapability` as their first
 argument, accept familiar Rust formatting syntax, own the resulting `String` in
 the matching descriptor, and return an ordinary
-`Command::effect_discarding_outcome`. They are deliberately absent from
+`.discard_outcome()`. They are deliberately absent from
 `samara::prelude`; qualification makes the deferred Samara effect visible at
 the call site. The returned `Command` remains `#[must_use]` because dropping it
 requests no output. By contrast, Rust's unqualified `print!` and `println!`
@@ -516,9 +516,9 @@ around values issued by one `ProgramBuilder`:
 - The kernel stores these inert values separately from Config and passes
   `&Capabilities<Component::Requires>` to every callback. They expose no I/O,
   runtime handle, Driver, or controlled-world operation.
-- `Command::effect(&capability, descriptor)`,
-  `Command::effect_with(&capability, descriptor, mapper)`, and
-  `Command::effect_discarding_outcome(&capability, descriptor)` are the only
+- `capability.perform(descriptor).into_command()`,
+  `capability.perform(descriptor).producing(mapper)`, and
+  `capability.perform(descriptor).discard_outcome()` are the only
   primitive public Effect issuance paths. Under ADR-0022, `FileCapability<P>`
   constructs bound `FileEffect<D>` values whose command conversion methods
   lower through these same paths, retaining the resource's exact identity.
@@ -583,8 +583,8 @@ exposed and renames the consumer-owned one:
   `Connector<P::Message>`, so both forms share one boxed conversion.
 - A Connector from another `ProgramBuilder` fails `build()` as a foreign provider
   under ADR-0008's existing rule.
-- `Command::send(&target, message)` takes any `Addressable`.
-  `Command::request_to(&target, constructor, map)` and `request_to_timeout`
+- `target.send(message)` takes any `Addressable`.
+  `target.request(constructor).producing(map)` and `request_to_timeout`
   address a request to an `Addressable`: `constructor: FnOnce(ReplyWith<R>) ->
   T::Message` is a function the provider published, its `ReplyWith<R>`
   parameter fixes the reply type, and the runtime mints the token and routes
@@ -593,7 +593,7 @@ exposed and renames the consumer-owned one:
   ADR-0008.
 - `Connector::accepting(map)` returns a Connector of another Message type that converts
   through `map` first; `map` must be pure.
-- A Connector request is inspected with `Command::into_request_to`, which
+- A Connector request is inspected with `Command::into_request`, which
   builds its message with an inert reply token (ADR-0016).
 
 ## Accepted and Implemented Contract: One Sending API
@@ -602,20 +602,20 @@ exposed and renames the consumer-owned one:
 interaction and leaves one way for a Command to reach a Component:
 
 - `Addressable` is implemented for `Port<M>`, `Connector<M>`, and
-  `ComponentRef<C>`. `Command::send(&target, message)`,
-  `Command::request_to(&target, constructor, map)`, and
-  `Command::request_to_timeout(&target, constructor, timeout, map)` accept any
+  `ComponentRef<C>`. `target.send(message)`,
+  `target.request(constructor).producing(map)`, and
+  `target.request(constructor).timeout(timeout).producing(map)` accept any
   of them and deliver a value of the destination's message type.
 - A request is a message variant carrying `ReplyWith<R>`; `constructor:
   FnOnce(ReplyWith<R>) -> M` fixes `R`, and `map: FnOnce(RequestOutcome<R>) ->
   Message` is checked against it. The provider answers with
-  `Command::reply(reply_with, value)`.
+  `reply_with.with(value)`.
 - A Port-addressed send resolves through the Port's binding at
   interpretation and is traced as `TraceCommandKind::Send` with
   `target_port` set and `target_component` empty. `TraceCommandKind::Notify`
   no longer exists.
 - `Command::send_intents::<M>()` searches batches for sends of `M`.
-  `Command::into_request_to::<M>()` extracts a top-level request as a
+  `Command::into_request::<M>()` extracts a top-level request as a
   `RequestIntent` whose `message` was built with an inert `ReplyWith` and whose
   `reply(outcome)` runs the continuation. The inert token belongs to no
   Program and is rejected as foreign if a reply is ever attempted through it.
@@ -655,6 +655,29 @@ as amended by [ADR-0018](adr/0018-assemblies-export-a-connector.md) and
 - Missing or incorrectly typed tuples fail compilation. Provenance, duplicate
   identities, conflicting bindings and invalid startup work still fail synchronous
   validation. Component and Assembly capability provenance is checked before init/install.
+
+## Accepted for Trial: Boundary Work Builders and Finishers
+
+[ADR-0023](adr/0023-boundary-work-builders-and-finishers.md):
+
+- Boundary work is described on what a Component holds:
+  `EffectCapability::perform(descriptor)` and resource operations such as
+  `file.read()` return an inert `EffectBuilder`; `Addressable::request(ctor)`
+  returns an inert `RequestBuilder`, optionally bounded with `.timeout(d)`;
+  `Addressable::send(message)` and `ReplyWith::with(value)` return a
+  `Command` directly. `Command::` keeps `none`, `batch`, and `after`.
+- A builder becomes a `Command` through one finisher: `producing(map)`,
+  `into_command()` (`Message::from`), `finish_with(f)`, or, for effects,
+  `discard_outcome()`.
+- `finish_with(f)` runs `f` on the outcome and interprets the
+  `Command<NoMessage>` it returns under the issuing Component, traced as
+  caused by the outcome. No transition occurs. `NoMessage` is uninhabited and
+  not `Send`, and continuation-bearing finishers require
+  `Message: Deliverable`, so the continuation can only reply, send, or
+  discard; anything whose result would return fails to compile.
+- `Command::into_request` extracts only Message-producing requests.
+- Removed: `Command::effect`, `effect_with`, `effect_discarding_outcome`,
+  `send`, `request_to`, `request_to_timeout`, `reply`.
 
 ## Deliberately Unfrozen Surfaces
 

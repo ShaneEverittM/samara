@@ -49,7 +49,7 @@ impl Component for Probe {
         outcome: Outcome,
     ) -> Command<Outcome> {
         model.push(outcome.clone());
-        Command::effect_discarding_outcome(&config.observed, Observed(outcome))
+        config.observed.perform(Observed(outcome)).discard_outcome()
     }
 }
 fn program(request: HttpRequest, limit: usize) -> (TestProgram, ComponentRef<Probe>) {

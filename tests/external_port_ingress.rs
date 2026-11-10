@@ -109,12 +109,11 @@ impl Component for Provider {
                 Command::none()
             }
             ProviderMessage::Host(HostMessage::RecordIngress(value))
-            | ProviderMessage::RecordIngressDirect(value) => {
-                Command::effect_discarding_outcome(&config.ingress_observed, IngressObserved(value))
-            }
-            ProviderMessage::Host(HostMessage::Read(reply_with)) => {
-                Command::reply(reply_with, *model)
-            }
+            | ProviderMessage::RecordIngressDirect(value) => config
+                .ingress_observed
+                .perform(IngressObserved(value))
+                .discard_outcome(),
+            ProviderMessage::Host(HostMessage::Read(reply_with)) => reply_with.with(*model),
             ProviderMessage::Host(HostMessage::Delayed(value, reply_with)) => {
                 let delay = if value == 11 {
                     Duration::from_millis(50)
@@ -122,39 +121,36 @@ impl Component for Provider {
                     Duration::from_millis(10)
                 };
                 Command::batch([
-                    Command::effect_with(&config.request_observed, RequestObserved, |_| {
-                        ProviderMessage::Signalled
-                    }),
+                    config
+                        .request_observed
+                        .perform(RequestObserved)
+                        .producing(|_| ProviderMessage::Signalled),
                     Command::after(
                         delay,
                         ProviderMessage::CompleteDelayed { reply_with, value },
                     ),
                 ])
             }
-            ProviderMessage::Host(HostMessage::Held(value, reply_with)) => {
-                Command::effect_with(&config.await_release, AwaitRelease(value), move |outcome| {
-                    match outcome {
-                        EffectOutcome::Succeeded(value) => {
-                            ProviderMessage::CompleteDelayed { reply_with, value }
-                        }
-                        EffectOutcome::Failed(EffectFailure::Error(never)) => match never {},
-                        EffectOutcome::Failed(EffectFailure::Cancelled(_)) => {
-                            ProviderMessage::Signalled
-                        }
+            ProviderMessage::Host(HostMessage::Held(value, reply_with)) => config
+                .await_release
+                .perform(AwaitRelease(value))
+                .producing(move |outcome| match outcome {
+                    EffectOutcome::Succeeded(value) => {
+                        ProviderMessage::CompleteDelayed { reply_with, value }
                     }
-                })
-            }
-            ProviderMessage::Host(HostMessage::Never(_reply_with)) => {
-                Command::effect_with(&config.request_observed, RequestObserved, |_| {
-                    ProviderMessage::Signalled
-                })
-            }
+                    EffectOutcome::Failed(EffectFailure::Error(never)) => match never {},
+                    EffectOutcome::Failed(EffectFailure::Cancelled(_)) => {
+                        ProviderMessage::Signalled
+                    }
+                }),
+            ProviderMessage::Host(HostMessage::Never(_reply_with)) => config
+                .request_observed
+                .perform(RequestObserved)
+                .producing(|_| ProviderMessage::Signalled),
             ProviderMessage::Host(HostMessage::Crash(_reply_with)) => {
                 panic!("provider crashed while handling an external request")
             }
-            ProviderMessage::CompleteDelayed { reply_with, value } => {
-                Command::reply(reply_with, value)
-            }
+            ProviderMessage::CompleteDelayed { reply_with, value } => reply_with.with(value),
             ProviderMessage::Signalled => Command::none(),
         }
     }

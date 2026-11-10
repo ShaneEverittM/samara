@@ -120,7 +120,7 @@ impl Component for HttpTimeServer {
             (Idle { .. }, PollFinished(_)) => Command::none(),
 
             // Cached reads are available in either state.
-            (state, GetTime(reply_with)) => Command::reply(reply_with, state.current_time()),
+            (state, GetTime(reply_with)) => reply_with.with(state.current_time()),
         }
     }
 }
@@ -209,11 +209,10 @@ impl Component for Cli {
             CliMessage::Command(CliCommand::Print(text)) => {
                 samara::println!(&capabilities.1, "{text}")
             }
-            CliMessage::Command(CliCommand::GetTime) => Command::request_to(
-                &config.time_server,
-                TimeServerMessage::GetCurrentTime,
-                CliMessage::TimeReceived,
-            ),
+            CliMessage::Command(CliCommand::GetTime) => config
+                .time_server
+                .request(TimeServerMessage::GetCurrentTime)
+                .producing(CliMessage::TimeReceived),
             CliMessage::InvalidCommand(command) => samara::eprintln!(
                 &capabilities.2,
                 "Unknown command `{command}`; use `print <text>` or `time`"
@@ -421,7 +420,7 @@ mod tests {
             CliMessage::Command(CliCommand::GetTime),
         );
         let request = time
-            .into_request_to::<TimeServerMessage>()
+            .into_request::<TimeServerMessage>()
             .unwrap_or_else(|_| panic!("`time` should request the time server"));
         assert!(matches!(
             request.message,

@@ -1,7 +1,7 @@
 use samara::{
-    Assembly, Capabilities, Command, Component, Connector, Effect, FileDriver, Init, PrintStdout,
-    Program, RequestOutcome, Runtime, Shutdown, Source, SourceEvent, StdinDriver, StdinLines,
-    StdoutDriver, Subscription, Subscriptions, SystemClockDriver,
+    Addressable, Assembly, Capabilities, Command, Component, Connector, Effect, FileDriver, Init,
+    PrintStdout, Program, RequestOutcome, Runtime, Shutdown, Source, SourceEvent, StdinDriver,
+    StdinLines, StdoutDriver, Subscription, Subscriptions, SystemClockDriver,
 };
 
 // This is a "library assembly", that is a subsection of a Program (discussed later)
@@ -51,18 +51,16 @@ impl Component for Monitor {
         message: Self::Message,
     ) -> Command<Self::Message> {
         match message {
-            Message::Input(s) => Command::request_to(
-                journal,
-                move |reply| JournalMessage::Recent {
+            Message::Input(s) => journal
+                .request(move |reply| JournalMessage::Recent {
                     count: if s == "5" { 5 } else { 10 },
                     reply,
-                },
-                |response| match response {
+                })
+                .producing(|response| match response {
                     RequestOutcome::Replied(r) => Message::JournalResponse(r.unwrap()),
                     // This would handle error or cancellation.
                     _ => todo!(),
-                },
-            ),
+                }),
             Message::JournalResponse(r) => samara::println!(&stdout, "Got response: {:?}", r),
         }
     }

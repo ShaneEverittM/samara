@@ -88,9 +88,10 @@ impl Component for Counter {
         match message {
             CounterMessage::Input(SourceEvent::Item(value)) | CounterMessage::Add(value) => {
                 model.total += value;
-                Command::effect_with(&config.record, Record(model.total), |_| {
-                    CounterMessage::Recorded
-                })
+                config
+                    .record
+                    .perform(Record(model.total))
+                    .producing(|_| CounterMessage::Recorded)
             }
             CounterMessage::Input(SourceEvent::Ended) => {
                 model.closed = true;
@@ -252,7 +253,7 @@ impl Component for CancelProbe {
         match message {
             CancelMessage::Start => {
                 let mapper_calls = config.mapper_calls.clone();
-                Command::effect_with(&config.effect, Hang, move |_| {
+                config.effect.perform(Hang).producing(move |_| {
                     mapper_calls.fetch_add(1, Ordering::SeqCst);
                     CancelMessage::UnexpectedOutcome
                 })
@@ -427,7 +428,7 @@ impl Component for InitialCancelProbe {
         _: &samara::Capabilities<Self::Requires>,
     ) -> Init<Self::Model, Self::Message> {
         let mapper_calls = config.mapper_calls.clone();
-        Init::new(()).with_command(Command::effect_with(&config.effect, Hang, move |_| {
+        Init::new(()).with_command(config.effect.perform(Hang).producing(move |_| {
             mapper_calls.fetch_add(1, Ordering::SeqCst);
         }))
     }
@@ -562,7 +563,7 @@ impl Component for PanicProbe {
         _model: &mut Self::Model,
         (): (),
     ) -> Command<Self::Message> {
-        Command::effect_with(&config.effect, PanicEffect, |_| ())
+        config.effect.perform(PanicEffect).producing(|_| ())
     }
 }
 
@@ -739,20 +740,20 @@ impl Component for SourceProbe {
                 model.items.push(value);
                 Command::none()
             }
-            SourceMessage::Event(SourceEvent::Failed(error)) => {
-                Command::effect_with(&config.observe, Observe(Observation::Failed(error)), |_| {
-                    SourceMessage::Observed
-                })
-            }
+            SourceMessage::Event(SourceEvent::Failed(error)) => config
+                .observe
+                .perform(Observe(Observation::Failed(error)))
+                .producing(|_| SourceMessage::Observed),
             SourceMessage::Event(SourceEvent::Ended) => {
                 let observation = if model.items.is_empty() {
                     Observation::Ended
                 } else {
                     Observation::ItemsThenEnded(model.items.clone())
                 };
-                Command::effect_with(&config.observe, Observe(observation), |_| {
-                    SourceMessage::Observed
-                })
+                config
+                    .observe
+                    .perform(Observe(observation))
+                    .producing(|_| SourceMessage::Observed)
             }
             SourceMessage::Replace(generation) => {
                 model.generation = Some(generation);
@@ -762,11 +763,10 @@ impl Component for SourceProbe {
                 model.generation = None;
                 Command::none()
             }
-            SourceMessage::Timer(value) => {
-                Command::effect_with(&config.observe, Observe(Observation::Timer(value)), |_| {
-                    SourceMessage::Observed
-                })
-            }
+            SourceMessage::Timer(value) => config
+                .observe
+                .perform(Observe(Observation::Timer(value)))
+                .producing(|_| SourceMessage::Observed),
             SourceMessage::Observed => Command::none(),
         }
     }
@@ -1154,9 +1154,10 @@ impl Component for AdmissionProbe {
         match message {
             AdmissionMessage::Add => {
                 *model += 1;
-                Command::effect_with(&config.record, Record(*model), |_| {
-                    AdmissionMessage::Recorded
-                })
+                config
+                    .record
+                    .perform(Record(*model))
+                    .producing(|_| AdmissionMessage::Recorded)
             }
             AdmissionMessage::Recorded => Command::none(),
         }
@@ -1263,7 +1264,7 @@ impl Component for InitialEffectComponent {
         config: &Self::Config,
         _: &samara::Capabilities<Self::Requires>,
     ) -> Init<Self::Model, Self::Message> {
-        Init::new(()).with_command(Command::effect_with(&config.effect, InitialEffect, |_| ()))
+        Init::new(()).with_command(config.effect.perform(InitialEffect).producing(|_| ()))
     }
 
     fn update(
@@ -1434,28 +1435,30 @@ impl Component for QueryProbe {
                 let success_calls = config.mapper_calls.clone();
                 let failure_calls = config.mapper_calls.clone();
                 Command::batch([
-                    Command::effect_with(&config.query, Query { fail: false }, move |outcome| {
-                        success_calls.fetch_add(1, Ordering::SeqCst);
-                        QueryMessage::Outcome(outcome)
-                    }),
-                    Command::effect_with(&config.query, Query { fail: true }, move |outcome| {
-                        failure_calls.fetch_add(1, Ordering::SeqCst);
-                        QueryMessage::Outcome(outcome)
-                    }),
+                    config
+                        .query
+                        .perform(Query { fail: false })
+                        .producing(move |outcome| {
+                            success_calls.fetch_add(1, Ordering::SeqCst);
+                            QueryMessage::Outcome(outcome)
+                        }),
+                    config
+                        .query
+                        .perform(Query { fail: true })
+                        .producing(move |outcome| {
+                            failure_calls.fetch_add(1, Ordering::SeqCst);
+                            QueryMessage::Outcome(outcome)
+                        }),
                 ])
             }
-            QueryMessage::Outcome(EffectOutcome::Succeeded(value)) => Command::effect_with(
-                &config.observe,
-                ObserveQuery(QueryObservation::Succeeded(value)),
-                |_| QueryMessage::Observed,
-            ),
-            QueryMessage::Outcome(EffectOutcome::Failed(EffectFailure::Error(error))) => {
-                Command::effect_with(
-                    &config.observe,
-                    ObserveQuery(QueryObservation::Failed(error)),
-                    |_| QueryMessage::Observed,
-                )
-            }
+            QueryMessage::Outcome(EffectOutcome::Succeeded(value)) => config
+                .observe
+                .perform(ObserveQuery(QueryObservation::Succeeded(value)))
+                .producing(|_| QueryMessage::Observed),
+            QueryMessage::Outcome(EffectOutcome::Failed(EffectFailure::Error(error))) => config
+                .observe
+                .perform(ObserveQuery(QueryObservation::Failed(error)))
+                .producing(|_| QueryMessage::Observed),
             QueryMessage::Outcome(EffectOutcome::Failed(EffectFailure::Cancelled(_))) => {
                 panic!("normal live completion is not scope cancellation")
             }
@@ -1577,14 +1580,16 @@ impl Component for DrainGateProbe {
         message: Self::Message,
     ) -> Command<Self::Message> {
         match message {
-            DrainGateMessage::Trigger => {
-                Command::effect_with(&config.gate, GateEffect, |_| DrainGateMessage::WantSource)
-            }
+            DrainGateMessage::Trigger => config
+                .gate
+                .perform(GateEffect)
+                .producing(|_| DrainGateMessage::WantSource),
             DrainGateMessage::WantSource => {
                 *desired = true;
-                Command::effect_with(&config.observe, Observe(Observation::Timer(99)), |_| {
-                    DrainGateMessage::Observed
-                })
+                config
+                    .observe
+                    .perform(Observe(Observation::Timer(99)))
+                    .producing(|_| DrainGateMessage::Observed)
             }
             DrainGateMessage::Noop | DrainGateMessage::Observed => Command::none(),
         }
@@ -1764,9 +1769,12 @@ impl Component for EchoProvider {
         match message {
             EchoProviderMessage::Echo(EchoMessage::Echo(value, reply_with)) => {
                 if config.reply {
-                    Command::reply(reply_with, value)
+                    reply_with.with(value)
                 } else {
-                    Command::effect_with(&config.seen, ProviderSeen, |_| EchoProviderMessage::Seen)
+                    config
+                        .seen
+                        .perform(ProviderSeen)
+                        .producing(|_| EchoProviderMessage::Seen)
                 }
             }
             EchoProviderMessage::Seen => Command::none(),
@@ -1832,20 +1840,18 @@ impl Component for EchoRequester {
         match message {
             EchoRequesterMessage::Start => {
                 let continuation_calls = config.continuation_calls.clone();
-                Command::request_to(
-                    &config.echo,
-                    |reply_with| EchoMessage::Echo(42, reply_with),
-                    move |outcome| {
+                config
+                    .echo
+                    .request(|reply_with| EchoMessage::Echo(42, reply_with))
+                    .producing(move |outcome| {
                         continuation_calls.fetch_add(1, Ordering::SeqCst);
                         EchoRequesterMessage::Outcome(outcome)
-                    },
-                )
+                    })
             }
-            EchoRequesterMessage::Outcome(RequestOutcome::Replied(value)) => {
-                Command::effect_with(&config.observe, ObserveReply(value), |_| {
-                    EchoRequesterMessage::Observed
-                })
-            }
+            EchoRequesterMessage::Outcome(RequestOutcome::Replied(value)) => config
+                .observe
+                .perform(ObserveReply(value))
+                .producing(|_| EchoRequesterMessage::Observed),
             EchoRequesterMessage::Outcome(_) => {
                 panic!("Phase 6 does not manufacture deferred Request outcomes")
             }
@@ -2053,22 +2059,19 @@ impl Component for IndependentProbe {
     ) -> Command<Self::Message> {
         match message {
             IndependentMessage::Start => Command::batch([
-                Command::effect_with(
-                    &config.independent,
-                    Independent('A'),
-                    IndependentMessage::Completed,
-                ),
-                Command::effect_with(
-                    &config.independent,
-                    Independent('B'),
-                    IndependentMessage::Completed,
-                ),
+                config
+                    .independent
+                    .perform(Independent('A'))
+                    .producing(IndependentMessage::Completed),
+                config
+                    .independent
+                    .perform(Independent('B'))
+                    .producing(IndependentMessage::Completed),
             ]),
-            IndependentMessage::Completed(EffectOutcome::Succeeded(label)) => {
-                Command::effect_with(&config.record, RecordOrder(label), |_| {
-                    IndependentMessage::Recorded
-                })
-            }
+            IndependentMessage::Completed(EffectOutcome::Succeeded(label)) => config
+                .record
+                .perform(RecordOrder(label))
+                .producing(|_| IndependentMessage::Recorded),
             IndependentMessage::Completed(EffectOutcome::Failed(EffectFailure::Error(never))) => {
                 match never {}
             }

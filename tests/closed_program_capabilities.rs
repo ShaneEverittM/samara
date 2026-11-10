@@ -57,13 +57,16 @@ impl Component for EffectComponent {
     ) -> Command<Self::Message> {
         match message {
             EffectMessage::Trigger => {
-                Command::effect_with(&config.effect, LateEffect(41), |outcome| match outcome {
-                    EffectOutcome::Succeeded(value) => EffectMessage::Finished(value),
-                    EffectOutcome::Failed(EffectFailure::Error(never)) => match never {},
-                    EffectOutcome::Failed(EffectFailure::Cancelled(_)) => {
-                        EffectMessage::Finished(0)
-                    }
-                })
+                config
+                    .effect
+                    .perform(LateEffect(41))
+                    .producing(|outcome| match outcome {
+                        EffectOutcome::Succeeded(value) => EffectMessage::Finished(value),
+                        EffectOutcome::Failed(EffectFailure::Error(never)) => match never {},
+                        EffectOutcome::Failed(EffectFailure::Cancelled(_)) => {
+                            EffectMessage::Finished(0)
+                        }
+                    })
             }
             EffectMessage::Finished(value) => {
                 *model = Some(value);
@@ -337,10 +340,7 @@ impl Component for InitialEffectComponent {
         config: &Self::Config,
         _: &samara::Capabilities<Self::Requires>,
     ) -> Init<Self::Model, Self::Message> {
-        Init::new(()).with_command(Command::effect_discarding_outcome(
-            &config.effect,
-            LateEffect(1),
-        ))
+        Init::new(()).with_command(config.effect.perform(LateEffect(1)).discard_outcome())
     }
 
     fn update(
@@ -431,7 +431,7 @@ impl Component for InitialForeignSend {
         config: &Self::Config,
         _: &samara::Capabilities<Self::Requires>,
     ) -> Init<Self::Model, Self::Message> {
-        Init::new(()).with_command(Command::send(&config.target, ()))
+        Init::new(()).with_command(config.target.send(()))
     }
 
     fn update(
@@ -486,7 +486,7 @@ impl Component for InitialForeignPortSend {
         config: &Self::Config,
         _: &samara::Capabilities<Self::Requires>,
     ) -> Init<Self::Model, Self::Message> {
-        Init::new(()).with_command(Command::send(&config.port, ForeignMessage::Signal))
+        Init::new(()).with_command(config.port.send(ForeignMessage::Signal))
     }
 
     fn update(
@@ -515,11 +515,7 @@ impl Component for InitialForeignRequest {
         config: &Self::Config,
         _: &samara::Capabilities<Self::Requires>,
     ) -> Init<Self::Model, Self::Message> {
-        Init::new(()).with_command(Command::request_to(
-            &config.port,
-            ForeignMessage::Read,
-            |_| (),
-        ))
+        Init::new(()).with_command(config.port.request(ForeignMessage::Read).producing(|_| ()))
     }
 
     fn update(
@@ -786,13 +782,12 @@ impl Component for DualStreamComponent {
                     .observe
                     .as_ref()
                     .map_or_else(Command::none, |observe| {
-                        Command::effect_discarding_outcome(
-                            observe,
-                            RecordDualStream {
+                        observe
+                            .perform(RecordDualStream {
                                 lane: "first",
                                 value,
-                            },
-                        )
+                            })
+                            .discard_outcome()
                     })
             }
             DualStreamMessage::Second(SourceEvent::Item(value)) => {
@@ -801,13 +796,12 @@ impl Component for DualStreamComponent {
                     .observe
                     .as_ref()
                     .map_or_else(Command::none, |observe| {
-                        Command::effect_discarding_outcome(
-                            observe,
-                            RecordDualStream {
+                        observe
+                            .perform(RecordDualStream {
                                 lane: "second",
                                 value,
-                            },
-                        )
+                            })
+                            .discard_outcome()
                     })
             }
             DualStreamMessage::First(SourceEvent::Failed(never))
@@ -1017,13 +1011,12 @@ impl Component for FramedStreamComponent {
                     .observe
                     .as_ref()
                     .map_or_else(Command::none, |observe| {
-                        Command::effect_discarding_outcome(
-                            observe,
-                            RecordDualStream {
+                        observe
+                            .perform(RecordDualStream {
                                 lane: "framed",
                                 value,
-                            },
-                        )
+                            })
+                            .discard_outcome()
                     })
             }
             SourceEvent::Failed(FramedError::Source(never))

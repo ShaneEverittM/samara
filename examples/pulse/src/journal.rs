@@ -6,15 +6,6 @@ struct Recorder;
 
 enum Message {
     Journal(JournalMessage),
-    SendTailToClient {
-        contents: Bytes,
-        count: usize,
-        reply: ReplyWith<Result<Vec<String>>>,
-    },
-    TellClientRecentFailed {
-        error: EffectFailure<FsError>,
-        reply: ReplyWith<Result<Vec<String>>>,
-    },
 }
 
 #[derive(Default, Debug)]
@@ -42,43 +33,32 @@ impl Component for Recorder {
                 .append_line(format!("{name}: {from} -> {to}"))
                 .discard_outcome(),
 
-            // Dispatch a tail of the journal.
+            // Answer with a tail of the journal, straight from the read's outcome.
+            // The reply token rides in the continuation, so no private Message
+            // variant is needed to carry it across the read.
             Message::Journal(JournalMessage::Recent { count, reply }) => {
-                file.read().into_command_with(move |result| match result {
-                    EffectOutcome::Succeeded(contents) => Message::SendTailToClient {
-                        contents,
-                        count,
-                        reply,
-                    },
-                    EffectOutcome::Failed(error) => {
-                        Message::TellClientRecentFailed { error, reply }
-                    }
+                file.read().finish_with(move |outcome| {
+                    reply.with(match outcome {
+                        EffectOutcome::Succeeded(contents) => Ok(tail(&contents, count)),
+                        EffectOutcome::Failed(EffectFailure::Error(_)) => {
+                            Err(Error::CouldNotReadJournal)
+                        }
+                        EffectOutcome::Failed(EffectFailure::Cancelled(_)) => {
+                            Err(Error::JournalReadCanceled)
+                        }
+                    })
                 })
-            }
-
-            // The tail request above completed, parse and give the results to the caller.
-            Message::SendTailToClient {
-                contents,
-                count,
-                reply,
-            } => {
-                let text = str::from_utf8(contents.as_ref()).expect("Invalid UTF-8");
-                let mut lines: Vec<_> = text.lines().rev().take(count).map(String::from).collect();
-                lines.reverse();
-
-                Command::reply(reply, Ok(lines))
-            }
-
-            // The tail request failed.
-            Message::TellClientRecentFailed { error, reply } => {
-                let error = match error {
-                    EffectFailure::Error(_) => Error::CouldNotReadJournal,
-                    EffectFailure::Cancelled(_) => Error::JournalReadCanceled,
-                };
-                Command::reply(reply, Err(error))
             }
         }
     }
+}
+
+/// The last `count` lines of the journal's contents, oldest first.
+fn tail(contents: &Bytes, count: usize) -> Vec<String> {
+    let text = str::from_utf8(contents.as_ref()).expect("Invalid UTF-8");
+    let mut lines: Vec<_> = text.lines().rev().take(count).map(String::from).collect();
+    lines.reverse();
+    lines
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;

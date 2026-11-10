@@ -123,7 +123,7 @@ impl Component for Quota {
                     }
                 };
 
-                Command::reply(reply_with, reservation)
+                reply_with.with(reservation)
             }
         }
     }
@@ -229,11 +229,10 @@ impl Component for Counter {
                 // granted. `CounterMessage::Reserved` is the explicit continuation:
                 // the runtime maps this request's eventual terminal outcome back
                 // into the requester's ordinary message stream.
-                Command::request_to(
-                    &config.quota,
-                    move |reply_with| QuotaProtocolMessage::Reserve { amount, reply_with },
-                    CounterMessage::Reserved,
-                )
+                config
+                    .quota
+                    .request(move |reply_with| QuotaProtocolMessage::Reserve { amount, reply_with })
+                    .producing(CounterMessage::Reserved)
             }
             CounterMessage::Reserved(outcome) => {
                 // Request correlation is runtime machinery, but its meaningful
@@ -242,11 +241,10 @@ impl Component for Counter {
                 let command = match &outcome {
                     RequestOutcome::Replied(Reservation::Granted { amount }) => {
                         model.count += amount;
-                        Command::effect_with(
-                            &capabilities.1,
-                            PersistCount { value: model.count },
-                            CounterMessage::Persisted,
-                        )
+                        capabilities
+                            .1
+                            .perform(PersistCount { value: model.count })
+                            .producing(CounterMessage::Persisted)
                     }
                     RequestOutcome::Replied(Reservation::Denied { .. })
                     | RequestOutcome::Failed(_)
@@ -501,7 +499,7 @@ mod tests {
         );
         assert_eq!(model.count, 0);
         let request = command
-            .into_request_to::<QuotaProtocolMessage>()
+            .into_request::<QuotaProtocolMessage>()
             .unwrap_or_else(|_| panic!("an increment should request a reservation"));
         assert!(matches!(
             request.message,

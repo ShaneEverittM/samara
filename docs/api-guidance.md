@@ -73,8 +73,8 @@ Continuation-bearing APIs therefore use a paired convention:
   context or distinguish this occurrence from another occurrence with the same
   boundary type.
 
-For example, `Command::effect(&capability, effect)` uses `Message::from`, while
-`Command::effect_with(&capability, effect, mapper)` preserves an explicit
+For example, `capability.perform(effect).into_command()` uses `Message::from`, while
+`capability.perform(effect).producing(mapper)` preserves an explicit
 continuation.
 The same convention applies to Requests, Subscriptions, and pure HTTP response
 pipelines where their lifecycle semantics permit it.
@@ -289,7 +289,7 @@ Component needs to choose relative filenames within a directory.
 ### When Should an Effect Discard Its Outcome?
 
 
-Use `Command::effect_discarding_outcome(&capability, descriptor)` when the
+Use `capability.perform(descriptor).discard_outcome()` when the
 Component deliberately has no behavioral reaction to success, typed failure,
 or effect-contract cancellation.
 Best-effort printing is the motivating case: an artificial "print finished"
@@ -299,9 +299,9 @@ This mode should not be called *fire and forget*. Samara still owns the effect,
 controlled execution still exposes and traces it, Drain still waits for it,
 Cancel still aborts it, and Driver or runtime faults still surface. Only the
 application continuation is absent. If any terminal outcome should affect the
-Model or cause another Command, use `Command::effect` with the matching
+Model or cause another Command, use `capability.perform(descriptor)` with the matching
 capability when the Message has the canonical `From<EffectOutcome<...>>`
-conversion, or `Command::effect_with` for an explicit mapper.
+conversion, or `.producing(map)` for an explicit mapper.
 
 ### Why Have Both Layers and Drivers?
 
@@ -589,8 +589,8 @@ dependency points the right way, from application to library, and the
 library's Component kind never becomes nameable outside its crate.
 
 A Connector is also an address in its own right. A Component may hold a `Connector<M>`
-in its `Config` and reach it with `Command::send`, or with
-`Command::request_to(&connector, Constructor, map)` where `Constructor` is a
+in its `Config` and reach it with `target.send(..)`, or with
+`connector.request(Constructor).producing(map)` where `Constructor` is a
 function the provider published that takes a `ReplyWith<R>`; the reply type is
 fixed by that parameter and checked against `map`. `Connector::accepting` adapts
 a library's Connector to the holder's vocabulary once, so the holder's Components
@@ -642,8 +642,8 @@ naming the Component kind.
 
 
 A Command names its destination, a `Port<M>`, `Connector<M>`, or
-`ComponentRef<C>`, and delivers a value of `M`. `Command::send` delivers a
-one-way message. `Command::request_to` delivers a message whose variant
+`ComponentRef<C>`, and delivers a value of `M`. `target.send(..)` delivers a
+one-way message. `target.request(..)` delivers a message whose variant
 carries a `ReplyWith<R>`: the caller passes the variant's constructor, the
 runtime mints the token, and the constructor's `ReplyWith<R>` parameter fixes
 the reply type the continuation must accept. That is the whole request
@@ -698,7 +698,7 @@ only the application knows what a reply means.
 ### Why Is `ReplyWith` a Checked Obligation Rather Than Merely a Token?
 
 
-A non-cloneable `ReplyWith` consumed by `Command::reply` prevents a provider from
+A non-cloneable `ReplyWith` consumed by `reply.with(..)` prevents a provider from
 replying twice through the same authority. Rust ownership alone cannot require
 the provider to use that authority: it can still be dropped, stored
 indefinitely, or deliberately forgotten. The type therefore provides an
@@ -713,7 +713,7 @@ checks:
 - When reply-obligation diagnostics are enabled, especially in controlled
   conformance tests, dropping an armed reply obligation records a violation.
   `Drop` must not panic or alter application semantics.
-- The obligation transfers into `Command::reply`, rather than disappearing when
+- The obligation transfers into `reply.with(..)`, rather than disappearing when
   that command is constructed, so constructing and then discarding a reply
   command remains detectable.
 - Runtime-owned request bookkeeping is authoritative. A later lifecycle
@@ -729,7 +729,7 @@ waiter with `RuntimeError` without manufacturing a Component outcome.
 ### How Do I Bound a Request's Lifetime?
 
 
-Use `Command::request_to_timeout(&target, constructor, duration, mapper)`;
+Use `target.request(constructor).timeout(duration).producing(mapper)`;
 pass `Message::from` as the mapper for the canonical
 `From<RequestOutcome<R>>` conversion or a closure to capture application
 context. The runtime starts the duration when interpreting the Command, using
@@ -756,7 +756,7 @@ explicit application protocol. `request_to` remains unbounded.
 
 
 Components do not suspend inside `update` and do not retain runtime-owned
-futures. A Request is declared through `Command::request_to` now; its typed
+futures. A Request is declared through `target.request(..)` now; its typed
 `RequestOutcome` arrives later through the Component's ordinary Message and
 transition path. This keeps request/reply compatible with pure transitions,
 controlled execution, and per-Component serialization. `RequestError` carries
@@ -808,7 +808,7 @@ Program before runtime startup. It also closes the set of Program-issued
 Component, Port, Effect, and Source capabilities.
 
 It cannot inspect arbitrary fields inside Component configuration or predict
-behavior-dependent `Command::send` edges. Port cycles are therefore legal and
+behavior-dependent `target.send(..)` edges. Port cycles are therefore legal and
 not detected. The Program has a closed capability inventory without claiming
 an introspected static graph of every possible edge.
 
@@ -961,9 +961,9 @@ all runtime ownership. Because the application is ending, it does not fabricate
 EffectOutcomes, SourceEvents, RequestOutcomes, or Messages solely to announce
 that abort. This differs from an explicit effect-contract cancellation outcome,
 which is typed data and completes the effect exactly once when accepted: it
-invokes the canonical or explicit mapper for `Command::effect` or
-`Command::effect_with`, or schedules no Message for
-`Command::effect_discarding_outcome`.
+invokes the canonical or explicit mapper for `capability.perform(descriptor)` or
+`.producing(map)`, or schedules no Message for
+`.discard_outcome()`.
 
 Successful shutdown always means no runtime-owned task or semantic obligation
 remains. `completed` and `cancelled` describe semantic obligations rather than

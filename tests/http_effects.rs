@@ -91,15 +91,16 @@ impl Component for HttpSequence {
         message: Self::Message,
     ) -> Command<Self::Message> {
         match message {
-            HttpMessage::Start => Command::effect_with(
-                &config.http,
-                config
-                    .requests
-                    .first()
-                    .expect("nonempty test sequence")
-                    .clone(),
-                HttpMessage::Finished,
-            ),
+            HttpMessage::Start => config
+                .http
+                .perform(
+                    config
+                        .requests
+                        .first()
+                        .expect("nonempty test sequence")
+                        .clone(),
+                )
+                .producing(HttpMessage::Finished),
             HttpMessage::Finished(outcome) => {
                 model.seen.push(match outcome {
                     EffectOutcome::Succeeded(response) => SeenHttp::Response(response),
@@ -107,11 +108,15 @@ impl Component for HttpSequence {
                     EffectOutcome::Failed(EffectFailure::Cancelled(_)) => SeenHttp::Cancelled,
                 });
                 if let Some(request) = config.requests.get(model.seen.len()) {
-                    Command::effect_with(&config.http, request.clone(), HttpMessage::Finished)
+                    config
+                        .http
+                        .perform(request.clone())
+                        .producing(HttpMessage::Finished)
                 } else {
-                    Command::effect_with(&config.observe, ObserveHttp(model.seen.clone()), |_| {
-                        HttpMessage::Observed
-                    })
+                    config
+                        .observe
+                        .perform(ObserveHttp(model.seen.clone()))
+                        .producing(|_| HttpMessage::Observed)
                 }
             }
             HttpMessage::Observed => Command::none(),

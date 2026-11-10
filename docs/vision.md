@@ -194,11 +194,7 @@ Pure synchronous closures or function pointers may transform typed EffectOutcome
 Component Messages. For example:
 
 ```text
-Command::effect_with(
-    &self.socket_read,
-    SocketRead { socket },
-    bytes -> SocketMessage::Frames(decode(bytes)),
-)
+self.socket_read.perform(SocketRead { socket }).producing(bytes -> SocketMessage::Frames(decode(bytes)))
 ```
 
 In this example, `SocketRead` is the interceptable EffectDescriptor. Live execution uses
