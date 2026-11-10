@@ -87,9 +87,7 @@ impl Component for ContractComponent {
         match message {
             ContractMessage::Add(amount) => {
                 model.total += amount;
-                config
-                    .save
-                    .perform(SaveTotal { value: model.total })
+                Effect::perform(&config.save, SaveTotal { value: model.total })
                     .producing(ContractMessage::Saved)
             }
             ContractMessage::Input(SourceEvent::Item(amount)) => {

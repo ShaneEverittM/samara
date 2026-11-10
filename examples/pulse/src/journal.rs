@@ -29,26 +29,28 @@ impl Component for Recorder {
     ) -> Command<Message> {
         match message {
             // Log the transition to the journal.
-            Message::Journal(JournalMessage::Transition { name, from, to }) => file
-                .append_line(format!("{name}: {from} -> {to}"))
-                .discard_outcome(),
+            Message::Journal(JournalMessage::Transition { name, from, to }) => {
+                File::append_line(file, format!("{name}: {from} -> {to}")).discard_outcome()
+            }
 
             // Answer with a tail of the journal, straight from the read's outcome.
             // The reply token rides in the continuation, so no private Message
             // variant is needed to carry it across the read.
-            Message::Journal(JournalMessage::Recent { count, reply }) => {
-                file.read().finish_with(move |outcome| {
-                    reply.with(match outcome {
-                        EffectOutcome::Succeeded(contents) => Ok(tail(&contents, count)),
-                        EffectOutcome::Failed(EffectFailure::Error(_)) => {
-                            Err(Error::CouldNotReadJournal)
-                        }
-                        EffectOutcome::Failed(EffectFailure::Cancelled(_)) => {
-                            Err(Error::JournalReadCanceled)
-                        }
-                    })
-                })
-            }
+            Message::Journal(JournalMessage::Recent { count, reply }) => File::read(file)
+                .finish_with(move |outcome| {
+                    Command::reply(
+                        reply,
+                        match outcome {
+                            EffectOutcome::Succeeded(contents) => Ok(tail(&contents, count)),
+                            EffectOutcome::Failed(EffectFailure::Error(_)) => {
+                                Err(Error::CouldNotReadJournal)
+                            }
+                            EffectOutcome::Failed(EffectFailure::Cancelled(_)) => {
+                                Err(Error::JournalReadCanceled)
+                            }
+                        },
+                    )
+                }),
         }
     }
 }

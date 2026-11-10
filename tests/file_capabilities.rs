@@ -52,12 +52,13 @@ impl Component for Writer {
         message: Message,
     ) -> Command<Message> {
         match message {
-            Message::Start => file.append_line(*text).producing(Message::Appended),
-            Message::Appended(EffectOutcome::Succeeded(())) => file.read().producing(Message::Read),
+            Message::Start => File::append_line(file, *text).producing(Message::Appended),
+            Message::Appended(EffectOutcome::Succeeded(())) => {
+                File::read(file).producing(Message::Read)
+            }
             Message::Read(EffectOutcome::Succeeded(contents)) => {
                 *model = contents;
-                report
-                    .perform(Report(String::from_utf8(model.to_vec()).unwrap()))
+                Effect::perform(report, Report(String::from_utf8(model.to_vec()).unwrap()))
                     .discard_outcome()
             }
             Message::Appended(EffectOutcome::Failed(_))
@@ -83,14 +84,15 @@ fn fixture() -> Fixture {
 #[test]
 fn file_operations_are_inert_and_preserve_their_typed_results() {
     let (_, file) = Program::builder::<File<ReadAppend>>();
-    let append: Command<EffectOutcome<(), FsError>> = file.append_line("hello").into_command();
+    let append: Command<EffectOutcome<(), FsError>> =
+        File::append_line(&file, "hello").into_command();
     assert_eq!(
         append.effect_intent::<FileAppend>().unwrap().as_bytes(),
         b"hello\n"
     );
-    let read: Command<EffectOutcome<Bytes, FsError>> = file.read().into_command();
+    let read: Command<EffectOutcome<Bytes, FsError>> = File::read(&file).into_command();
     assert!(read.effect_intent::<FileRead>().is_some());
-    let append = file.append_text("raw").discard_outcome::<()>();
+    let append = File::append_text(&file, "raw").discard_outcome::<()>();
     assert_eq!(
         append.effect_intent::<FileAppend>().unwrap().as_bytes(),
         b"raw"
@@ -101,23 +103,18 @@ fn file_operations_are_inert_and_preserve_their_typed_results() {
 fn write_authority_constructs_typed_replacements_and_narrows_to_existing_permissions() {
     let (mut builder, (file, report)) = Program::builder::<(File<ReadWrite>, Effect<Report>)>();
     let replace: Command<EffectOutcome<(), FsError>> =
-        file.replace_text("new contents").into_command();
+        File::replace_text(&file, "new contents").into_command();
     assert_eq!(
         replace.effect_intent::<FileReplace>().unwrap().as_str(),
         Some("new contents")
     );
-    let binary = file
-        .write_only()
-        .replace_bytes(Bytes::from_static(&[0, 255]))
+    let binary = File::replace_bytes(&file.write_only(), Bytes::from_static(&[0, 255]))
         .discard_outcome::<()>();
     assert_eq!(
         binary.effect_intent::<FileReplace>().unwrap().as_bytes(),
         &[0, 255]
     );
-    let append = file
-        .write_only()
-        .append_text("tail")
-        .discard_outcome::<()>();
+    let append = File::append_text(&file.write_only(), "tail").discard_outcome::<()>();
     assert_eq!(
         append.effect_intent::<FileAppend>().unwrap().as_str(),
         Some("tail")
@@ -157,7 +154,7 @@ impl Component for Replacer {
         text: &Self::Config,
         file: &Capabilities<Self::Requires>,
     ) -> Init<Self::Model, Self::Message> {
-        Init::new(None).with_command(file.replace_text(*text).into_command())
+        Init::new(None).with_command(File::replace_text(file, *text).into_command())
     }
     fn update(
         _: &Self::Config,
@@ -346,7 +343,7 @@ impl Component for Reader {
     type Model = Bytes;
     type Message = EffectOutcome<Bytes, FsError>;
     fn init(_: &(), file: &Capabilities<Self::Requires>) -> Init<Bytes, Self::Message> {
-        Init::new(Bytes::new()).with_command(file.read().into_command())
+        Init::new(Bytes::new()).with_command(File::read(file).into_command())
     }
     fn update(
         _: &(),
@@ -430,14 +427,14 @@ impl Component for HiddenFile {
     type Message = bool;
     fn init(config: &Self::Config, _: &()) -> Init<(), bool> {
         Init::new(()).with_command(if config.1 {
-            config.0.read().producing(|_| false)
+            File::read(&config.0).producing(|_| false)
         } else {
             Command::none()
         })
     }
     fn update(config: &Self::Config, _: &(), _: &mut (), start: bool) -> Command<bool> {
         if start {
-            config.0.read().producing(|_| false)
+            File::read(&config.0).producing(|_| false)
         } else {
             Command::none()
         }

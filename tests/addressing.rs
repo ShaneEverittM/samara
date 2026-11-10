@@ -1,5 +1,5 @@
-//! Acceptance evidence for `Addressable`: `target.send(..)` and
-//! `target.request(..)` reach a Port exactly as they reach a Connector, a
+//! Acceptance evidence for `Addressable`: `Command::send` and
+//! `Command::request` reach a Port exactly as they reach a Connector, a
 //! hand-written message enum needs no macro or request trait, `PortHandle`
 //! offers the same two forms to a live host, and `into_request` lets a
 //! unit test inspect a request without a runtime.
@@ -53,7 +53,7 @@ impl Component for Ledger {
                 model.total += amount;
                 Command::none()
             }
-            LedgerMessage::Total(reply_with) => reply_with.with(model.total),
+            LedgerMessage::Total(reply_with) => Command::reply(reply_with, model.total),
             LedgerMessage::Park(reply_with) => {
                 model.parked.push(reply_with);
                 Command::none()
@@ -101,16 +101,12 @@ impl Component for Clerk {
     ) -> Command<ClerkMessage> {
         match message {
             ClerkMessage::Start => Command::batch([
-                config.ledger.send(LedgerMessage::Add(2)),
-                config.ledger.send(LedgerMessage::Add(3)),
+                Command::send(&config.ledger, LedgerMessage::Add(2)),
+                Command::send(&config.ledger, LedgerMessage::Add(3)),
                 match config.patience {
-                    None => config
-                        .ledger
-                        .request(LedgerMessage::Total)
+                    None => Command::request(&config.ledger, LedgerMessage::Total)
                         .producing(ClerkMessage::Total),
-                    Some(patience) => config
-                        .ledger
-                        .request(LedgerMessage::Park)
+                    Some(patience) => Command::request(&config.ledger, LedgerMessage::Park)
                         .timeout(patience)
                         .producing(ClerkMessage::Total),
                 },
@@ -211,8 +207,7 @@ fn into_request_to_inspects_a_request_without_a_runtime() {
     let (mut program, ()) = samara::Program::builder::<()>();
     let ledger = program.port::<LedgerMessage>(PortId::new("ledger"));
 
-    let intent = ledger
-        .request(LedgerMessage::Total)
+    let intent = Command::request(&ledger, LedgerMessage::Total)
         .producing(ClerkMessage::Total)
         .into_request::<LedgerMessage>()
         .ok()
@@ -224,11 +219,10 @@ fn into_request_to_inspects_a_request_without_a_runtime() {
     ));
 
     // Anything else comes back unchanged.
-    let send: Command<ClerkMessage> = ledger.send(LedgerMessage::Add(1));
+    let send: Command<ClerkMessage> = Command::send(&ledger, LedgerMessage::Add(1));
     assert!(send.into_request::<LedgerMessage>().is_err());
-    let other: Command<ClerkMessage> = ledger
-        .request(LedgerMessage::Total)
-        .producing(ClerkMessage::Total);
+    let other: Command<ClerkMessage> =
+        Command::request(&ledger, LedgerMessage::Total).producing(ClerkMessage::Total);
     assert!(other.into_request::<ClerkMessage>().is_err());
 }
 
@@ -244,7 +238,7 @@ fn an_initial_send_to_a_foreign_port_fails_both_profile_builds() {
             ledger: &Port<LedgerMessage>,
             _: &samara::Capabilities<Self::Requires>,
         ) -> Init<(), ClerkMessage> {
-            Init::new(()).with_command(ledger.send(LedgerMessage::Add(1)))
+            Init::new(()).with_command(Command::send(ledger, LedgerMessage::Add(1)))
         }
         fn update(
             _: &Port<LedgerMessage>,

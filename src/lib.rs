@@ -174,10 +174,10 @@ pub mod prelude {
 #[macro_export]
 macro_rules! print {
     ($capability:expr) => {
-        ($capability).perform($crate::PrintStdout::text(::std::string::String::new())).discard_outcome()
+        $crate::Effect::perform($capability, $crate::PrintStdout::text(::std::string::String::new())).discard_outcome()
     };
     ($capability:expr, $($argument:tt)+) => {
-        ($capability).perform($crate::PrintStdout::text(::std::format!($($argument)+))).discard_outcome()
+        $crate::Effect::perform($capability, $crate::PrintStdout::text(::std::format!($($argument)+))).discard_outcome()
     };
 }
 
@@ -197,10 +197,10 @@ macro_rules! print {
 #[macro_export]
 macro_rules! println {
     ($capability:expr) => {
-        ($capability).perform($crate::PrintStdout::line(::std::string::String::new())).discard_outcome()
+        $crate::Effect::perform($capability, $crate::PrintStdout::line(::std::string::String::new())).discard_outcome()
     };
     ($capability:expr, $($argument:tt)+) => {
-        ($capability).perform($crate::PrintStdout::line(::std::format!($($argument)+))).discard_outcome()
+        $crate::Effect::perform($capability, $crate::PrintStdout::line(::std::format!($($argument)+))).discard_outcome()
     };
 }
 
@@ -220,10 +220,10 @@ macro_rules! println {
 #[macro_export]
 macro_rules! eprint {
     ($capability:expr) => {
-        ($capability).perform($crate::PrintStderr::text(::std::string::String::new())).discard_outcome()
+        $crate::Effect::perform($capability, $crate::PrintStderr::text(::std::string::String::new())).discard_outcome()
     };
     ($capability:expr, $($argument:tt)+) => {
-        ($capability).perform($crate::PrintStderr::text(::std::format!($($argument)+))).discard_outcome()
+        $crate::Effect::perform($capability, $crate::PrintStderr::text(::std::format!($($argument)+))).discard_outcome()
     };
 }
 
@@ -243,10 +243,10 @@ macro_rules! eprint {
 #[macro_export]
 macro_rules! eprintln {
     ($capability:expr) => {
-        ($capability).perform($crate::PrintStderr::line(::std::string::String::new())).discard_outcome()
+        $crate::Effect::perform($capability, $crate::PrintStderr::line(::std::string::String::new())).discard_outcome()
     };
     ($capability:expr, $($argument:tt)+) => {
-        ($capability).perform($crate::PrintStderr::line(::std::format!($($argument)+))).discard_outcome()
+        $crate::Effect::perform($capability, $crate::PrintStderr::line(::std::format!($($argument)+))).discard_outcome()
     };
 }
 
@@ -296,8 +296,7 @@ impl PortId {
 /// }
 /// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<ReadFile>,)>();
 /// let files = declared_0;
-/// let command: Command<_> = files
-///     .perform(ReadFile { path: "settings.txt".into() })
+/// let command: Command<_> = samara::Effect::perform(&files, ReadFile { path: "settings.txt".into() })
 ///     .producing(|outcome| outcome);
 /// assert_eq!(command.effect_intent::<ReadFile>().unwrap().path, "settings.txt");
 /// ```
@@ -847,7 +846,7 @@ pub enum RequestError {
 
 /// The token a provider uses to reply to a request.
 ///
-/// Pass it to [`ReplyWith::with`]. It cannot be cloned or created by application
+/// Pass it to [`Command::reply`]. It cannot be cloned or created by application
 /// code, so each request can be answered at most once. Dropping it does not cancel
 /// the request: the caller keeps waiting until its timeout or runtime shutdown.
 /// An unanswered request without a timeout can keep [`Shutdown::Drain`] waiting.
@@ -867,7 +866,7 @@ pub enum RequestError {
 /// ```
 ///
 /// </details>
-#[must_use = "a ReplyWith must be consumed by `with`"]
+#[must_use = "a ReplyWith must be consumed by Command::reply"]
 pub struct ReplyWith<Reply> {
     token: Arc<RequestToken>,
     marker: PhantomData<fn(Reply)>,
@@ -1234,7 +1233,7 @@ struct Reply<Reply> {
 /// use samara::prelude::*;
 /// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<PrintStdout>,)>();
 /// let output = declared_0;
-/// let command = output.perform(PrintStdout::line("ready")).producing(|outcome| outcome);
+/// let command = Effect::perform(&output, PrintStdout::line("ready")).producing(|outcome| outcome);
 /// let invocation = command.into_effect::<PrintStdout>().ok().unwrap();
 /// assert_eq!(invocation.descriptor().as_str(), "ready\n");
 /// assert!(matches!(invocation.map_outcome(EffectOutcome::Succeeded(())),
@@ -1276,7 +1275,7 @@ where
     ///
     /// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<Read>,)>();
     /// let read = declared_0;
-    /// let invocation = read.perform(Read).producing(|_| ())
+    /// let invocation = Effect::perform(&read, Read).producing(|_| ())
     ///     .into_effect::<Read>()
     ///     .ok()
     ///     .unwrap();
@@ -1294,7 +1293,7 @@ where
     }
 }
 
-/// A [`Addressable::request`] extracted for a unit test by [`Command::into_request`].
+/// A [`Command::request`] extracted for a unit test by [`Command::into_request`].
 ///
 /// `message` is what the constructor built; its reply token is inert and cannot
 /// deliver a reply. [`Self::reply`] runs the command's continuation on an
@@ -1410,6 +1409,35 @@ impl<Message> Command<Message> {
     /// Returns a command that does nothing.
     pub fn none() -> Self {
         Self(CommandKind::None)
+    }
+
+    /// Queues a message for a [`Port`], a [`Connector`], or a [`ComponentRef`].
+    ///
+    /// The target handles it after the current update returns. No delivery
+    /// result comes back; a routing error faults the runtime.
+    pub fn send<T>(target: &T, message: T::Message) -> Self
+    where
+        T: Addressable,
+    {
+        Self(CommandKind::Send(Box::new(SendTo {
+            address: target.to_address(),
+            message,
+        })))
+    }
+
+    /// Replies to a request using its reply token.
+    ///
+    /// The token is consumed, so a request is answered at most once. Delivery
+    /// happens after the current update returns; a reply after the caller's
+    /// timeout is ignored.
+    pub fn reply<Reply>(reply_with: ReplyWith<Reply>, reply: Reply) -> Self
+    where
+        Reply: Send + 'static,
+    {
+        Self(CommandKind::Reply(Box::new(self::Reply {
+            reply_with,
+            reply,
+        })))
     }
 
     /// Schedules a message for this component after `delay`.
@@ -1546,8 +1574,8 @@ impl<Message> Command<Message> {
     /// let (mut program, ()) = samara::Program::builder::<()>();
     /// let ledger = program.port::<LedgerMessage>(PortId::new("ledger"));
     /// let command: Command<()> = Command::batch([
-    ///     ledger.send(LedgerMessage::Add(2)),
-    ///     ledger.send(LedgerMessage::Add(3)),
+    ///     Command::send(&ledger, LedgerMessage::Add(2)),
+    ///     Command::send(&ledger, LedgerMessage::Add(3)),
     /// ]);
     /// assert_eq!(command.send_intents::<LedgerMessage>(), [&LedgerMessage::Add(2), &LedgerMessage::Add(3)]);
     /// ```
@@ -1577,7 +1605,7 @@ impl<Message> Command<Message> {
         }
     }
 
-    /// Extracts a [`Addressable::request`] command for a unit test.
+    /// Extracts a [`Command::request`] command for a unit test.
     ///
     /// Returns the message the constructor built, with an inert reply token that
     /// no runtime will honor, and a [`RequestIntent`] that maps a chosen
@@ -1591,7 +1619,7 @@ impl<Message> Command<Message> {
     /// enum ClerkMessage { Total(RequestOutcome<u64>) }
     /// let (mut program, ()) = samara::Program::builder::<()>();
     /// let ledger = program.port::<LedgerMessage>(PortId::new("ledger"));
-    /// let command = ledger.request(LedgerMessage::Total).producing(ClerkMessage::Total);
+    /// let command = Command::request(&ledger, LedgerMessage::Total).producing(ClerkMessage::Total);
     /// let intent = command.into_request::<LedgerMessage>().ok().expect("a request to the ledger");
     /// assert!(matches!(intent.message, LedgerMessage::Total(_)));
     /// assert!(matches!(intent.reply(RequestOutcome::Replied(5u64)), ClerkMessage::Total(RequestOutcome::Replied(5))));
@@ -2677,8 +2705,7 @@ where
                 limit,
                 Box::new(move |outcome| map(transform(outcome))),
             ),
-            None => capability
-                .perform(request)
+            None => Effect::perform(capability, request)
                 .producing(move |outcome| map(transform(outcome))),
         }
     }
@@ -3391,14 +3418,14 @@ where
 /// Permission to request an effect type within a Program.
 ///
 /// Obtain it from [`Program::builder`] using an [`Effect`] requirement, then pass
-/// it to [`EffectCapability::perform`] or [`EffectBuilder::producing`]. Cloning shares permission
+/// it to [`Effect::perform`] or [`EffectBuilder::producing`]. Cloning shares permission
 /// within the same program; using it in a different program is an error.
 ///
 /// ```
 /// use samara::prelude::*;
 /// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<HttpRequest>,)>();
 /// let http = declared_0;
-/// let command = http.perform(HttpRequest::get("https://example.test/")).producing(|outcome| outcome);
+/// let command = Effect::perform(&http, HttpRequest::get("https://example.test/")).producing(|outcome| outcome);
 /// ```
 ///
 /// The runtime builder requires a driver or test control for every declared
@@ -3507,8 +3534,8 @@ impl<S: SourceDescriptor> fmt::Debug for SourceCapability<S> {
 ///
 /// The application declares the message enum in its own vocabulary, creates the
 /// Port with [`ProgramBuilder::port`], and connects a provider with
-/// [`ProgramBuilder::connect`]. Components use it with [`Addressable::send`] and
-/// [`Addressable::request`]. Code outside the program uses a [`PortHandle`] instead.
+/// [`ProgramBuilder::connect`]. Components use it with [`Command::send`] and
+/// [`Command::request`]. Code outside the program uses a [`PortHandle`] instead.
 /// The provider-owned counterpart, an address a Component hands out itself,
 /// is [`Connector`].
 ///
@@ -3561,7 +3588,7 @@ impl<P: Send + 'static> fmt::Debug for Port<P> {
 
 /// Identifies a registered component without giving access to its state.
 ///
-/// Returned by [`ProgramBuilder::component`]. Use it with [`Addressable::send`] for
+/// Returned by [`ProgramBuilder::component`]. Use it with [`Command::send`] for
 /// component-to-component delivery, [`Runtime::handle`] for an external sender,
 /// or [`ControlledRuntime::state`] to inspect state in tests.
 ///
@@ -3576,7 +3603,7 @@ impl<P: Send + 'static> fmt::Debug for Port<P> {
 /// use samara::{Component, ComponentRef};
 ///
 /// fn bypass_runtime<C: Component>(target: &ComponentRef<C>, message: C::Message) {
-///     target.send(message);
+///     Command::send(&target, message);
 /// }
 /// ```
 ///
@@ -3763,8 +3790,8 @@ impl<M> fmt::Debug for Connector<M> {
 /// The message type of a command that can never deliver a Message.
 ///
 /// It has no values and is deliberately not `Send`, so a `Command<NoMessage>`
-/// can hold only work that ends where it is issued: [`ReplyWith::with`],
-/// [`Addressable::send`], an effect finished with
+/// can hold only work that ends where it is issued: [`Command::reply`],
+/// [`Command::send`], an effect finished with
 /// [`EffectBuilder::discard_outcome`], [`Command::none`], and batches of
 /// those. Anything that would need a continuation (`producing`,
 /// `into_command`, `finish_with`, [`Command::after`]) cannot be built for it.
@@ -3786,6 +3813,29 @@ pub trait Deliverable: Send + 'static {}
 impl<T: Send + 'static> Deliverable for T {}
 
 impl Command<NoMessage> {
+    /// Describes a request to a [`Port`], a [`Connector`], or a [`ComponentRef`].
+    ///
+    /// `request` is a constructor taking the reply token, such as
+    /// `TallyMessage::total` or `|reply| LedgerMessage::Total(reply)`; its
+    /// `ReplyWith<R>` parameter fixes the reply type. Returns an inert
+    /// [`RequestBuilder`]: optionally bound it with `timeout`, then finish it
+    /// with `producing`, `into_command`, or `finish_with`. It is written
+    /// `Command::request(..)` in any Component; it lives on this impl only so
+    /// that the Message type need not be named before a finisher supplies it.
+    pub fn request<T, R, Build>(target: &T, request: Build) -> RequestBuilder<T::Message, R, Build>
+    where
+        T: Addressable,
+        R: Send + 'static,
+        Build: FnOnce(ReplyWith<R>) -> T::Message + Send + 'static,
+    {
+        RequestBuilder {
+            address: target.to_address(),
+            build: request,
+            timeout: None,
+            reply: PhantomData,
+        }
+    }
+
     /// Re-types finishing work for the Component that issued it.
     fn widen<Message: Send + 'static>(self) -> Command<Message> {
         Command(match self.0 {
@@ -3839,8 +3889,8 @@ impl<Message: Send + 'static> ErasedEffectCommand<Message> for WidenedEffect {
 
 /// One effect, described and authorized, waiting to be told how it ends.
 ///
-/// Made by [`EffectCapability::perform`] or by a resource capability's
-/// operation such as `file.read()`. It is inert; one of its finishers turns
+/// Made by [`Effect::perform`] or by a resource capability's
+/// operation such as `File::read(&file)`. It is inert; one of its finishers turns
 /// it into a [`Command`]:
 ///
 /// - [`Self::producing`]: the outcome becomes a Message through a pure mapper.
@@ -3852,7 +3902,7 @@ impl<Message: Send + 'static> ErasedEffectCommand<Message> for WidenedEffect {
 /// use samara::prelude::*;
 /// enum Message { Printed(EffectOutcome<(), std::convert::Infallible>) }
 /// let (_program, (output,)) = Program::builder::<(Effect<PrintStdout>,)>();
-/// let command: Command<Message> = output.perform(PrintStdout::line("ready")).producing(Message::Printed);
+/// let command: Command<Message> = Effect::perform(&output, PrintStdout::line("ready")).producing(Message::Printed);
 /// assert!(command.effect_intent::<PrintStdout>().is_some());
 /// ```
 #[must_use = "finish the effect into a Command with producing, into_command, finish_with, or discard_outcome"]
@@ -3908,9 +3958,8 @@ impl<D: EffectDescriptor> EffectBuilder<D> {
     /// let (_program, (output,)) = Program::builder::<(Effect<PrintStdout>,)>();
     /// # let reply: Option<ReplyWith<usize>> = None;
     /// # if let Some(reply) = reply {
-    /// let command: Command<Asked> = output
-    ///     .perform(PrintStdout::line("measuring"))
-    ///     .finish_with(move |_outcome| reply.with(42));
+    /// let command: Command<Asked> = Effect::perform(&output, PrintStdout::line("measuring"))
+    ///     .finish_with(move |_outcome| Command::reply(reply, 42));
     /// # drop(command);
     /// # }
     /// ```
@@ -3921,9 +3970,8 @@ impl<D: EffectDescriptor> EffectBuilder<D> {
     /// use samara::prelude::*;
     /// let (_program, (output,)) = Program::builder::<(Effect<PrintStdout>,)>();
     /// let again = output.clone();
-    /// let _: Command<()> = output
-    ///     .perform(PrintStdout::line("one"))
-    ///     .finish_with(move |_| again.perform(PrintStdout::line("two")).producing(|_| unreachable!()));
+    /// let _: Command<()> = Effect::perform(&output, PrintStdout::line("one"))
+    ///     .finish_with(move |_| Effect::perform(&again, PrintStdout::line("two")).producing(|_| unreachable!()));
     /// ```
     pub fn finish_with<Message, Finish>(self, finish: Finish) -> Command<Message>
     where
@@ -3950,19 +3998,20 @@ impl<D: EffectDescriptor> EffectBuilder<D> {
     }
 }
 
-impl<D: EffectDescriptor> EffectCapability<D> {
-    /// Describes performing `descriptor` under this capability.
+impl<D: EffectDescriptor> Effect<D> {
+    /// Describes performing `descriptor` under the capability this requirement issued.
     ///
-    /// Returns an inert [`EffectBuilder`]; choose how the outcome ends to get
-    /// a [`Command`].
-    pub fn perform(&self, descriptor: D) -> EffectBuilder<D> {
-        EffectBuilder::new(self.clone(), descriptor)
+    /// World work is called on the requirement that authorizes it: declare
+    /// `Effect<D>` in `Requires`, call `Effect::perform`. Returns an inert
+    /// [`EffectBuilder`]; choose how the outcome ends to get a [`Command`].
+    pub fn perform(capability: &EffectCapability<D>, descriptor: D) -> EffectBuilder<D> {
+        EffectBuilder::new(capability.clone(), descriptor)
     }
 }
 
 /// One request, addressed and described, waiting to be told how its reply ends.
 ///
-/// Made by [`Addressable::request`]. Optionally bound with [`Self::timeout`],
+/// Made by [`Command::request`]. Optionally bound with [`Self::timeout`],
 /// then finished with [`Self::producing`], [`Self::into_command`], or
 /// [`Self::finish_with`].
 #[must_use = "finish the request into a Command with producing, into_command, or finish_with"]
@@ -4034,24 +4083,10 @@ where
     }
 }
 
-impl<Reply: Send + 'static> ReplyWith<Reply> {
-    /// Replies to the request this token came from.
-    ///
-    /// The token is consumed, so a request is answered at most once. Delivery
-    /// happens after the current update returns; a reply after the caller's
-    /// timeout is ignored.
-    pub fn with<Message>(self, reply: Reply) -> Command<Message> {
-        Command(CommandKind::Reply(Box::new(self::Reply {
-            reply_with: self,
-            reply,
-        })))
-    }
-}
-
 /// Something a Command can be addressed to: a [`Port`], a [`Connector`], or a
 /// [`ComponentRef`].
 ///
-/// [`Addressable::send`], [`Addressable::request`], and
+/// [`Command::send`], [`Command::request`], and
 /// [`RequestBuilder::timeout`] accept any of the three and deliver a value
 /// of `Message`. A Port resolves to its provider through the binding at
 /// interpretation; a Connector and a ComponentRef already name the provider.
@@ -4062,35 +4097,13 @@ pub trait Addressable {
 
     /// Erases this destination for a Command to carry.
     fn to_address(&self) -> Address<Self::Message>;
+}
 
-    /// Queues a message for this destination.
-    ///
-    /// The target handles it after the current update returns. No delivery
-    /// result comes back; a routing error faults the runtime.
-    fn send<Message>(&self, message: Self::Message) -> Command<Message> {
-        Command(CommandKind::Send(Box::new(SendTo {
-            address: self.to_address(),
-            message,
-        })))
-    }
+impl<T: Addressable> Addressable for &T {
+    type Message = T::Message;
 
-    /// Describes a request to this destination.
-    ///
-    /// `request` is a constructor taking the reply token, such as
-    /// `TallyMessage::total` or `|reply| LedgerMessage::Total(reply)`; its
-    /// `ReplyWith<R>` parameter fixes the reply type. Returns an inert
-    /// [`RequestBuilder`] to finish into a [`Command`].
-    fn request<R, Build>(&self, request: Build) -> RequestBuilder<Self::Message, R, Build>
-    where
-        R: Send + 'static,
-        Build: FnOnce(ReplyWith<R>) -> Self::Message + Send + 'static,
-    {
-        RequestBuilder {
-            address: self.to_address(),
-            build: request,
-            timeout: None,
-            reply: PhantomData,
-        }
+    fn to_address(&self) -> Address<T::Message> {
+        (**self).to_address()
     }
 }
 
@@ -4813,7 +4826,7 @@ impl<R: Requirements> ProgramBuilder<R> {
     ///     fn init(_: &(), _: &samara::Capabilities<Self::Requires>) -> Init<u64, CounterMessage> { Init::new(42) }
     ///     fn update(_: &(), _: &samara::Capabilities<Self::Requires>, count: &mut u64, message: CounterMessage) -> Command<CounterMessage> {
     ///         match message {
-    ///             CounterMessage::Count(CountMessage::Read(reply_with)) => reply_with.with(*count),
+    ///             CounterMessage::Count(CountMessage::Read(reply_with)) => Command::reply(reply_with, *count),
     ///             CounterMessage::Tick => { *count += 1; Command::none() }
     ///         }
     ///     }
@@ -4828,7 +4841,7 @@ impl<R: Requirements> ProgramBuilder<R> {
     ///     type Model = Option<u64>;
     ///     type Message = RequestOutcome<u64>;
     ///     fn init(config: &Self::Config, _: &samara::Capabilities<Self::Requires>) -> Init<Self::Model, Self::Message> {
-    ///         Init::default().with_command(config.counter.request(CountMessage::Read).producing(|outcome| outcome))
+    ///         Init::default().with_command(Command::request(&config.counter, CountMessage::Read).producing(|outcome| outcome))
     ///     }
     ///     fn update(_config: &Self::Config, _: &samara::Capabilities<Self::Requires>, value: &mut Option<u64>, reply: Self::Message) -> Command<Self::Message> {
     ///         if let RequestOutcome::Replied(count) = reply { *value = Some(count); }
@@ -5464,7 +5477,7 @@ impl<C: Component> ComponentHandle<C> {
 ///     fn init(_config: &Self::Config, _: &samara::Capabilities<Self::Requires>) -> Init<u64, CountMessage> { Init::new(42) }
 ///     fn update(_config: &Self::Config, _: &samara::Capabilities<Self::Requires>, count: &mut u64, message: CountMessage) -> Command<CountMessage> {
 ///         match message {
-///             CountMessage::Read(reply_with) => reply_with.with(*count),
+///             CountMessage::Read(reply_with) => Command::reply(reply_with, *count),
 ///         }
 ///     }
 /// }
@@ -5563,7 +5576,7 @@ impl<P: Send + 'static> PortHandle<P> {
     /// Sends a request built from its reply token and waits for the reply.
     ///
     /// `request` is a constructor taking `ReplyWith<R>`, as for
-    /// [`Addressable::request`]; the awaited value is `R`. Dropping this future
+    /// [`Command::request`]; the awaited value is `R`. Dropping this future
     /// after sending stops waiting but does not cancel the provider's work. An
     /// unanswered request can keep Drain waiting; see
     /// [`Self::request_to_timeout`].
@@ -5843,7 +5856,7 @@ pub struct ControlledRuntimeBuilder {
 ///     type Message = EffectOutcome<HttpResponse, HttpError>;
 ///     fn init(_config: &Self::Config, capabilities: &Capabilities<Self::Requires>) -> Init<Self::Model, Self::Message> {
 ///         Init::default().with_command(
-///             capabilities.0.perform(HttpRequest::get("https://example.test/health")).into_command(),
+///             Effect::perform(&capabilities.0, HttpRequest::get("https://example.test/health")).into_command(),
 ///         )
 ///     }
 ///     fn update(_config: &Self::Config, capabilities: &Capabilities<Self::Requires>, status: &mut Self::Model, outcome: Self::Message) -> Command<Self::Message> {
@@ -6542,7 +6555,7 @@ mod request_authority_tests {
             _: &mut (),
             reply_with: Self::Message,
         ) -> Command<Self::Message> {
-            reply_with.with(7)
+            Command::reply(reply_with, 7)
         }
     }
 

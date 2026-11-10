@@ -91,16 +91,15 @@ impl Component for HttpSequence {
         message: Self::Message,
     ) -> Command<Self::Message> {
         match message {
-            HttpMessage::Start => config
-                .http
-                .perform(
-                    config
-                        .requests
-                        .first()
-                        .expect("nonempty test sequence")
-                        .clone(),
-                )
-                .producing(HttpMessage::Finished),
+            HttpMessage::Start => Effect::perform(
+                &config.http,
+                config
+                    .requests
+                    .first()
+                    .expect("nonempty test sequence")
+                    .clone(),
+            )
+            .producing(HttpMessage::Finished),
             HttpMessage::Finished(outcome) => {
                 model.seen.push(match outcome {
                     EffectOutcome::Succeeded(response) => SeenHttp::Response(response),
@@ -108,14 +107,9 @@ impl Component for HttpSequence {
                     EffectOutcome::Failed(EffectFailure::Cancelled(_)) => SeenHttp::Cancelled,
                 });
                 if let Some(request) = config.requests.get(model.seen.len()) {
-                    config
-                        .http
-                        .perform(request.clone())
-                        .producing(HttpMessage::Finished)
+                    Effect::perform(&config.http, request.clone()).producing(HttpMessage::Finished)
                 } else {
-                    config
-                        .observe
-                        .perform(ObserveHttp(model.seen.clone()))
+                    Effect::perform(&config.observe, ObserveHttp(model.seen.clone()))
                         .producing(|_| HttpMessage::Observed)
                 }
             }

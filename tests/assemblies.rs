@@ -66,10 +66,10 @@ impl Component for Recorder {
         match message {
             RecorderMessage::Ledger(LedgerMessage::Record(entry)) => {
                 entries.push(entry);
-                stamp.perform(Stamp).producing(RecorderMessage::Stamped)
+                Effect::perform(stamp, Stamp).producing(RecorderMessage::Stamped)
             }
             RecorderMessage::Ledger(LedgerMessage::Count(reply_with)) => {
-                reply_with.with(entries.len())
+                Command::reply(reply_with, entries.len())
             }
             RecorderMessage::Stamped(EffectOutcome::Succeeded(stamp)) => {
                 entries.push(format!("stamp {stamp}"));

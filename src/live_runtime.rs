@@ -3063,9 +3063,7 @@ mod tests {
             match message {
                 CutoffMessage::Start => {
                     *started = true;
-                    config
-                        .effect
-                        .perform(CutoffIntent)
+                    crate::Effect::perform(&config.effect, CutoffIntent)
                         .producing(|_| CutoffMessage::Outcome)
                 }
                 CutoffMessage::Outcome => Command::none(),

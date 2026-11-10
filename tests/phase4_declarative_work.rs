@@ -33,12 +33,12 @@ enum EffectMessage {
 fn v3_effect_command_exposes_descriptor_and_maps_one_outcome() {
     let (_program, (declared_0,)) = samara::Program::builder::<(samara::Effect<PersistValue>,)>();
     let persist = declared_0;
-    let command = persist
-        .perform(PersistValue { value: 41 })
-        .producing(|outcome| EffectMessage::Persisted {
+    let command = Effect::perform(&persist, PersistValue { value: 41 }).producing(|outcome| {
+        EffectMessage::Persisted {
             request: 41,
             outcome,
-        });
+        }
+    });
 
     let invocation = match command.into_effect::<PersistValue>() {
         Ok(invocation) => invocation,
@@ -60,8 +60,7 @@ fn v3_effect_command_exposes_descriptor_and_maps_one_outcome() {
 fn v3_all_effect_outcomes_remain_typed_message_input() {
     let (_program, (declared_0,)) = samara::Program::builder::<(samara::Effect<PersistValue>,)>();
     let persist = declared_0;
-    let failed = persist
-        .perform(PersistValue { value: 5 })
+    let failed = Effect::perform(&persist, PersistValue { value: 5 })
         .producing(|outcome| EffectMessage::Persisted {
             request: 5,
             outcome,
@@ -70,8 +69,7 @@ fn v3_all_effect_outcomes_remain_typed_message_input() {
             PersistError,
         )))
         .unwrap_or_else(|_| panic!("failure descriptor should match"));
-    let cancelled = persist
-        .perform(PersistValue { value: 6 })
+    let cancelled = Effect::perform(&persist, PersistValue { value: 6 })
         .producing(|outcome| EffectMessage::Persisted {
             request: 6,
             outcome,
@@ -102,18 +100,18 @@ fn v3_equal_effect_descriptors_remain_distinct_command_occurrences() {
     let (_program, (declared_0,)) = samara::Program::builder::<(samara::Effect<PersistValue>,)>();
     let persist = declared_0;
     let command: Command<EffectMessage> = Command::batch([
-        persist
-            .perform(PersistValue { value: 7 })
-            .producing(|outcome| EffectMessage::Persisted {
+        Effect::perform(&persist, PersistValue { value: 7 }).producing(|outcome| {
+            EffectMessage::Persisted {
                 request: 1,
                 outcome,
-            }),
-        persist
-            .perform(PersistValue { value: 7 })
-            .producing(|outcome| EffectMessage::Persisted {
+            }
+        }),
+        Effect::perform(&persist, PersistValue { value: 7 }).producing(|outcome| {
+            EffectMessage::Persisted {
                 request: 2,
                 outcome,
-            }),
+            }
+        }),
     ]);
 
     assert_eq!(

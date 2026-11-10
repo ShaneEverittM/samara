@@ -71,13 +71,9 @@ impl Component for OutputProbe {
     ) -> Command<Self::Message> {
         match message {
             OutputMessage::Start => Command::batch([
-                config
-                    .stdout
-                    .perform(PrintStdout::text(""))
+                Effect::perform(&config.stdout, PrintStdout::text(""))
                     .producing(OutputMessage::Finished),
-                config
-                    .stderr
-                    .perform(PrintStderr::text(""))
+                Effect::perform(&config.stderr, PrintStderr::text(""))
                     .producing(OutputMessage::Finished),
             ]),
             OutputMessage::Finished(outcome) => {
@@ -93,8 +89,7 @@ impl Component for OutputProbe {
                     }
                 };
                 if let Some(observe) = &config.observe {
-                    observe
-                        .perform(ObserveOutput(succeeded))
+                    Effect::perform(observe, ObserveOutput(succeeded))
                         .producing(|_| OutputMessage::Observed)
                 } else {
                     Command::none()

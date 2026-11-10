@@ -3,7 +3,7 @@
 //! Each continuation-bearing boundary offers a short form using
 //! `Message: From<BoundaryValue>` and an explicit form for call-site-specific
 //! mapping or captured domain context. Effects and Sources spell the pair as
-//! a default and a `_with` method; `target.request(..)` takes the map as an
+//! a default and a `_with` method; `Command::request` takes the map as an
 //! argument, so the short form is passing `Message::from` and the explicit
 //! form is passing a closure.
 
@@ -41,7 +41,7 @@ impl From<EffectOutcome<u64, Infallible>> for EffectMessage {
 fn effect_default_uses_from_and_effect_with_preserves_context() {
     let (_program, (declared_0,)) = samara::Program::builder::<(samara::Effect<ProbeEffect>,)>();
     let probe = declared_0;
-    let default: Command<EffectMessage> = probe.perform(ProbeEffect).into_command();
+    let default: Command<EffectMessage> = Effect::perform(&probe, ProbeEffect).into_command();
     assert_eq!(
         default
             .map_effect_outcome::<ProbeEffect>(EffectOutcome::Succeeded(7))
@@ -50,7 +50,7 @@ fn effect_default_uses_from_and_effect_with_preserves_context() {
         EffectMessage::Canonical(EffectOutcome::Succeeded(7))
     );
 
-    let cancelled: Command<EffectMessage> = probe.perform(ProbeEffect).into_command();
+    let cancelled: Command<EffectMessage> = Effect::perform(&probe, ProbeEffect).into_command();
     assert_eq!(
         cancelled
             .map_effect_outcome::<ProbeEffect>(EffectOutcome::Failed(EffectFailure::Cancelled(
@@ -64,8 +64,7 @@ fn effect_default_uses_from_and_effect_with_preserves_context() {
     );
 
     let context = "secondary read";
-    let explicit: Command<EffectMessage> = probe
-        .perform(ProbeEffect)
+    let explicit: Command<EffectMessage> = Effect::perform(&probe, ProbeEffect)
         .producing(move |outcome| EffectMessage::Explicit { context, outcome });
     assert_eq!(
         explicit
@@ -79,7 +78,7 @@ fn effect_default_uses_from_and_effect_with_preserves_context() {
     );
 
     let identity: Command<EffectOutcome<u64, Infallible>> =
-        probe.perform(ProbeEffect).into_command();
+        Effect::perform(&probe, ProbeEffect).into_command();
     assert_eq!(
         identity
             .map_effect_outcome::<ProbeEffect>(EffectOutcome::Succeeded(9))
@@ -234,7 +233,7 @@ impl Component for EchoProvider {
         message: Self::Message,
     ) -> Command<Self::Message> {
         let ProviderMessage::Protocol(EchoProtocolMessage::Echo(value, reply_with)) = message;
-        reply_with.with(value)
+        Command::reply(reply_with, value)
     }
 }
 
@@ -288,16 +287,16 @@ impl Component for Requester {
         match message {
             // The short form: `Message::from` is the continuation, so the
             // `From<RequestOutcome<u64>>` impl above still decides the variant.
-            RequesterMessage::StartDefault => config
-                .echo
-                .request(|reply_with| EchoProtocolMessage::Echo(11, reply_with))
-                .producing(RequesterMessage::from),
+            RequesterMessage::StartDefault => Command::request(&config.echo, |reply_with| {
+                EchoProtocolMessage::Echo(11, reply_with)
+            })
+            .producing(RequesterMessage::from),
             RequesterMessage::StartExplicit => {
                 let context = "second request";
-                config
-                    .echo
-                    .request(|reply_with| EchoProtocolMessage::Echo(12, reply_with))
-                    .producing(move |outcome| RequesterMessage::Explicit { context, outcome })
+                Command::request(&config.echo, |reply_with| {
+                    EchoProtocolMessage::Echo(12, reply_with)
+                })
+                .producing(move |outcome| RequesterMessage::Explicit { context, outcome })
             }
             RequesterMessage::Canonical(outcome) => {
                 model.canonical = Some(outcome);

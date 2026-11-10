@@ -87,46 +87,32 @@ impl Component for Walker {
         let next = |model: &mut WalkerModel| -> Command<WalkerMessage> {
             model.step += 1;
             match model.step {
-                1 => config
-                    .append
-                    .perform(AppendToFile::line(FILE, "first"))
+                1 => Effect::perform(&config.append, AppendToFile::line(FILE, "first"))
                     .producing(WalkerMessage::Wrote),
-                2 => config
-                    .append
-                    .perform(AppendToFile::line(FILE, "second"))
+                2 => Effect::perform(&config.append, AppendToFile::line(FILE, "second"))
                     .producing(WalkerMessage::Wrote),
-                3 | 5 | 7 => config
-                    .read
-                    .perform(ReadFile::new(FILE))
+                3 | 5 | 7 => Effect::perform(&config.read, ReadFile::new(FILE))
                     .producing(WalkerMessage::Read),
-                4 => config
-                    .replace
-                    .perform(ReplaceFile::text(FILE, "replaced"))
+                4 => Effect::perform(&config.replace, ReplaceFile::text(FILE, "replaced"))
                     .producing(WalkerMessage::Wrote),
-                6 => config
-                    .remove
-                    .perform(RemoveFile::new(FILE))
+                6 => Effect::perform(&config.remove, RemoveFile::new(FILE))
                     .producing(WalkerMessage::Wrote),
-                _ => config
-                    .report
-                    .perform(Report("done".into()))
+                _ => Effect::perform(&config.report, Report("done".into()))
                     .producing(|_| WalkerMessage::Reported),
             }
         };
         match message {
             WalkerMessage::Start => next(model),
-            WalkerMessage::Escape => config
-                .append
-                .perform(AppendToFile::line("../escape.log", "nope"))
-                .producing(WalkerMessage::Wrote),
+            WalkerMessage::Escape => {
+                Effect::perform(&config.append, AppendToFile::line("../escape.log", "nope"))
+                    .producing(WalkerMessage::Wrote)
+            }
             WalkerMessage::Wrote(EffectOutcome::Succeeded(())) => next(model),
             WalkerMessage::Read(EffectOutcome::Succeeded(bytes)) => {
                 let text = String::from_utf8_lossy(&bytes).into_owned();
                 model.seen.push(text.clone());
                 Command::batch([
-                    config
-                        .report
-                        .perform(Report(text))
+                    Effect::perform(&config.report, Report(text))
                         .producing(|_| WalkerMessage::Reported),
                     next(model),
                 ])
@@ -138,9 +124,7 @@ impl Component for Walker {
                     .push((error.operation(), error.kind(), error.path().to_path_buf()));
                 let line = format!("{:?} {:?}", error.operation(), error.kind());
                 Command::batch([
-                    config
-                        .report
-                        .perform(Report(line))
+                    Effect::perform(&config.report, Report(line))
                         .producing(|_| WalkerMessage::Reported),
                     if model.step == 7 {
                         next(model)

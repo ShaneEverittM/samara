@@ -55,7 +55,7 @@ mod journal_lib {
                 JournalMessage::Recent(count, reply_with) => {
                     let count = count.min(entries.len());
                     let recent = entries[entries.len() - count..].to_vec();
-                    reply_with.with(recent)
+                    Command::reply(reply_with, recent)
                 }
             }
         }
@@ -136,20 +136,26 @@ impl Component for Monitor {
     ) -> Command<MonitorMessage> {
         match message {
             MonitorMessage::Start => Command::batch([
-                config.audit.send(AuditMessage::Changed {
-                    what: "api".into(),
-                    from: "up".into(),
-                    to: "down".into(),
-                }),
-                config.audit.send(AuditMessage::Changed {
-                    what: "api".into(),
-                    from: "down".into(),
-                    to: "up".into(),
-                }),
-                config
-                    .audit
-                    .request(|reply_with| AuditMessage::Tail(1, reply_with))
-                    .producing(MonitorMessage::Tail),
+                Command::send(
+                    &config.audit,
+                    AuditMessage::Changed {
+                        what: "api".into(),
+                        from: "up".into(),
+                        to: "down".into(),
+                    },
+                ),
+                Command::send(
+                    &config.audit,
+                    AuditMessage::Changed {
+                        what: "api".into(),
+                        from: "down".into(),
+                        to: "up".into(),
+                    },
+                ),
+                Command::request(&config.audit, |reply_with| {
+                    AuditMessage::Tail(1, reply_with)
+                })
+                .producing(MonitorMessage::Tail),
             ]),
             MonitorMessage::Tail(RequestOutcome::Replied(tail)) => {
                 model.tail = Some(tail);
@@ -327,7 +333,7 @@ mod tally_lib {
                     model.total += amount;
                     Command::none()
                 }
-                Inner::Total(reply_with) => reply_with.with(model.total),
+                Inner::Total(reply_with) => Command::reply(reply_with, model.total),
                 Inner::Park(reply_with) => {
                     model.parked.push(reply_with);
                     Command::none()
@@ -401,16 +407,12 @@ impl Component for Teller {
     ) -> Command<TellerMessage> {
         match message {
             TellerMessage::Start => Command::batch([
-                config.tally.send(TallyMessage::add(2)),
-                config.tally.send(TallyMessage::add(3)),
+                Command::send(&config.tally, TallyMessage::add(2)),
+                Command::send(&config.tally, TallyMessage::add(3)),
                 match config.patience {
-                    None => config
-                        .tally
-                        .request(TallyMessage::total)
+                    None => Command::request(&config.tally, TallyMessage::total)
                         .producing(TellerMessage::Total),
-                    Some(patience) => config
-                        .tally
-                        .request(TallyMessage::park)
+                    Some(patience) => Command::request(&config.tally, TallyMessage::park)
                         .timeout(patience)
                         .producing(TellerMessage::Total),
                 },
@@ -536,15 +538,18 @@ impl Component for DirectMonitor {
     ) -> Command<MonitorMessage> {
         match message {
             MonitorMessage::Start => Command::batch([
-                config.audit.send(AuditMessage::Changed {
-                    what: "db".into(),
-                    from: "cold".into(),
-                    to: "warm".into(),
-                }),
-                config
-                    .audit
-                    .request(|reply_with| AuditMessage::Tail(1, reply_with))
-                    .producing(MonitorMessage::Tail),
+                Command::send(
+                    &config.audit,
+                    AuditMessage::Changed {
+                        what: "db".into(),
+                        from: "cold".into(),
+                        to: "warm".into(),
+                    },
+                ),
+                Command::request(&config.audit, |reply_with| {
+                    AuditMessage::Tail(1, reply_with)
+                })
+                .producing(MonitorMessage::Tail),
             ]),
             MonitorMessage::Tail(RequestOutcome::Replied(tail)) => {
                 model.tail = Some(tail);
@@ -609,9 +614,7 @@ impl Component for EagerTeller {
         _: &samara::Capabilities<Self::Requires>,
     ) -> Init<(), TellerMessage> {
         Init::new(()).with_command(
-            tally
-                .request(TallyMessage::total)
-                .producing(TellerMessage::Total),
+            Command::request(tally, TallyMessage::total).producing(TellerMessage::Total),
         )
     }
 
@@ -668,10 +671,8 @@ fn a_connector_request_is_inspectable_without_a_runtime() {
         .install::<Tally>(())
         .finish()
         .expect("assembly installation");
-    let command: Command<TellerMessage> = tally
-        .connector()
-        .request(TallyMessage::total)
-        .producing(TellerMessage::Total);
+    let command: Command<TellerMessage> =
+        Command::request(tally.connector(), TallyMessage::total).producing(TellerMessage::Total);
     // The message is built with an inert reply token; the continuation runs on
     // an outcome the test chooses. The library's private `Inner` stays private,
     // so the test can only observe what the constructor exposes.

@@ -74,9 +74,7 @@ impl Component for TimeReader {
         message: Self::Message,
     ) -> Command<Self::Message> {
         match message {
-            ReadMessage::Read => config
-                .0
-                .request(TimeServerMessage::GetCurrentTime)
+            ReadMessage::Read => Command::request(&config.0, TimeServerMessage::GetCurrentTime)
                 .producing(ReadMessage::Received),
             ReadMessage::Received(RequestOutcome::Replied(time)) => {
                 model.push(time);

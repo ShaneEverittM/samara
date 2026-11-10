@@ -22,7 +22,7 @@ use crate::{BoxFuture, EffectDescriptor, EffectDriver};
 /// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<ReadSystemTime>,)>();
 /// let clock = declared_0;
 /// let command: Command<SystemTime> =
-///     clock.perform(ReadSystemTime).producing(|outcome| match outcome {
+///     Effect::perform(&clock, ReadSystemTime).producing(|outcome| match outcome {
 ///         EffectOutcome::Succeeded(now) => now,
 ///         EffectOutcome::Failed(EffectFailure::Error(never)) => match never {},
 ///         EffectOutcome::Failed(EffectFailure::Cancelled(_)) => SystemTime::UNIX_EPOCH,

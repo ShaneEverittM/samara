@@ -162,7 +162,7 @@ a journal Component; exploratory proposals, not accepted API decisions.
   module.
 
 - [x] **Connectors as first-class addresses.** Landed November 8, 2026
-  (ADR-0014): `target.send(..)` over any address, `target.request(..)` and
+  (ADR-0014): `Command::send(&target, ..)` over any address, `Command::request(&target, ctor)` and
   `request_to_timeout` minting the `ReplyWith` against a Connector from a published
   constructor function, and `Connector::accepting`, Elm 0.16's `forwardTo`. A
   library written the Elm way, an opaque Message with constructor functions,
@@ -178,7 +178,7 @@ a journal Component; exploratory proposals, not accepted API decisions.
   2026, after the `Runtime` rename.
 
 - [ ] **Text reads for File capabilities.** ADR-0022 gives the write side
-  `append_text` and `replace_text`, but `file.read()` returns only `Bytes`,
+  `append_text` and `replace_text`, but `File::read(&file)` returns only `Bytes`,
   so a Component reading a text file decodes inside `update` and the
   shortest spelling is `.expect(..)`, a Program-wide fault on bad bytes.
   Pulse's journal did exactly that. A `read_text()` whose outcome carries a
@@ -198,7 +198,7 @@ a journal Component; exploratory proposals, not accepted API decisions.
   trial with spellings expected to move. Known inconsistencies left for the
   audit: `PortHandle::request_to` and `request_to_timeout` keep the old
   static shape on the host side (an awaitable builder would match
-  `target.request(ctor).timeout(d)`); `HttpResponsePipeline` still spells
+  `Command::request(&target, ctor).timeout(d)`); `HttpResponsePipeline` still spells
   its mapper finisher `into_command_with`; `Subscription::source_with` is
   the last `_with` pair; and there is no unit-test inspector for a
   `finish_with` continuation, only controlled execution. The reply-token

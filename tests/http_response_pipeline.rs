@@ -158,9 +158,7 @@ impl Component for PipelineComponent {
                     }
                 };
                 model.result = Some(result.clone());
-                config
-                    .observe
-                    .perform(ObservePipelineResult(result))
+                Effect::perform(&config.observe, ObservePipelineResult(result))
                     .producing(|_| PipelineMessage::Observed)
             }
             PipelineMessage::Observed => Command::none(),

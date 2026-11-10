@@ -123,7 +123,7 @@ impl Component for Quota {
                     }
                 };
 
-                reply_with.with(reservation)
+                Command::reply(reply_with, reservation)
             }
         }
     }
@@ -229,10 +229,10 @@ impl Component for Counter {
                 // granted. `CounterMessage::Reserved` is the explicit continuation:
                 // the runtime maps this request's eventual terminal outcome back
                 // into the requester's ordinary message stream.
-                config
-                    .quota
-                    .request(move |reply_with| QuotaProtocolMessage::Reserve { amount, reply_with })
-                    .producing(CounterMessage::Reserved)
+                Command::request(&config.quota, move |reply_with| {
+                    QuotaProtocolMessage::Reserve { amount, reply_with }
+                })
+                .producing(CounterMessage::Reserved)
             }
             CounterMessage::Reserved(outcome) => {
                 // Request correlation is runtime machinery, but its meaningful
@@ -241,9 +241,7 @@ impl Component for Counter {
                 let command = match &outcome {
                     RequestOutcome::Replied(Reservation::Granted { amount }) => {
                         model.count += amount;
-                        capabilities
-                            .1
-                            .perform(PersistCount { value: model.count })
+                        Effect::perform(&capabilities.1, PersistCount { value: model.count })
                             .producing(CounterMessage::Persisted)
                     }
                     RequestOutcome::Replied(Reservation::Denied { .. })

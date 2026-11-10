@@ -52,12 +52,17 @@ impl Component for Gauge {
         match message {
             // Answer the caller straight from the effect's outcome: no private
             // Message variant carries the reply token across the hop.
-            GaugeMessage::Read(reply) => probe.perform(Probe).finish_with(move |outcome| {
-                reply.with(match outcome {
-                    EffectOutcome::Succeeded(reading) => reading,
-                    EffectOutcome::Failed(_) => 0,
+            GaugeMessage::Read(reply) => {
+                Effect::perform(probe, Probe).finish_with(move |outcome| {
+                    Command::reply(
+                        reply,
+                        match outcome {
+                            EffectOutcome::Succeeded(reading) => reading,
+                            EffectOutcome::Failed(_) => 0,
+                        },
+                    )
                 })
-            }),
+            }
             GaugeMessage::Park(reply) => {
                 model.parked.push(reply);
                 Command::none()
@@ -95,19 +100,17 @@ impl Component for Relay {
         RelayMessage::ReadPlusOne(reply): RelayMessage,
     ) -> Command<RelayMessage> {
         let audit = gauge.clone();
-        gauge
-            .request(GaugeMessage::Read)
-            .finish_with(move |outcome| {
-                let reading = match outcome {
-                    RequestOutcome::Replied(reading) => reading + 1,
-                    _ => 0,
-                };
-                // Finishing work may be several things, none of which come back.
-                Command::batch([
-                    reply.with(reading),
-                    audit.send(GaugeMessage::Note(format!("relayed {reading}"))),
-                ])
-            })
+        Command::request(&gauge, GaugeMessage::Read).finish_with(move |outcome| {
+            let reading = match outcome {
+                RequestOutcome::Replied(reading) => reading + 1,
+                _ => 0,
+            };
+            // Finishing work may be several things, none of which come back.
+            Command::batch([
+                Command::reply(reply, reading),
+                Command::send(&audit, GaugeMessage::Note(format!("relayed {reading}"))),
+            ])
+        })
     }
 }
 
@@ -148,15 +151,13 @@ impl Component for Client {
         message: ClientMessage,
     ) -> Command<ClientMessage> {
         match message {
-            ClientMessage::Start => config
-                .relay
-                .request(RelayMessage::ReadPlusOne)
+            ClientMessage::Start => Command::request(&config.relay, RelayMessage::ReadPlusOne)
                 .producing(ClientMessage::Got),
-            ClientMessage::StartParked(patience) => config
-                .gauge
-                .request(GaugeMessage::Park)
-                .timeout(patience)
-                .into_command(),
+            ClientMessage::StartParked(patience) => {
+                Command::request(&config.gauge, GaugeMessage::Park)
+                    .timeout(patience)
+                    .into_command()
+            }
             ClientMessage::Got(outcome) => {
                 model.push(outcome);
                 Command::none()
@@ -307,16 +308,16 @@ fn inspectors_see_builder_commands_and_skip_finishing_requests() {
         .unwrap()
         .connector();
 
-    let sent: Command<ClientMessage> = gauge.send(GaugeMessage::Note("hello".into()));
+    let sent: Command<ClientMessage> = Command::send(&gauge, GaugeMessage::Note("hello".into()));
     assert!(matches!(
         sent.send_intents::<GaugeMessage>().as_slice(),
         [GaugeMessage::Note(note)] if note == "hello"
     ));
 
-    let performed: Command<ClientMessage> = probe.perform(Probe).discard_outcome();
+    let performed: Command<ClientMessage> = Effect::perform(&probe, Probe).discard_outcome();
     assert_eq!(performed.effect_intent::<Probe>(), Some(&Probe));
 
-    let asked: Command<ClientMessage> = gauge.request(GaugeMessage::Read).into_command();
+    let asked: Command<ClientMessage> = Command::request(&gauge, GaugeMessage::Read).into_command();
     let intent = asked
         .into_request::<GaugeMessage>()
         .ok()
@@ -329,9 +330,8 @@ fn inspectors_see_builder_commands_and_skip_finishing_requests() {
 
     // A finishing request has no Message to map to, so it is not extracted;
     // controlled execution observes it instead.
-    let finishing: Command<ClientMessage> = gauge
-        .request(GaugeMessage::Read)
-        .finish_with(|_| Command::none());
+    let finishing: Command<ClientMessage> =
+        Command::request(&gauge, GaugeMessage::Read).finish_with(|_| Command::none());
     assert!(finishing.into_request::<GaugeMessage>().is_err());
 }
 

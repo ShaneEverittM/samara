@@ -80,7 +80,7 @@ impl CanWrite for ReadWrite {}
 /// ```
 /// use samara::prelude::*;
 /// let (builder, (file,)) = Program::builder::<(File<ReadAppend>,)>();
-/// let append: Command<()> = file.append_line("hello").discard_outcome();
+/// let append: Command<()> = File::append_line(&file, "hello").discard_outcome();
 /// assert_eq!(append.effect_intent::<FileAppend>().unwrap().as_bytes(), b"hello\n");
 /// let runtime = Runtime::builder(builder.build()?)
 ///     .with_drivers((FileDriver::new("data/journal.log"),)).build()?;
@@ -106,13 +106,13 @@ pub struct File<P: FilePermissions>(PhantomData<fn() -> P>);
 /// ```compile_fail
 /// use samara::prelude::*;
 /// let (_, file) = Program::builder::<File<ReadOnly>>();
-/// file.append_line("not permitted");
+/// File::append_line(&file, "not permitted");
 /// ```
 ///
 /// ```compile_fail
 /// use samara::prelude::*;
 /// let (_, file) = Program::builder::<File<AppendOnly>>();
-/// file.read();
+/// File::read(&file);
 /// ```
 ///
 /// Append authority does not permit replacement, even when reading is allowed:
@@ -120,19 +120,19 @@ pub struct File<P: FilePermissions>(PhantomData<fn() -> P>);
 /// ```compile_fail
 /// use samara::prelude::*;
 /// let (_, file) = Program::builder::<File<AppendOnly>>();
-/// file.replace_text("not permitted");
+/// File::replace_text(&file, "not permitted");
 /// ```
 ///
 /// ```compile_fail
 /// use samara::prelude::*;
 /// let (_, file) = Program::builder::<File<ReadAppend>>();
-/// file.replace_text("not permitted");
+/// File::replace_text(&file, "not permitted");
 /// ```
 ///
 /// ```compile_fail
 /// use samara::prelude::*;
 /// let (_, file) = Program::builder::<File<ReadOnly>>();
-/// file.replace_bytes(vec![1, 2, 3]);
+/// File::replace_bytes(&file, vec![1, 2, 3]);
 /// ```
 ///
 /// Write authority alone does not permit reading:
@@ -140,7 +140,7 @@ pub struct File<P: FilePermissions>(PhantomData<fn() -> P>);
 /// ```compile_fail
 /// use samara::prelude::*;
 /// let (_, file) = Program::builder::<File<WriteOnly>>();
-/// file.read();
+/// File::read(&file);
 /// ```
 ///
 /// Narrowing removes replacement authority:
@@ -148,7 +148,7 @@ pub struct File<P: FilePermissions>(PhantomData<fn() -> P>);
 /// ```compile_fail
 /// use samara::prelude::*;
 /// let (_, file) = Program::builder::<File<ReadWrite>>();
-/// file.read_append().replace_text("not permitted");
+/// File::replace_text(&file.read_append(), "not permitted");
 /// ```
 ///
 /// Permissions cannot be widened:
@@ -194,7 +194,7 @@ impl<P: FilePermissions> FileCapability<P> {
 }
 impl<P: CanRead> FileCapability<P> {
     /// Describes reading this file, returning Bytes or FsError when executed.
-    pub fn read(&self) -> FileEffect<FileRead> {
+    fn read(&self) -> FileEffect<FileRead> {
         self.operation(FileRead { _private: () })
     }
     /// Shares read-only authority over this same resource.
@@ -204,17 +204,17 @@ impl<P: CanRead> FileCapability<P> {
 }
 impl<P: CanAppend> FileCapability<P> {
     /// Describes appending bytes to this file, creating it and its parents if needed.
-    pub fn append_bytes(&self, bytes: impl Into<Bytes>) -> FileEffect<FileAppend> {
+    fn append_bytes(&self, bytes: impl Into<Bytes>) -> FileEffect<FileAppend> {
         self.operation(FileAppend {
             bytes: bytes.into(),
         })
     }
     /// Describes appending UTF-8 text without adding a newline.
-    pub fn append_text(&self, text: impl Into<String>) -> FileEffect<FileAppend> {
+    fn append_text(&self, text: impl Into<String>) -> FileEffect<FileAppend> {
         self.append_bytes(text.into())
     }
     /// Describes appending text followed by one newline.
-    pub fn append_line(&self, text: impl Into<String>) -> FileEffect<FileAppend> {
+    fn append_line(&self, text: impl Into<String>) -> FileEffect<FileAppend> {
         let mut text = text.into();
         text.push('\n');
         self.append_text(text)
@@ -235,13 +235,13 @@ impl<P: CanWrite> FileCapability<P> {
     ///
     /// Uses [`ReplaceFile`]'s temporary-sibling write, file sync, and rename.
     /// Missing parents are created; the directory entry itself is not synced.
-    pub fn replace_bytes(&self, bytes: impl Into<Bytes>) -> FileEffect<FileReplace> {
+    fn replace_bytes(&self, bytes: impl Into<Bytes>) -> FileEffect<FileReplace> {
         self.operation(FileReplace {
             bytes: bytes.into(),
         })
     }
     /// Describes replacing the contents with exactly this text.
-    pub fn replace_text(&self, text: impl Into<String>) -> FileEffect<FileReplace> {
+    fn replace_text(&self, text: impl Into<String>) -> FileEffect<FileReplace> {
         self.replace_bytes(text.into())
     }
     /// Shares write and append authority without granting read access.
@@ -385,5 +385,54 @@ impl ControlledRuntime {
         file: &FileCapability<P>,
     ) -> Result<PendingEffect<FileReplace>, RuntimeError> {
         self.core.next_effect_for(Some(&file.token))
+    }
+}
+
+impl<P: CanRead> File<P> {
+    /// Describes reading the file, returning Bytes or FsError when executed.
+    pub fn read(file: &FileCapability<P>) -> FileEffect<FileRead> {
+        FileCapability::read(file)
+    }
+}
+impl<P: CanAppend> File<P> {
+    /// Describes appending bytes, creating the file and its parents if needed.
+    pub fn append_bytes(
+        file: &FileCapability<P>,
+        bytes: impl Into<Bytes>,
+    ) -> FileEffect<FileAppend> {
+        FileCapability::append_bytes(file, bytes)
+    }
+    /// Describes appending UTF-8 text without adding a newline.
+    pub fn append_text(
+        file: &FileCapability<P>,
+        text: impl Into<String>,
+    ) -> FileEffect<FileAppend> {
+        FileCapability::append_text(file, text)
+    }
+    /// Describes appending text followed by one newline.
+    pub fn append_line(
+        file: &FileCapability<P>,
+        text: impl Into<String>,
+    ) -> FileEffect<FileAppend> {
+        FileCapability::append_line(file, text)
+    }
+}
+impl<P: CanWrite> File<P> {
+    /// Describes atomically replacing the file's whole contents.
+    ///
+    /// Uses [`ReplaceFile`]'s temporary-sibling write, file sync, and rename.
+    /// Missing parents are created; the directory entry itself is not synced.
+    pub fn replace_bytes(
+        file: &FileCapability<P>,
+        bytes: impl Into<Bytes>,
+    ) -> FileEffect<FileReplace> {
+        FileCapability::replace_bytes(file, bytes)
+    }
+    /// Describes replacing the contents with exactly this text.
+    pub fn replace_text(
+        file: &FileCapability<P>,
+        text: impl Into<String>,
+    ) -> FileEffect<FileReplace> {
+        FileCapability::replace_text(file, text)
     }
 }

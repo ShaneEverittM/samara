@@ -127,12 +127,12 @@ The July 25 API revision adopts one consistent continuation convention without
 changing these lifecycle semantics or the concrete
 `Component::update(...) -> Command<Message>` boundary:
 
-- `capability.perform(effect).into_command()`,
+- `Effect::perform(&capability, effect).into_command()`,
   `Subscription::source(&capability, descriptor)`, and
   `HttpResponsePipeline::into_command(&capability)` use the standard
   `Message: From<BoundaryValue>` conversion as their default mapper.
 - Their `effect_with`, `source_with`, and `into_command_with` counterparts
-  accept an explicit pure mapper. `target.request(..)` always takes the
+  accept an explicit pure mapper. `Command::request(&target, ctor)` always takes the
   mapper explicitly; `Message::from` is the canonical argument (ADR-0016).
 - The default is appropriate only when one boundary type has one canonical
   Message meaning. Captured domain correlation or call-site-specific meaning
@@ -253,7 +253,7 @@ boundary to provider-neutral Ports:
 - Successful send means accepted for runtime-managed conversion and delivery,
   not that the provider transition completed.
 - An admitted host request uses the same Port binding, message variant,
-  opaque correlation, and `ReplyWith` path as `target.request(..)`, but its
+  opaque correlation, and `ReplyWith` path as `Command::request(&target, ctor)`, but its
   awaited success is `R` directly. It creates neither a requester Component
   Message nor `RequestOutcome::Replied`.
 - Drain closes new Port ingress and retains admitted Notifications, Requests,
@@ -277,7 +277,7 @@ remain deferred.
 ## Accepted and Implemented Contract: Request Timeouts
 
 [ADR-0011](adr/0011-request-timeouts.md) adds opt-in request deadlines, now
-spelled `target.request(..).timeout(..)` and `PortHandle::request_to_timeout`
+spelled `Command::request(&target, ..).timeout(..)` and `PortHandle::request_to_timeout`
 (ADR-0016). `request_to` remains unbounded.
 
 - Component durations start at Command interpretation; host durations start at
@@ -516,9 +516,9 @@ around values issued by one `ProgramBuilder`:
 - The kernel stores these inert values separately from Config and passes
   `&Capabilities<Component::Requires>` to every callback. They expose no I/O,
   runtime handle, Driver, or controlled-world operation.
-- `capability.perform(descriptor).into_command()`,
-  `capability.perform(descriptor).producing(mapper)`, and
-  `capability.perform(descriptor).discard_outcome()` are the only
+- `Effect::perform(&capability, descriptor).into_command()`,
+  `Effect::perform(&capability, descriptor).producing(mapper)`, and
+  `Effect::perform(&capability, descriptor).discard_outcome()` are the only
   primitive public Effect issuance paths. Under ADR-0022, `FileCapability<P>`
   constructs bound `FileEffect<D>` values whose command conversion methods
   lower through these same paths, retaining the resource's exact identity.
@@ -583,8 +583,8 @@ exposed and renames the consumer-owned one:
   `Connector<P::Message>`, so both forms share one boxed conversion.
 - A Connector from another `ProgramBuilder` fails `build()` as a foreign provider
   under ADR-0008's existing rule.
-- `target.send(message)` takes any `Addressable`.
-  `target.request(constructor).producing(map)` and `request_to_timeout`
+- `Command::send(&target, message)` takes any `Addressable`.
+  `Command::request(&target, constructor).producing(map)` and `request_to_timeout`
   address a request to an `Addressable`: `constructor: FnOnce(ReplyWith<R>) ->
   T::Message` is a function the provider published, its `ReplyWith<R>`
   parameter fixes the reply type, and the runtime mints the token and routes
@@ -602,14 +602,14 @@ exposed and renames the consumer-owned one:
 interaction and leaves one way for a Command to reach a Component:
 
 - `Addressable` is implemented for `Port<M>`, `Connector<M>`, and
-  `ComponentRef<C>`. `target.send(message)`,
-  `target.request(constructor).producing(map)`, and
-  `target.request(constructor).timeout(timeout).producing(map)` accept any
+  `ComponentRef<C>`. `Command::send(&target, message)`,
+  `Command::request(&target, constructor).producing(map)`, and
+  `Command::request(&target, constructor).timeout(timeout).producing(map)` accept any
   of them and deliver a value of the destination's message type.
 - A request is a message variant carrying `ReplyWith<R>`; `constructor:
   FnOnce(ReplyWith<R>) -> M` fixes `R`, and `map: FnOnce(RequestOutcome<R>) ->
   Message` is checked against it. The provider answers with
-  `reply_with.with(value)`.
+  `Command::reply(reply_with, value)`.
 - A Port-addressed send resolves through the Port's binding at
   interpretation and is traced as `TraceCommandKind::Send` with
   `target_port` set and `target_component` empty. `TraceCommandKind::Notify`
@@ -661,10 +661,10 @@ as amended by [ADR-0018](adr/0018-assemblies-export-a-connector.md) and
 [ADR-0023](adr/0023-boundary-work-builders-and-finishers.md):
 
 - Boundary work is described on what a Component holds:
-  `EffectCapability::perform(descriptor)` and resource operations such as
-  `file.read()` return an inert `EffectBuilder`; `Addressable::request(ctor)`
+  `Effect::perform(&capability, descriptor)` and resource operations such as
+  `File::read(&file)` return an inert `EffectBuilder`; `Command::request(&target, ctor)`
   returns an inert `RequestBuilder`, optionally bounded with `.timeout(d)`;
-  `Addressable::send(message)` and `ReplyWith::with(value)` return a
+  `Command::send(&target, message)` and `Command::reply(reply, value)` return a
   `Command` directly. `Command::` keeps `none`, `batch`, and `after`.
 - A builder becomes a `Command` through one finisher: `producing(map)`,
   `into_command()` (`Message::from`), `finish_with(f)`, or, for effects,

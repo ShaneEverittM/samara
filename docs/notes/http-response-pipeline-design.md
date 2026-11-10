@@ -147,7 +147,7 @@ semantics depend on observation and make traces misleading.
 
 The narrow HTTP builder need not add a composed discard convenience in its
 first slice. A caller that genuinely ignores an HTTP response can continue to
-use `self.http.perform(HttpRequest::get(...)).discard_outcome()`;
+use `Effect::perform(&self.http, HttpRequest::get(...)).discard_outcome()`;
 decoding a value and then discarding it has no demonstrated ergonomic use yet.
 
 ## Explicit punts and risks
