@@ -177,6 +177,23 @@ a journal Component; exploratory proposals, not accepted API decisions.
   controlled execution keeps logical time. Decided to pursue November 9,
   2026, after the `Runtime` rename.
 
+- [ ] **Text reads for File capabilities.** ADR-0022 gives the write side
+  `append_text` and `replace_text`, but `file.read()` returns only `Bytes`,
+  so a Component reading a text file decodes inside `update` and the
+  shortest spelling is `.expect(..)`, a Program-wide fault on bad bytes.
+  Pulse's journal did exactly that. A `read_text()` whose outcome carries a
+  typed decode failure beside `FsError` would make the correct handling the
+  easy one. Found November 2026 reviewing the merged journal.
+
+- [ ] **Unused declared capabilities go unnoticed.** A capability listed in
+  `Requires` must be driven by every host even if `update` never touches it;
+  pulse's journal requires a clock it binds as `_clock`. Only the
+  unused-variable lint could say so, and the underscore silences it. Likely
+  acceptable; recorded so `Requires` drifting ahead of use is a known shape.
+  Also from the journal: answering a request from an effect result costs two
+  private Message variants to carry the reply token, more evidence for the
+  composition item below.
+
 - [ ] **Constructor-function derive.** ADR-0016 left one sending API, with
   `M::Variant { .. }` spelled at every call site. If that proves noisy once
   the examples have lived with it, a small derive that emits `pub fn
