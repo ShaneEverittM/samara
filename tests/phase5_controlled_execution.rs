@@ -48,18 +48,20 @@ impl Component for Empty {
 }
 
 #[test]
-fn phase5_program_build_rejects_duplicate_component_id() {
+fn phase5_program_build_accepts_duplicate_component_names() {
     let (mut builder, ()) = samara::Program::builder::<()>();
     let _ = builder
-        .component::<Empty>(ComponentId::new("duplicate"), ())
+        .component::<Empty>(())
+        .name("duplicate")
         .finish()
         .expect("component registration");
     let _ = builder
-        .component::<Empty>(ComponentId::new("duplicate"), ())
+        .component::<Empty>(())
+        .name("duplicate")
         .finish()
         .expect("component registration");
 
-    assert!(builder.build().is_err());
+    assert!(builder.build().is_ok());
 }
 
 #[test]
@@ -80,7 +82,8 @@ fn phase5_program_build_requires_exactly_one_binding_per_port() {
     let (mut duplicate, ()) = samara::Program::builder::<()>();
     let port = duplicate.port::<()>(PortId::new("service"));
     let provider = duplicate
-        .component::<Empty>(ComponentId::new("provider"), ())
+        .component::<Empty>(())
+        .name("provider")
         .finish()
         .expect("component registration");
     duplicate.connect(&port, &provider.connector());
@@ -92,7 +95,8 @@ fn phase5_program_build_requires_exactly_one_binding_per_port() {
 fn phase5_program_build_rejects_provider_from_another_builder() {
     let (mut provider_builder, ()) = samara::Program::builder::<()>();
     let provider = provider_builder
-        .component::<Empty>(ComponentId::new("provider"), ())
+        .component::<Empty>(())
+        .name("provider")
         .finish()
         .expect("component registration");
 
@@ -167,21 +171,17 @@ fn phase5_program_build_allows_port_cycles() {
     let left_port = builder.port::<()>(PortId::new("left"));
     let right_port = builder.port::<()>(PortId::new("right"));
     let left = builder
-        .component::<Left>(
-            ComponentId::new("left"),
-            LeftConfig {
-                _right: right_port.clone(),
-            },
-        )
+        .component::<Left>(LeftConfig {
+            _right: right_port.clone(),
+        })
+        .name("left")
         .finish()
         .expect("component registration");
     let right = builder
-        .component::<Right>(
-            ComponentId::new("right"),
-            RightConfig {
-                _left: left_port.clone(),
-            },
-        )
+        .component::<Right>(RightConfig {
+            _left: left_port.clone(),
+        })
+        .name("right")
         .finish()
         .expect("component registration");
     builder.connect(&left_port, &left.connector());
@@ -265,13 +265,11 @@ fn effect_program(mapper_calls: Arc<AtomicUsize>) -> (TestProgram, ComponentRef<
     let (mut builder, (declared_0,)) = samara::Program::builder::<(samara::Effect<ProbeEffect>,)>();
     let effect = declared_0;
     let component = builder
-        .component::<EffectComponent>(
-            ComponentId::new("effect"),
-            EffectComponentConfig {
-                mapper_calls,
-                effect,
-            },
-        )
+        .component::<EffectComponent>(EffectComponentConfig {
+            mapper_calls,
+            effect,
+        })
+        .name("effect")
         .finish()
         .expect("component registration");
     (builder.build().expect("valid effect program"), component)
@@ -441,16 +439,18 @@ impl Component for MappingComponent {
         model: &Self::Model,
     ) -> Subscriptions<Self::Message> {
         let mapper = model.mapper_version;
-        Subscriptions::one(Subscription::source_with(
-            &config.input,
-            SubscriptionId::new("input"),
-            StreamDescriptor::<u64>::named(model.binding),
-            move |event| match event {
-                SourceEvent::Item(value) => MappingMessage::Observed { mapper, value },
-                SourceEvent::Ended => MappingMessage::Ended,
-                SourceEvent::Failed(never) => match never {},
-            },
-        ))
+        Subscriptions::one(
+            Subscription::source_with(
+                &config.input,
+                StreamDescriptor::<u64>::named(model.binding),
+                move |event| match event {
+                    SourceEvent::Item(value) => MappingMessage::Observed { mapper, value },
+                    SourceEvent::Ended => MappingMessage::Ended,
+                    SourceEvent::Failed(never) => match never {},
+                },
+            )
+            .key("input"),
+        )
     }
 }
 
@@ -459,10 +459,8 @@ fn mapping_program() -> (TestProgram2, ComponentRef<MappingComponent>) {
         samara::Program::builder::<(samara::Source<StreamDescriptor<u64>>,)>();
     let input = declared_0;
     let component = builder
-        .component::<MappingComponent>(
-            ComponentId::new("mapping"),
-            MappingComponentConfig { input },
-        )
+        .component::<MappingComponent>(MappingComponentConfig { input })
+        .name("mapping")
         .finish()
         .expect("component registration");
     (builder.build().expect("valid source program"), component)
@@ -482,7 +480,7 @@ fn v4_equal_descriptor_retains_source_and_adopts_latest_mapper() {
     runtime
         .emit_source::<MappingComponent, StreamDescriptor<u64>>(
             &component,
-            &SubscriptionId::new("input"),
+            &SubscriptionId::key("input"),
             SourceEvent::Item(7),
         )
         .unwrap();
@@ -515,7 +513,7 @@ fn v4_terminal_source_event_ends_the_active_realization() {
     runtime
         .emit_source::<MappingComponent, StreamDescriptor<u64>>(
             &component,
-            &SubscriptionId::new("input"),
+            &SubscriptionId::key("input"),
             SourceEvent::Ended,
         )
         .unwrap();
@@ -526,7 +524,7 @@ fn v4_terminal_source_event_ends_the_active_realization() {
         runtime
             .source_descriptor::<MappingComponent, StreamDescriptor<u64>>(
                 &component,
-                &SubscriptionId::new("input")
+                &SubscriptionId::key("input")
             )
             .is_err(),
         "a terminal event must not leave an inspectable active Source"
@@ -547,7 +545,7 @@ fn v4_already_mapped_message_keeps_its_original_meaning_after_retention() {
     runtime
         .emit_source::<MappingComponent, StreamDescriptor<u64>>(
             &component,
-            &SubscriptionId::new("input"),
+            &SubscriptionId::key("input"),
             SourceEvent::Item(7),
         )
         .unwrap();
@@ -575,7 +573,7 @@ fn v4_replaced_generation_discards_stale_work() {
     runtime
         .emit_source::<MappingComponent, StreamDescriptor<u64>>(
             &component,
-            &SubscriptionId::new("input"),
+            &SubscriptionId::key("input"),
             SourceEvent::Item(9),
         )
         .unwrap();
@@ -586,7 +584,7 @@ fn v4_replaced_generation_discards_stale_work() {
         runtime
             .source_descriptor::<MappingComponent, StreamDescriptor<u64>>(
                 &component,
-                &SubscriptionId::new("input")
+                &SubscriptionId::key("input")
             )
             .unwrap(),
         StreamDescriptor::named("two")
@@ -613,7 +611,7 @@ fn v4_replaced_generation_discards_already_mapped_message() {
     runtime
         .emit_source::<MappingComponent, StreamDescriptor<u64>>(
             &component,
-            &SubscriptionId::new("input"),
+            &SubscriptionId::key("input"),
             SourceEvent::Item(11),
         )
         .unwrap();
@@ -730,12 +728,14 @@ impl Component for FramedComponent {
         _: &samara::Capabilities<Self::Requires>,
         _model: &Self::Model,
     ) -> Subscriptions<Self::Message> {
-        Subscriptions::one(Subscription::source_with(
-            &config.source,
-            SubscriptionId::new("framed"),
-            Framed::new(Framed::new(RawBytes, LengthPrefix), LengthPrefix),
-            FramedMessage::Event,
-        ))
+        Subscriptions::one(
+            Subscription::source_with(
+                &config.source,
+                Framed::new(Framed::new(RawBytes, LengthPrefix), LengthPrefix),
+                FramedMessage::Event,
+            )
+            .key("framed"),
+        )
     }
 }
 
@@ -744,7 +744,8 @@ fn v4_composed_source_plan_reaches_terminal_controlled_behavior() {
     let (mut builder, (declared_0,)) = samara::Program::builder::<(samara::Source<TwiceFramed>,)>();
     let source = declared_0;
     let component = builder
-        .component::<FramedComponent>(ComponentId::new("framed"), FramedComponentConfig { source })
+        .component::<FramedComponent>(FramedComponentConfig { source })
+        .name("framed")
         .finish()
         .expect("component registration");
     let program = builder.build().unwrap();
@@ -756,7 +757,7 @@ fn v4_composed_source_plan_reaches_terminal_controlled_behavior() {
     runtime
         .emit_source::<FramedComponent, RawBytes>(
             &component,
-            &SubscriptionId::new("framed"),
+            &SubscriptionId::key("framed"),
             SourceEvent::Item(vec![3, 2, b'a', b'b']),
         )
         .unwrap();
@@ -767,7 +768,7 @@ fn v4_composed_source_plan_reaches_terminal_controlled_behavior() {
         runtime
             .source_descriptor::<FramedComponent, TwiceFramed>(
                 &component,
-                &SubscriptionId::new("framed")
+                &SubscriptionId::key("framed")
             )
             .unwrap(),
         Framed::new(Framed::new(RawBytes, LengthPrefix), LengthPrefix)
@@ -779,7 +780,8 @@ fn v4_composed_source_binding_must_name_the_terminal_descriptor() {
     let (mut builder, (declared_0,)) = samara::Program::builder::<(samara::Source<TwiceFramed>,)>();
     let source = declared_0;
     let _component = builder
-        .component::<FramedComponent>(ComponentId::new("framed"), FramedComponentConfig { source })
+        .component::<FramedComponent>(FramedComponentConfig { source })
+        .name("framed")
         .finish()
         .expect("component registration");
     let program = builder.build().unwrap();
@@ -841,21 +843,25 @@ fn timer_program(
     let (mut builder, ()) = samara::Program::builder::<()>();
     let (alpha, beta) = if reverse_registration {
         let beta = builder
-            .component::<TimerComponent>(ComponentId::new("beta"), ())
+            .component::<TimerComponent>(())
+            .name("beta")
             .finish()
             .expect("component registration");
         let alpha = builder
-            .component::<TimerComponent>(ComponentId::new("alpha"), ())
+            .component::<TimerComponent>(())
+            .name("alpha")
             .finish()
             .expect("component registration");
         (alpha, beta)
     } else {
         let alpha = builder
-            .component::<TimerComponent>(ComponentId::new("alpha"), ())
+            .component::<TimerComponent>(())
+            .name("alpha")
             .finish()
             .expect("component registration");
         let beta = builder
-            .component::<TimerComponent>(ComponentId::new("beta"), ())
+            .component::<TimerComponent>(())
+            .name("beta")
             .finish()
             .expect("component registration");
         (alpha, beta)
@@ -893,10 +899,22 @@ fn v7_equal_time_uses_deterministic_causal_insertion_order() {
 }
 
 #[test]
-fn v7_initial_work_uses_component_id_not_registration_order() {
+fn v7_initial_work_follows_registration_order_independently_of_names() {
+    fn names(trace: &[TraceRecord]) -> Vec<&str> {
+        trace
+            .iter()
+            .filter_map(|record| match &record.event {
+                TraceEvent::Initialization { component } => Some(component.name()),
+                _ => None,
+            })
+            .collect()
+    }
     let normal = run_timers(false, false);
     let reversed = run_timers(true, false);
-    assert_eq!(normal, reversed);
+    assert_eq!(names(&normal.0), ["alpha", "beta"]);
+    assert_eq!(names(&reversed.0), ["beta", "alpha"]);
+    assert_eq!(normal.1, reversed.1);
+    assert_eq!(normal.2, reversed.2);
 }
 
 #[test]
@@ -947,7 +965,8 @@ impl Component for CausalTimer {
 fn run_causal_timer(automatic: bool) -> (Vec<&'static str>, Vec<TraceRecord>) {
     let (mut builder, ()) = samara::Program::builder::<()>();
     let component = builder
-        .component::<CausalTimer>(ComponentId::new("causal-timer"), ())
+        .component::<CausalTimer>(())
+        .name("causal-timer")
         .finish()
         .expect("component registration");
     let program = builder.build().unwrap();
@@ -1030,7 +1049,8 @@ impl Component for OverflowTimer {
 fn phase5_timer_deadline_overflow_faults_instead_of_panicking() {
     let (mut builder, ()) = samara::Program::builder::<()>();
     let component = builder
-        .component::<OverflowTimer>(ComponentId::new("overflow"), ())
+        .component::<OverflowTimer>(())
+        .name("overflow")
         .finish()
         .expect("component registration");
     let program = builder.build().unwrap();
@@ -1083,7 +1103,8 @@ fn v6_equal_final_state_with_different_structural_trace_is_not_equivalent() {
     fn run(inputs: &[i32]) -> (i32, Vec<TraceRecord>) {
         let (mut builder, ()) = samara::Program::builder::<()>();
         let balance = builder
-            .component::<Balance>(ComponentId::new("balance"), ())
+            .component::<Balance>(())
+            .name("balance")
             .finish()
             .expect("component registration");
         let program = builder.build().unwrap();
@@ -1158,16 +1179,15 @@ impl Component for Forwarder {
 fn v2_cross_component_interaction_reenters_as_message() {
     let (mut builder, ()) = samara::Program::builder::<()>();
     let target = builder
-        .component::<TimerComponent>(ComponentId::new("target"), ())
+        .component::<TimerComponent>(())
+        .name("target")
         .finish()
         .expect("component registration");
     let forwarder = builder
-        .component::<Forwarder>(
-            ComponentId::new("forwarder"),
-            ForwarderConfig {
-                target: target.clone(),
-            },
-        )
+        .component::<Forwarder>(ForwarderConfig {
+            target: target.clone(),
+        })
+        .name("forwarder")
         .finish()
         .expect("component registration");
     let program = builder.build().unwrap();
@@ -1265,7 +1285,8 @@ impl Component for DueComponent {
 fn v9_pending_now_counts_ready_messages_and_due_timers() {
     let (mut builder, ()) = samara::Program::builder::<()>();
     let component = builder
-        .component::<DueComponent>(ComponentId::new("due"), ())
+        .component::<DueComponent>(())
+        .name("due")
         .finish()
         .expect("component registration");
     let program = builder.build().unwrap();
@@ -1356,12 +1377,14 @@ impl Component for OwnershipComponent {
         _: &samara::Capabilities<Self::Requires>,
         _model: &Self::Model,
     ) -> Subscriptions<Self::Message> {
-        Subscriptions::one(Subscription::source_with(
-            &config.input,
-            SubscriptionId::new("input"),
-            StreamDescriptor::named("ownership/input"),
-            OwnershipMessage::Input,
-        ))
+        Subscriptions::one(
+            Subscription::source_with(
+                &config.input,
+                StreamDescriptor::named("ownership/input"),
+                OwnershipMessage::Input,
+            )
+            .key("input"),
+        )
     }
 }
 
@@ -1372,24 +1395,20 @@ fn ownership_runtime() -> (ControlledRuntime, ComponentRef<OwnershipComponent>) 
     )>();
     let port = builder.port::<EchoProtocolMessage>(PortId::new("echo"));
     let provider = builder
-        .component::<EchoProvider>(
-            ComponentId::new("provider"),
-            EchoProviderConfig { reply: false },
-        )
+        .component::<EchoProvider>(EchoProviderConfig { reply: false })
+        .name("provider")
         .finish()
         .expect("component registration");
     builder.connect(&port, &provider.connector());
     let effect = declared_0;
     let input = declared_1;
     let component = builder
-        .component::<OwnershipComponent>(
-            ComponentId::new("owner"),
-            OwnershipComponentConfig {
-                port,
-                effect,
-                input: input.clone(),
-            },
-        )
+        .component::<OwnershipComponent>(OwnershipComponentConfig {
+            port,
+            effect,
+            input: input.clone(),
+        })
+        .name("owner")
         .finish()
         .expect("component registration");
     let program = builder.build().unwrap();
@@ -1470,14 +1489,16 @@ impl Component for CancellationProbe {
         _model: &Self::Model,
     ) -> Subscriptions<Self::Message> {
         let mapper_calls = config.mapper_calls.clone();
-        Subscriptions::one(Subscription::source_with(
-            &config.source,
-            SubscriptionId::new("cancellation-probe"),
-            StreamDescriptor::<u64>::named("cancellation-probe"),
-            move |_event| {
-                mapper_calls.fetch_add(1, Ordering::SeqCst);
-            },
-        ))
+        Subscriptions::one(
+            Subscription::source_with(
+                &config.source,
+                StreamDescriptor::<u64>::named("cancellation-probe"),
+                move |_event| {
+                    mapper_calls.fetch_add(1, Ordering::SeqCst);
+                },
+            )
+            .key("cancellation-probe"),
+        )
     }
 }
 
@@ -1488,13 +1509,11 @@ fn v9_source_cancellation_emits_no_unpromised_event() {
         samara::Program::builder::<(samara::Source<StreamDescriptor<u64>>,)>();
     let source = declared_0;
     let _component = builder
-        .component::<CancellationProbe>(
-            ComponentId::new("cancellation-probe"),
-            CancellationProbeConfig {
-                mapper_calls: mapper_calls.clone(),
-                source,
-            },
-        )
+        .component::<CancellationProbe>(CancellationProbeConfig {
+            mapper_calls: mapper_calls.clone(),
+            source,
+        })
+        .name("cancellation-probe")
         .finish()
         .expect("component registration");
     let program = builder.build().unwrap();
@@ -1522,7 +1541,7 @@ fn v10_reading_controlled_trace_after_drive_has_no_feedback_path() {
     runtime
         .emit_source::<MappingComponent, StreamDescriptor<u64>>(
             &component,
-            &SubscriptionId::new("input"),
+            &SubscriptionId::key("input"),
             SourceEvent::Item(3),
         )
         .unwrap();
@@ -1647,15 +1666,14 @@ fn echo_program(reply: bool, requests: usize) -> (Program, ComponentRef<EchoRequ
     let (mut builder, ()) = samara::Program::builder::<()>();
     let port = builder.port::<EchoProtocolMessage>(PortId::new("echo"));
     let provider = builder
-        .component::<EchoProvider>(ComponentId::new("provider"), EchoProviderConfig { reply })
+        .component::<EchoProvider>(EchoProviderConfig { reply })
+        .name("provider")
         .finish()
         .expect("component registration");
     builder.connect(&port, &provider.connector());
     let requester = builder
-        .component::<EchoRequester>(
-            ComponentId::new("requester"),
-            EchoRequesterConfig { port, requests },
-        )
+        .component::<EchoRequester>(EchoRequesterConfig { port, requests })
+        .name("requester")
         .finish()
         .expect("component registration");
     (builder.build().unwrap(), requester)
@@ -1714,7 +1732,7 @@ fn v8_request_to_reply_causal_edges_are_preserved() {
     assert!(matches!(
         &provider_transition.event,
         TraceEvent::Transition { component, .. }
-            if component == &ComponentId::new("provider")
+            if component.name() == "provider"
     ));
     let request = &trace[provider_transition.cause.unwrap().get() as usize];
     assert!(matches!(

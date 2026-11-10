@@ -167,10 +167,7 @@ impl Assembly for Journal {
         capabilities: Capabilities<Self::Requires>,
     ) -> Result<(Connector<JournalMessage>, ()), ProgramBuildError> {
         let recorder = program
-            .component::<Recorder>(
-                ComponentId::new("journal"),
-                RecorderConfig { file: config.file },
-            )
+            .component::<Recorder>(RecorderConfig { file: config.file })
             .with_capabilities(capabilities)
             .finish()?;
         Ok((recorder.accepting(Message::Journal), ()))

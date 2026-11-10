@@ -25,9 +25,6 @@ use samara::prelude::*;
 /// Logical first-party input bound by the surrounding runtime world.
 const INCREMENT_INPUT: &str = "counter/increment-input";
 
-/// Component-local identity used to reconcile desire for the input.
-const INCREMENT_SUBSCRIPTION: &str = "increments";
-
 /// The particular quota dependency used by this Counter instance.
 const QUOTA: &str = "counter/quota";
 
@@ -286,7 +283,6 @@ impl Component for Counter {
         // task, receiver, or cancellation handle to the Component.
         Subscriptions::one(Subscription::source_with(
             &capabilities.0,
-            SubscriptionId::new(INCREMENT_SUBSCRIPTION),
             config.increments.clone(),
             |event| match event {
                 SourceEvent::Item(by) => CounterMessage::Increment(by),
@@ -346,7 +342,7 @@ fn program(increments: StreamDescriptor<u64>) -> (AppProgram, AppRefs) {
     // Port to coexist without a global “one provider per type” rule.
     let quota_port = program.port(PortId::new(QUOTA));
     let quota = program
-        .component::<Quota>(ComponentId::new("quota"), QuotaConfig { initial: 100 })
+        .component::<Quota>(QuotaConfig { initial: 100 })
         .finish()
         .expect("component registration");
 
@@ -355,13 +351,10 @@ fn program(increments: StreamDescriptor<u64>) -> (AppProgram, AppRefs) {
     // know that private Message vocabulary.
     program.connect(&quota_port, &quota.connector());
     let counter = program
-        .component::<Counter>(
-            ComponentId::new("counter"),
-            CounterConfig {
-                increments: increments.clone(),
-                quota: quota_port,
-            },
-        )
+        .component::<Counter>(CounterConfig {
+            increments: increments.clone(),
+            quota: quota_port,
+        })
         .with_capabilities((increment_source.clone(), persistence))
         .finish()
         .expect("component registration");
@@ -536,8 +529,7 @@ mod tests {
         // the receiver or depending on a particular task/mailbox topology.
         let subscriptions = Counter::subscriptions(&component, &component_capabilities, &model);
         assert_eq!(
-            subscriptions
-                .find::<StreamDescriptor<u64>>(&SubscriptionId::new(INCREMENT_SUBSCRIPTION)),
+            subscriptions.find::<StreamDescriptor<u64>>(&component_capabilities.0),
             Some(&increments)
         );
     }

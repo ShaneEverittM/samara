@@ -56,15 +56,13 @@ fn program(request: HttpRequest, limit: usize) -> (TestProgram, ComponentRef<Pro
     let (mut builder, (http, observed)) =
         Program::builder::<(Effect<HttpRequest>, Effect<Observed>)>();
     let probe = builder
-        .component::<Probe>(
-            ComponentId::new("probe"),
-            ProbeConfig {
-                http,
-                observed,
-                request,
-                limit,
-            },
-        )
+        .component::<Probe>(ProbeConfig {
+            http,
+            observed,
+            request,
+            limit,
+        })
+        .name("probe")
         .finish()
         .expect("component registration");
     (builder.build().unwrap(), probe)
@@ -396,7 +394,8 @@ fn status_and_json_transforms_run_only_after_following_and_keep_typed_errors() {
     for status in [200, 404, 301] {
         let (mut builder, (http,)) = Program::builder::<(Effect<HttpRequest>,)>();
         let probe = builder
-            .component::<JsonProbe>(ComponentId::new("json"), JsonProbeConfig(http))
+            .component::<JsonProbe>(JsonProbeConfig(http))
+            .name("json")
             .finish()
             .expect("component registration");
         let mut runtime = ControlledRuntime::builder(builder.build().unwrap())

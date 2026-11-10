@@ -118,12 +118,10 @@ impl Component for ContractComponent {
             return Subscriptions::none();
         }
 
-        Subscriptions::one(Subscription::source_with(
-            &config.source,
-            SubscriptionId::new(INPUT_SUBSCRIPTION),
-            config.input.clone(),
-            ContractMessage::Input,
-        ))
+        Subscriptions::one(
+            Subscription::source_with(&config.source, config.input.clone(), ContractMessage::Input)
+                .key(INPUT_SUBSCRIPTION),
+        )
     }
 }
 
@@ -176,7 +174,7 @@ fn v4_subscription_separates_component_identity_from_source_descriptor() {
     let subscriptions = ContractComponent::subscriptions(&component, &(), &model);
     let subscription = subscriptions.iter().next().expect("one input desire");
 
-    assert_eq!(subscription.id(), &SubscriptionId::new(INPUT_SUBSCRIPTION));
+    assert_eq!(subscription.id(), &SubscriptionId::key(INPUT_SUBSCRIPTION));
     assert_eq!(
         subscription.source_descriptor::<StreamDescriptor<u64>>(),
         Some(&StreamDescriptor::named(INPUT_BINDING))
@@ -192,9 +190,10 @@ fn component_kernel_accepts_non_sync_configuration() {
         Program::builder::<(Source<StreamDescriptor<u64>>, Effect<SaveTotal>)>();
     let contract = ContractComponentConfig::new(capabilities);
     let component = program
-        .component::<ContractComponent>(ComponentId::new("contract"), contract)
+        .component::<ContractComponent>(contract)
+        .name("contract")
         .finish()
         .expect("component registration");
 
-    assert_eq!(component.id(), &ComponentId::new("contract"));
+    assert_eq!(component.id().name(), "contract");
 }

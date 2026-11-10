@@ -44,6 +44,11 @@ runtime implementation begins.
 
 ## Decision
 
+ADR-0021 supersedes user-supplied Component/subscription names and the initial
+Component ordering rule below. Components now use builder-issued identities;
+subscriptions default to capability slots with optional typed application keys.
+Initial work follows successful registration order, independent of names.
+
 ### Retained Sources Adopt the Latest Mapper
 
 `ComponentId` plus `SubscriptionId` identifies one ongoing desire, and
@@ -99,8 +104,8 @@ Tickets are assigned by these v0 rules:
 
 - Commands emitted by one transition follow declaration traversal order.
 - Controlled inputs follow the order supplied by the harness.
-- Initial Component work is canonicalized by `ComponentId`, never registration
-  order.
+- Initial Component work follows successful registration order (ADR-0021);
+  diagnostic names have no effect.
 - Work emitted while handling another event receives its tickets after its
   cause.
 
@@ -150,7 +155,7 @@ durable trace schema, storage format, or replay promise.
 `ProgramBuilder::build()` is fallible. It validates only facts explicitly
 represented by assembly:
 
-- every `ComponentId` is unique;
+- Component identities are issued uniquely by the builder (ADR-0021);
 - every `(Protocol type, PortId)` declaration is unique;
 - every declared Port is bound exactly once; and
 - every bound provider was registered in the same builder.

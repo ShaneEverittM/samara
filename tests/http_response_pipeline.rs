@@ -183,14 +183,12 @@ fn pipeline_program(url: impl Into<String>) -> (TestProgram, ComponentRef<Pipeli
     let http = declared_0;
     let observe = declared_1;
     let component = builder
-        .component::<PipelineComponent>(
-            ComponentId::new("http-pipeline"),
-            PipelineComponentConfig {
-                http,
-                observe,
-                url: url.into(),
-            },
-        )
+        .component::<PipelineComponent>(PipelineComponentConfig {
+            http,
+            observe,
+            url: url.into(),
+        })
+        .name("http-pipeline")
         .finish()
         .expect("component registration");
     (builder.build().expect("valid pipeline program"), component)

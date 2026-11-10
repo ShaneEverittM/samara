@@ -268,7 +268,7 @@ mod tests {
 
     async fn assert_local_serialization(id: &str) {
         let component = SerializedComponent::new(ComponentKernel::<ProbeComponent>::new(
-            ComponentId::new(id),
+            ComponentId::new(0, id),
             ProbeComponentConfig {
                 not_sync: PhantomData,
             },
@@ -344,7 +344,7 @@ mod tests {
             }
         }
 
-        let mut kernel = ComponentKernel::<Startup>::new(ComponentId::new("startup"), (), ());
+        let mut kernel = ComponentKernel::<Startup>::new(ComponentId::new(0, "startup"), (), ());
 
         assert!(kernel.take_initial_command().is_some());
         assert!(kernel.take_initial_command().is_none());

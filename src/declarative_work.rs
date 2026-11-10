@@ -4,10 +4,10 @@
 //! execution profile. Retention installs the newest mapper while preserving
 //! SourcePlan state; replacement creates a fresh private generation.
 //!
-//! Reconciliation commits descriptor bookkeeping while returning an unordered
-//! set of lifecycle changes. Execution profiles accept those changes as one
-//! reconciliation step rather than treating Vec traversal as application Source
-//! ordering.
+//! Reconciliation commits descriptor bookkeeping and returns lifecycle changes
+//! in deterministic projection order, then removals in prior retained order.
+//! Profiles accept them as one reconciliation step. This traversal supports
+//! controlled traces; it does not promise ordering of independent live events.
 
 use std::{collections::HashSet, marker::PhantomData};
 
@@ -27,7 +27,7 @@ struct ActiveDescriptor {
 
 /// One Source-lifecycle decision produced without realizing that Source.
 ///
-/// The surrounding Vec is a collection, not a promised application order.
+/// Vec traversal is deterministic reproducibility machinery, not a live event order.
 pub(crate) enum SubscriptionChange<Message> {
     /// A new Component-local identity needs a Source.
     Start { subscription: Subscription<Message> },
@@ -153,12 +153,14 @@ mod tests {
         source: &SourceCapability<StreamDescriptor<u64>>,
         binding: &'static str,
     ) -> Subscriptions<Message> {
-        Subscriptions::one(Subscription::source_with(
-            source,
-            SubscriptionId::new("input"),
-            StreamDescriptor::<u64>::named(binding),
-            Message::Old,
-        ))
+        Subscriptions::one(
+            Subscription::source_with(
+                source,
+                StreamDescriptor::<u64>::named(binding),
+                Message::Old,
+            )
+            .key("input"),
+        )
     }
 
     struct DesiredComponent;
@@ -206,12 +208,14 @@ mod tests {
             model: &Self::Model,
         ) -> Subscriptions<Self::Message> {
             match model {
-                Some(binding) => Subscriptions::one(Subscription::source_with(
-                    &config.source,
-                    SubscriptionId::new("input"),
-                    StreamDescriptor::<u64>::named(*binding),
-                    DesiredMessage::Input,
-                )),
+                Some(binding) => Subscriptions::one(
+                    Subscription::source_with(
+                        &config.source,
+                        StreamDescriptor::<u64>::named(*binding),
+                        DesiredMessage::Input,
+                    )
+                    .key("input"),
+                ),
                 None => Subscriptions::none(),
             }
         }
@@ -270,7 +274,7 @@ mod tests {
             crate::Program::builder::<(crate::Source<StreamDescriptor<u64>>,)>();
         let source = declared_0;
         let mut kernel = ComponentKernel::<DesiredComponent>::new(
-            ComponentId::new("desired"),
+            ComponentId::new(0, "desired"),
             DesiredComponentConfig { source },
             (),
         );
@@ -313,7 +317,7 @@ mod tests {
         let (_program, (declared_0,)) =
             crate::Program::builder::<(crate::Source<StreamDescriptor<u64>>,)>();
         let source = declared_0;
-        let mut reconciler = SubscriptionReconciler::new(ComponentId::new("alpha"));
+        let mut reconciler = SubscriptionReconciler::new(ComponentId::new(0, "alpha"));
 
         assert!(matches!(
             reconciler
@@ -350,11 +354,11 @@ mod tests {
         let (_program, (declared_0,)) =
             crate::Program::builder::<(crate::Source<StreamDescriptor<u64>>,)>();
         let source = declared_0;
-        let mut alpha = SubscriptionReconciler::new(ComponentId::new("alpha"));
-        let mut beta = SubscriptionReconciler::new(ComponentId::new("beta"));
+        let mut alpha = SubscriptionReconciler::new(ComponentId::new(0, "alpha"));
+        let mut beta = SubscriptionReconciler::new(ComponentId::new(1, "beta"));
 
-        assert_eq!(alpha.owner(), &ComponentId::new("alpha"));
-        assert_eq!(beta.owner(), &ComponentId::new("beta"));
+        assert_eq!(alpha.owner(), &ComponentId::new(0, "alpha"));
+        assert_eq!(beta.owner(), &ComponentId::new(1, "beta"));
 
         assert!(matches!(
             alpha
@@ -376,20 +380,12 @@ mod tests {
         let (_program, (declared_0,)) =
             crate::Program::builder::<(crate::Source<StreamDescriptor<u64>>,)>();
         let source = declared_0;
-        let mut reconciler = SubscriptionReconciler::new(ComponentId::new("alpha"));
+        let mut reconciler = SubscriptionReconciler::new(ComponentId::new(0, "alpha"));
         let duplicate = vec![
-            Subscription::source_with(
-                &source,
-                SubscriptionId::new("input"),
-                StreamDescriptor::<u64>::named("one"),
-                Message::Old,
-            ),
-            Subscription::source_with(
-                &source,
-                SubscriptionId::new("input"),
-                StreamDescriptor::<u64>::named("two"),
-                Message::New,
-            ),
+            Subscription::source_with(&source, StreamDescriptor::<u64>::named("one"), Message::Old)
+                .key("input"),
+            Subscription::source_with(&source, StreamDescriptor::<u64>::named("two"), Message::New)
+                .key("input"),
         ]
         .into();
 
@@ -397,7 +393,7 @@ mod tests {
             Ok(_) => panic!("one Component cannot desire one identity twice"),
             Err(error) => error,
         };
-        assert_eq!(error.id, SubscriptionId::new("input"));
+        assert_eq!(error.id, SubscriptionId::key("input"));
         assert!(matches!(
             reconciler
                 .reconcile(desired(&source, "one"))
@@ -408,21 +404,40 @@ mod tests {
     }
 
     #[test]
+    fn ambiguous_default_slots_do_not_change_existing_bookkeeping() {
+        let (_, (source,)) = crate::Program::builder::<(crate::Source<StreamDescriptor<u64>>,)>();
+        let mut reconciler = SubscriptionReconciler::new(ComponentId::new(0, "probe"));
+        let input =
+            || Subscription::source_with(&source, StreamDescriptor::named("one"), Message::Old);
+        reconciler.reconcile(Subscriptions::one(input())).unwrap();
+        assert!(reconciler.reconcile(vec![input(), input()].into()).is_err());
+        assert!(matches!(
+            reconciler
+                .reconcile(Subscriptions::one(input()))
+                .unwrap()
+                .as_slice(),
+            [SubscriptionChange::Retain { .. }]
+        ));
+    }
+
+    #[test]
     fn v4_retention_preserves_new_mapper_as_unselected_candidate_data() {
         let (_program, (declared_0,)) =
             crate::Program::builder::<(crate::Source<StreamDescriptor<u64>>,)>();
         let source = declared_0;
-        let mut reconciler = SubscriptionReconciler::new(ComponentId::new("alpha"));
+        let mut reconciler = SubscriptionReconciler::new(ComponentId::new(0, "alpha"));
         let _ = reconciler
             .reconcile(desired(&source, "one"))
             .expect("valid desires");
         let changes = reconciler
-            .reconcile(Subscriptions::one(Subscription::source_with(
-                &source,
-                SubscriptionId::new("input"),
-                StreamDescriptor::<u64>::named("one"),
-                Message::New,
-            )))
+            .reconcile(Subscriptions::one(
+                Subscription::source_with(
+                    &source,
+                    StreamDescriptor::<u64>::named("one"),
+                    Message::New,
+                )
+                .key("input"),
+            ))
             .expect("valid desires");
 
         let [SubscriptionChange::Retain { subscription }] = changes.as_slice() else {
@@ -444,7 +459,7 @@ mod tests {
         )>();
         let first = declared_0;
         let second = declared_1;
-        let mut reconciler = SubscriptionReconciler::new(ComponentId::new("alpha"));
+        let mut reconciler = SubscriptionReconciler::new(ComponentId::new(0, "alpha"));
 
         let _ = reconciler
             .reconcile(desired(&first, "same"))

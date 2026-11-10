@@ -170,7 +170,8 @@ fn walker_program() -> (TestProgram, ComponentRef<Walker>) {
         report: declared_4,
     };
     let walker = builder
-        .component::<Walker>(ComponentId::new("walker"), config)
+        .component::<Walker>(config)
+        .name("walker")
         .finish()
         .expect("component registration");
     (builder.build().expect("valid walker program"), walker)

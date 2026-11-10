@@ -410,7 +410,7 @@ impl ControlledCore {
                         component,
                         None,
                         initialization,
-                        format!("duplicate desired Subscription identity {duplicate:?}"),
+                        duplicate.duplicate_message(),
                     );
                     break;
                 }
@@ -594,10 +594,9 @@ impl ControlledCore {
     fn apply_subscription_changes(
         &mut self,
         component: &ComponentId,
-        mut changes: Vec<ErasedSubscriptionChange>,
+        changes: Vec<ErasedSubscriptionChange>,
         cause: TraceId,
     ) -> Result<(), RuntimeError> {
-        changes.sort_by(|left, right| left.id().cmp(right.id()));
         for change in changes {
             match change {
                 ErasedSubscriptionChange::Start(subscription) => {
@@ -1253,6 +1252,11 @@ impl ControlledCore {
         S: SourceDescriptor,
     {
         self.ensure_not_faulted()?;
+        if !id.belongs_to(&self.program.program) {
+            return Err(RuntimeError::harness(
+                "controlled Source selector belongs to another Program",
+            ));
+        }
         if !Arc::ptr_eq(&component.program, &self.program.program) {
             return Err(RuntimeError::harness(
                 "controlled Source target is not part of this Program",
@@ -1275,6 +1279,11 @@ impl ControlledCore {
         C: Component,
         S: SourceDescriptor,
     {
+        if !id.belongs_to(&self.program.program) {
+            return Err(RuntimeError::harness(
+                "controlled Source selector belongs to another Program",
+            ));
+        }
         if !Arc::ptr_eq(&component.program, &self.program.program) {
             return Err(RuntimeError::harness(
                 "controlled Source target is not part of this Program",
@@ -1560,7 +1569,7 @@ impl ControlledCore {
                     message.target,
                     None,
                     transition,
-                    format!("duplicate desired Subscription identity {duplicate:?}"),
+                    duplicate.duplicate_message(),
                 ));
             }
         };

@@ -170,16 +170,18 @@ fn v2_protocol_message_remains_distinct_from_provider_message() {
 }
 
 #[test]
-fn component_identity_is_explicit_and_not_registration_order() {
+fn component_identity_follows_registration_independently_of_names() {
     let (mut left_program, ()) = samara::Program::builder::<()>();
     let (left_first, _, _, _) = KernelComponentConfig::fixture();
     let (left_second, _, _, _) = KernelComponentConfig::fixture();
     let alpha_left = left_program
-        .component::<KernelComponent>(ComponentId::new("alpha"), left_first)
+        .component::<KernelComponent>(left_first)
+        .name("alpha")
         .finish()
         .expect("component registration");
     let beta_left = left_program
-        .component::<KernelComponent>(ComponentId::new("beta"), left_second)
+        .component::<KernelComponent>(left_second)
+        .name("beta")
         .finish()
         .expect("component registration");
 
@@ -187,16 +189,18 @@ fn component_identity_is_explicit_and_not_registration_order() {
     let (right_first, _, _, _) = KernelComponentConfig::fixture();
     let (right_second, _, _, _) = KernelComponentConfig::fixture();
     let beta_right = right_program
-        .component::<KernelComponent>(ComponentId::new("beta"), right_first)
+        .component::<KernelComponent>(right_first)
+        .name("beta")
         .finish()
         .expect("component registration");
     let alpha_right = right_program
-        .component::<KernelComponent>(ComponentId::new("alpha"), right_second)
+        .component::<KernelComponent>(right_second)
+        .name("alpha")
         .finish()
         .expect("component registration");
 
-    assert_eq!(alpha_left.id(), alpha_right.id());
-    assert_eq!(beta_left.id(), beta_right.id());
+    assert_eq!(alpha_left.id(), beta_right.id());
+    assert_eq!(beta_left.id(), alpha_right.id());
     assert_ne!(alpha_left.id(), beta_left.id());
 }
 
@@ -207,11 +211,12 @@ fn registration_transfers_configuration_and_model_ownership_to_program() {
     let (mut builder, ()) = samara::Program::builder::<()>();
 
     let component_ref = builder
-        .component::<KernelComponent>(ComponentId::new("owned"), component)
+        .component::<KernelComponent>(component)
+        .name("owned")
         .finish()
         .expect("component registration");
 
-    assert_eq!(component_ref.id(), &ComponentId::new("owned"));
+    assert_eq!(component_ref.id().name(), "owned");
     assert_eq!(configuration_drops.load(Ordering::SeqCst), 0);
     assert_eq!(model_drops.load(Ordering::SeqCst), 0);
 

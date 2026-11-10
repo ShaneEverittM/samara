@@ -470,7 +470,6 @@ Conceptually:
 Component:
     Subscription::source_with(
         &packet_source,
-        "packets",
         packet_input,
         PacketMessage::Received,
     )

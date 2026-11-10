@@ -327,7 +327,7 @@ pub struct SuppliedCapabilities<T>(T);
 ///     fn update(_: &(), _: &Capabilities<Self::Requires>, _: &mut (), _: ()) -> Command<()> { Command::none() }
 /// }
 /// let (mut program, _) = Program::builder::<(Effect<ReadSystemTime>,)>();
-/// program.component::<Clock>(ComponentId::new("clock"), ()).finish();
+/// program.component::<Clock>(()).finish();
 /// ```
 ///
 /// ```compile_fail
@@ -340,24 +340,20 @@ pub struct SuppliedCapabilities<T>(T);
 ///     fn update(_: &(), _: &Capabilities<Self::Requires>, _: &mut (), _: ()) -> Command<()> { Command::none() }
 /// }
 /// let (mut program, http) = Program::builder::<(Effect<HttpRequest>,)>();
-/// program.component::<Clock>(ComponentId::new("clock"), ()).with_capabilities(http);
+/// program.component::<Clock>(()).with_capabilities(http);
 /// ```
 #[must_use = "finish component registration with with_capabilities(...).finish()"]
 pub struct ComponentRegistration<'a, R: Requirements, C: Component, State = MissingCapabilities> {
     program: &'a mut ProgramBuilder<R>,
-    id: ComponentId,
+    name: Option<Arc<str>>,
     config: C::Config,
     state: State,
 }
 impl<'a, R: Requirements, C: Component> ComponentRegistration<'a, R, C> {
-    pub(crate) fn new(
-        program: &'a mut ProgramBuilder<R>,
-        id: ComponentId,
-        config: C::Config,
-    ) -> Self {
+    pub(crate) fn new(program: &'a mut ProgramBuilder<R>, config: C::Config) -> Self {
         Self {
             program,
-            id,
+            name: None,
             config,
             state: MissingCapabilities,
         }
@@ -369,10 +365,18 @@ impl<'a, R: Requirements, C: Component> ComponentRegistration<'a, R, C> {
     ) -> ComponentRegistration<'a, R, C, SuppliedCapabilities<Capabilities<C::Requires>>> {
         ComponentRegistration {
             program: self.program,
-            id: self.id,
+            name: self.name,
             config: self.config,
             state: SuppliedCapabilities(caps),
         }
+    }
+}
+impl<R: Requirements, C: Component, State> ComponentRegistration<'_, R, C, State> {
+    /// Sets a diagnostic label. Names need not be unique and never affect routing
+    /// or execution order. Without this, diagnostics use the Component type name.
+    pub fn name(mut self, name: impl Into<Arc<str>>) -> Self {
+        self.name = Some(name.into());
+        self
     }
 }
 impl<R: Requirements, C: Component<Requires = ()>> ComponentRegistration<'_, R, C> {
@@ -387,7 +391,7 @@ impl<R: Requirements, C: Component>
     /// Validates provenance, initializes the Component and registers it atomically.
     pub fn finish(self) -> Result<ComponentRef<C>, ProgramBuildError> {
         self.program
-            .register::<C>(self.id, self.config, self.state.0)
+            .register::<C>(self.name, self.config, self.state.0)
     }
 }
 

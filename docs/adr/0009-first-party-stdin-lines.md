@@ -42,7 +42,6 @@ let stdin = program.source::<StdinLines>();
 
 Subscription::source_with(
     &stdin,
-    SubscriptionId::new("commands"),
     StdinLines,
     |event| match event {
         SourceEvent::Item(line) => Message::Line(line),

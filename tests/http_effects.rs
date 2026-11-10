@@ -147,14 +147,12 @@ fn http_program(requests: Vec<HttpRequest>) -> (TestProgram, ComponentRef<HttpSe
     let http = declared_0;
     let observe = declared_1;
     let probe = builder
-        .component::<HttpSequence>(
-            ComponentId::new("http-sequence"),
-            HttpSequenceConfig {
-                http,
-                observe,
-                requests,
-            },
-        )
+        .component::<HttpSequence>(HttpSequenceConfig {
+            http,
+            observe,
+            requests,
+        })
+        .name("http-sequence")
         .finish()
         .expect("component registration");
     (builder.build().expect("valid HTTP program"), probe)

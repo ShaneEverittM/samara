@@ -5,7 +5,6 @@ use chrono::{DateTime, Utc};
 use samara::prelude::*;
 use serde::Deserialize;
 
-const CLI_SUBSCRIPTION: &str = "commands";
 const TIME_SERVER_PORT: &str = "TimeServer";
 
 enum HttpTimeMessage {
@@ -259,7 +258,6 @@ impl Component for Cli {
 
         Subscriptions::one(Subscription::source_with(
             &capabilities.0,
-            SubscriptionId::new(CLI_SUBSCRIPTION),
             StdinLines::new(),
             |event| match event {
                 SourceEvent::Item(line) => parse_cli_command(line),
@@ -318,10 +316,7 @@ async fn main() -> Result<()> {
 
     // The concrete provider happens to obtain time over HTTP.
     let http_time_server = builder
-        .component::<HttpTimeServer>(
-            ComponentId::new("http-time-server"),
-            HttpTimeServerConfig {},
-        )
+        .component::<HttpTimeServer>(HttpTimeServerConfig {})
         .with_capabilities((http, stderr.clone()))
         .finish()
         .expect("component registration");
@@ -332,12 +327,9 @@ async fn main() -> Result<()> {
     // Raw terminal lines cross the runtime boundary as an ongoing Source. The
     // CLI owns parsing, presentation, and its dependency on the time service.
     builder
-        .component::<Cli>(
-            ComponentId::new("cli"),
-            CliConfig {
-                time_server: time_port,
-            },
-        )
+        .component::<Cli>(CliConfig {
+            time_server: time_port,
+        })
         .with_capabilities((cli_input.clone(), stdout, stderr))
         .finish()
         .expect("component registration");

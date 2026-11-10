@@ -42,11 +42,12 @@ new acceptance scenarios and do not become observable topology.
 
 The accepted Phase 2 audit constrains Phase 3 to this slice:
 
-- `ComponentId` is stable logical identity, not a task, mailbox, type singleton,
-  or registration-order token.
+- `ComponentId` is opaque, Program-issued instance identity. Optional diagnostic
+  names do not affect equality or routing. ADR-0021 replaces user-supplied names
+  and name-based controlled ordering with successful registration order.
 - The type implementing `Component` names a kind and is never stored. Its
   immutable logical configuration is `Component::Config`, supplied at
-  registration as `component::<Kind>(id, config).with_capabilities(caps).finish()?`; behaviorally relevant
+  registration as `component::<Kind>(config).with_capabilities(caps).finish()?`; behaviorally relevant
   mutable state belongs in `Component::Model`
   ([ADR-0013](adr/0013-component-kinds-assemblies-and-first-party-effects.md)).
 - `Component::Message` is the only transition input.
@@ -122,7 +123,7 @@ changing these lifecycle semantics or the concrete
 `Component::update(...) -> Command<Message>` boundary:
 
 - `Command::effect(&capability, effect)`,
-  `Subscription::source(&capability, id, descriptor)`, and
+  `Subscription::source(&capability, descriptor)`, and
   `HttpResponsePipeline::into_command(&capability)` use the standard
   `Message: From<BoundaryValue>` conversion as their default mapper.
 - Their `effect_with`, `source_with`, and `into_command_with` counterparts
@@ -514,9 +515,13 @@ around values issued by one `ProgramBuilder`:
   `Command::effect_with(&capability, descriptor, mapper)`, and
   `Command::effect_discarding_outcome(&capability, descriptor)` are the only
   public Effect issuance paths.
-- `Subscription::source(&capability, id, descriptor)` and
-  `Subscription::source_with(&capability, id, descriptor, mapper)` are the only
+- `Subscription::source(&capability, descriptor)` and
+  `Subscription::source_with(&capability, descriptor, mapper)` are the only
   public Source issuance paths.
+- ADR-0021 gives each capability a default Component-local subscription slot.
+  Optional `.key(value)` overrides it with a typed application key. Duplicate
+  defaults or explicit keys are rejected before reconciliation. Component names
+  are optional diagnostic metadata; neither API requires an invented name.
 - Capability identity participates in Source reconciliation. Equal
   Subscription identity and descriptor with another Source capability replaces
   the Source.
@@ -560,7 +565,9 @@ exposed and renames the consumer-owned one:
 - `Connector<M>` is a provider-owned, inert address: a `ComponentRef<C>` erased to
   the Message type it accepts, obtained with `ComponentRef::connector` (a `From`
   conversion) or `ComponentRef::accepting` (an explicit pure conversion). It
-  grants no delivery capability and its `Debug` output names `M`, not `C`.
+  grants no delivery capability and its `Debug` type information names `M`.
+  Its diagnostic component label may contain the default Component type name
+  under ADR-0021; this does not add a concrete Component type to the address API.
 - `connect(&port, &connector)` takes a `Connector<M>` for a `Port<M>` and
   nothing else (ADR-0015 amendment); a `ComponentRef` is connected through
   `connector()` or `accepting(map)`. A Port binding is stored as the Port and a

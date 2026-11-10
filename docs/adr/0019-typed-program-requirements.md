@@ -4,6 +4,9 @@
 - Date: November 9, 2026
 - Amends: ADR-0005, ADR-0008, ADR-0009, ADR-0013, and ADR-0018.
 
+ADR-0021 amends Component registration to `component::<C>(config)` with an
+optional diagnostic `.name(...)`; Component identity is issued by the builder.
+
 ## Decision
 
 `Program::builder::<R>()` declares the complete requirement shape and returns
@@ -15,7 +18,7 @@ sharing. There is no public operation to add capabilities after this call.
 Components declare `type Requires: Requirements`. Their immutable settings and
 connections remain in `Config`; `init`, `update`, and `subscriptions` also
 receive `&Capabilities<Self::Requires>`. Registration is staged:
-`component::<C>(id, config).with_capabilities(caps).finish()?`. The final step
+`component::<C>(config).with_capabilities(caps).finish()?`. The final step
 checks capability provenance before calling `init` or changing the graph.
 Components requiring `()` may omit `with_capabilities(())`.
 

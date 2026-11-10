@@ -158,10 +158,10 @@ fn v4_source_event_mapper_is_reusable_before_delivery() {
     let input = declared_0;
     let subscription = Subscription::source_with(
         &input,
-        SubscriptionId::new("input"),
         StreamDescriptor::<u64>::named("phase4/input"),
         StreamMessage::Input,
-    );
+    )
+    .key("input");
 
     assert_eq!(
         subscription
@@ -348,12 +348,8 @@ fn v4_framed_source_events_map_into_component_messages() {
         LengthDelimited { maximum: 8 },
     );
     let mut layer = descriptor.clone().into_layer();
-    let subscription = Subscription::source_with(
-        &socket,
-        SubscriptionId::new("socket"),
-        descriptor,
-        FrameMessage::Socket,
-    );
+    let subscription =
+        Subscription::source_with(&socket, descriptor, FrameMessage::Socket).key("socket");
 
     let messages = layer
         .map_event(SourceEvent::Item(vec![1, b'x', 1, b'y']))

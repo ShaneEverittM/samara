@@ -271,7 +271,6 @@ impl Component for Checker {
     ) -> Subscriptions<Message> {
         Subscriptions::one(Subscription::source_with(
             &capabilities.0,
-            SubscriptionId::new("commands"),
             StdinLines::new(),
             |event| {
                 Message::Input(match event {
@@ -304,12 +303,17 @@ pub type UrlRequirements = (
 /// # }
 /// ```
 pub fn program() -> Result<Program<UrlRequirements>, ProgramBuildError> {
-    let (program, _) = assemble()?;
+    let (program, _, _) = assemble()?;
     Ok(program)
 }
 
-// Tests retain the component reference without exposing it to library consumers.
-fn assemble() -> Result<(Program<UrlRequirements>, ComponentRef<Checker>), ProgramBuildError> {
+// Tests retain addresses and the input capability without exposing internals.
+type Assembled = (
+    Program<UrlRequirements>,
+    ComponentRef<Checker>,
+    SourceCapability<StdinLines>,
+);
+fn assemble() -> Result<Assembled, ProgramBuildError> {
     let (mut builder, (http, stdout, stderr, input)) = Program::builder::<(
         Effect<HttpRequest>,
         Effect<PrintStdout>,
@@ -318,12 +322,12 @@ fn assemble() -> Result<(Program<UrlRequirements>, ComponentRef<Checker>), Progr
     )>();
 
     let checker = builder
-        .component::<Checker>(ComponentId::new("Url Checker"), CheckerConfig {})
-        .with_capabilities((input, stdout, stderr, http))
+        .component::<Checker>(CheckerConfig {})
+        .with_capabilities((input.clone(), stdout, stderr, http))
         .finish()
         .expect("component registration");
 
-    Ok((builder.build()?, checker))
+    Ok((builder.build()?, checker, input))
 }
 
 #[cfg(test)]

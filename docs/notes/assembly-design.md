@@ -136,11 +136,9 @@ pulse journal (`examples/pulse/src/journal.rs`) is the worked example: one
   `build()` with the descriptor named, which is the same contract `Result`
   offers through `must_use`. Decided November 7, 2026: not an end state to
   work toward.
-- **Identity scoping.** `Config` is where a scope or instance id would go.
-  Since ADR-0018 Assemblies declare no Ports, so only `ComponentId` can
-  collide across two installs of one Assembly; whether the runtime should
-  help, for example by prefixing `ComponentId` under an Assembly scope, is
-  open.
+- **Identity scoping.** Settled by ADR-0021: the Program builder issues opaque
+  Component identities, and optional names are diagnostic metadata. Repeated
+  Assembly installations require no Component-name coordination through Config.
 - **Exports beyond a Port.** Settled November 9, 2026 (ADR-0018): every
   Assembly returns a `Connector<Accepts>` as its address, and `Exports` is
   for anything else. The url checker's tests wanted a private `ComponentRef`

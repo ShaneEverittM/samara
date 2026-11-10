@@ -55,12 +55,14 @@ fn shared_capability_reaches_callbacks_and_delayed_effects() {
     let (mut program, (read,)) = Program::builder::<(Effect<Read>,)>();
     let count = Arc::new(AtomicUsize::new(0));
     let first = program
-        .component::<Reader>(ComponentId::new("first"), count.clone())
+        .component::<Reader>(count.clone())
+        .name("first")
         .with_capabilities((read.clone(),))
         .finish()
         .unwrap();
     let second = program
-        .component::<Reader>(ComponentId::new("second"), count.clone())
+        .component::<Reader>(count.clone())
+        .name("second")
         .with_capabilities((read,))
         .finish()
         .unwrap();
@@ -89,14 +91,16 @@ fn foreign_registration_fails_before_init_and_leaves_no_component() {
     let count = Arc::new(AtomicUsize::new(0));
     assert!(
         program
-            .component::<Reader>(ComponentId::new("reader"), count.clone())
+            .component::<Reader>(count.clone())
+            .name("reader")
             .with_capabilities(foreign)
             .finish()
             .is_err()
     );
     assert_eq!(count.load(Ordering::SeqCst), 0);
     program
-        .component::<Reader>(ComponentId::new("reader"), count.clone())
+        .component::<Reader>(count.clone())
+        .name("reader")
         .with_capabilities(own)
         .finish()
         .unwrap();
@@ -109,12 +113,14 @@ async fn live_tuple_binds_one_driver_for_shared_capabilities() {
     let (mut program, (read,)) = Program::builder::<(Effect<Read>,)>();
     let count = Arc::new(AtomicUsize::new(0));
     let first = program
-        .component::<Reader>(ComponentId::new("first"), count.clone())
+        .component::<Reader>(count.clone())
+        .name("first")
         .with_capabilities((read.clone(),))
         .finish()
         .unwrap();
     program
-        .component::<Reader>(ComponentId::new("second"), count)
+        .component::<Reader>(count)
+        .name("second")
         .with_capabilities((read,))
         .finish()
         .unwrap();
@@ -162,11 +168,35 @@ impl Assembly for Library {
         caps: Capabilities<Self::Requires>,
     ) -> Result<(Connector<Self::Accepts>, Self::Exports), ProgramBuildError> {
         let reader = program
-            .component::<Reader>(ComponentId::new("library"), count)
+            .component::<Reader>(count)
+            .name("library")
             .with_capabilities(caps)
             .finish()?;
         Ok((reader.connector(), reader))
     }
+}
+
+#[test]
+fn repeated_assembly_installations_need_no_component_name_coordination() {
+    let (mut program, caps) = Program::builder::<(Effect<Read>,)>();
+    let count = Arc::new(AtomicUsize::new(0));
+    let first = program
+        .install::<Library>(count.clone())
+        .with_capabilities(caps.clone())
+        .finish()
+        .unwrap();
+    let second = program
+        .install::<Library>(count.clone())
+        .with_capabilities(caps)
+        .finish()
+        .unwrap();
+    assert_eq!(
+        first.connector().id().name(),
+        second.connector().id().name()
+    );
+    assert_ne!(first.connector().id(), second.connector().id());
+    assert_eq!(count.load(Ordering::SeqCst), 2);
+    program.build().unwrap();
 }
 
 #[test]

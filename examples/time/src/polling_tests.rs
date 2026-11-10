@@ -97,13 +97,13 @@ fn controlled_http_fixture() -> (
         Program::builder::<(Effect<HttpRequest>, Effect<PrintStderr>)>();
     let port = builder.port(PortId::new(TIME_SERVER_PORT));
     let server = builder
-        .component::<HttpTimeServer>(ComponentId::new("time-server"), HttpTimeServerConfig {})
+        .component::<HttpTimeServer>(HttpTimeServerConfig {})
         .with_capabilities((http, stderr))
         .finish()
         .expect("component registration");
     builder.connect(&port, &server.connector());
     let reader = builder
-        .component::<TimeReader>(ComponentId::new("reader"), TimeReaderConfig(port))
+        .component::<TimeReader>(TimeReaderConfig(port))
         .finish()
         .expect("component registration");
     let runtime = ControlledRuntime::builder(builder.build().unwrap())

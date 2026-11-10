@@ -76,7 +76,8 @@ mod journal_lib {
             _: Capabilities<Self::Requires>,
         ) -> Result<(Connector<JournalMessage>, ()), ProgramBuildError> {
             let recorder = program
-                .component::<Recorder>(ComponentId::new("journal"), ())
+                .component::<Recorder>(())
+                .name("journal")
                 .finish()
                 .expect("component registration");
             Ok((recorder.accepting(RecorderMessage::Journal), ()))
@@ -188,7 +189,8 @@ fn assemble() -> (Program, InstalledAssembly<Journal>, ComponentRef<Monitor>) {
         .expect("assembly installation");
     program.connect(&audit, &journal.connector().accepting(couple));
     let monitor = program
-        .component::<Monitor>(ComponentId::new("monitor"), MonitorConfig { audit })
+        .component::<Monitor>(MonitorConfig { audit })
+        .name("monitor")
         .finish()
         .expect("component registration");
     (
@@ -230,7 +232,7 @@ fn connectors_are_inert_addresses_that_remember_only_what_they_accept() {
         .finish()
         .expect("assembly installation");
     let connector: &Connector<JournalMessage> = journal.connector();
-    assert_eq!(connector.id(), &ComponentId::new("journal"));
+    assert_eq!(connector.id().name(), "journal");
     let shown = format!("{connector:?}");
     assert!(shown.contains("JournalMessage"), "{shown}");
     assert!(!shown.contains("Recorder"), "{shown}");
@@ -239,7 +241,8 @@ fn connectors_are_inert_addresses_that_remember_only_what_they_accept() {
     // `connector()`, which is what `connect` takes.
     let audit = program.port::<AuditMessage>(PortId::new("audit"));
     let monitor = program
-        .component::<Monitor>(ComponentId::new("monitor"), MonitorConfig { audit })
+        .component::<Monitor>(MonitorConfig { audit })
+        .name("monitor")
         .finish()
         .expect("component registration");
     let same: Connector<MonitorMessage> = monitor.connector();
@@ -354,7 +357,8 @@ mod tally_lib {
             _: Capabilities<Self::Requires>,
         ) -> Result<(Connector<TallyMessage>, ()), ProgramBuildError> {
             let counter = program
-                .component::<Counter>(ComponentId::new("tally"), ())
+                .component::<Counter>(())
+                .name("tally")
                 .finish()
                 .expect("component registration");
             Ok((counter.connector(), ()))
@@ -437,13 +441,11 @@ fn assemble_tally(
         .finish()
         .expect("assembly installation");
     let teller = program
-        .component::<Teller>(
-            ComponentId::new("teller"),
-            TellerConfig {
-                tally: tally.connector().clone(),
-                patience,
-            },
-        )
+        .component::<Teller>(TellerConfig {
+            tally: tally.connector().clone(),
+            patience,
+        })
+        .name("teller")
         .finish()
         .expect("component registration");
     (program.build().expect("program assembles"), tally, teller)
@@ -451,7 +453,7 @@ fn assemble_tally(
 
 #[test]
 fn a_component_sends_and_requests_through_a_connector_with_no_port_or_protocol() {
-    let (program, _tally, teller) = assemble_tally(None);
+    let (program, tally, teller) = assemble_tally(None);
     let mut runtime = ControlledRuntime::builder(program)
         .control_all()
         .build()
@@ -487,7 +489,7 @@ fn a_component_sends_and_requests_through_a_connector_with_no_port_or_protocol()
             target_component: Some(target),
             target_port: None,
             ..
-        } if target == &ComponentId::new("tally")
+        } if target == tally.connector().id()
     ));
     assert!(runtime.cancel().expect("clean close").is_clean());
 }
@@ -581,7 +583,8 @@ fn a_connector_is_adapted_to_the_holders_vocabulary_once_with_accepting() {
         "{shown}"
     );
     let monitor = program
-        .component::<DirectMonitor>(ComponentId::new("monitor"), DirectMonitorConfig { audit })
+        .component::<DirectMonitor>(DirectMonitorConfig { audit })
+        .name("monitor")
         .finish()
         .expect("component registration");
     let program = program.build().expect("program assembles");
@@ -645,7 +648,8 @@ fn an_initial_request_to_a_foreign_connector_fails_both_profile_builds() {
             .expect("assembly installation");
         let (mut program, ()) = samara::Program::builder::<()>();
         program
-            .component::<EagerTeller>(ComponentId::new("eager"), foreign.connector().clone())
+            .component::<EagerTeller>(foreign.connector().clone())
+            .name("eager")
             .finish()
             .expect("component registration");
         program

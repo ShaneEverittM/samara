@@ -1706,12 +1706,7 @@ impl LiveCore {
                 )
             };
             let changes = changes.map_err(|duplicate| {
-                self.runtime_fault(
-                    component.clone(),
-                    None,
-                    work,
-                    format!("duplicate desired Subscription identity {duplicate:?}"),
-                )
+                self.runtime_fault(component.clone(), None, work, duplicate.duplicate_message())
             })?;
             if self.scope.is_cancelling() {
                 return Ok(());
@@ -1833,10 +1828,9 @@ impl LiveCore {
     fn apply_subscription_changes(
         &mut self,
         component: &ComponentId,
-        mut changes: Vec<ErasedSubscriptionChange>,
+        changes: Vec<ErasedSubscriptionChange>,
         work: TraceId,
     ) -> Result<(), RuntimeError> {
-        changes.sort_by(|left, right| left.id().cmp(right.id()));
         for change in changes {
             self.observe_drain_cutoff()?;
             match change {
@@ -2269,12 +2263,7 @@ impl LiveCore {
         let changes = self.program.components[index]
             .reconcile_subscriptions_erased()
             .map_err(|duplicate| {
-                self.runtime_fault(
-                    target.clone(),
-                    None,
-                    work,
-                    format!("duplicate desired Subscription identity {duplicate:?}"),
-                )
+                self.runtime_fault(target.clone(), None, work, duplicate.duplicate_message())
             })?;
         if self.scope.is_cancelling() {
             return Ok(());
@@ -2396,7 +2385,7 @@ impl LiveCore {
                 let protocol_type = send.protocol_type();
                 if !Arc::ptr_eq(send.port_program(), &self.program.program) {
                     return Err(self.runtime_fault(
-                        ComponentId::new("<external-port>"),
+                        ComponentId::external_port(),
                         None,
                         work,
                         "send Port belongs to another Program",
@@ -2404,7 +2393,7 @@ impl LiveCore {
                 }
                 let Some(binding_index) = self.binding_index(protocol_type, &port) else {
                     return Err(self.runtime_fault(
-                        ComponentId::new("<external-port>"),
+                        ComponentId::external_port(),
                         None,
                         work,
                         "send Port has no runtime binding",
@@ -2458,7 +2447,7 @@ impl LiveCore {
                 let protocol_type = request.protocol_type();
                 if !Arc::ptr_eq(request.port_program(), &self.program.program) {
                     return Err(self.runtime_fault(
-                        ComponentId::new("<external-port>"),
+                        ComponentId::external_port(),
                         None,
                         work,
                         "request Port belongs to another Program",
@@ -2466,7 +2455,7 @@ impl LiveCore {
                 }
                 let Some(binding_index) = self.binding_index(protocol_type, &port) else {
                     return Err(self.runtime_fault(
-                        ComponentId::new("<external-port>"),
+                        ComponentId::external_port(),
                         None,
                         work,
                         "request Port has no runtime binding",
@@ -2485,7 +2474,7 @@ impl LiveCore {
                 let reply_type = request.reply_type();
                 let deadline = request.deadline();
                 let token = RequestToken::new(correlation, self.program.program.clone());
-                let owner = ComponentId::new("<external-port>");
+                let owner = ComponentId::external_port();
                 let deadline_task =
                     self.schedule_request_deadline(correlation, deadline, &owner, work);
                 let (conversion, completion) = request.into_conversion();
@@ -2732,7 +2721,7 @@ impl LiveCore {
                 Err(_) => {
                     let work = self.work();
                     let error = self.runtime_fault(
-                        ComponentId::new("<runtime>"),
+                        ComponentId::runtime(),
                         None,
                         work,
                         "runtime-owned task failed outside Driver supervision",
@@ -2847,7 +2836,7 @@ impl LiveCore {
                         Some(Err(_)) => {
                             let work = self.work();
                             let error = self.runtime_fault(
-                                ComponentId::new("<runtime>"),
+                                ComponentId::runtime(),
                                 None,
                                 work,
                                 "runtime-owned task failed outside Driver supervision",
@@ -2863,7 +2852,7 @@ impl LiveCore {
                     let Some(event) = event else {
                         let work = self.work();
                         let error = self.runtime_fault(
-                            ComponentId::new("<runtime>"),
+                            ComponentId::runtime(),
                             None,
                             work,
                             "live runtime event channel closed unexpectedly",
@@ -3078,12 +3067,14 @@ mod tests {
             _: &crate::Capabilities<Self::Requires>,
             model: &Self::Model,
         ) -> Subscriptions<Self::Message> {
-            Subscriptions::one(Subscription::source_with(
-                &config.source,
-                SubscriptionId::new("generation"),
-                GenerationSource(model.generation),
-                GenerationMessage::Event,
-            ))
+            Subscriptions::one(
+                Subscription::source_with(
+                    &config.source,
+                    GenerationSource(model.generation),
+                    GenerationMessage::Event,
+                )
+                .key("generation"),
+            )
         }
     }
 
@@ -3164,12 +3155,14 @@ mod tests {
             _: &crate::Capabilities<Self::Requires>,
             _model: &Self::Model,
         ) -> Subscriptions<Self::Message> {
-            Subscriptions::one(Subscription::source_with(
-                &config.source,
-                SubscriptionId::new("framed-drain"),
-                Framed::new(GenerationSource(1), config.decoder.clone()),
-                std::convert::identity,
-            ))
+            Subscriptions::one(
+                Subscription::source_with(
+                    &config.source,
+                    Framed::new(GenerationSource(1), config.decoder.clone()),
+                    std::convert::identity,
+                )
+                .key("framed-drain"),
+            )
         }
     }
 
@@ -3217,10 +3210,8 @@ mod tests {
             crate::Program::builder::<(crate::Source<GenerationSource>,)>();
         let source = declared_0;
         let component = builder
-            .component::<GenerationComponent>(
-                ComponentId::new("generation"),
-                GenerationComponentConfig { source },
-            )
+            .component::<GenerationComponent>(GenerationComponentConfig { source })
+            .name("generation")
             .finish()
             .expect("component registration");
         let program = builder.build().expect("valid generation Program");
@@ -3290,10 +3281,8 @@ mod tests {
             crate::Program::builder::<(crate::Effect<CutoffIntent>,)>();
         let effect = declared_0;
         let component = builder
-            .component::<CutoffComponent>(
-                ComponentId::new("cancel-cutoff"),
-                CutoffComponentConfig { effect },
-            )
+            .component::<CutoffComponent>(CutoffComponentConfig { effect })
+            .name("cancel-cutoff")
             .finish()
             .expect("component registration");
         let program = builder.build().expect("valid cutoff Program");
@@ -3431,15 +3420,13 @@ mod tests {
         )>();
         let source = declared_0;
         let _ = builder
-            .component::<FramedDrainComponent>(
-                ComponentId::new("framed-drain"),
-                FramedDrainComponentConfig {
-                    source,
-                    decoder: DrainFailDecoder {
-                        finish_calls: finish_calls.clone(),
-                    },
+            .component::<FramedDrainComponent>(FramedDrainComponentConfig {
+                source,
+                decoder: DrainFailDecoder {
+                    finish_calls: finish_calls.clone(),
                 },
-            )
+            })
+            .name("framed-drain")
             .finish()
             .expect("component registration");
         let program = builder.build().expect("valid framed Drain Program");
@@ -3495,10 +3482,8 @@ mod tests {
             crate::Program::builder::<(crate::Source<GenerationSource>,)>();
         let source = declared_0;
         let component = builder
-            .component::<GenerationComponent>(
-                ComponentId::new("drain-panic"),
-                GenerationComponentConfig { source },
-            )
+            .component::<GenerationComponent>(GenerationComponentConfig { source })
+            .name("drain-panic")
             .finish()
             .expect("component registration");
         let program = builder.build().expect("valid Source panic Program");
@@ -3543,10 +3528,8 @@ mod tests {
                 crate::Program::builder::<(crate::Source<GenerationSource>,)>();
             let source = declared_0;
             let component = builder
-                .component::<GenerationComponent>(
-                    ComponentId::new("escalation-panic"),
-                    GenerationComponentConfig { source },
-                )
+                .component::<GenerationComponent>(GenerationComponentConfig { source })
+                .name("escalation-panic")
                 .finish()
                 .expect("component registration");
             let (entered, entered_rx) = tokio::sync::oneshot::channel();
@@ -3600,7 +3583,7 @@ mod tests {
             .build()
             .expect("empty timer test Program");
         let mut core = LiveCore::new(program, LiveBindings::new(), scope, receiver);
-        let component = ComponentId::new("timer-owner");
+        let component = ComponentId::new(0, "timer-owner");
         let work = TraceId(17);
         core.spawn_owned(
             TaskContext::Timer {
@@ -3664,8 +3647,8 @@ mod tests {
             scope,
             gate: Arc::new(SourceGate::new()),
             stamp: SourceStamp {
-                component: ComponentId::new("tcp-read-error"),
-                subscription: SubscriptionId::new("tcp"),
+                component: ComponentId::new(0, "tcp-read-error"),
+                subscription: SubscriptionId::key("tcp"),
                 generation: 1,
             },
             terminal_type: TypeId::of::<TcpBytes>(),
@@ -3701,7 +3684,7 @@ mod tests {
         let task = core.spawn_owned(
             TaskContext::Effect {
                 id: 7,
-                component: ComponentId::new("cancel-race"),
+                component: ComponentId::new(0, "cancel-race"),
                 descriptor_type: "CancelRaceEffect",
                 work: TraceId(0),
             },
@@ -3711,7 +3694,7 @@ mod tests {
         let calls = mapper_calls.clone();
         core.effects.push(PendingEffect {
             id: 7,
-            component: ComponentId::new("cancel-race"),
+            component: ComponentId::new(0, "cancel-race"),
             descriptor_type_name: "CancelRaceEffect",
             mapper: Some(Box::new(move |_| {
                 calls.fetch_add(1, Ordering::SeqCst);
@@ -3726,7 +3709,7 @@ mod tests {
         // application driving. The real Effect result behind it was accepted
         // first, so its one-shot mapper must nevertheless be consumed once.
         assert!(scope.accept_finite(LiveEvent::Message(QueuedMessage {
-            target: ComponentId::new("must-not-drive"),
+            target: ComponentId::new(0, "must-not-drive"),
             target_message_type: TypeId::of::<()>(),
             message_type_name: std::any::type_name::<()>(),
             message: Box::new(()),
@@ -3797,8 +3780,8 @@ mod tests {
                 scope: scope.clone(),
                 gate: Arc::new(SourceGate::new()),
                 stamp: SourceStamp {
-                    component: ComponentId::new("one-shot"),
-                    subscription: SubscriptionId::new("stream"),
+                    component: ComponentId::new(0, "one-shot"),
+                    subscription: SubscriptionId::key("stream"),
                     generation,
                 },
                 terminal_type: TypeId::of::<StreamDescriptor<u8>>(),
@@ -3824,8 +3807,8 @@ mod tests {
             scope,
             gate: Arc::new(SourceGate::new()),
             stamp: SourceStamp {
-                component: ComponentId::new("source-fifo"),
-                subscription: SubscriptionId::new("stream"),
+                component: ComponentId::new(0, "source-fifo"),
+                subscription: SubscriptionId::key("stream"),
                 generation: 1,
             },
             terminal_type: TypeId::of::<StreamDescriptor<u8>>(),
@@ -3870,8 +3853,8 @@ mod tests {
             scope,
             gate: Arc::new(SourceGate::new()),
             stamp: SourceStamp {
-                component: ComponentId::new("stdin-reader"),
-                subscription: SubscriptionId::new("stdin"),
+                component: ComponentId::new(0, "stdin-reader"),
+                subscription: SubscriptionId::key("stdin"),
                 generation: 1,
             },
             terminal_type: TypeId::of::<StdinLines>(),

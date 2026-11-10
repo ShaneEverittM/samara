@@ -25,9 +25,6 @@ use samara::prelude::*;
 /// Logical first-party input bound by the surrounding runtime world.
 const INCREMENT_INPUT: &str = "counter/increment-input";
 
-/// Component-local identity used to reconcile its desire for that input.
-const INCREMENT_SUBSCRIPTION: &str = "increments";
-
 /// All mutable application state owned by the Counter Component.
 #[derive(Debug, Default, PartialEq, Eq)]
 struct CounterModel {
@@ -107,7 +104,6 @@ impl Component for Counter {
 
         Subscriptions::one(Subscription::source_with(
             &capabilities.0,
-            SubscriptionId::new(INCREMENT_SUBSCRIPTION),
             config.increments.clone(),
             |event| match event {
                 SourceEvent::Item(amount) => CounterMessage::Increment(amount),
@@ -133,7 +129,7 @@ fn program(
     let (mut program, (input,)) = Program::builder::<(Source<StreamDescriptor<u64>>,)>();
 
     let counter = program
-        .component::<Counter>(ComponentId::new("counter"), CounterConfig { increments })
+        .component::<Counter>(CounterConfig { increments })
         .with_capabilities((input.clone(),))
         .finish()
         .expect("component registration");
@@ -206,7 +202,7 @@ mod tests {
 
         assert_eq!(
             Counter::subscriptions(&config, &config_capabilities, &model)
-                .find::<StreamDescriptor<u64>>(&SubscriptionId::new(INCREMENT_SUBSCRIPTION)),
+                .find::<StreamDescriptor<u64>>(&config_capabilities.0),
             Some(&increments)
         );
 

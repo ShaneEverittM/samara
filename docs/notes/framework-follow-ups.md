@@ -156,8 +156,8 @@ a journal Component; exploratory proposals, not accepted API decisions.
   (ADR-0013); design, rejected alternatives, and remaining open items are in
   the [Assembly design note](assembly-design.md). Amended November 9 by
   ADR-0018: every Assembly returns a `Connector<Accepts>` and declares no
-  Ports. Still open from it: `ComponentId` scoping through `Config`, named
-  `Requires` positions, and a
+  Ports. ADR-0021 resolves Component identity scoping with builder-issued IDs
+  and optional diagnostic names. Still open: named `Requires` positions and a
   Port-level controlled ingress so an Assembly can be tested from outside its
   module.
 

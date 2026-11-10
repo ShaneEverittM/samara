@@ -108,7 +108,8 @@ fn shared_failure_message_preserves_domain_mapping_and_trace_reasons() {
     for (text_outcome, count_outcome, expected, expected_trace) in cases {
         let (mut builder, capabilities) = Program::builder::<<Reader as Component>::Requires>();
         let reader = builder
-            .component::<Reader>(ComponentId::new("reader"), ())
+            .component::<Reader>(())
+            .name("reader")
             .with_capabilities(capabilities)
             .finish()
             .unwrap();

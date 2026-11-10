@@ -95,11 +95,9 @@ impl Component for StdinProbe {
         if model.terminal.is_some() {
             Subscriptions::none()
         } else {
-            Subscriptions::one(Subscription::source(
-                &config.stdin,
-                SubscriptionId::new(STDIN_SUBSCRIPTION),
-                StdinLines::new(),
-            ))
+            Subscriptions::one(
+                Subscription::source(&config.stdin, StdinLines::new()).key(STDIN_SUBSCRIPTION),
+            )
         }
     }
 }
@@ -112,12 +110,10 @@ fn stdin_program() -> (
     let (mut builder, (declared_0,)) = samara::Program::builder::<(samara::Source<StdinLines>,)>();
     let stdin = declared_0;
     let probe = builder
-        .component::<StdinProbe>(
-            ComponentId::new("stdin-probe"),
-            StdinProbeConfig {
-                stdin: stdin.clone(),
-            },
-        )
+        .component::<StdinProbe>(StdinProbeConfig {
+            stdin: stdin.clone(),
+        })
+        .name("stdin-probe")
         .finish()
         .expect("component registration");
     (builder.build().expect("valid stdin program"), probe, stdin)
@@ -156,7 +152,7 @@ fn controlled_stdin_delivers_lines_and_normal_eof() {
         runtime
             .emit_source::<StdinProbe, StdinLines>(
                 &probe,
-                &SubscriptionId::new(STDIN_SUBSCRIPTION),
+                &SubscriptionId::key(STDIN_SUBSCRIPTION),
                 SourceEvent::Item(line.to_owned()),
             )
             .expect("line accepted");
@@ -164,7 +160,7 @@ fn controlled_stdin_delivers_lines_and_normal_eof() {
     runtime
         .emit_source::<StdinProbe, StdinLines>(
             &probe,
-            &SubscriptionId::new(STDIN_SUBSCRIPTION),
+            &SubscriptionId::key(STDIN_SUBSCRIPTION),
             SourceEvent::Ended,
         )
         .expect("EOF accepted");
@@ -196,7 +192,7 @@ fn controlled_stdin_delivers_typed_failure_without_live_fallback() {
     runtime
         .emit_source::<StdinProbe, StdinLines>(
             &probe,
-            &SubscriptionId::new(STDIN_SUBSCRIPTION),
+            &SubscriptionId::key(STDIN_SUBSCRIPTION),
             SourceEvent::Failed(failure.clone()),
         )
         .expect("failure accepted");

@@ -88,12 +88,9 @@ impl Component for Recorder {
         (_stamp, pulses): &Capabilities<RecorderNeeds>,
         _: &Vec<String>,
     ) -> Subscriptions<RecorderMessage> {
-        Subscriptions::one(Subscription::source_with(
-            pulses,
-            SubscriptionId::new("pulses"),
-            Pulses,
-            RecorderMessage::Pulse,
-        ))
+        Subscriptions::one(
+            Subscription::source_with(pulses, Pulses, RecorderMessage::Pulse).key("pulses"),
+        )
     }
 }
 
@@ -115,7 +112,8 @@ impl Assembly for Recorder {
         (stamp, pulses): Capabilities<RecorderNeeds>,
     ) -> Result<(Connector<LedgerMessage>, RecorderExports), ProgramBuildError> {
         let recorder = program
-            .component::<Recorder>(ComponentId::new("recorder"), ())
+            .component::<Recorder>(())
+            .name("recorder")
             .with_capabilities((stamp, pulses))
             .finish()?;
         Ok((
@@ -184,11 +182,8 @@ fn assemble() -> (
 #[test]
 fn install_returns_a_token_carrying_the_connector_and_exports() {
     let (_program, recorder, _) = assemble();
-    assert_eq!(recorder.connector().id(), &ComponentId::new("recorder"));
-    assert_eq!(
-        recorder.exports().recorder.id(),
-        &ComponentId::new("recorder")
-    );
+    assert_eq!(recorder.connector().id(), recorder.exports().recorder.id());
+    assert_eq!(recorder.exports().recorder.id().name(), "recorder");
     assert!(format!("{recorder:?}").contains("Recorder"));
 }
 

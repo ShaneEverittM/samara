@@ -77,7 +77,7 @@ fn program(
     let port = builder.port::<JournalMessage>(PortId::new("journal"));
     builder.connect(&port, journal.connector());
     let client = builder
-        .component::<JournalClient>(ComponentId::new("client"), journal.connector().clone())
+        .component::<JournalClient>(journal.connector().clone())
         .finish()
         .unwrap();
     (builder.build().unwrap(), client, port)
@@ -132,12 +132,9 @@ fn assembly_uses_default_and_user_supplied_filenames_in_controlled_appends() {
 fn append_outcomes_are_discarded_without_automatic_retry() {
     let (mut builder, capabilities) = Program::builder::<JournalNeeds>();
     let recorder = builder
-        .component::<Recorder>(
-            ComponentId::new("recorder"),
-            RecorderConfig {
-                file: "chosen.log".into(),
-            },
-        )
+        .component::<Recorder>(RecorderConfig {
+            file: "chosen.log".into(),
+        })
         .with_capabilities(capabilities)
         .finish()
         .unwrap();

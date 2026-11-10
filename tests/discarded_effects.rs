@@ -82,10 +82,8 @@ fn controlled_discarded_outcome_is_traced_without_scheduling_a_message() {
     let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<PrintStdout>,)>();
     let stdout = declared_0;
     let probe = program
-        .component::<PrintProbe>(
-            ComponentId::new("discarded-print"),
-            PrintProbeConfig { stdout },
-        )
+        .component::<PrintProbe>(PrintProbeConfig { stdout })
+        .name("discarded-print")
         .finish()
         .expect("component registration");
     let mut runtime = ControlledRuntime::builder(program.build().unwrap())
@@ -249,10 +247,8 @@ fn gated_program() -> (TestProgram, ComponentRef<GateProbe>) {
     let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<GateEffect>,)>();
     let effect = declared_0;
     let probe = program
-        .component::<GateProbe>(
-            ComponentId::new("discarded-gate"),
-            GateProbeConfig { effect },
-        )
+        .component::<GateProbe>(GateProbeConfig { effect })
+        .name("discarded-gate")
         .finish()
         .expect("component registration");
     (program.build().unwrap(), probe)

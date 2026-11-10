@@ -29,9 +29,6 @@ use std::{future::pending, sync::Arc};
 
 use samara::prelude::*;
 
-/// Stable identity for the telemetry feed's reconciled subscription.
-const SOCKET: &str = "telemetry/socket";
-
 /// Assembly-time identity of the health dependency used by `Telemetry`.
 const HEALTH: &str = "health/primary";
 
@@ -540,7 +537,6 @@ impl Component for Telemetry {
         // identity.
         Subscriptions::one(Subscription::source_with(
             &capabilities.1,
-            SubscriptionId::new(SOCKET),
             Framed::new(
                 TcpBytes {
                     endpoint: config.endpoint.clone(),
@@ -586,6 +582,9 @@ struct AppRefs {
 
     /// Reference used by the host to send telemetry messages.
     telemetry: ComponentRef<Telemetry>,
+
+    /// Source capability retained for controlled input selection.
+    socket: SourceCapability<TelemetryFeed>,
 }
 
 /// Declares the Component graph and resolves Port dependency injection.
@@ -601,7 +600,7 @@ fn program() -> (AppProgram, AppRefs) {
     // message enum; the message's Rust type alone is not a global service key.
     let health_port = program.port(PortId::new(HEALTH));
     let health = program
-        .component::<Health>(ComponentId::new("health"), ())
+        .component::<Health>(())
         .finish()
         .expect("component registration");
 
@@ -610,13 +609,10 @@ fn program() -> (AppProgram, AppRefs) {
     program.connect(&health_port, &health.connector());
 
     let telemetry = program
-        .component::<Telemetry>(
-            ComponentId::new("telemetry"),
-            TelemetryConfig {
-                health: health_port.clone(),
-            },
-        )
-        .with_capabilities((storage, socket))
+        .component::<Telemetry>(TelemetryConfig {
+            health: health_port.clone(),
+        })
+        .with_capabilities((storage, socket.clone()))
         .finish()
         .expect("component registration");
 
@@ -626,6 +622,7 @@ fn program() -> (AppProgram, AppRefs) {
             health,
             health_port,
             telemetry,
+            socket,
         },
     )
 }
@@ -680,8 +677,8 @@ fn controlled_shape() -> Result<(), RuntimeError> {
 
     // Controlled execution exposes declared runtime state for assertions; it
     // does not require poking at a Driver's private task or socket.
-    let socket = SubscriptionId::new(SOCKET);
-    let active: TelemetryFeed = runtime.source_descriptor(&refs.telemetry, &socket)?;
+    let socket = &refs.socket;
+    let active: TelemetryFeed = runtime.source_descriptor(&refs.telemetry, socket)?;
     assert_eq!(active.source.endpoint, Endpoint::new("simulated:7000"));
 
     // Inject raw chunks at the terminal TcpBytes descriptor. The first chunk is
@@ -689,12 +686,12 @@ fn controlled_shape() -> Result<(), RuntimeError> {
     // same decoder Layer therefore runs in controlled and live execution.
     runtime.emit_source::<Telemetry, TcpBytes>(
         &refs.telemetry,
-        &socket,
+        socket,
         SourceEvent::Item(vec![0, 3, b'a']),
     )?;
     runtime.emit_source::<Telemetry, TcpBytes>(
         &refs.telemetry,
-        &socket,
+        socket,
         SourceEvent::Item(vec![b'b', b'c', 0, 1, b'x']),
     )?;
     runtime.run_until_idle()?;
@@ -716,12 +713,12 @@ fn controlled_shape() -> Result<(), RuntimeError> {
         TelemetryMessage::Connect(config("simulated:8000", 2)),
     )?;
     runtime.run_until_idle()?;
-    let replaced: TelemetryFeed = runtime.source_descriptor(&refs.telemetry, &socket)?;
+    let replaced: TelemetryFeed = runtime.source_descriptor(&refs.telemetry, socket)?;
     assert_ne!(active, replaced);
 
     runtime.emit_source::<Telemetry, TcpBytes>(
         &refs.telemetry,
-        &socket,
+        socket,
         SourceEvent::Failed(TcpError::Read("connection reset".to_owned())),
     )?;
     runtime.run_until_idle()?;
@@ -826,7 +823,7 @@ mod tests {
         let (component, component_capabilities) =
             (TelemetryConfig { health }, (declared_0, declared_1));
         let mut model = Telemetry::init(&component, &component_capabilities).model;
-        let id = SubscriptionId::new(SOCKET);
+        let id = &component_capabilities.1;
 
         let _ = Telemetry::update(
             &component,
@@ -835,7 +832,7 @@ mod tests {
             TelemetryMessage::Connect(config("one:7000", 1)),
         );
         let first = Telemetry::subscriptions(&component, &component_capabilities, &model);
-        let first = first.find::<TelemetryFeed>(&id).unwrap();
+        let first = first.find::<TelemetryFeed>(id).unwrap();
 
         let _ = Telemetry::update(
             &component,
@@ -844,7 +841,7 @@ mod tests {
             TelemetryMessage::Connect(config("two:7000", 2)),
         );
         let second = Telemetry::subscriptions(&component, &component_capabilities, &model);
-        let second = second.find::<TelemetryFeed>(&id).unwrap();
+        let second = second.find::<TelemetryFeed>(id).unwrap();
 
         assert_ne!(first, second);
         assert_eq!(first.source.endpoint, Endpoint::new("one:7000"));
@@ -859,7 +856,7 @@ mod tests {
         let primary = builder.port::<HealthProtocolMessage>(PortId::new("health/primary"));
         let fallback = builder.port::<HealthProtocolMessage>(PortId::new("health/fallback"));
         let provider = builder
-            .component::<Health>(ComponentId::new("health"), ())
+            .component::<Health>(())
             .finish()
             .expect("component registration");
 

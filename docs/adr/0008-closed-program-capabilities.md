@@ -71,14 +71,11 @@ state, but it cannot add a new dependency kind or exact resource capability.
 The intended shape is:
 
 ```rust,ignore
-let mut program = Program::builder();
-let http = program.effect::<HttpRequest>();
-let input = program.source::<StreamDescriptor<Input>>();
-
-let component = program.component(
-    ComponentId::new("worker"),
-    Worker { http, input },
-);
+let (mut program, (http, input)) =
+    Program::builder::<(Effect<HttpRequest>, Source<StreamDescriptor<Input>>)>() ;
+let component = program.component::<Worker>(settings)
+    .with_capabilities((http, input))
+    .finish()?;
 let program = program.build()?;
 ```
 
@@ -95,7 +92,6 @@ Command::effect_with(&self.http, request, Message::HttpFinished)
 
 Subscription::source_with(
     &self.input,
-    SubscriptionId::new("input"),
     descriptor,
     Message::Input,
 )

@@ -109,12 +109,14 @@ impl Component for Counter {
         if model.closed {
             Subscriptions::none()
         } else {
-            Subscriptions::one(Subscription::source_with(
-                &config.input,
-                SubscriptionId::new("input"),
-                config.input_descriptor.clone(),
-                CounterMessage::Input,
-            ))
+            Subscriptions::one(
+                Subscription::source_with(
+                    &config.input,
+                    config.input_descriptor.clone(),
+                    CounterMessage::Input,
+                )
+                .key("input"),
+            )
         }
     }
 }
@@ -133,14 +135,12 @@ fn counter_program(
     let input = declared_0;
     let record = declared_1;
     let counter = program
-        .component::<Counter>(
-            ComponentId::new("counter"),
-            CounterConfig {
-                input: input.clone(),
-                input_descriptor,
-                record,
-            },
-        )
+        .component::<Counter>(CounterConfig {
+            input: input.clone(),
+            input_descriptor,
+            record,
+        })
+        .name("counter")
         .finish()
         .expect("component registration");
     (program.build().expect("valid program"), counter, input)
@@ -270,13 +270,11 @@ async fn phase6_scope_cancel_drops_effect_without_invoking_mapper() {
     let (entered, entered_rx) = tokio::sync::oneshot::channel();
     let effect = declared_0;
     let probe = program
-        .component::<CancelProbe>(
-            ComponentId::new("cancel-probe"),
-            CancelProbeConfig {
-                mapper_calls: mapper_calls.clone(),
-                effect,
-            },
-        )
+        .component::<CancelProbe>(CancelProbeConfig {
+            mapper_calls: mapper_calls.clone(),
+            effect,
+        })
+        .name("cancel-probe")
         .finish()
         .expect("component registration");
     let runtime = Runtime::builder(program.build().expect("valid program"))
@@ -307,13 +305,11 @@ async fn phase6_cancelled_shutdown_future_detaches_no_runtime_work() {
     let (entered, entered_rx) = tokio::sync::oneshot::channel();
     let effect = declared_0;
     let probe = program
-        .component::<CancelProbe>(
-            ComponentId::new("shutdown-future-cancel"),
-            CancelProbeConfig {
-                mapper_calls: mapper_calls.clone(),
-                effect,
-            },
-        )
+        .component::<CancelProbe>(CancelProbeConfig {
+            mapper_calls: mapper_calls.clone(),
+            effect,
+        })
+        .name("shutdown-future-cancel")
         .finish()
         .expect("component registration");
     let runtime = Runtime::builder(program.build().expect("valid program"))
@@ -375,13 +371,11 @@ async fn shutdown_escalation_joins_pending_effect_without_mapping() {
     let (entered, entered_rx) = tokio::sync::oneshot::channel();
     let effect = declared_0;
     let probe = program
-        .component::<CancelProbe>(
-            ComponentId::new("escalation-effect"),
-            CancelProbeConfig {
-                mapper_calls: mapper_calls.clone(),
-                effect,
-            },
-        )
+        .component::<CancelProbe>(CancelProbeConfig {
+            mapper_calls: mapper_calls.clone(),
+            effect,
+        })
+        .name("escalation-effect")
         .finish()
         .expect("component registration");
     let runtime = Runtime::builder(program.build().expect("valid program"))
@@ -466,13 +460,11 @@ async fn phase6_cancel_stops_driving_without_mapping_scope_abort() {
     let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<Hang>,)>();
     let effect = declared_0;
     let _ = program
-        .component::<InitialCancelProbe>(
-            ComponentId::new("immediate-cancel"),
-            InitialCancelProbeConfig {
-                mapper_calls: mapper_calls.clone(),
-                effect,
-            },
-        )
+        .component::<InitialCancelProbe>(InitialCancelProbeConfig {
+            mapper_calls: mapper_calls.clone(),
+            effect,
+        })
+        .name("immediate-cancel")
         .finish()
         .expect("component registration");
     let runtime = Runtime::builder(program.build().expect("valid program"))
@@ -502,13 +494,11 @@ async fn shutdown_escalation_before_owner_poll_cannot_restart_work() {
     let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<Hang>,)>();
     let effect = declared_0;
     program
-        .component::<InitialCancelProbe>(
-            ComponentId::new("early-escalation"),
-            InitialCancelProbeConfig {
-                mapper_calls: mapper_calls.clone(),
-                effect,
-            },
-        )
+        .component::<InitialCancelProbe>(InitialCancelProbeConfig {
+            mapper_calls: mapper_calls.clone(),
+            effect,
+        })
+        .name("early-escalation")
         .finish()
         .expect("component registration");
     let mut task = Runtime::builder(program.build().expect("valid program"))
@@ -581,7 +571,8 @@ async fn phase6_driver_panic_faults_and_cleans_scope() {
     let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<PanicEffect>,)>();
     let effect = declared_0;
     let probe = program
-        .component::<PanicProbe>(ComponentId::new("panic-probe"), PanicProbeConfig { effect })
+        .component::<PanicProbe>(PanicProbeConfig { effect })
+        .name("panic-probe")
         .finish()
         .expect("component registration");
     let runtime = Runtime::builder(program.build().expect("valid program"))
@@ -596,7 +587,7 @@ async fn phase6_driver_panic_faults_and_cleans_scope() {
         .shutdown(Shutdown::Drain)
         .await
         .expect_err("Driver panic must fault the runtime");
-    assert_eq!(error.component(), Some(&ComponentId::new("panic-probe")));
+    assert_eq!(error.component(), Some(probe.id()));
     assert!(handle.send(()).await.is_err());
 }
 
@@ -605,10 +596,8 @@ async fn shutdown_requests_preserve_completed_fault() {
     let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<PanicEffect>,)>();
     let effect = declared_0;
     let probe = program
-        .component::<PanicProbe>(
-            ComponentId::new("preserved-fault"),
-            PanicProbeConfig { effect },
-        )
+        .component::<PanicProbe>(PanicProbeConfig { effect })
+        .name("preserved-fault")
         .finish()
         .expect("component registration");
     let runtime = Runtime::builder(program.build().expect("valid program"))
@@ -790,12 +779,14 @@ impl Component for SourceProbe {
         model
             .generation
             .map_or_else(Subscriptions::none, |generation| {
-                Subscriptions::one(Subscription::source_with(
-                    &config.source,
-                    SubscriptionId::new("scripted"),
-                    ScriptedSource { generation },
-                    SourceMessage::Event,
-                ))
+                Subscriptions::one(
+                    Subscription::source_with(
+                        &config.source,
+                        ScriptedSource { generation },
+                        SourceMessage::Event,
+                    )
+                    .key("scripted"),
+                )
             })
     }
 }
@@ -815,14 +806,12 @@ fn source_fixture(causal_timer: bool) -> SourceFixture {
     let source = declared_0;
     let observe = declared_1;
     let component = program
-        .component::<SourceProbe>(
-            ComponentId::new("source-probe"),
-            SourceProbeConfig {
-                causal_timer,
-                source,
-                observe,
-            },
-        )
+        .component::<SourceProbe>(SourceProbeConfig {
+            causal_timer,
+            source,
+            observe,
+        })
+        .name("source-probe")
         .finish()
         .expect("component registration");
     let (observation_tx, observations) = tokio::sync::mpsc::unbounded_channel();
@@ -927,14 +916,12 @@ async fn phase6_silent_source_return_ends_once() {
     let source = declared_0;
     let observe = declared_1;
     let _component = program
-        .component::<SourceProbe>(
-            ComponentId::new("silent-source"),
-            SourceProbeConfig {
-                causal_timer: false,
-                source,
-                observe,
-            },
-        )
+        .component::<SourceProbe>(SourceProbeConfig {
+            causal_timer: false,
+            source,
+            observe,
+        })
+        .name("silent-source")
         .finish()
         .expect("component registration");
     let starts = Arc::new(AtomicUsize::new(0));
@@ -998,14 +985,12 @@ async fn phase6_source_driver_panics_fault_and_clean_the_scope() {
         let source = declared_0;
         let observe = declared_1;
         let _ = program
-            .component::<SourceProbe>(
-                ComponentId::new(format!("source-panic-{mode:?}")),
-                SourceProbeConfig {
-                    causal_timer: false,
-                    source,
-                    observe,
-                },
-            )
+            .component::<SourceProbe>(SourceProbeConfig {
+                causal_timer: false,
+                source,
+                observe,
+            })
+            .name(format!("source-panic-{mode:?}"))
             .finish()
             .expect("component registration");
         let (entered, entered_rx) = tokio::sync::oneshot::channel();
@@ -1182,10 +1167,8 @@ async fn admitted_burst(count: usize) -> Vec<u64> {
     let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<Record>,)>();
     let record = declared_0;
     let probe = program
-        .component::<AdmissionProbe>(
-            ComponentId::new("admission-probe"),
-            AdmissionProbeConfig { record },
-        )
+        .component::<AdmissionProbe>(AdmissionProbeConfig { record })
+        .name("admission-probe")
         .finish()
         .expect("component registration");
     let values = Arc::new(Mutex::new(Vec::new()));
@@ -1237,10 +1220,8 @@ async fn phase6_shutdown_closes_external_ingress() -> Result<(), RuntimeError> {
     let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<Record>,)>();
     let record = declared_0;
     let probe = program
-        .component::<AdmissionProbe>(
-            ComponentId::new("closed-ingress"),
-            AdmissionProbeConfig { record },
-        )
+        .component::<AdmissionProbe>(AdmissionProbeConfig { record })
+        .name("closed-ingress")
         .finish()
         .expect("component registration");
     let values = Arc::new(Mutex::new(Vec::new()));
@@ -1310,10 +1291,8 @@ async fn phase6_knowable_live_binding_errors_fail_build() {
         );
     let effect = declared_0;
     let _ = program
-        .component::<InitialEffectComponent>(
-            ComponentId::new("duplicate-effect"),
-            InitialEffectComponentConfig { effect },
-        )
+        .component::<InitialEffectComponent>(InitialEffectComponentConfig { effect })
+        .name("duplicate-effect")
         .finish()
         .expect("component registration");
     assert!(
@@ -1331,14 +1310,12 @@ async fn phase6_knowable_live_binding_errors_fail_build() {
     let source = declared_0;
     let observe = declared_1;
     let _ = program
-        .component::<SourceProbe>(
-            ComponentId::new("duplicate-source"),
-            SourceProbeConfig {
-                causal_timer: false,
-                source,
-                observe,
-            },
-        )
+        .component::<SourceProbe>(SourceProbeConfig {
+            causal_timer: false,
+            source,
+            observe,
+        })
+        .name("duplicate-source")
         .finish()
         .expect("component registration");
     let (sinks, _sink_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1497,14 +1474,12 @@ async fn phase6_effect_success_and_failure_map_exactly_once() -> Result<(), Runt
     let query = declared_0;
     let observe = declared_1;
     let probe = program
-        .component::<QueryProbe>(
-            ComponentId::new("query"),
-            QueryProbeConfig {
-                mapper_calls: mapper_calls.clone(),
-                query,
-                observe,
-            },
-        )
+        .component::<QueryProbe>(QueryProbeConfig {
+            mapper_calls: mapper_calls.clone(),
+            query,
+            observe,
+        })
+        .name("query")
         .finish()
         .expect("component registration");
     let runtime = Runtime::builder(program.build().expect("valid program"))
@@ -1621,12 +1596,12 @@ impl Component for DrainGateProbe {
         desired: &Self::Model,
     ) -> Subscriptions<Self::Message> {
         if *desired {
-            Subscriptions::one(Subscription::source_with(
-                &config.source,
-                SubscriptionId::new("late-source"),
-                ScriptedSource { generation: 1 },
-                |_| DrainGateMessage::Noop,
-            ))
+            Subscriptions::one(
+                Subscription::source_with(&config.source, ScriptedSource { generation: 1 }, |_| {
+                    DrainGateMessage::Noop
+                })
+                .key("late-source"),
+            )
         } else {
             Subscriptions::none()
         }
@@ -1650,14 +1625,12 @@ async fn phase6_drain_realizes_no_new_sources() {
     let observe = declared_1;
     let source = declared_2;
     let probe = program
-        .component::<DrainGateProbe>(
-            ComponentId::new("drain-gate"),
-            DrainGateProbeConfig {
-                gate,
-                observe,
-                source,
-            },
-        )
+        .component::<DrainGateProbe>(DrainGateProbeConfig {
+            gate,
+            observe,
+            source,
+        })
+        .name("drain-gate")
         .finish()
         .expect("component registration");
     let runtime = Runtime::builder(program.build().expect("valid program"))
@@ -1709,10 +1682,8 @@ async fn phase6_successful_shutdown_owns_zero_work() -> Result<(), RuntimeError>
         let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<Record>,)>();
         let record = declared_0;
         let _ = program
-            .component::<AdmissionProbe>(
-                ComponentId::new(format!("empty-{mode:?}")),
-                AdmissionProbeConfig { record },
-            )
+            .component::<AdmissionProbe>(AdmissionProbeConfig { record })
+            .name(format!("empty-{mode:?}"))
             .finish()
             .expect("component registration");
         let runtime = Runtime::builder(program.build().expect("valid program"))
@@ -1893,22 +1864,18 @@ fn echo_program(
     let seen = declared_0;
     let observe = declared_1;
     let provider = program
-        .component::<EchoProvider>(
-            ComponentId::new("echo-provider"),
-            EchoProviderConfig { reply, seen },
-        )
+        .component::<EchoProvider>(EchoProviderConfig { reply, seen })
+        .name("echo-provider")
         .finish()
         .expect("component registration");
     program.connect(&echo, &provider.accepting(EchoProviderMessage::Echo));
     let requester = program
-        .component::<EchoRequester>(
-            ComponentId::new("echo-requester"),
-            EchoRequesterConfig {
-                echo,
-                continuation_calls,
-                observe,
-            },
-        )
+        .component::<EchoRequester>(EchoRequesterConfig {
+            echo,
+            continuation_calls,
+            observe,
+        })
+        .name("echo-requester")
         .finish()
         .expect("component registration");
     (program.build().expect("valid Echo program"), requester)
@@ -2125,13 +2092,11 @@ async fn forced_independent_order(first: char, second: char) -> Vec<char> {
     let independent = declared_0;
     let record = declared_1;
     let probe = program
-        .component::<IndependentProbe>(
-            ComponentId::new("independent"),
-            IndependentProbeConfig {
-                independent,
-                record,
-            },
-        )
+        .component::<IndependentProbe>(IndependentProbeConfig {
+            independent,
+            record,
+        })
+        .name("independent")
         .finish()
         .expect("component registration");
     let runtime = Runtime::builder(program.build().expect("valid program"))
@@ -2205,14 +2170,12 @@ fn query_program(mapper_calls: Arc<AtomicUsize>) -> (TestProgram3, ComponentRef<
     let query = declared_0;
     let observe = declared_1;
     let probe = program
-        .component::<QueryProbe>(
-            ComponentId::new("query-parity"),
-            QueryProbeConfig {
-                mapper_calls,
-                query,
-                observe,
-            },
-        )
+        .component::<QueryProbe>(QueryProbeConfig {
+            mapper_calls,
+            query,
+            observe,
+        })
+        .name("query-parity")
         .finish()
         .expect("component registration");
     (program.build().expect("valid query program"), probe)

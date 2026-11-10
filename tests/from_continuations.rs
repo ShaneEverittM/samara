@@ -111,7 +111,7 @@ fn source_default_is_reusable_and_source_with_preserves_context() {
     let source = declared_0;
     let descriptor = StreamDescriptor::<u64>::named("from/default");
     let default: Subscription<SourceMessage> =
-        Subscription::source(&source, SubscriptionId::new("default"), descriptor);
+        Subscription::source(&source, descriptor).key("default");
     assert_eq!(
         default
             .map_source_event::<StreamDescriptor<u64>>(SourceEvent::Item(1))
@@ -128,10 +128,10 @@ fn source_default_is_reusable_and_source_with_preserves_context() {
     let context = "telemetry";
     let explicit = Subscription::source_with(
         &source,
-        SubscriptionId::new("explicit"),
         StreamDescriptor::<u64>::named("from/explicit"),
         move |event| SourceMessage::Explicit { context, event },
-    );
+    )
+    .key("explicit");
     assert_eq!(
         explicit
             .map_source_event::<StreamDescriptor<u64>>(SourceEvent::Item(3))
@@ -318,15 +318,14 @@ fn request_to_with_message_from_uses_from_and_a_closure_preserves_context() {
     let (mut builder, ()) = samara::Program::builder::<()>();
     let echo = builder.port::<EchoProtocolMessage>(PortId::new("echo"));
     let provider = builder
-        .component::<EchoProvider>(ComponentId::new("provider"), ())
+        .component::<EchoProvider>(())
+        .name("provider")
         .finish()
         .expect("component registration");
     builder.connect(&echo, &provider.connector());
     let requester = builder
-        .component::<Requester>(
-            ComponentId::new("requester"),
-            RequesterConfig { echo: echo.clone() },
-        )
+        .component::<Requester>(RequesterConfig { echo: echo.clone() })
+        .name("requester")
         .finish()
         .expect("component registration");
     let mut runtime = ControlledRuntime::builder(builder.build().unwrap())

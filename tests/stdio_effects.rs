@@ -117,14 +117,12 @@ fn output_program(observe: bool) -> (TestProgram, ComponentRef<OutputProbe>) {
     let stderr = declared_1;
     let observe = observe.then_some(declared_2);
     let probe = builder
-        .component::<OutputProbe>(
-            ComponentId::new("standard-output"),
-            OutputProbeConfig {
-                stdout,
-                stderr,
-                observe,
-            },
-        )
+        .component::<OutputProbe>(OutputProbeConfig {
+            stdout,
+            stderr,
+            observe,
+        })
+        .name("standard-output")
         .finish()
         .expect("component registration");
     (builder.build().expect("valid output program"), probe)

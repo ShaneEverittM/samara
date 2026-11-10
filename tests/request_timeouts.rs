@@ -182,18 +182,17 @@ fn fixture() -> Fixture {
     let port = builder.port::<ProbeProtocolMessage>(PortId::new("probe"));
     let observe = declared_0;
     let provider = builder
-        .component::<Provider>(ComponentId::new("provider"), ())
+        .component::<Provider>(())
+        .name("provider")
         .finish()
         .expect("component registration");
     builder.connect(&port, &provider.connector());
     let requester = builder
-        .component::<Requester>(
-            ComponentId::new("requester"),
-            RequesterConfig {
-                port: port.clone(),
-                observe,
-            },
-        )
+        .component::<Requester>(RequesterConfig {
+            port: port.clone(),
+            observe,
+        })
+        .name("requester")
         .finish()
         .expect("component registration");
     Fixture {
@@ -640,6 +639,6 @@ async fn live_timeout_preserves_runtime_fault_and_rejects_overflow() {
         .request_to_timeout(ask(u64::MAX, None), SECOND)
         .await
         .unwrap_err();
-    assert_eq!(fault.component(), Some(&ComponentId::new("provider")));
+    assert_eq!(fault.component().map(ComponentId::name), Some("provider"));
     assert_eq!(task.shutdown(Shutdown::Cancel).await, Err(fault));
 }

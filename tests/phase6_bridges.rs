@@ -104,12 +104,14 @@ impl Component for StreamProbe {
         model: &Self::Model,
     ) -> Subscriptions<Self::Message> {
         if model.desired {
-            Subscriptions::one(Subscription::source_with(
-                &config.stream,
-                SubscriptionId::new("stream"),
-                config.descriptor.clone(),
-                StreamMessage::Event,
-            ))
+            Subscriptions::one(
+                Subscription::source_with(
+                    &config.stream,
+                    config.descriptor.clone(),
+                    StreamMessage::Event,
+                )
+                .key("stream"),
+            )
         } else {
             Subscriptions::none()
         }
@@ -133,14 +135,12 @@ fn stream_program(
     let components = (0..count)
         .map(|index| {
             program
-                .component::<StreamProbe>(
-                    ComponentId::new(format!("stream-{index}")),
-                    StreamProbeConfig {
-                        stream: stream.clone(),
-                        descriptor: descriptor.clone(),
-                        observe: observe.clone(),
-                    },
-                )
+                .component::<StreamProbe>(StreamProbeConfig {
+                    stream: stream.clone(),
+                    descriptor: descriptor.clone(),
+                    observe: observe.clone(),
+                })
+                .name(format!("stream-{index}"))
                 .finish()
                 .expect("component registration")
         })
@@ -340,12 +340,10 @@ impl Component for TcpProbe {
         active: &Self::Model,
     ) -> Subscriptions<Self::Message> {
         if *active {
-            Subscriptions::one(Subscription::source_with(
-                &config.source,
-                SubscriptionId::new("tcp"),
-                config.tcp.clone(),
-                TcpMessage::Event,
-            ))
+            Subscriptions::one(
+                Subscription::source_with(&config.source, config.tcp.clone(), TcpMessage::Event)
+                    .key("tcp"),
+            )
         } else {
             Subscriptions::none()
         }
@@ -358,14 +356,12 @@ fn tcp_program(endpoint: SocketAddr) -> (TestProgram2, ComponentRef<TcpProbe>) {
     let source = declared_0;
     let observe = declared_1;
     let probe = program
-        .component::<TcpProbe>(
-            ComponentId::new("tcp-probe"),
-            TcpProbeConfig {
-                tcp: TcpBytes::connect(endpoint),
-                source,
-                observe,
-            },
-        )
+        .component::<TcpProbe>(TcpProbeConfig {
+            tcp: TcpBytes::connect(endpoint),
+            source,
+            observe,
+        })
+        .name("tcp-probe")
         .finish()
         .expect("component registration");
     (program.build().expect("valid TCP program"), probe)
@@ -405,7 +401,7 @@ fn phase6_tcp_failure_is_constructible_and_scriptable_in_controlled_execution() 
     runtime
         .emit_source::<TcpProbe, TcpBytes>(
             &probe,
-            &SubscriptionId::new("tcp"),
+            &SubscriptionId::key("tcp"),
             SourceEvent::Failed(failure),
         )
         .expect("typed TCP failure is injectable");

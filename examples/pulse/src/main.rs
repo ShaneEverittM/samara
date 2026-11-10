@@ -1,7 +1,7 @@
 use samara::{
-    Assembly, Capabilities, Command, Component, ComponentId, Connector, Effect, FsDriver, Init,
-    PrintStdout, Program, RequestOutcome, Runtime, Shutdown, Source, SourceEvent, StdinDriver,
-    StdinLines, StdoutDriver, Subscription, SubscriptionId, Subscriptions, SystemClockDriver,
+    Assembly, Capabilities, Command, Component, Connector, Effect, FsDriver, Init, PrintStdout,
+    Program, RequestOutcome, Runtime, Shutdown, Source, SourceEvent, StdinDriver, StdinLines,
+    StdoutDriver, Subscription, Subscriptions, SystemClockDriver,
 };
 
 // This is a "library assembly", that is a subsection of a Program (discussed later)
@@ -74,7 +74,6 @@ impl Component for Monitor {
     ) -> Subscriptions<Self::Message> {
         Subscriptions::one(Subscription::source_with(
             stdin,
-            SubscriptionId::new("input"),
             StdinLines::new(),
             |event| match event {
                 SourceEvent::Item(s) => Message::Input(s),
@@ -107,12 +106,9 @@ async fn main() -> anyhow::Result<()> {
 
     // Install our application component...
     let _monitor = builder
-        .component::<Monitor>(
-            ComponentId::new("monitor"),
-            Config {
-                journal: journal.connector().clone(),
-            },
-        )
+        .component::<Monitor>(Config {
+            journal: journal.connector().clone(),
+        })
         // ...that also requires its capabilities.
         .with_capabilities(monitor_caps)
         .finish()?;

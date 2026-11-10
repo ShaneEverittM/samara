@@ -259,14 +259,12 @@ fn counted_binding_program() -> (TestProgram2, Port<HostMessage>, Arc<AtomicUsiz
     let request_observed = declared_1;
     let await_release = declared_2;
     let provider = builder
-        .component::<Provider>(
-            ComponentId::new("provider"),
-            ProviderConfig {
-                ingress_observed,
-                request_observed,
-                await_release,
-            },
-        )
+        .component::<Provider>(ProviderConfig {
+            ingress_observed,
+            request_observed,
+            await_release,
+        })
+        .name("provider")
         .finish()
         .expect("component registration");
     let conversions = Arc::new(AtomicUsize::new(0));
@@ -294,14 +292,12 @@ fn selectively_panicking_binding_program() -> (TestProgram2, Port<HostMessage>) 
     let request_observed = declared_1;
     let await_release = declared_2;
     let provider = builder
-        .component::<Provider>(
-            ComponentId::new("provider"),
-            ProviderConfig {
-                ingress_observed,
-                request_observed,
-                await_release,
-            },
-        )
+        .component::<Provider>(ProviderConfig {
+            ingress_observed,
+            request_observed,
+            await_release,
+        })
+        .name("provider")
         .finish()
         .expect("component registration");
     builder.connect(
@@ -318,7 +314,8 @@ fn panicking_binding_program() -> (Program, Port<BindingMessage>) {
     let (mut builder, ()) = samara::Program::builder::<()>();
     let port = builder.port::<BindingMessage>(PortId::new("panicking-binding"));
     let provider = builder
-        .component::<PanickingBindingProvider>(ComponentId::new("panicking-binding-provider"), ())
+        .component::<PanickingBindingProvider>(())
+        .name("panicking-binding-provider")
         .finish()
         .expect("component registration");
     builder.connect(
@@ -421,14 +418,12 @@ async fn cloned_port_handles_deliver_each_send_exactly_once() -> Result<(), Runt
     let request_observed = declared_1;
     let await_release = declared_2;
     let provider = builder
-        .component::<Provider>(
-            ComponentId::new("cloned-provider"),
-            ProviderConfig {
-                ingress_observed,
-                request_observed,
-                await_release,
-            },
-        )
+        .component::<Provider>(ProviderConfig {
+            ingress_observed,
+            request_observed,
+            await_release,
+        })
+        .name("cloned-provider")
         .finish()
         .expect("component registration");
     builder.connect(&port, &provider.accepting(ProviderMessage::Host));
@@ -633,14 +628,12 @@ async fn component_and_port_ingress_share_one_shutdown_cutoff() -> Result<(), Ru
     let request_observed = declared_1;
     let await_release = declared_2;
     let provider = builder
-        .component::<Provider>(
-            ComponentId::new("race-provider"),
-            ProviderConfig {
-                ingress_observed,
-                request_observed,
-                await_release,
-            },
-        )
+        .component::<Provider>(ProviderConfig {
+            ingress_observed,
+            request_observed,
+            await_release,
+        })
+        .name("race-provider")
         .finish()
         .expect("component registration");
     builder.connect(&port, &provider.accepting(ProviderMessage::Host));

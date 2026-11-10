@@ -215,7 +215,7 @@ capability values ([ADR-0019](adr/0019-typed-program-requirements.md)):
 ```rust,ignore
 type World = (Effect<HttpRequest>, Source<StreamDescriptor<Input>>);
 let (mut program, (http, input)) = Program::builder::<World>();
-let worker = program.component::<Worker>(ComponentId::new("worker"), settings)
+let worker = program.component::<Worker>(settings)
     .with_capabilities((http, input))
     .finish()?;
 let program: Program<World> = program.build()?;
@@ -946,3 +946,38 @@ ADR-0005 additionally freezes only its narrow raw, pooled, no-redirect,
 no-retry HTTP Effect; it does not settle higher-level endpoint or client policy.
 Those choices should follow the guidance above rather than being inferred from
 the first implementation.
+
+## Component names and subscription keys
+
+Component registration needs only configuration. The builder issues an opaque
+identity and returns the typed address. Optional `.name("Primary worker")`
+improves diagnostics; duplicate names are allowed, and names do not affect
+routing or controlled execution order. Repeated Assembly installations need no
+coordination of private Component names.
+
+Subscriptions normally need only a capability, descriptor, and mapper:
+
+```rust,ignore
+Subscription::source_with(&input, StdinLines::new(), Message::Input)
+```
+
+This uses the capability's stable slot within the Component. Configuration
+changes replace the input, mapper-only changes retain it, and omission cancels
+it. For multiple inputs through one capability, use a domain key:
+
+```rust,ignore
+Subscription::source_with(&tcp, descriptor, Message::Network).key(peer.id)
+```
+
+Keys preserve their Rust type and value and are unique within a Component. They
+are independent of list position and can preserve identity across a capability
+change. An ambiguous default slot or duplicate explicit key is an error.
+Controlled `emit_source`, `source_descriptor`, and direct `Subscriptions::find`
+accept the capability for a default slot or `SubscriptionId::key(peer.id)` for
+an explicit key. Keep the capability alongside the ComponentRef in test fixtures.
+
+Initial controlled work follows successful registration order. Subscription
+lifecycle work follows deterministic declaration order, with removed slots
+following in their prior retained order. These are reproducibility rules, not
+ordering guarantees between independent live events. See
+[ADR-0021](adr/0021-implicit-identities-and-diagnostic-names.md).

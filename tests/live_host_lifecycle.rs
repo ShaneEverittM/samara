@@ -53,7 +53,8 @@ async fn live_host_observes_a_later_foreign_effect_fault() {
     let (mut program, ()) = Program::builder::<()>();
     // Deliberately nonconforming Config exercises the runtime provenance defense.
     let probe = program
-        .component::<FaultProbe>(ComponentId::new("fault"), FaultProbeConfig { effect })
+        .component::<FaultProbe>(FaultProbeConfig { effect })
+        .name("fault")
         .finish()
         .unwrap();
     let runtime = Runtime::builder(program.build().unwrap()).build().unwrap();
@@ -105,7 +106,8 @@ async fn cancelled_run_forever_observation_preserves_owner_for_explicit_shutdown
     for mode in [Shutdown::Drain, Shutdown::Cancel] {
         let (mut program, ()) = samara::Program::builder::<()>();
         let idle = program
-            .component::<Idle>(ComponentId::new("host-lifecycle-idle"), ())
+            .component::<Idle>(())
+            .name("host-lifecycle-idle")
             .finish()
             .expect("component registration");
         let runtime = Runtime::builder(program.build().expect("valid program"))
@@ -141,7 +143,8 @@ async fn shutdown_requests_close_ingress_and_preserve_completed_result() {
     for mode in [Shutdown::Drain, Shutdown::Cancel] {
         let (mut program, ()) = samara::Program::builder::<()>();
         let idle = program
-            .component::<Idle>(ComponentId::new("shutdown-requests"), ())
+            .component::<Idle>(())
+            .name("shutdown-requests")
             .finish()
             .expect("component registration");
         let runtime = Runtime::builder(program.build().expect("valid program"))
@@ -195,7 +198,8 @@ impl Component for RecurringTimer {
 async fn shutdown_grace_period_escalates_recurring_timer_and_joins() {
     let (mut program, ()) = samara::Program::builder::<()>();
     program
-        .component::<RecurringTimer>(ComponentId::new("recurring-timer"), ())
+        .component::<RecurringTimer>(())
+        .name("recurring-timer")
         .finish()
         .expect("component registration");
     let mut task = Runtime::builder(program.build().expect("valid program"))

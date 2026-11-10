@@ -38,7 +38,7 @@
 //! }
 //!
 //! let (mut builder, ()) = samara::Program::builder::<()>();
-//! let counter = builder.component::<Counter>(ComponentId::new("counter"), ()).finish().expect("component registration");
+//! let counter = builder.component::<Counter>(()).finish().expect("component registration");
 //! let mut runtime = ControlledRuntime::builder(builder.build()?).control_all().build()?;
 //! runtime.send(&counter, Message::Add(3))?;
 //! runtime.run_until_idle()?;
@@ -77,7 +77,9 @@ use std::{
     time::Duration,
 };
 
+mod identity;
 mod typed_program;
+pub use identity::{ComponentId, SubscriptionId};
 pub use typed_program::*;
 
 mod clock;
@@ -277,25 +279,6 @@ macro_rules! eprintln {
 /// ```
 pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 
-/// The name of a component within a Program.
-///
-/// Names must be unique within that program.
-///
-/// ```
-/// use samara::ComponentId;
-/// let id = ComponentId::new("input");
-/// assert_eq!(id, ComponentId::new("input"));
-/// ```
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ComponentId(Arc<str>);
-
-impl ComponentId {
-    /// Creates a name from a string.
-    pub fn new(value: impl Into<Arc<str>>) -> Self {
-        Self(value.into())
-    }
-}
-
 /// The name of a Port within a Program.
 ///
 /// A port is identified by its message type and name. Use different names for
@@ -310,27 +293,6 @@ impl ComponentId {
 pub struct PortId(Arc<str>);
 
 impl PortId {
-    /// Creates a name from a string.
-    pub fn new(value: impl Into<Arc<str>>) -> Self {
-        Self(value.into())
-    }
-}
-
-/// The name of a subscription within one component.
-///
-/// Reuse the name across calls to `subscriptions` to keep the same input active.
-/// Different components can use the same name. See [`Subscription`] for when
-/// Samara keeps or replaces a source.
-///
-/// ```
-/// use samara::SubscriptionId;
-/// let id = SubscriptionId::new("input");
-/// assert_eq!(id, SubscriptionId::new("input"));
-/// ```
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct SubscriptionId(Arc<str>);
-
-impl SubscriptionId {
     /// Creates a name from a string.
     pub fn new(value: impl Into<Arc<str>>) -> Self {
         Self(value.into())
@@ -413,10 +375,10 @@ mod source_plan_private {
 /// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Source<WatchFile>,)>();
 /// let files = declared_0;
 /// let subscription = Subscription::source_with(
-///     &files, SubscriptionId::new("settings"),
+///     &files,
 ///     WatchFile { path: "settings.txt".into() }, |event| event,
 /// );
-/// assert_eq!(subscription.id(), &SubscriptionId::new("settings"));
+/// assert_eq!(subscription.id(), &SubscriptionId::from(&files));
 /// ```
 ///
 /// Use [`StdinLines`] for terminal input, [`StreamDescriptor`] for a Tokio channel,
@@ -1624,7 +1586,7 @@ impl<Message> Command<Message> {
     /// #     }
     /// # }
     /// let (mut program, ()) = samara::Program::builder::<()>();
-    /// let tally: Connector<TallyMessage> = program.component::<Tally>(ComponentId::new("tally"), ()).finish().expect("component registration").connector();
+    /// let tally: Connector<TallyMessage> = program.component::<Tally>(()).finish().expect("component registration").connector();
     /// let command: Command<RequestOutcome<u64>> =
     ///     Command::request_to(&tally, TallyMessage::total, |outcome| outcome);
     /// # let _ = command;
@@ -2049,16 +2011,18 @@ impl<S: SourceDescriptor> ErasedSourceDescriptor for SourceDescriptorSnapshot<S>
     }
 }
 
-/// An input a component wants to receive, with a name and an event-to-message mapper.
+/// An input a component wants to receive, with an event-to-message mapper.
 ///
 /// Return subscriptions from [`Component::subscriptions`]. Samara compares them
 /// after each update:
 ///
-/// - The same ID, capability, and equal descriptor keep the input running.
+/// - The default slot is the source capability, scoped to this component.
+/// - The same slot, capability, and equal descriptor keep the input running.
 /// - A changed capability or descriptor stops the old input and starts a new one.
-/// - An omitted ID stops that input.
+/// - An omitted slot stops that input.
 ///
-/// IDs must be unique within one component's returned set. Updating only the
+/// Use `.key(domain_id)` to distinguish multiple inputs through one capability.
+/// Duplicate default slots or explicit keys are rejected. Updating only the
 /// mapper keeps the input running and uses the new mapper for subsequent events;
 /// messages already created keep their original values. Replacing the input
 /// discards old events and messages that have not begun an update.
@@ -2069,7 +2033,7 @@ impl<S: SourceDescriptor> ErasedSourceDescriptor for SourceDescriptorSnapshot<S>
 /// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Source<StdinLines>,)>();
 /// let input = declared_0;
 /// let subscription = Subscription::source_with(
-///     &input, SubscriptionId::new("commands"), StdinLines::new(), Message::Input,
+///     &input, StdinLines::new(), Message::Input,
 /// );
 /// assert_eq!(subscription.source_descriptor::<StdinLines>(), Some(&StdinLines::new()));
 /// ```
@@ -2085,12 +2049,12 @@ impl<Message> Subscription<Message> {
     ///
     /// Requires `Message: From<SourceEvent<S::Item, S::Error>>`. Use
     /// [`Self::source_with`] to supply a closure. See [`StdinLines`] for a complete example.
-    pub fn source<S>(capability: &SourceCapability<S>, id: SubscriptionId, descriptor: S) -> Self
+    pub fn source<S>(capability: &SourceCapability<S>, descriptor: S) -> Self
     where
         Message: From<SourceEvent<S::Item, S::Error>> + Send + 'static,
         S: SourceDescriptor,
     {
-        Self::source_with(capability, id, descriptor, Message::from)
+        Self::source_with(capability, descriptor, Message::from)
     }
 
     /// Subscribes to a source and maps each event to a message.
@@ -2099,19 +2063,14 @@ impl<Message> Subscription<Message> {
     /// many times and must not perform I/O or change state. Capture configuration or
     /// IDs by value when events need application context. See [`Subscription`] for a
     /// construction example and [`StdinLines`] for live and controlled wiring.
-    pub fn source_with<S, Map>(
-        capability: &SourceCapability<S>,
-        id: SubscriptionId,
-        descriptor: S,
-        map: Map,
-    ) -> Self
+    pub fn source_with<S, Map>(capability: &SourceCapability<S>, descriptor: S, map: Map) -> Self
     where
         Message: Send + 'static,
         S: SourceDescriptor,
         Map: Fn(SourceEvent<S::Item, S::Error>) -> Message + Send + Sync + 'static,
     {
         Self {
-            id,
+            id: SubscriptionId::for_capability(&capability.token),
             descriptor: Box::new(MappedSourceDescriptor {
                 capability: capability.token.clone(),
                 descriptor,
@@ -2120,7 +2079,21 @@ impl<Message> Subscription<Message> {
         }
     }
 
-    /// Returns the name used to match this subscription across updates.
+    /// Distinguishes a logical input when one capability supplies several inputs.
+    ///
+    /// Use an existing domain identity such as a peer ID. Keys are local to the
+    /// Component and preserve Rust type and value equality. A key also preserves
+    /// logical identity across capability changes. Equality and hashing must be
+    /// pure and stable; duplicate keys are rejected during reconciliation.
+    pub fn key<K: Eq + std::hash::Hash + fmt::Debug + Send + Sync + 'static>(
+        mut self,
+        key: K,
+    ) -> Self {
+        self.id = SubscriptionId::key(key);
+        self
+    }
+
+    /// Returns the slot used to match this subscription across updates.
     pub fn id(&self) -> &SubscriptionId {
         &self.id
     }
@@ -2142,7 +2115,7 @@ impl<Message> Subscription<Message> {
     /// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Source<StdinLines>,)>();
     /// let input = declared_0;
     /// let subscription = Subscription::source_with(
-    ///     &input, SubscriptionId::new("input"), StdinLines::new(), |event| event,
+    ///     &input, StdinLines::new(), |event| event,
     /// );
     /// let message = subscription.map_source_event::<StdinLines>(SourceEvent::Item("hello".into())).unwrap();
     /// assert_eq!(message, SourceEvent::Item("hello".into()));
@@ -2196,17 +2169,18 @@ impl<Message> Subscription<Message> {
 /// The inputs a component wants to keep active.
 ///
 /// Return the full set on each call to [`Component::subscriptions`]. Leaving out
-/// an earlier subscription stops its input. IDs must be unique within the set.
+/// an earlier subscription stops its input. Default capability slots and explicit
+/// application keys must be unique within the set.
 ///
 /// ```
 /// use samara::prelude::*;
 /// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Source<StdinLines>,)>();
 /// let input = declared_0;
 /// let subscriptions: Subscriptions<SourceEvent<String, StdinError>> = vec![
-///     Subscription::source(&input, SubscriptionId::new("commands"), StdinLines::new()),
+///     Subscription::source(&input, StdinLines::new()),
 /// ].into();
 /// assert_eq!(subscriptions.iter().count(), 1);
-/// assert!(subscriptions.find::<StdinLines>(&SubscriptionId::new("commands")).is_some());
+/// assert!(subscriptions.find::<StdinLines>(&input).is_some());
 /// ```
 pub struct Subscriptions<Message>(Vec<Subscription<Message>>);
 
@@ -2226,13 +2200,17 @@ impl<Message> Subscriptions<Message> {
         self.0.iter()
     }
 
-    /// Returns the descriptor with this ID if it has type `S`, otherwise `None`.
+    /// Returns the descriptor selected by a capability or explicit key, if it has type `S`.
     ///
     /// Useful for asserting what a component subscribes to. See [`Subscriptions`].
-    pub fn find<S: SourceDescriptor>(&self, id: &SubscriptionId) -> Option<&S> {
+    pub fn find<S: SourceDescriptor>(&self, id: impl Into<SubscriptionId>) -> Option<&S> {
+        let id = id.into();
         self.0
             .iter()
-            .find(|subscription| subscription.id() == id)
+            .find(|subscription| {
+                subscription.id() == &id
+                    && id.belongs_to(&subscription.descriptor.capability().program)
+            })
             .and_then(Subscription::source_descriptor)
     }
 }
@@ -2265,14 +2243,14 @@ impl<Message> From<Vec<Subscription<Message>>> for Subscriptions<Message> {
 ///     }
 ///     fn subscriptions(_config: &Self::Config, capabilities: &Capabilities<Self::Requires>, _: &u64) -> Subscriptions<Self::Message> {
 ///         Subscriptions::one(Subscription::source(
-///             &capabilities.0, SubscriptionId::new("values"), StreamDescriptor::named("numbers"),
+///             &capabilities.0, StreamDescriptor::named("numbers"),
 ///         ))
 ///     }
 /// }
 /// fn program() -> Result<(Program<(Source<StreamDescriptor<u64>>,)>, ComponentRef<Sum>, SourceCapability<StreamDescriptor<u64>>), ProgramBuildError> {
 ///     let (mut builder, (declared_0,)) = samara::Program::builder::<(samara::Source<StreamDescriptor<u64>>,)>();
 ///     let input = declared_0;
-///     let sum = builder.component::<Sum>(ComponentId::new("sum"), ()).with_capabilities((input.clone(),)).finish().expect("component registration");
+///     let sum = builder.component::<Sum>(()).with_capabilities((input.clone(),)).finish().expect("component registration");
 ///     Ok((builder.build()?, sum, input))
 /// }
 /// let (program_under_test, sum, input) = program()?;
@@ -2395,28 +2373,28 @@ impl<T: Send + 'static> StreamSourceDescriptor for StreamDescriptor<T> {
 ///     fn subscriptions(_config: &Self::Config, capabilities: &Capabilities<Self::Requires>, model: &Model) -> Subscriptions<Self::Message> {
 ///         if !model.open { return Subscriptions::none(); }
 ///         Subscriptions::one(Subscription::source(
-///             &capabilities.0, SubscriptionId::new("input"), StdinLines::new(),
+///             &capabilities.0, StdinLines::new(),
 ///         ))
 ///     }
 /// }
 ///
-/// fn program() -> Result<(Program<(Source<StdinLines>,)>, ComponentRef<Reader>), ProgramBuildError> {
+/// fn program() -> Result<(Program<(Source<StdinLines>,)>, ComponentRef<Reader>, SourceCapability<StdinLines>), ProgramBuildError> {
 ///     let (mut builder, (declared_0,)) = samara::Program::builder::<(samara::Source<StdinLines>,)>();
 ///     let input = declared_0;
-///     let reader = builder.component::<Reader>(ComponentId::new("reader"), ()).with_capabilities((input,)).finish().expect("component registration");
-///     Ok((builder.build()?, reader))
+///     let reader = builder.component::<Reader>(()).with_capabilities((input.clone(),)).finish().expect("component registration");
+///     Ok((builder.build()?, reader, input))
 /// }
 ///
 /// // Test input without reading the terminal.
-/// let (program_under_test, reader) = program()?;
+/// let (program_under_test, reader, input) = program()?;
 /// let mut test = ControlledRuntime::builder(program_under_test).control_all().build()?;
 /// test.run_until_idle()?; // Starts the subscription.
 /// test.emit_source::<_, StdinLines>(
-///     &reader, &SubscriptionId::new("input"), SourceEvent::Item("hello".into()),
+///     &reader, &input, SourceEvent::Item("hello".into()),
 /// )?;
 /// test.run_until_idle()?;
 /// assert_eq!(test.state(&reader)?.lines, ["hello"]);
-/// test.emit_source::<_, StdinLines>(&reader, &SubscriptionId::new("input"), SourceEvent::Ended)?;
+/// test.emit_source::<_, StdinLines>(&reader, &input, SourceEvent::Ended)?;
 /// test.run_until_idle()?;
 /// assert!(!test.state(&reader)?.open);
 /// assert!(test.cancel()?.is_clean());
@@ -2424,7 +2402,7 @@ impl<T: Send + 'static> StreamSourceDescriptor for StreamDescriptor<T> {
 /// // Bind the same component to process stdin on Unix.
 /// #[cfg(unix)]
 /// {
-///     let (program, _) = program()?;
+///     let (program, _, _) = program()?;
 ///     let live = Runtime::builder(program).with_drivers((samara::StdinDriver,)).build()?;
 ///     // Call live.spawn() inside Tokio to start reading; see RuntimeTask for shutdown.
 /// }
@@ -3295,7 +3273,7 @@ impl EffectDescriptor for PrintStderr {
 ///     address: SocketAddr,
 /// ) -> Subscriptions<SourceEvent<bytes::Bytes, TcpError>> {
 ///     Subscriptions::one(Subscription::source(
-///         tcp, SubscriptionId::new("feed"), TcpBytes::connect(address),
+///         tcp, TcpBytes::connect(address),
 ///     ))
 /// }
 /// ```
@@ -3725,7 +3703,6 @@ impl<D: EffectDescriptor> fmt::Debug for EffectCapability<D> {
 /// }
 ///
 /// let _: Subscription<()> = Subscription::source_with(
-///     SubscriptionId::new("input"),
 ///     Input,
 ///     |_: SourceEvent<(), ()>| (),
 /// );
@@ -3845,7 +3822,7 @@ pub struct ComponentRef<C: Component> {
 }
 
 impl<C: Component> ComponentRef<C> {
-    /// Returns the component name.
+    /// Returns the builder-issued component identity, including its diagnostic name.
     pub fn id(&self) -> &ComponentId {
         &self.id
     }
@@ -3947,7 +3924,7 @@ impl<C: Component> ComponentRef<C> {
 ///
 /// let (mut program, ()) = samara::Program::builder::<()>();
 /// let audit = program.port::<AuditMessage>(PortId::new("audit"));
-/// let recorder = program.component::<Recorder>(ComponentId::new("recorder"), ()).finish().expect("component registration");
+/// let recorder = program.component::<Recorder>(()).finish().expect("component registration");
 /// let provider: Connector<JournalMessage> = recorder.accepting(RecorderMessage);
 /// program.connect(&audit, &provider.accepting(|message| match message {
 ///     AuditMessage::Changed(what) => JournalMessage::Note(what),
@@ -4362,8 +4339,8 @@ where
     for subscription in subscriptions.iter() {
         if !ids.insert(subscription.id().clone()) {
             return Err(RuntimeError::harness(format!(
-                "Component {component:?} initially desires duplicate Subscription {:?}",
-                subscription.id()
+                "Component {component:?}: {}",
+                subscription.id().duplicate_message()
             )));
         }
         let plan = subscription.source_plan();
@@ -4489,8 +4466,6 @@ pub enum ProgramBuildError {
         /// The capability descriptor type.
         descriptor_type: &'static str,
     },
-    /// Two components have the same name.
-    DuplicateComponentId(ComponentId),
     /// A port name was declared twice for the same message type.
     DuplicatePort {
         /// The Port message type's Rust type name.
@@ -4516,12 +4491,12 @@ pub enum ProgramBuildError {
     },
     /// A provider belongs to another builder.
     ForeignProvider {
-        /// The provider name.
+        /// The provider identity.
         provider: ComponentId,
     },
     /// The referenced provider is not registered.
     ProviderNotRegistered {
-        /// The provider name.
+        /// The provider identity.
         provider: ComponentId,
     },
 }
@@ -4533,9 +4508,6 @@ impl fmt::Display for ProgramBuildError {
                 formatter,
                 "capability for {descriptor_type} belongs to another Program"
             ),
-            Self::DuplicateComponentId(id) => {
-                write!(formatter, "duplicate Component identity {id:?}")
-            }
             Self::DuplicatePort {
                 protocol_type,
                 port,
@@ -4654,28 +4626,32 @@ impl<R: Requirements> ProgramBuilder<R> {
 
     /// Starts registering a Component of kind `C` with its settings and connections.
     ///
-    /// Supply `C::Requires` through `with_capabilities`, then call `build()` to
+    /// Supply `C::Requires` through `with_capabilities`, then call `finish()` to
     /// validate provenance, invoke [`Component::init`], and obtain its address.
-    /// Components with `Requires = ()` can call `build()` directly. Startup work
-    /// runs when the runtime starts. Names must be unique; registration order
-    /// does not determine live execution order.
+    /// Components with `Requires = ()` can call `finish()` directly. Optional
+    /// `.name(...)` sets a diagnostic label; duplicate names are allowed. Startup
+    /// work runs when the runtime starts. Registration order determines initial
+    /// controlled work order, with no ordering promise for independent live events.
     ///
     /// See the [crate example](crate) or [`Self::connect`].
     pub fn component<C: Component>(
         &mut self,
-        id: ComponentId,
         config: C::Config,
     ) -> ComponentRegistration<'_, R, C> {
-        ComponentRegistration::new(self, id, config)
+        ComponentRegistration::new(self, config)
     }
 
     fn register<C: Component>(
         &mut self,
-        id: ComponentId,
+        name: Option<Arc<str>>,
         config: C::Config,
         capabilities: Capabilities<C::Requires>,
     ) -> Result<ComponentRef<C>, ProgramBuildError> {
         C::Requires::validate(&capabilities, &self.program)?;
+        let id = ComponentId::new(
+            self.components.len() as u64,
+            name.unwrap_or_else(|| std::any::type_name::<C>().into()),
+        );
         let component_ref = ComponentRef {
             id: id.clone(),
             program: self.program.clone(),
@@ -4764,9 +4740,9 @@ impl<R: Requirements> ProgramBuilder<R> {
     ///
     /// let (mut builder, ()) = samara::Program::builder::<()>();
     /// let port = builder.port::<CountMessage>(PortId::new("counter"));
-    /// let counter = builder.component::<Counter>(ComponentId::new("counter"), ()).finish().expect("component registration");
+    /// let counter = builder.component::<Counter>(()).finish().expect("component registration");
     /// builder.connect(&port, &counter.accepting(CounterMessage::Count));
-    /// let client = builder.component::<Client>(ComponentId::new("client"), ClientConfig { counter: port }).finish().expect("component registration");
+    /// let client = builder.component::<Client>(ClientConfig { counter: port }).finish().expect("component registration");
     /// let mut runtime = ControlledRuntime::builder(builder.build()?).control_all().build()?;
     /// runtime.run_until_idle()?;
     /// assert_eq!(*runtime.state(&client)?, Some(42));
@@ -4783,21 +4759,12 @@ impl<R: Requirements> ProgramBuilder<R> {
         }));
     }
 
-    /// Checks component names and port connections and returns the Program.
+    /// Checks port connections and returns the Program.
     ///
-    /// Returns [`ProgramBuildError`] for duplicate names, missing or duplicate port
+    /// Returns [`ProgramBuildError`] for duplicate ports, missing or duplicate port
     /// bindings, or references from another builder. Does not start work. I/O drivers
     /// and test controls are checked by the runtime builder.
     pub fn build(self) -> Result<Program<R>, ProgramBuildError> {
-        let mut component_ids = std::collections::HashSet::new();
-        for component in &self.components {
-            if !component_ids.insert(component.id().clone()) {
-                return Err(ProgramBuildError::DuplicateComponentId(
-                    component.id().clone(),
-                ));
-            }
-        }
-
         let mut ports = std::collections::HashSet::new();
         for port in &self.ports {
             let key = (port.protocol_type, port.id.clone());
@@ -5205,7 +5172,7 @@ pub struct RuntimeBuilder {
 /// let tokio = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
 /// tokio.block_on(async {
 ///     let (mut builder, ()) = samara::Program::builder::<()>();
-///     let counter = builder.component::<Counter>(ComponentId::new("counter"), ()).finish().expect("component registration");
+///     let counter = builder.component::<Counter>(()).finish().expect("component registration");
 ///     let runtime = Runtime::builder(builder.build()?).build()?;
 ///     let sender = runtime.handle(&counter)?;
 ///     let task = runtime.spawn();
@@ -5407,7 +5374,7 @@ impl<C: Component> ComponentHandle<C> {
 /// tokio.block_on(async {
 ///     let (mut builder, ()) = samara::Program::builder::<()>();
 ///     let count = builder.port::<CountMessage>(PortId::new("count"));
-///     let counter = builder.component::<Counter>(ComponentId::new("counter"), ()).finish().expect("component registration");
+///     let counter = builder.component::<Counter>(()).finish().expect("component registration");
 ///     builder.connect(&count, &counter.connector());
 ///     let runtime = Runtime::builder(builder.build()?).build()?;
 ///     let client = runtime.port_handle(&count)?;
@@ -5790,7 +5757,7 @@ pub struct ControlledRuntimeBuilder {
 /// }
 /// let (mut builder, (declared_0,)) = samara::Program::builder::<(samara::Effect<HttpRequest>,)>();
 /// let http = declared_0;
-/// let check = builder.component::<Check>(ComponentId::new("check"), ()).with_capabilities((http,)).finish().expect("component registration");
+/// let check = builder.component::<Check>(()).with_capabilities((http,)).finish().expect("component registration");
 /// let mut runtime = ControlledRuntime::builder(builder.build()?).control_all().build()?;
 /// runtime.run_until_idle()?;
 /// let request = runtime.next_effect::<HttpRequest>()?;
@@ -5864,6 +5831,9 @@ impl ControlledRuntime {
 
     /// Supplies an event to a component's active subscription.
     ///
+    /// Pass the source capability for a default slot, or `SubscriptionId::key(key)`
+    /// for a subscription declared with `.key(key)`.
+    ///
     /// Use the underlying input type for `S`: for `Framed<TcpBytes, D>`, provide
     /// `SourceEvent<bytes::Bytes, TcpError>` with `S = TcpBytes`. Samara runs the decoder
     /// before the message mapper. An inactive subscription, wrong type, or component
@@ -5874,17 +5844,19 @@ impl ControlledRuntime {
     pub fn emit_source<C, S>(
         &mut self,
         component: &ComponentRef<C>,
-        id: &SubscriptionId,
+        id: impl Into<SubscriptionId>,
         event: SourceEvent<S::Item, S::Error>,
     ) -> Result<(), RuntimeError>
     where
         C: Component,
         S: SourceDescriptor,
     {
-        self.core.emit_source::<C, S>(component, id, event)
+        self.core.emit_source::<C, S>(component, &id.into(), event)
     }
 
     /// Returns a clone of the active subscription's descriptor.
+    ///
+    /// Select a default slot with its capability, or use `SubscriptionId::key(key)`.
     ///
     /// Use the full descriptor type for `S`, including any [`Framed`] wrappers.
     /// Returns an error if the component, subscription, or descriptor type does not
@@ -5892,13 +5864,13 @@ impl ControlledRuntime {
     pub fn source_descriptor<C, S>(
         &self,
         component: &ComponentRef<C>,
-        id: &SubscriptionId,
+        id: impl Into<SubscriptionId>,
     ) -> Result<S, RuntimeError>
     where
         C: Component,
         S: SourceDescriptor,
     {
-        self.core.source_descriptor(component, id)
+        self.core.source_descriptor(component, &id.into())
     }
 
     /// Takes the next pending effect of type `E` for inspection and completion.
@@ -5964,7 +5936,7 @@ impl ControlledRuntime {
     ///     }
     /// }
     /// let (mut builder, ()) = samara::Program::builder::<()>();
-    /// let timer = builder.component::<Timer>(ComponentId::new("timer"), ()).finish().expect("component registration");
+    /// let timer = builder.component::<Timer>(()).finish().expect("component registration");
     /// let mut runtime = ControlledRuntime::builder(builder.build()?).control_all().build()?;
     /// runtime.advance(Duration::from_secs(1))?;
     /// assert!(!*runtime.state(&timer)?);
@@ -6270,7 +6242,7 @@ pub enum TraceEvent {
     ControlledSourceInput {
         /// The component subscribed to the input.
         component: ComponentId,
-        /// The subscription name within the component.
+        /// The subscription slot within the component.
         subscription: SubscriptionId,
         /// The underlying input descriptor type, before decoding.
         source_descriptor_type: &'static str,
@@ -6301,7 +6273,7 @@ pub enum TraceEvent {
     SubscriptionLifecycle {
         /// The component requesting the subscription.
         component: ComponentId,
-        /// The subscription name within the component.
+        /// The subscription slot within the component.
         subscription: SubscriptionId,
         /// The subscribed descriptor type, including decoder wrappers.
         source_descriptor_type: &'static str,
@@ -6312,7 +6284,7 @@ pub enum TraceEvent {
     SourceEventMapped {
         /// The component subscribed to the input.
         component: ComponentId,
-        /// The subscription name within the component.
+        /// The subscription slot within the component.
         subscription: SubscriptionId,
         /// The subscribed descriptor type, including decoder wrappers.
         source_descriptor_type: &'static str,
@@ -6323,7 +6295,7 @@ pub enum TraceEvent {
     StaleSourceWorkDropped {
         /// The component that would have received it.
         component: ComponentId,
-        /// The subscription name within the component.
+        /// The subscription slot within the component.
         subscription: SubscriptionId,
         /// `true` for an already-mapped message; `false` for an input event.
         mapped_message: bool,
@@ -6479,7 +6451,8 @@ mod request_authority_tests {
     fn fixture() -> (Program, ComponentRef<Replier>, ReplyWith<u64>) {
         let (mut builder, ()) = crate::Program::builder::<()>();
         let replier = builder
-            .component::<Replier>(ComponentId::new("replier"), ())
+            .component::<Replier>(())
+            .name("replier")
             .finish()
             .expect("component registration");
         let token = RequestToken::new(0, Arc::new(()));

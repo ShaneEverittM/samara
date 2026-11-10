@@ -129,18 +129,17 @@ fn assemble(patience: Option<Duration>) -> (Program, Port<LedgerMessage>, Compon
     let (mut program, ()) = samara::Program::builder::<()>();
     let ledger = program.port::<LedgerMessage>(PortId::new("ledger"));
     let provider = program
-        .component::<Ledger>(ComponentId::new("ledger"), ())
+        .component::<Ledger>(())
+        .name("ledger")
         .finish()
         .expect("component registration");
     program.connect(&ledger, &provider.accepting(LedgerProviderMessage::Ledger));
     let clerk = program
-        .component::<Clerk>(
-            ComponentId::new("clerk"),
-            ClerkConfig {
-                ledger: ledger.clone(),
-                patience,
-            },
-        )
+        .component::<Clerk>(ClerkConfig {
+            ledger: ledger.clone(),
+            patience,
+        })
+        .name("clerk")
         .finish()
         .expect("component registration");
     (program.build().expect("program assembles"), ledger, clerk)
@@ -260,7 +259,8 @@ fn an_initial_send_to_a_foreign_port_fails_both_profile_builds() {
         let foreign = other.port::<LedgerMessage>(PortId::new("ledger"));
         let (mut program, ()) = samara::Program::builder::<()>();
         program
-            .component::<Eager>(ComponentId::new("eager"), foreign)
+            .component::<Eager>(foreign)
+            .name("eager")
             .finish()
             .expect("component registration");
         program.build().expect("the hidden Port is ordinary Rust")
