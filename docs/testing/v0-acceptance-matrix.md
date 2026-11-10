@@ -45,6 +45,16 @@ other names now cite those tests.
 
 ## Scenario Definitions
 
+ADR-0022 adds `tests/file_capabilities.rs`, filesystem registry unit tests, and
+permission/result compile-fail rustdoc for V1, V3, V5, V6, V9, and V12. Journal
+uses one permission-typed file resource for append and read; tests distinguish
+two same-type resources and preserve their identity in both execution profiles.
+Write tests cover atomic whole-file replacement through `WriteOnly` and
+`ReadWrite`, narrowing away replacement authority, exact controlled selection,
+typed failure/cancellation, missing replacement bindings, and live replacement
+of an existing target. Compile-fail cases reject replacement through read-only
+or append-only views and reading through a write-only view.
+
 ADR-0021 adds `tests/identity.rs` for V4, V6, V7, V11, and V12: Component names
 are optional diagnostics, routing uses builder-issued identities, subscriptions
 default to capability slots, typed keys distinguish logical instances, and
@@ -172,9 +182,9 @@ The following evidence must pass before the Phase 2 audit:
   Vendored-driver coverage verifies that caller-supplied driver settings reach
   live execution while the Assembly's logical config and controlled setup stay
   independent of those settings.
-- `examples/pulse/src/journal/tests.rs` verifies Journal's default and
-  caller-supplied filenames, discarded append outcomes, and live root
-  configuration. Recent-history coverage includes tail boundaries, overlapping
+- `examples/pulse/src/journal/tests.rs` verifies Journal's single file capability,
+  discarded append outcomes, and host-selected path binding (ADR-0022).
+  Recent-history coverage includes tail boundaries, overlapping
   request correlation, independent append/read completion, and the domain
   mapping of read errors and cancellation (ADR-0020). Live reads cover existing
   and missing files.

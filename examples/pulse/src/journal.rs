@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use bytes::Bytes;
 use samara::prelude::*;
 
@@ -22,45 +20,31 @@ enum Message {
 #[derive(Default, Debug)]
 struct Model;
 
-/// Immutable logical settings forwarded from the Assembly.
-struct RecorderConfig {
-    file: PathBuf,
-}
-
 impl Component for Recorder {
-    type Requires = (
-        Effect<AppendToFile>,
-        Effect<ReadSystemTime>,
-        Effect<ReadFile>,
-    );
-    type Config = RecorderConfig;
+    type Requires = (File<ReadAppend>, Effect<ReadSystemTime>);
+    type Config = ();
     type Model = Model;
     type Message = Message;
 
-    fn init(_: &RecorderConfig, _: &Capabilities<Self::Requires>) -> Init<Model, Message> {
+    fn init(_: &(), _: &Capabilities<Self::Requires>) -> Init<Model, Message> {
         Init::default()
     }
 
     fn update(
-        config: &RecorderConfig,
-        (append, .., read): &Capabilities<Self::Requires>,
+        _: &(),
+        (file, _clock): &Capabilities<Self::Requires>,
         _: &mut Model,
         message: Message,
     ) -> Command<Message> {
         match message {
             // Log the transition to the journal.
-            Message::Journal(JournalMessage::Transition { name, from, to }) => {
-                Command::effect_discarding_outcome(
-                    append,
-                    AppendToFile::line(&config.file, format!("{name}: {from} -> {to}")),
-                )
-            }
+            Message::Journal(JournalMessage::Transition { name, from, to }) => file
+                .append_line(format!("{name}: {from} -> {to}"))
+                .discard_outcome(),
 
             // Dispatch a tail of the journal.
-            Message::Journal(JournalMessage::Recent { count, reply }) => Command::effect_with(
-                read,
-                ReadFile::new(&config.file),
-                move |result| match result {
+            Message::Journal(JournalMessage::Recent { count, reply }) => {
+                file.read().into_command_with(move |result| match result {
                     EffectOutcome::Succeeded(contents) => Message::SendTailToClient {
                         contents,
                         count,
@@ -69,8 +53,8 @@ impl Component for Recorder {
                     EffectOutcome::Failed(error) => {
                         Message::TellClientRecentFailed { error, reply }
                     }
-                },
-            ),
+                })
+            }
 
             // The tail request above completed, parse and give the results to the caller.
             Message::SendTailToClient {
@@ -114,24 +98,6 @@ pub enum Error {
 /// The Assembly's public name; its Connector accepts `JournalMessage`.
 pub struct Journal;
 
-/// Logical Journal settings shared by live and controlled execution.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct JournalConfig {
-    /// User-supplied filename relative to the Driver's root.
-    pub file: PathBuf,
-}
-
-/// Default filename, relative to the root the host supplies to the Driver.
-pub const JOURNAL_FILE: &str = "pulse.journal";
-
-impl Default for JournalConfig {
-    fn default() -> Self {
-        Self {
-            file: JOURNAL_FILE.into(),
-        }
-    }
-}
-
 /// The journal's public vocabulary, accepted by the Assembly's Connector.
 #[derive(Debug)]
 pub enum JournalMessage {
@@ -152,22 +118,18 @@ pub enum JournalMessage {
 }
 
 impl Assembly for Journal {
-    type Config = JournalConfig;
+    type Config = ();
     type Accepts = JournalMessage;
     type Exports = ();
-    type Requires = (
-        Effect<AppendToFile>,
-        Effect<ReadSystemTime>,
-        Effect<ReadFile>,
-    );
+    type Requires = (File<ReadAppend>, Effect<ReadSystemTime>);
 
     fn install<R: Requirements>(
         program: &mut ProgramBuilder<R>,
-        config: Self::Config,
+        _: Self::Config,
         capabilities: Capabilities<Self::Requires>,
     ) -> Result<(Connector<JournalMessage>, ()), ProgramBuildError> {
         let recorder = program
-            .component::<Recorder>(RecorderConfig { file: config.file })
+            .component::<Recorder>(())
             .with_capabilities(capabilities)
             .finish()?;
         Ok((recorder.accepting(Message::Journal), ()))

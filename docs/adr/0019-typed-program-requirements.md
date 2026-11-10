@@ -6,6 +6,8 @@
 
 ADR-0021 amends Component registration to `component::<C>(config)` with an
 optional diagnostic `.name(...)`; Component identity is issued by the builder.
+ADR-0022 adds `File<P>` requirements with one exact resource binding for their
+permitted operations and moves Journal's target path into that binding.
 
 ## Decision
 
@@ -59,13 +61,12 @@ of `Assembly::Config`, is never installed in the Program, and is unnecessary
 for controlled execution. A host may construct different driver tuples for
 the same logical Program without changing its Components or descriptors.
 
-For the Journal example, `JournalConfig.file` is the user-supplied relative
-filename forwarded into the Recorder's immutable config. `JournalConfig::default()`
-selects `JOURNAL_FILE`. The host supplies `FsDriver::new(root)` and
-`SystemClockDriver` directly in `main`; the root is not part of logical
-application wiring. Journal needs no vendored-driver wrapper for these
-standard implementations. This does not change filesystem path validation or
-make configuration imply any file I/O.
+Under ADR-0022, Journal requires `(File<ReadAppend>, Effect<ReadSystemTime>)`.
+It has no filename config: the host supplies
+`(FileDriver::new("./data/pulse.journal"), SystemClockDriver)` directly in
+`main`. The file's single binding ensures reads and appends use the same
+target. Journal needs no vendored-driver wrapper for these standard
+implementations. Binding performs no file I/O.
 
 The requirement machinery is sealed: application implementations cannot
 declare one type shape while omitting its capabilities or binding work.
@@ -117,9 +118,9 @@ Additional compile-fail contracts reject incremental live binding and direct
 trait binding. Duplicate and conflicting driver tuples remain integration
 tests; internal registry tests retain foreign exact-capability defenses.
 
-The `pulse` example verifies separate filename and root configuration. A
-Transition emits one `AppendToFile::line` containing `name: from -> to` and
-discards its outcome without retrying. Recent-history requests issue `ReadFile`
+The `pulse` example verifies one host-bound file target (ADR-0022). A
+Transition emits one `FileAppend` containing `name: from -> to` and
+discards its outcome without retrying. Recent-history requests issue `FileRead`
 and return up to the requested number of trailing lines from the returned
 bytes, in file order. They have no ordering guarantee against concurrent
 appends; an unterminated trailing line is included.

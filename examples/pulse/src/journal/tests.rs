@@ -1,11 +1,11 @@
-//! Journal acceptance: appends use the configured path and do not retry.
+//! Journal acceptance: reads and appends use one file capability and do not retry.
 //! Recent returns the tail of the supplied read result, including an unterminated
 //! last line. Reads need not wait for appends or complete in request order; each
 //! completion retains its own count and reply token.
 //! Replies distinguish a successful tail from Journal's read-error and
 //! cancellation variants; append completion never produces another transition.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -61,16 +61,16 @@ impl Component for JournalClient {
     }
 }
 
-fn program(
-    config: JournalConfig,
-) -> (
+fn program() -> (
     Program<JournalNeeds>,
     ComponentRef<JournalClient>,
     Port<JournalMessage>,
+    FileCapability<ReadAppend>,
 ) {
     let (mut builder, capabilities) = Program::builder::<JournalNeeds>();
+    let file = capabilities.0.clone();
     let journal = builder
-        .install::<Journal>(config)
+        .install::<Journal>(())
         .with_capabilities(capabilities)
         .finish()
         .unwrap();
@@ -80,7 +80,7 @@ fn program(
         .component::<JournalClient>(journal.connector().clone())
         .finish()
         .unwrap();
-    (builder.build().unwrap(), client, port)
+    (builder.build().unwrap(), client, port, file)
 }
 
 fn successful_replies(
@@ -99,42 +99,30 @@ fn successful_replies(
 }
 
 #[test]
-fn assembly_uses_default_and_user_supplied_filenames_in_controlled_appends() {
-    for (config, expected) in [
-        (JournalConfig::default(), JOURNAL_FILE),
-        (
-            JournalConfig {
-                file: "custom/events.log".into(),
-            },
-            "custom/events.log",
-        ),
-    ] {
-        let (program, client, _) = program(config);
-        let mut runtime = ControlledRuntime::builder(program)
-            .control_all()
-            .build()
-            .unwrap();
-        runtime.send(&client, ClientMessage::Transition).unwrap();
-        runtime.run_until_idle().unwrap();
-        let pending = runtime.next_effect::<AppendToFile>().unwrap();
-        assert_eq!(pending.intent.path(), Path::new(expected));
-        assert_eq!(pending.intent.as_str(), Some("pump: idle -> running\n"));
-        runtime
-            .complete(pending, EffectOutcome::Succeeded(()))
-            .unwrap();
-        runtime.run_until_idle().unwrap();
-        assert_eq!(runtime.pending_work().pending_later, 0);
-        assert!(runtime.cancel().unwrap().is_clean());
-    }
+fn assembly_appends_through_its_supplied_file_capability() {
+    let (program, client, _, file) = program();
+    let mut runtime = ControlledRuntime::builder(program)
+        .control_all()
+        .build()
+        .unwrap();
+    runtime.send(&client, ClientMessage::Transition).unwrap();
+    runtime.run_until_idle().unwrap();
+    let pending = runtime.next_file_append(&file).unwrap();
+    assert_eq!(pending.intent.as_str(), Some("pump: idle -> running\n"));
+    runtime
+        .complete(pending, EffectOutcome::Succeeded(()))
+        .unwrap();
+    runtime.run_until_idle().unwrap();
+    assert_eq!(runtime.pending_work().pending_later, 0);
+    assert!(runtime.cancel().unwrap().is_clean());
 }
 
 #[test]
 fn append_outcomes_are_discarded_without_automatic_retry() {
     let (mut builder, capabilities) = Program::builder::<JournalNeeds>();
+    let file = capabilities.0.clone();
     let recorder = builder
-        .component::<Recorder>(RecorderConfig {
-            file: "chosen.log".into(),
-        })
+        .component::<Recorder>(())
         .with_capabilities(capabilities)
         .finish()
         .unwrap();
@@ -157,7 +145,7 @@ fn append_outcomes_are_discarded_without_automatic_retry() {
             .send(&recorder, Message::Journal(transition()))
             .unwrap();
         assert_eq!(runtime.run_until_idle().unwrap().transitions, 1);
-        let pending = runtime.next_effect::<AppendToFile>().unwrap();
+        let pending = runtime.next_file_append(&file).unwrap();
         runtime.complete(pending, outcome).unwrap();
         assert_eq!(runtime.run_until_idle().unwrap().transitions, 0);
         assert_eq!(runtime.pending_work(), PendingWork::default());
@@ -166,7 +154,7 @@ fn append_outcomes_are_discarded_without_automatic_retry() {
 }
 
 #[test]
-fn recent_returns_the_requested_tail_of_the_configured_file() {
+fn recent_returns_the_requested_tail_of_the_supplied_file() {
     let cases: &[(&str, usize, &[&str])] = &[
         ("", 3, &[]),
         ("first\nsecond\n", 0, &[]),
@@ -178,54 +166,46 @@ fn recent_returns_the_requested_tail_of_the_configured_file() {
         ("first\r\nsecond\r\n", 1, &["second"]),
         ("first\ncafé\n東京\n", 2, &["café", "東京"]),
     ];
-    for config in [
-        JournalConfig::default(),
-        JournalConfig {
-            file: "custom/recent.log".into(),
-        },
-    ] {
-        for &(text, count, expected) in cases {
-            let (program, client, _) = program(config.clone());
-            let mut runtime = ControlledRuntime::builder(program)
-                .control_all()
-                .build()
-                .unwrap();
-            runtime.send(&client, ClientMessage::Recent(count)).unwrap();
-            runtime.run_until_idle().unwrap();
-            let pending = runtime.next_effect::<ReadFile>().unwrap();
-            assert_eq!(pending.intent.path(), config.file.as_path());
-            assert!(runtime.state(&client).unwrap().is_empty());
-            runtime
-                .complete(
-                    pending,
-                    EffectOutcome::Succeeded(Bytes::copy_from_slice(text.as_bytes())),
-                )
-                .unwrap();
-            runtime.run_until_idle().unwrap();
-            assert_eq!(
-                successful_replies(&runtime, &client),
-                vec![(count, expected.iter().map(|line| (*line).into()).collect())],
-                "text={text:?}, count={count}",
-            );
-            assert_eq!(runtime.pending_work().pending_later, 0);
-            assert!(runtime.cancel().unwrap().is_clean());
-        }
+    for &(text, count, expected) in cases {
+        let (program, client, _, file) = program();
+        let mut runtime = ControlledRuntime::builder(program)
+            .control_all()
+            .build()
+            .unwrap();
+        runtime.send(&client, ClientMessage::Recent(count)).unwrap();
+        runtime.run_until_idle().unwrap();
+        let pending = runtime.next_file_read(&file).unwrap();
+        assert!(runtime.state(&client).unwrap().is_empty());
+        runtime
+            .complete(
+                pending,
+                EffectOutcome::Succeeded(Bytes::copy_from_slice(text.as_bytes())),
+            )
+            .unwrap();
+        runtime.run_until_idle().unwrap();
+        assert_eq!(
+            successful_replies(&runtime, &client),
+            vec![(count, expected.iter().map(|line| (*line).into()).collect())],
+            "text={text:?}, count={count}",
+        );
+        assert_eq!(runtime.pending_work().pending_later, 0);
+        assert!(runtime.cancel().unwrap().is_clean());
     }
 }
 
 #[test]
 fn overlapping_recent_requests_keep_their_counts_and_reply_tokens() {
-    let (program, client, _) = program(JournalConfig::default());
+    let (program, client, _, file) = program();
     let mut runtime = ControlledRuntime::builder(program)
         .control_all()
         .build()
         .unwrap();
     runtime.send(&client, ClientMessage::Recent(1)).unwrap();
     runtime.run_until_idle().unwrap();
-    let first = runtime.next_effect::<ReadFile>().unwrap();
+    let first = runtime.next_file_read(&file).unwrap();
     runtime.send(&client, ClientMessage::Recent(2)).unwrap();
     runtime.run_until_idle().unwrap();
-    let second = runtime.next_effect::<ReadFile>().unwrap();
+    let second = runtime.next_file_read(&file).unwrap();
 
     runtime
         .complete(
@@ -253,17 +233,17 @@ fn overlapping_recent_requests_keep_their_counts_and_reply_tokens() {
 #[test]
 fn recent_uses_its_read_result_regardless_of_append_completion_order() {
     for append_finishes_first in [false, true] {
-        let (program, client, _) = program(JournalConfig::default());
+        let (program, client, _, file) = program();
         let mut runtime = ControlledRuntime::builder(program)
             .control_all()
             .build()
             .unwrap();
         runtime.send(&client, ClientMessage::Transition).unwrap();
         runtime.run_until_idle().unwrap();
-        let mut append = Some(runtime.next_effect::<AppendToFile>().unwrap());
+        let mut append = Some(runtime.next_file_append(&file).unwrap());
         runtime.send(&client, ClientMessage::Recent(1)).unwrap();
         runtime.run_until_idle().unwrap();
-        let read = runtime.next_effect::<ReadFile>().unwrap();
+        let read = runtime.next_file_read(&file).unwrap();
 
         if append_finishes_first {
             runtime
@@ -307,16 +287,14 @@ fn read_failures_reply_with_the_journal_domain_error() {
         (EffectFailure::Cancelled(CancelReason::Deadline), true),
         (EffectFailure::Cancelled(CancelReason::Shutdown), true),
     ] {
-        let (program, client, _) = program(JournalConfig {
-            file: "chosen.log".into(),
-        });
+        let (program, client, _, file) = program();
         let mut runtime = ControlledRuntime::builder(program)
             .control_all()
             .build()
             .unwrap();
         runtime.send(&client, ClientMessage::Recent(3)).unwrap();
         runtime.run_until_idle().unwrap();
-        let read = runtime.next_effect::<ReadFile>().unwrap();
+        let read = runtime.next_file_read(&file).unwrap();
         runtime
             .complete(read, EffectOutcome::Failed(failure))
             .unwrap();
@@ -356,13 +334,12 @@ impl Drop for TestRoot {
 }
 
 #[tokio::test]
-async fn standard_driver_uses_the_configured_filename_and_root() {
+async fn file_binding_selects_the_journal_target() {
     let root = TestRoot::new();
     let file = "custom/events.log";
-    let (program, _, port) = program(JournalConfig { file: file.into() });
-    let fs = FsDriver::new(root.0.clone());
+    let (program, _, port, _) = program();
     let runtime = Runtime::builder(program)
-        .with_drivers((fs.clone(), SystemClockDriver, fs))
+        .with_drivers((FileDriver::new(root.0.join(file)), SystemClockDriver))
         .build()
         .unwrap();
     let journal = runtime.port_handle(&port).unwrap();
@@ -377,7 +354,6 @@ async fn standard_driver_uses_the_configured_filename_and_root() {
         std::fs::read_to_string(root.0.join(file)).unwrap(),
         "pump: idle -> running\n"
     );
-    assert!(!root.0.join(JOURNAL_FILE).exists());
 }
 
 #[tokio::test]
@@ -386,10 +362,9 @@ async fn recent_reads_existing_entries_through_the_standard_driver() {
     let file = "custom/events.log";
     std::fs::create_dir_all(root.0.join("custom")).unwrap();
     std::fs::write(root.0.join(file), "first\nsecond\nthird\n").unwrap();
-    let (program, _, port) = program(JournalConfig { file: file.into() });
-    let fs = FsDriver::new(root.0.clone());
+    let (program, _, port, _) = program();
     let runtime = Runtime::builder(program)
-        .with_drivers((fs.clone(), SystemClockDriver, fs))
+        .with_drivers((FileDriver::new(root.0.join(file)), SystemClockDriver))
         .build()
         .unwrap();
     let journal = runtime.port_handle(&port).unwrap();
@@ -419,5 +394,4 @@ async fn recent_reads_existing_entries_through_the_standard_driver() {
         RequestOutcome::Replied(Err(Error::CouldNotReadJournal))
     ));
     assert!(task.shutdown(Shutdown::Drain).await.unwrap().is_clean());
-    assert!(!root.0.join(JOURNAL_FILE).exists());
 }

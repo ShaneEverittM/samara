@@ -7,7 +7,6 @@
 
 use std::{
     any::{Any, TypeId},
-    collections::HashSet,
     convert::Infallible,
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{Arc, Mutex, MutexGuard},
@@ -73,10 +72,24 @@ pub(crate) trait ErasedEffectBinding: Send + Sync {
     fn descriptor_type(&self) -> TypeId;
     fn descriptor_type_name(&self) -> &'static str;
     fn execute(&self, descriptor: ErasedValue) -> BoxFuture<ErasedValue>;
+    fn exact_capability(&self) -> Option<&CapabilityToken>;
+
+    fn matches(&self, capability: &CapabilityToken, descriptor: TypeId) -> bool {
+        self.descriptor_type() == descriptor
+            && self
+                .exact_capability()
+                .is_none_or(|bound| bound.same_as(capability))
+    }
+
+    fn satisfies(&self, requirement: &crate::EffectRequirement) -> bool {
+        self.exact_capability().is_some() == requirement.exact
+            && self.matches(&requirement.token, requirement.descriptor_type)
+    }
 }
 
 struct TypedEffectBinding<D, Driver> {
     driver: Driver,
+    capability: Option<CapabilityToken>,
     marker: std::marker::PhantomData<fn() -> D>,
 }
 
@@ -85,6 +98,10 @@ where
     D: EffectDescriptor,
     Driver: EffectDriver<D>,
 {
+    fn exact_capability(&self) -> Option<&CapabilityToken> {
+        self.capability.as_ref()
+    }
+
     fn descriptor_type(&self) -> TypeId {
         TypeId::of::<D>()
     }
@@ -990,6 +1007,20 @@ impl LiveBindings {
     {
         self.effects.push(Arc::new(TypedEffectBinding::<D, Driver> {
             driver,
+            capability: None,
+            marker: std::marker::PhantomData,
+        }));
+    }
+
+    #[cfg(feature = "fs")]
+    pub(crate) fn bind_exact_effect<D: EffectDescriptor, Driver: EffectDriver<D>>(
+        &mut self,
+        capability: &CapabilityToken,
+        driver: Driver,
+    ) {
+        self.effects.push(Arc::new(TypedEffectBinding::<D, Driver> {
+            driver,
+            capability: Some(capability.clone()),
             marker: std::marker::PhantomData,
         }));
     }
@@ -1030,13 +1061,33 @@ impl LiveBindings {
     }
 
     pub(crate) fn validate(&mut self, program: &Program) -> Result<(), RuntimeError> {
-        let mut effect_types = HashSet::new();
-        for binding in &self.effects {
-            if !effect_types.insert(binding.descriptor_type()) {
+        for (index, binding) in self.effects.iter().enumerate() {
+            if self.effects[index + 1..].iter().any(|other| {
+                binding.descriptor_type() == other.descriptor_type()
+                    && match (binding.exact_capability(), other.exact_capability()) {
+                        (Some(left), Some(right)) => left.same_as(right),
+                        _ => true,
+                    }
+            }) {
                 return Err(RuntimeError::harness(format!(
-                    "duplicate live Effect binding for {}",
+                    "duplicate or ambiguous live Effect binding for {}",
                     binding.descriptor_type_name()
                 )));
+            }
+            if let Some(capability) = binding.exact_capability() {
+                if !capability.belongs_to(&program.program) {
+                    return Err(RuntimeError::harness(
+                        "exact live Effect binding uses a capability from another Program",
+                    ));
+                }
+                if !program
+                    .effect_requirement(capability, binding.descriptor_type())
+                    .is_some_and(|requirement| requirement.exact)
+                {
+                    return Err(RuntimeError::harness(
+                        "exact live Effect binding has no matching resource operation declaration",
+                    ));
+                }
             }
         }
         for (index, binding) in self.sources.iter().enumerate() {
@@ -1081,7 +1132,7 @@ impl LiveBindings {
             let count = self
                 .effects
                 .iter()
-                .filter(|binding| binding.descriptor_type() == requirement.descriptor_type)
+                .filter(|binding| binding.satisfies(requirement))
                 .count();
             if count != 1 {
                 return Err(RuntimeError::harness(format!(
@@ -1106,10 +1157,14 @@ impl LiveBindings {
         Ok(())
     }
 
-    fn effect(&self, descriptor_type: TypeId) -> Option<Arc<dyn ErasedEffectBinding>> {
+    fn effect(
+        &self,
+        capability: &CapabilityToken,
+        descriptor_type: TypeId,
+    ) -> Option<Arc<dyn ErasedEffectBinding>> {
         self.effects
             .iter()
-            .find(|binding| binding.descriptor_type() == descriptor_type)
+            .find(|binding| binding.matches(capability, descriptor_type))
             .cloned()
     }
 
@@ -1904,14 +1959,17 @@ impl LiveCore {
                             "Effect capability belongs to another Program",
                         ));
                     }
-                    let binding = self.bindings.effect(descriptor_type).ok_or_else(|| {
-                        self.runtime_fault(
-                            component.clone(),
-                            Some(descriptor_type_name),
-                            work,
-                            "missing live terminal Effect binding",
-                        )
-                    })?;
+                    let binding = self
+                        .bindings
+                        .effect(command.capability(), descriptor_type)
+                        .ok_or_else(|| {
+                            self.runtime_fault(
+                                component.clone(),
+                                Some(descriptor_type_name),
+                                work,
+                                "missing live terminal Effect binding",
+                            )
+                        })?;
                     let (descriptor, mapper) = command.into_parts();
                     let mapper: Option<ErasedMessageMapper> = mapper.map(|mapper| {
                         Box::new(move |outcome| erase_effect_continuation(mapper(outcome)))

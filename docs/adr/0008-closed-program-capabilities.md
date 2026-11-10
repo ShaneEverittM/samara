@@ -113,6 +113,10 @@ An Effect capability declares that the Program may issue descriptor type `D`.
 Each Command still carries one concrete `D` value representing one finite
 occurrence.
 
+ADR-0022 adds a sealed `File<P>` resource family: one capability authorizes
+several permitted descriptor types. Its bound operation builders still lower
+to these same finite typed Effect Commands, with the original capability.
+
 A Source capability declares that the Program may desire descriptor type `S`.
 Each Subscription still carries the concrete, Model-derived `S` value used for
 reconciliation. This preserves dynamic configuration such as reconnecting to a
@@ -160,6 +164,10 @@ the declared Layers. Runtime selection does not infer identity by comparing
 future descriptor values. A type-wide binding and an exact binding that would
 both satisfy one capability remain ambiguous and are rejected unless a future
 ADR defines explicit precedence.
+
+ADR-0022 extends exact binding to File operations. A single `FileDriver` binds
+all permitted operations at a File requirement position; ordinary type-wide
+Effect bindings cannot satisfy those declarations. Overlap remains an error.
 
 ### Both execution profiles validate the complete declaration set
 
@@ -280,8 +288,8 @@ application dependencies.
 ## Explicitly Unresolved
 
 - Named capabilities and user-facing capability identity inspection.
-- Capability-specific Effect Drivers or precedence between exact and type-wide
-  bindings.
+- General capability-specific Effect Drivers beyond ADR-0022's File resource,
+  or precedence between exact and type-wide bindings.
 - A compound standard-I/O capability or other bundles that reduce assembly
   fields without hiding individual requirements.
 - Static derivation or linting of a Component's stored capability inventory.

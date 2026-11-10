@@ -40,6 +40,11 @@ new acceptance scenarios and do not become observable topology.
 
 ## Frozen for Phase 3: Component Kernel
 
+ADR-0022 adds a filesystem resource requirement `File<P>`: one Program-issued
+identity with sealed read/append/write permissions, operation-specific typed outcomes,
+and one host path binding. Exact Effect dispatch and controlled selection retain
+that resource identity. Existing `Effect<D>` type-wide requirements are unchanged.
+
 The accepted Phase 2 audit constrains Phase 3 to this slice:
 
 - `ComponentId` is opaque, Program-issued instance identity. Optional diagnostic
@@ -514,7 +519,9 @@ around values issued by one `ProgramBuilder`:
 - `Command::effect(&capability, descriptor)`,
   `Command::effect_with(&capability, descriptor, mapper)`, and
   `Command::effect_discarding_outcome(&capability, descriptor)` are the only
-  public Effect issuance paths.
+  primitive public Effect issuance paths. Under ADR-0022, `FileCapability<P>`
+  constructs bound `FileEffect<D>` values whose command conversion methods
+  lower through these same paths, retaining the resource's exact identity.
 - `Subscription::source(&capability, descriptor)` and
   `Subscription::source_with(&capability, descriptor, mapper)` are the only
   public Source issuance paths.
@@ -532,8 +539,10 @@ around values issued by one `ProgramBuilder`:
 The requirement shape fixes the capability inventory at builder creation.
 `ProgramBuilder::build()` closes the Component and connection graph. `RuntimeBuilder::build()` and
 `ControlledRuntimeBuilder::build()` synchronously require exactly one
-applicable terminal behavior for every declaration. Normal Drivers and
-controlled registrations are type-wide; the one-shot `mpsc` bridge uses an
+applicable terminal behavior for every declaration. Ordinary `Effect<D>` Drivers
+and controlled registrations are type-wide. `File<P>` uses one exact binding
+for all permitted operations, with no type-wide fallback; controlled
+`next_file_read`, `next_file_append`, and `next_file_replace` retain that selection. The one-shot `mpsc` bridge uses an
 exact Source capability selected by the `MpscReceiver::new(receiver)` tuple
 position. `control_all()` retains that identity. Controlled `emit_stream` and `close_stream`
 operations select that same exact capability. These exact APIs also accept a

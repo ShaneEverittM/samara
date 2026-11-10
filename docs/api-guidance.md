@@ -228,7 +228,7 @@ without adding another driver obligation. The values perform no I/O.
 
 Live execution uses `with_drivers((HttpDriver::new(), MpscReceiver::new(receiver)))`.
 Controlled execution uses `control_all()`, deriving all controls from the Program
-while retaining exact stream identities. Both then call `build()`. Missing or
+while retaining exact resource identities. Both then call `build()`. Missing or
 wrong tuples fail compilation; both profiles retain value-level validation.
 For a type-wide source Driver, use `DrivenSource::new(driver)`. The wrapper
 keeps source Driver selection distinct from exact receiver binding under Rust's
@@ -240,6 +240,51 @@ The closed set does not mean Samara reflects over Component fields or predicts
 every message edge. Deliberately hiding a foreign capability remains a user
 conformance violation; Samara faults before terminal behavior when that value
 becomes observable.
+
+### How Do Reads and Appends Share One File?
+
+Declare `File<ReadAppend>` when operations must target the same file
+([ADR-0022](adr/0022-file-resource-capabilities.md)):
+
+```rust,ignore
+type Requires = (File<ReadAppend>, Effect<ReadSystemTime>);
+
+// In update, using the supplied file capability:
+let append = file.append_line(format!("{name}: {from} -> {to}")).discard_outcome();
+let read = file.read().into_command_with(Message::ReadCompleted);
+
+// The host binds the target once:
+Runtime::builder(program)
+    .with_drivers((FileDriver::new("./data/pulse.journal"), SystemClockDriver))
+    .build()?;
+```
+
+A read completes with `Bytes`;
+an append completes with `()`, both using `FsError`. Constructing a file
+operation is inert. `ReadOnly` and `AppendOnly` restrict the available methods;
+`file.read_only()` and `file.append_only()` share narrower authority over the
+same resource. Two `File<ReadAppend>` positions can bind different targets
+without inventing names or Rust marker types for the files.
+
+For whole-file writes, use `File<WriteOnly>` or `File<ReadWrite>`:
+
+```rust,ignore
+file.replace_text(serialized_state).into_command_with(Message::Saved)
+```
+
+Both permit replacement and append; `ReadWrite` also permits reading.
+Replacement returns `()` or `FsError` and uses the existing atomic
+temporary-file-and-rename mechanism. `replace_bytes` accepts binary contents.
+`file.write_only()` and `file.read_append()` remove authority while retaining
+the same target. `AppendOnly` and `ReadAppend` cannot replace contents.
+
+Controlled tests select pending operations with `next_file_read(&file)` or
+`next_file_append(&file)`, or select replacements with `next_file_replace(&file)`,
+then complete their typed outcomes. They need no
+path or live Driver. Sharing a target does not order independent effects;
+wait for an append's outcome before issuing a read when that order matters.
+Path-based descriptors with `FsDriver::new(root)` remain available when a
+Component needs to choose relative filenames within a directory.
 
 ### When Should an Effect Discard Its Outcome?
 
@@ -795,19 +840,19 @@ Messages and identities can remain private (ADR-0018 and ADR-0019).
 `InstalledAssembly<A>` holding only the Connector and exports. The Program
 carries binding obligations into runtime setup, so no Assembly token must be
 passed separately. Driver tuples match the Program's requirement shape and
-incomplete runtime setup has no `build` method. Exact stream positions retain
+incomplete runtime setup has no `build` method. Exact resource positions retain
 their capability identities; controlled execution constructs no live Driver.
 
 Assemblies may implement `VendorsDrivers` to supply a concrete tuple through
 `A::drivers(driver_config)`. `VendorsDrivers::DriverConfig` contains live
 implementation settings, such as a filesystem root; `Assembly::Config` contains
-logical settings, such as a relative filename. These are separate types, and
+logical settings, such as a history limit. These are separate types, and
 the Program does not retain driver config. Use `DriverConfig = ()` for vendors
 without settings. The host can use the returned tuple at a matching position
 in the Program's driver tuple. Libraries normally feature-gate this implementation;
 the Assembly and its requirement shape remain available without live drivers.
 Assemblies that only need standard Drivers can omit `VendorsDrivers`; their
-hosts supply constructors such as `FsDriver::new(root)` directly in the tuple.
+hosts supply constructors such as `FileDriver::new(path)` directly in the tuple.
 
 Implement `Assembly` on a public marker struct, not on a Component.
 `Component`'s associated types are part of its public interface, so a public

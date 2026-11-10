@@ -87,6 +87,8 @@ mod component_kernel;
 mod controlled_runtime;
 mod declarative_work;
 #[cfg(feature = "fs")]
+mod file;
+#[cfg(feature = "fs")]
 mod fs;
 mod http_redirect;
 mod live_runtime;
@@ -104,6 +106,8 @@ use controlled_runtime::ControlledCore;
 /// assert_eq!(status.as_u16(), 200);
 /// ```
 pub use clock::{ReadSystemTime, SystemClockDriver};
+#[cfg(feature = "fs")]
+pub use file::*;
 #[cfg(feature = "fs")]
 pub use fs::{
     AppendToFile, FsDriver, FsError, FsErrorKind, FsOperation, ReadFile, RemoveFile, ReplaceFile,
@@ -147,8 +151,10 @@ pub mod prelude {
     };
     #[cfg(feature = "fs")]
     pub use crate::{
-        AppendToFile, FsDriver, FsError, FsErrorKind, FsOperation, ReadFile, RemoveFile,
-        ReplaceFile,
+        AppendOnly, AppendToFile, CanAppend, CanRead, CanWrite, File, FileAppend, FileCapability,
+        FileDriver, FileEffect, FilePermissions, FileRead, FileReplace, FsDriver, FsError,
+        FsErrorKind, FsOperation, ReadAppend, ReadFile, ReadOnly, ReadWrite, RemoveFile,
+        ReplaceFile, WriteOnly,
     };
 }
 
@@ -4158,6 +4164,7 @@ pub(crate) struct EffectRequirement {
     token: CapabilityToken,
     descriptor_type: TypeId,
     descriptor_type_name: &'static str,
+    exact: bool,
 }
 
 pub(crate) struct SourceRequirement {
@@ -4170,10 +4177,14 @@ pub(crate) struct SourceRequirement {
 }
 
 impl Program {
-    fn effect_requirement(&self, token: &CapabilityToken) -> Option<&EffectRequirement> {
-        self.effect_requirements
-            .iter()
-            .find(|requirement| requirement.token.same_as(token))
+    fn effect_requirement(
+        &self,
+        token: &CapabilityToken,
+        descriptor: TypeId,
+    ) -> Option<&EffectRequirement> {
+        self.effect_requirements.iter().find(|requirement| {
+            requirement.token.same_as(token) && requirement.descriptor_type == descriptor
+        })
     }
 
     fn source_requirement(&self, token: &CapabilityToken) -> Option<&SourceRequirement> {
@@ -4183,10 +4194,7 @@ impl Program {
     }
 
     pub(crate) fn declares_effect(&self, token: &CapabilityToken, descriptor: TypeId) -> bool {
-        token.belongs_to(&self.program)
-            && self
-                .effect_requirement(token)
-                .is_some_and(|requirement| requirement.descriptor_type == descriptor)
+        token.belongs_to(&self.program) && self.effect_requirement(token, descriptor).is_some()
     }
 
     pub(crate) fn declares_source(&self, token: &CapabilityToken, descriptor: TypeId) -> bool {
@@ -4592,11 +4600,23 @@ impl<R: Requirements> ProgramBuilder<R> {
             token: token.clone(),
             descriptor_type: TypeId::of::<D>(),
             descriptor_type_name: std::any::type_name::<D>(),
+            exact: false,
         });
         EffectCapability {
             token,
             marker: PhantomData,
         }
+    }
+
+    /// Adds one allowed operation under an existing exact resource identity.
+    #[cfg(feature = "fs")]
+    fn exact_effect<D: EffectDescriptor>(&mut self, token: &CapabilityToken) {
+        self.effect_requirements.push(EffectRequirement {
+            token: token.clone(),
+            descriptor_type: TypeId::of::<D>(),
+            descriptor_type_name: std::any::type_name::<D>(),
+            exact: true,
+        });
     }
 
     /// Declares a source type and returns the capability used to subscribe to it.

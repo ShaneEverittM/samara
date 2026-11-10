@@ -11,8 +11,15 @@ file but not the directory; removing a missing file is `NotFound`, not
 success; the root is created lazily by the first write; no ordering is
 promised and handles are not modelled. The remaining questions are still the
 design work. Raw material came from `examples/pulse`, whose journal now
-appends through the first-party effect; see the
+uses the first-party file resource; see the
 [filesystem follow-up](framework-follow-ups.md) for the running summary.
+
+November 9 update: [ADR-0022](../adr/0022-file-resource-capabilities.md) implements
+the declared sink/store as `File<P>`, with `ReadOnly`, `AppendOnly`, `ReadAppend`,
+`WriteOnly`, and `ReadWrite` permission sets. Write permits replacement and
+append; append alone cannot replace contents. One host-supplied `FileDriver` binds its path;
+controlled tests select operations by resource identity. It reuses the
+filesystem mechanisms above without open handles or an ordering guarantee.
 
 ## Governing principle
 
@@ -87,13 +94,12 @@ mechanism.
 
 Open questions:
 
-- Is a sink literally a root with a fixed relative name, or a distinct token
-  type with a smaller descriptor surface? The first is one mechanism; the
-  second reads better at the call site.
+- Settled for this trial by ADR-0022: a declared file has a distinct token and
+  path-free operation descriptors, backed by the same filesystem mechanisms.
 - How does use 3 appear in the inventory so that it is obviously broader than
   use 2? A separate capability type, or a root bound to `/`?
-- Does the controlled runtime need to know anything about roots, or is a
-  relative path in an intent enough for a test to assert?
+- Controlled File tests use exact resource identity; roots are live settings.
+  Directory-level descriptors still expose relative paths to tests.
 - Where does use 4 belong: this module, or alongside other Sources?
 
 ## Owned and Shared handles

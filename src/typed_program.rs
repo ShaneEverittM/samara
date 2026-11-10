@@ -15,6 +15,7 @@ mod private {
 pub type Capabilities<R> = <R as Requirements>::Capabilities;
 
 /// A finite requirement shape: `Effect<D>`, `Source<S>`, `()`, or nested tuples.
+/// The `fs` feature also supplies `File<P>` for one permission-typed file resource.
 ///
 /// Sealed so the typed shape and its issued capabilities cannot disagree.
 ///
@@ -87,6 +88,60 @@ impl<D: EffectDescriptor> Requirements for Effect<D> {
         runtime.control_effect::<D>()
     }
 }
+
+#[cfg(feature = "fs")]
+impl<P: FilePermissions> private::Requirement for File<P> {}
+#[cfg(feature = "fs")]
+impl<P: FilePermissions> Requirements for File<P> {
+    type Capabilities = FileCapability<P>;
+    fn declare(builder: &mut ProgramBuilder, _: private::Key) -> Self::Capabilities {
+        let token = builder.next_capability();
+        if P::READ {
+            builder.exact_effect::<FileRead>(&token);
+        }
+        if P::APPEND {
+            builder.exact_effect::<FileAppend>(&token);
+        }
+        if P::WRITE {
+            builder.exact_effect::<FileReplace>(&token);
+        }
+        FileCapability::new(token)
+    }
+    fn validate(cap: &Self::Capabilities, program: &Arc<()>) -> Result<(), ProgramBuildError> {
+        if cap.token.belongs_to(program) {
+            Ok(())
+        } else {
+            Err(ProgramBuildError::ForeignCapability {
+                descriptor_type: std::any::type_name::<File<P>>(),
+            })
+        }
+    }
+    fn control(
+        cap: &Self::Capabilities,
+        mut runtime: ControlledRuntimeBuilder,
+        _: private::Key,
+    ) -> ControlledRuntimeBuilder {
+        if P::READ {
+            runtime
+                .bindings
+                .exact_effects
+                .push((cap.token.clone(), TypeId::of::<FileRead>()));
+        }
+        if P::APPEND {
+            runtime
+                .bindings
+                .exact_effects
+                .push((cap.token.clone(), TypeId::of::<FileAppend>()));
+        }
+        if P::WRITE {
+            runtime
+                .bindings
+                .exact_effects
+                .push((cap.token.clone(), TypeId::of::<FileReplace>()));
+        }
+        runtime
+    }
+}
 impl<S: SourceDescriptor> private::Requirement for Source<S> {}
 impl<S: SourceDescriptor> Requirements for Source<S> {
     type Capabilities = SourceCapability<S>;
@@ -140,6 +195,7 @@ impl Requirements for () {
 ///
 /// A source driver handles the terminal descriptor beneath its declared Layers.
 /// Use `MpscReceiver` for an exact channel resource and `StdinDriver` for stdin.
+/// With the `fs` feature, one `FileDriver` supplies all operations of a `File<P>`.
 /// Binding is private; supply values through [`RuntimeSetup::with_drivers`].
 /// This trait is sealed. Implement [`EffectDriver`] or [`SourceDriver`] for
 /// application-defined Drivers.
@@ -159,6 +215,20 @@ impl<R: Requirements, T: private::Driver<R>> Drivers<R> for T {}
 impl<D: EffectDescriptor, T: EffectDriver<D>> private::Driver<Effect<D>> for T {
     fn bind(self, _: &EffectCapability<D>, bindings: &mut live_runtime::LiveBindings) {
         bindings.bind_effect::<D, T>(self);
+    }
+}
+#[cfg(feature = "fs")]
+impl<P: FilePermissions> private::Driver<File<P>> for FileDriver {
+    fn bind(self, cap: &FileCapability<P>, bindings: &mut live_runtime::LiveBindings) {
+        if P::READ {
+            bindings.bind_exact_effect::<FileRead, _>(&cap.token, self.clone());
+        }
+        if P::APPEND {
+            bindings.bind_exact_effect::<FileAppend, _>(&cap.token, self.clone());
+        }
+        if P::WRITE {
+            bindings.bind_exact_effect::<FileReplace, _>(&cap.token, self);
+        }
     }
 }
 /// A type-wide terminal source Driver used in a requirement tuple.
@@ -299,7 +369,7 @@ pub struct ControlledRuntimeSetup<R: Requirements> {
     pub(crate) builder: ControlledRuntimeBuilder,
 }
 impl<R: Requirements> ControlledRuntimeSetup<R> {
-    /// Controls every declared effect and source, preserving exact channel identities.
+    /// Controls every declared effect and source, preserving exact resource identities.
     pub fn control_all(self) -> ControlledRuntimeBuilder {
         R::control(&self.capabilities, self.builder, private::Key)
     }

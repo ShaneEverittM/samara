@@ -20,7 +20,7 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-# First-party filesystem effects: AppendToFile, ReplaceFile, ReadFile, RemoveFile, FsDriver.
+# First-party filesystem effects and permission-typed File resources.
 fs = ["tokio/fs"]
 
 [dependencies]

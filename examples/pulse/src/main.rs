@@ -1,12 +1,12 @@
 use samara::{
-    Assembly, Capabilities, Command, Component, Connector, Effect, FsDriver, Init, PrintStdout,
+    Assembly, Capabilities, Command, Component, Connector, Effect, FileDriver, Init, PrintStdout,
     Program, RequestOutcome, Runtime, Shutdown, Source, SourceEvent, StdinDriver, StdinLines,
     StdoutDriver, Subscription, Subscriptions, SystemClockDriver,
 };
 
 // This is a "library assembly", that is a subsection of a Program (discussed later)
 // designed to be embedded in another program.
-use pulse::journal::{Journal, JournalConfig, JournalMessage};
+use pulse::journal::{Journal, JournalMessage};
 
 // This is the component of our application>
 struct Monitor;
@@ -99,7 +99,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Re-use the library assembly...
     let journal = builder
-        .install::<Journal>(JournalConfig::default())
+        .install::<Journal>(())
         // ...failing to compile if you don't give it its declared capabilities.
         .with_capabilities(journal_caps)
         .finish()?;
@@ -117,11 +117,10 @@ async fn main() -> anyhow::Result<()> {
     let program = builder.build()?;
 
     // Create a runtime for our program...
-    let fs = FsDriver::new("./data");
     let runtime = Runtime::builder(program)
         // ...and install the drivers that actually supply the behavior to the capabilities.
         .with_drivers((
-            (fs.clone(), SystemClockDriver, fs),
+            (FileDriver::new("./data/pulse.journal"), SystemClockDriver),
             (StdinDriver, StdoutDriver::new()),
         ))
         .build()?;
