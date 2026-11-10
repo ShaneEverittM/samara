@@ -66,8 +66,8 @@ the type. The function is pure.
 ## Consequences
 
 - **Drain now terminates when a provider holds or has dropped a reply
-  token.** This amends the ADR-0006 and ADR-0007 statements that an
-  unanswered request may keep Drain pending forever: the provider's shutdown
+  token.** This amends the ADR-0004, ADR-0006, ADR-0010, and ADR-0011
+  statements that an unanswered request may keep Drain pending forever: the provider's shutdown
   either answers it or abandons it, and the requester hears which. Outside
   Drain a dropped token still leaves its request pending, as before.
 - `RequestError::ReplyAbandoned` is produced for the first time, and

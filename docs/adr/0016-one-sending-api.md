@@ -1,6 +1,11 @@
 # ADR-0016: One Sending API
 
-- Status: Accepted
+- Status: Accepted; the request spelling is amended by
+  [ADR-0023](0023-boundary-work-builders-and-finishers.md):
+  `Command::request(&target, ctor)` returns a builder that takes an optional
+  `.timeout(d)` and a finisher, replacing `request_to` and
+  `request_to_timeout`, and the inspector is `Command::into_request`.
+  `PortHandle` keeps the host-side names decided here.
 - Date: November 8, 2026
 - Deciders: Samara maintainers
 - Scope: Removal of `messages!`, `Notification`, `Request`,

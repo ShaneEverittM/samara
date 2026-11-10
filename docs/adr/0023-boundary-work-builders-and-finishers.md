@@ -1,19 +1,19 @@
-# ADR-0023: Boundary Work Is Built on What You Hold and Ends with a Finisher
+# ADR-0023: Boundary Work Is Named `Kind::verb` and Ends with a Finisher
 
-- Status: Accepted for implementation trial. Spellings are expected to be
-  revisited once the shape has been lived with.
+- Status: Accepted. Amends the call spellings of ADR-0016 and ADR-0022.
 - Date: November 2026
 - Deciders: Samara maintainers
 - Scope: How a Component describes effects, sends, requests, and replies;
-  the finishers that turn a described interaction into a `Command`;
-  `finish_with` and `Command<NoMessage>`; removal of the static `Command`
-  constructors for boundary work
+  the `Kind::verb` rule for where each entry point lives; the finishers that
+  turn a described interaction into a `Command`; `finish_with` and
+  `Command<NoMessage>`; removal of the finisher-in-the-name `Command`
+  constructors
 
 ## Context
 
 Two styles of describing boundary work had grown side by side. ADR-0022's
-file capabilities are builders: `file.read()` returns an inert value that a
-finisher turns into a Command. Everything else was a static function with
+file capabilities were builders: `file.read()` returned an inert value that a
+finisher turned into a Command. Everything else was a static function with
 the finisher baked into its name: `Command::effect`, `effect_with`,
 `effect_discarding_outcome`, `Command::send`, `request_to`,
 `request_to_timeout`, `Command::reply`. Each new way for an outcome to end
@@ -29,19 +29,34 @@ and nothing in a chain can do what a `Cmd` does.
 
 ## Decision
 
-### The verb lives on the thing a Component holds
+### Entry points are `Kind::verb`, rooted by what the work needs
+
+World-facing work is rooted at the requirement that grants it. Work that
+needs no capability is rooted at `Command`.
 
 ```rust,ignore
-journal.send(JournalMessage::Transition { .. })      // Addressable: Port, Connector, ComponentRef, InstalledAssembly
-journal.request(|reply| JournalMessage::Recent { count, reply })   // -> RequestBuilder
-clock.perform(ReadSystemTime)                        // EffectCapability -> EffectBuilder
-file.read()                                          // FileCapability   -> EffectBuilder (FileEffect is an alias)
-reply.with(value)                                    // ReplyWith
+// Requirement-rooted: the first argument is the capability the Component declared.
+Effect::perform(clock, ReadSystemTime)               // -> EffectBuilder
+File::read(file)                                     // -> EffectBuilder (FileEffect is an alias)
+File::append_line(file, text)
+
+// Command-rooted: needs no capability.
+Command::send(&journal, JournalMessage::Transition { .. })
+Command::request(&journal, |reply| JournalMessage::Recent { count, reply })   // -> RequestBuilder
+Command::reply(reply, value)
+Command::none()   Command::batch(..)   Command::after(duration, message)
 ```
 
-`Command::` keeps only what has no target: `none`, `batch`, `after`.
+`Command` by itself is therefore the root for work that requires no
+capability, and every other root names the requirement that authorizes the
+work. A reader can tell from the first token of a call whether it reaches
+the world. Targets are `Addressable` (Port, Connector, ComponentRef,
+InstalledAssembly, and references to them) and are passed by reference.
 
-### Every interaction ends with one of four finishers
+`send` and `reply` have nothing to observe and are Commands already.
+`perform`, the `File` operations, and `request` return builders.
+
+### Every builder ends with one of four finishers
 
 | Finisher | The outcome becomes |
 | --- | --- |
@@ -51,7 +66,8 @@ reply.with(value)                                    // ReplyWith
 | `.discard_outcome()` | nothing (effects only) |
 
 A request builder also takes `.timeout(duration)` before its finisher, which
-replaces `request_to_timeout`.
+replaces `request_to_timeout`. An effect's outcome is `EffectOutcome`
+(ADR-0025); a request's is `RequestOutcome`.
 
 ### `finish_with` is exactly one hop
 
@@ -59,8 +75,11 @@ replaces `request_to_timeout`.
 values and is not `Send`. The finishers that need a continuation require
 `Message: Deliverable`, which every `Send + 'static` type satisfies and
 `NoMessage` does not, so inside the closure only work that ends where it is
-issued can be built: `reply.with`, `target.send`, an effect with
-`discard_outcome`, `Command::none`, and batches of those. Starting anything
+issued can be built: `Command::reply`, `Command::send`, an effect with
+`discard_outcome`, `Command::none`, and batches of those. `Command::request`
+is defined on `Command<NoMessage>` so that its target's message type is
+inferred from the target alone; its finishers still require `Deliverable`,
+so a request cannot be completed inside the closure. Starting anything
 whose result would come back is a compile error with a diagnostic that says
 so. The closure is pure and never sees the Model; state changes still
 require a Message.
@@ -71,10 +90,25 @@ erased continuation now yields either a Message or a Command, and both
 runtimes interpret the latter under the requester with the outcome as its
 trace cause.
 
+`Component::shutdown` (ADR-0024) returns the same `Command<NoMessage>`, for
+the same reason.
+
 ## Alternatives considered
 
 - **Add `finish_with` to each static entry point.** Three more function
-  names today and three per future finisher.
+  names at the time and three per future finisher.
+- **Verbs as methods on the held value** (`journal.send(..)`,
+  `clock.perform(..)`, `file.read()`, `reply.with(..)`). Implemented first
+  and lived with briefly. Discoverable through completion, but a transition
+  arm no longer began with a word saying what kind of thing it returned, and
+  capability-bearing calls looked the same as plain sends. The static form
+  kept the builders and restored that reading.
+- **`Command::perform` for effects.** Puts world work under the root that
+  means "needs no capability", which is the distinction the rule exists to
+  show.
+- **`Connector::send` / `ComponentRef::send`.** Would make the root depend on
+  which kind of address a Component happens to hold; `Addressable` exists so
+  it does not have to.
 - **Unrestricted Command continuations.** Rejected for the hidden-state
   reason above.
 - **A distinct `Finish` type with its own constructors.** Airtight without
@@ -90,10 +124,13 @@ trace cause.
   Component that issued it.
 - A Component that answers a request from an effect result needs no private
   Message variants for the hop.
-- `into_request_to` extracts only Message-producing requests; a finishing
+- `Command::into_request` extracts only Message-producing requests; a finishing
   request is observed through controlled execution.
-- `PortHandle`'s host-side `request_to` and the HTTP pipeline's
-  `into_command_with` keep their names for now and are listed for the audit.
+- `PortHandle`'s host-side `request_to` and `request_to_timeout`, the HTTP
+  pipeline's `into_command_with`, and `Subscription::source_with` keep their
+  older names. They are recorded in `docs/notes/framework-follow-ups.md`.
+- The capability methods behind the `File` operations are private; the
+  `File::` functions are the public surface (amends ADR-0022's spelling).
 - Every boundary call site changes spelling. Mechanical.
 
 ## Evidence
@@ -109,4 +146,5 @@ Message.
 ## Rollback
 
 Revert the implementing commits. The builders were additive in the first
-commit, so reverting only the removal restores both spellings.
+commit, so reverting only the removal restores both spellings. The
+`Kind::verb` respelling is a separate, purely mechanical commit.

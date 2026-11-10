@@ -7,6 +7,9 @@
 - Decision owners: Samara maintainers
 - Extends: [ADR 0004](0004-initial-live-runtime-semantics.md)
 
+> Amendment note (November 2026): Effect and request call spellings below are the originals; the current
+> spellings are in [ADR-0023](0023-boundary-work-builders-and-finishers.md).
+
 > Capability amendment (July 25, 2026):
 > [ADR-0008](0008-closed-program-capabilities.md) requires an
 > `EffectCapability<HttpRequest>` when this pipeline lowers into a Command.
@@ -122,9 +125,8 @@ runtime behavior or Command kind.
 
 `HttpResponseError` keeps configuration/transport `HttpError`, selected status
 policy, and JSON decoding failures distinct.
-`EffectOutcome::Failed(EffectFailure::Cancelled(reason))` (ADR-0020)
-continues through the pipeline as cancellation and is never converted into
-response-error data. Operations run in declared order, so
+Under [ADR-0025](0025-bare-effect-outcomes.md) the raw outcome carries no
+cancellation case, so the pipeline has none to pass through. Operations run in declared order, so
 `require_success().json::<T>()` rejects a non-2xx response before attempting
 decoding, while `json::<T>()` alone may successfully decode a non-2xx response.
 

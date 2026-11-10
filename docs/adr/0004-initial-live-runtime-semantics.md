@@ -6,6 +6,14 @@
 - Extends: [ADR 0002](0002-runtime-topology-and-ordering.md) and
   [ADR 0003](0003-controlled-execution-semantics.md)
 
+> Amendment note (November 2026): Effect and request call spellings below are the originals; the current
+> spellings are in [ADR-0023](0023-boundary-work-builders-and-finishers.md).
+> [ADR-0024](0024-component-shutdown.md) stops Components during Drain and
+> abandons requests whose reply token no longer exists, so an unanswered
+> Request no longer keeps Drain waiting on its own.
+> [ADR-0025](0025-bare-effect-outcomes.md) makes an effect's outcome exactly
+> its Driver's result.
+
 > Supersession note (July 25, 2026): [ADR-0008](0008-closed-program-capabilities.md)
 > requires every declared Effect and Source terminal binding to validate during
 > profile build. References below to legitimately discovering a missing dynamic
@@ -108,8 +116,9 @@ not manufacture Component Messages,
 EffectOutcomes, SourceEvents, or RequestOutcomes merely because the application
 is ending. In particular, canceling an in-flight effect as part of runtime
 shutdown drops or cancels its live future and does not invoke its message
-mapper. This is distinct from an explicit per-effect cancellation outcome
-defined by an effect contract or supplied by controlled behavior.
+mapper. Under [ADR-0025](0025-bare-effect-outcomes.md) no per-effect
+cancellation outcome exists either; an effect contract that needs one models
+it in its own error type.
 
 Future per-effect deadlines, supersession, and in-band cancellation remain
 deferred.
@@ -133,10 +142,8 @@ must not depend on exact counts.
 A normally returning `EffectDriver` result maps exactly once:
 
 - `Ok(output)` becomes `EffectOutcome::Succeeded(output)`; and
-- `Err(error)` becomes `EffectOutcome::Failed(EffectFailure::Error(error))`
-  under [ADR-0020](0020-effect-failure-reasons.md), which groups errors and
-  explicit cancellation under the unsuccessful outcome without changing
-  whole-scope cancellation behavior.
+- `Err(error)` becomes `EffectOutcome::Failed(error)`
+  ([ADR-0025](0025-bare-effect-outcomes.md)).
 
 For `Command::effect(&capability, descriptor)`, the originating one-shot mapper
 is then invoked exactly once and its Message re-enters runtime-managed delivery.

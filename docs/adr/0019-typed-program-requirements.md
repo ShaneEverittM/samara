@@ -8,6 +8,8 @@ ADR-0021 amends Component registration to `component::<C>(config)` with an
 optional diagnostic `.name(...)`; Component identity is issued by the builder.
 ADR-0022 adds `File<P>` requirements with one exact resource binding for their
 permitted operations and moves Journal's target path into that binding.
+ADR-0023 respells boundary work and ADR-0025 flattens `EffectOutcome`; the
+pulse description below reflects both.
 
 ## Decision
 
@@ -125,10 +127,11 @@ and return up to the requested number of trailing lines from the returned
 bytes, in file order. They have no ordering guarantee against concurrent
 appends; an unterminated trailing line is included.
 
-Recent replies carry `Result<Vec<String>, journal::Error>`. Under ADR-0020,
-the effect mapper routes success or an `EffectFailure<FsError>` to a Message;
-update maps error and cancellation reasons to the public Journal error
-variants. Controlled tests cover tail boundaries, request correlation,
+Recent replies carry `Result<Vec<String>, journal::Error>`. The read is
+finished with `finish_with` (ADR-0023), which replies to the caller directly
+from the `EffectOutcome` (ADR-0025): success becomes the tail, and an
+`FsError` becomes the public Journal error. No private Message carries the
+reply token. Controlled tests cover tail boundaries, request correlation,
 completion orders, domain mapping, and discarded append outcomes. Live tests
 verify configured paths, existing-file reads, and missing-file errors.
 Invalid UTF-8 and the application's broader error handling remain unfinished,

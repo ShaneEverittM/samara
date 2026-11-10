@@ -5,6 +5,12 @@
 - Decision owners: Samara maintainers
 - Extends: [ADR 0002](0002-runtime-topology-and-ordering.md)
 
+> Amendment note (November 2026): Effect and request call spellings below are the originals; the current
+> spellings are in [ADR-0023](0023-boundary-work-builders-and-finishers.md).
+> [ADR-0024](0024-component-shutdown.md) adds a controlled Drain, and
+> [ADR-0025](0025-bare-effect-outcomes.md) removes cancellation from effect
+> outcomes.
+
 > Supersession note (July 25, 2026): [ADR-0008](0008-closed-program-capabilities.md)
 > supersedes this ADR's open Effect/Source dependency qualification and normal
 > runtime discovery of missing controlled behavior. The scheduling, trace,
@@ -191,9 +197,7 @@ counts it as pending work, and requires the harness either to complete it with
 one typed `EffectOutcome` or to cancel the controlled scope. Supplying an
 outcome removes the obligation and records the ordinary structural
 `EffectOutcome` trace entry, but schedules no Message and therefore causes no
-Component transition. Supplying
-`EffectOutcome::Failed(EffectFailure::Cancelled(reason))` (ADR-0020) follows
-the same rule. Whole-scope controlled cancellation continues to clear the obligation
+Component transition. Whole-scope controlled cancellation continues to clear the obligation
 without manufacturing an outcome.
 
 Missing controlled behavior remains a runtime fault even when the outcome

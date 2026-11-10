@@ -9,6 +9,9 @@
   allowance for a legitimately declared Effect or Source binding to be
   discovered missing only after execution starts
 
+> Amendment note (November 2026): Effect and request call spellings below are the originals; the current
+> spellings are in [ADR-0023](0023-boundary-work-builders-and-finishers.md).
+
 > Runtime construction amendment (November 9, 2026):
 > [ADR-0019](0019-typed-program-requirements.md) declares capabilities through
 > `Program::builder::<R>()` and supplies all live Drivers through `with_drivers`.

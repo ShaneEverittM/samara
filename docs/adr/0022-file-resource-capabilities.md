@@ -3,6 +3,10 @@
 - Status: Accepted for implementation trial.
 - Date: November 9, 2026
 - Amends: ADR-0008, ADR-0013, and ADR-0019.
+- Amended by: [ADR-0023](0023-boundary-work-builders-and-finishers.md) for
+  the operation and finisher spellings, and
+  [ADR-0025](0025-bare-effect-outcomes.md) for the outcome shape. The text
+  below uses the current spellings.
 
 ## Problem
 
@@ -31,14 +35,15 @@ permission types but bind different targets; neither names nor marker types
 are needed to distinguish them. A File denotes a logical pathname, not a
 persistent OS handle or an inode protected against external replacement.
 
-`file.read()` produces `FileEffect<FileRead>` and `file.append_line(text)` (or
-`append_bytes` / `append_text`) produces `FileEffect<FileAppend>`. These values
-are inert. `into_command()` uses Message conversion, `into_command_with(mapper)`
-maps a typed outcome, and `discard_outcome()` issues the operation without an
-application continuation. FileRead returns Bytes; FileAppend returns unit;
+`File::read(file)` produces `FileEffect<FileRead>` and
+`File::append_line(file, text)` (or `append_bytes` / `append_text`) produces
+`FileEffect<FileAppend>`. These values are inert. `into_command()` uses
+Message conversion, `producing(mapper)` maps a typed outcome,
+`finish_with(f)` ends in finishing commands, and `discard_outcome()` issues
+the operation without an application continuation. FileRead returns Bytes; FileAppend returns unit;
 both use FsError. Operation descriptors contain no caller-selectable target.
 
-`file.replace_bytes(contents)` and `file.replace_text(contents)` require
+`File::replace_bytes(file, contents)` and `File::replace_text(file, contents)` require
 `CanWrite` and produce `FileEffect<FileReplace>`, returning unit or FsError.
 The Driver reuses `ReplaceFile`'s temporary-sibling write, file sync, and rename
 mechanism: a reader sees the old or new contents, with no partial target write.

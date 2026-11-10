@@ -657,11 +657,12 @@ as amended by [ADR-0018](adr/0018-assemblies-export-a-connector.md) and
   identities, conflicting bindings and invalid startup work still fail synchronous
   validation. Component and Assembly capability provenance is checked before init/install.
 
-## Accepted for Trial: Boundary Work Builders and Finishers
+## Accepted and Implemented Contract: Boundary Work Builders and Finishers
 
 [ADR-0023](adr/0023-boundary-work-builders-and-finishers.md):
 
-- Boundary work is described on what a Component holds:
+- Entry points are `Kind::verb`. World-facing work is rooted at the
+  requirement that grants it and everything else at `Command`:
   `Effect::perform(&capability, descriptor)` and resource operations such as
   `File::read(&file)` return an inert `EffectBuilder`; `Command::request(&target, ctor)`
   returns an inert `RequestBuilder`, optionally bounded with `.timeout(d)`;
@@ -678,7 +679,7 @@ as amended by [ADR-0018](adr/0018-assemblies-export-a-connector.md) and
   discard; anything whose result would return fails to compile.
 - `Command::into_request` extracts only Message-producing requests.
 - Removed: `Command::effect`, `effect_with`, `effect_discarding_outcome`,
-  `send`, `request_to`, `request_to_timeout`, `reply`.
+  `request_to`, `request_to_timeout`.
 
 ## Accepted and Implemented Contract: Component Shutdown
 

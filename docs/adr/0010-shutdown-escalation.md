@@ -5,6 +5,13 @@
 - Extends: [ADR-0004](0004-initial-live-runtime-semantics.md) and
   [ADR-0007](0007-live-host-lifecycle.md)
 
+> Amendment note (November 2026): [ADR-0024](0024-component-shutdown.md)
+> has Drain stop Components and abandon requests whose reply token no longer
+> exists, so an unanswered request is no longer a reason for Drain to wait
+> indefinitely. Hung effects and recurring timers still are, and escalation
+> remains the only bound. Components not yet stopped when Drain escalates
+> are named in `ShutdownReport::not_shut_down`.
+
 ## Context
 
 Drain can wait indefinitely for an effect, unanswered request, or recurring

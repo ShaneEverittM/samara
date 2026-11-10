@@ -396,7 +396,8 @@ values.
 `Command` by saying how its outcome ends: `producing(map)` (a Message),
 `into_command()` (a Message through `From`), `finish_with(f)` (finishing
 commands and no Message), or `discard_outcome()` (nothing; effects only).
-The interaction itself is described on what the Component holds:
+The interaction itself is named `Kind::verb`, rooted at the requirement for
+world-facing work and at `Command` otherwise:
 `Effect::perform(&capability, descriptor)`, `File::read(&file)`, `Command::request(&target, ctor)`
 (ADR-0023).
 

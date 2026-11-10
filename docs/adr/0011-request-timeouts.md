@@ -5,6 +5,12 @@
 - Extends: [ADR-0003](0003-controlled-execution-semantics.md) and
   [ADR-0006](0006-live-port-ingress.md)
 
+> Amendment note (November 2026): the timeout is now spelled
+> `Command::request(&target, ctor).timeout(duration)`
+> ([ADR-0023](0023-boundary-work-builders-and-finishers.md)).
+> [ADR-0024](0024-component-shutdown.md) separately releases an unanswered
+> Request during Drain once its reply token no longer exists.
+
 ## Context
 
 An unanswered Request owns its continuation indefinitely and prevents Drain

@@ -9,6 +9,11 @@
 > adds opt-in Request timeouts and harmless late Replies. Successful-only and
 > deferred-timeout statements below describe the original unbounded forms.
 
+> Amendment note (November 2026): [ADR-0024](0024-component-shutdown.md)
+> ends the unbounded Drain wait on an unanswered host Request. A provider's
+> shutdown answers or drops the token, and a waiter whose token no longer
+> exists receives a `RuntimeError`.
+
 ## Context
 
 ADR-0004 introduced `ComponentHandle<C>` as a live capability for surrounding

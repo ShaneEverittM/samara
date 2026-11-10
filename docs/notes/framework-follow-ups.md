@@ -194,9 +194,9 @@ a journal Component; exploratory proposals, not accepted API decisions.
   private Message variants to carry the reply token, more evidence for the
   composition item below.
 
-- [ ] **Audit after ADR-0023.** The builders and finishers landed as a
-  trial with spellings expected to move. Known inconsistencies left for the
-  audit: `PortHandle::request_to` and `request_to_timeout` keep the old
+- [ ] **Leftover spellings after ADR-0023.** The audit accepted the
+  `Kind::verb` entry points and the four finishers, and ADR-0023 now records
+  them. Inconsistencies that remain: `PortHandle::request_to` and `request_to_timeout` keep the old
   static shape on the host side (an awaitable builder would match
   `Command::request(&target, ctor).timeout(d)`); `HttpResponsePipeline` still spells
   its mapper finisher `into_command_with`; `Subscription::source_with` is
