@@ -25,6 +25,9 @@ use crate::{
 type ErasedValue = Box<dyn Any + Send>;
 type ErasedMessageMapper =
     Box<dyn FnOnce(ErasedValue) -> ErasedEffectContinuation + Send + 'static>;
+/// A request's continuation after its typed outcome mapper has been erased.
+pub(crate) type ErasedRequestContinuation =
+    Box<dyn FnOnce(RequestOutcome<ErasedValue>) -> ErasedEffectContinuation + Send + 'static>;
 
 /// Type-erased finite work returned by one typed Component transition.
 pub(crate) trait ErasedCommand: Send {
@@ -259,7 +262,7 @@ struct OutstandingRequest {
     requester: ComponentId,
     reply_type: TypeId,
     reply_type_name: &'static str,
-    mapper: Option<ErasedRequestMapper<ErasedValue>>,
+    mapper: Option<ErasedRequestContinuation>,
     message_type: TypeId,
     message_type_name: &'static str,
 }
@@ -991,8 +994,8 @@ impl ControlledCore {
                     let token = RequestToken::new(correlation, self.program.program.clone());
                     let (port_message, mapper): (_, ErasedRequestMapper<Message>) =
                         command.into_parts(token.clone());
-                    let mapper: ErasedRequestMapper<ErasedValue> =
-                        Box::new(move |reply| Box::new(mapper(reply)));
+                    let mapper: ErasedRequestContinuation =
+                        Box::new(move |reply| erase_effect_continuation(mapper(reply)));
                     let (target, message_type, message_type_name, message) = match route {
                         MessageRoute::Binding(binding_index) => {
                             let binding = &self.program.bindings[binding_index];
@@ -1082,9 +1085,9 @@ impl ControlledCore {
                             .is_some_and(|deadline| self.now >= deadline)
                         {
                             let cause = self.requests[index].request_trace;
-                            self.complete_request(index, RequestOutcome::TimedOut, cause);
+                            self.complete_request(index, RequestOutcome::TimedOut, cause)?;
                         } else {
-                            self.complete_request(index, RequestOutcome::Replied(reply), work);
+                            self.complete_request(index, RequestOutcome::Replied(reply), work)?;
                             continue;
                         }
                     }
@@ -1448,7 +1451,7 @@ impl ControlledCore {
         index: usize,
         outcome: RequestOutcome<ErasedValue>,
         cause: TraceId,
-    ) {
+    ) -> Result<(), RuntimeError> {
         let mut request = self.requests.remove(index);
         self.scheduled.retain(|work| !matches!(work.kind,
             ScheduledKind::RequestDeadline { correlation } if correlation == request.token.correlation));
@@ -1472,18 +1475,24 @@ impl ControlledCore {
             .mapper
             .take()
             .expect("an outstanding Request owns one mapper");
-        self.schedule_message(
-            QueuedMessage {
-                target: request.requester,
-                target_message_type: request.message_type,
-                message_type_name: request.message_type_name,
-                message: mapper(outcome),
-                cause: trace,
-                source: None,
-                delivery: DeliveryKind::Message,
-            },
-            self.now,
-        );
+        match mapper(outcome) {
+            ErasedEffectContinuation::Message(message) => self.schedule_message(
+                QueuedMessage {
+                    target: request.requester,
+                    target_message_type: request.message_type,
+                    message_type_name: request.message_type_name,
+                    message,
+                    cause: trace,
+                    source: None,
+                    delivery: DeliveryKind::Message,
+                },
+                self.now,
+            ),
+            ErasedEffectContinuation::Command(command) => {
+                command.interpret(self, &request.requester, trace)?;
+            }
+        }
+        Ok(())
     }
 
     fn pop_next_due(&mut self) -> Option<ScheduledWork> {
@@ -1654,7 +1663,7 @@ impl ControlledCore {
                         .position(|request| request.token.correlation == correlation)
                     {
                         let cause = self.requests[index].request_trace;
-                        self.complete_request(index, RequestOutcome::TimedOut, cause);
+                        self.complete_request(index, RequestOutcome::TimedOut, cause)?;
                     }
                     0
                 }

@@ -134,20 +134,20 @@ pub mod prelude {
     pub use crate::{
         Addressable, Assembly, BoxFuture, CancelReason, Capabilities, Command, Component,
         ComponentHandle, ComponentId, ComponentRef, Connector, ControlledRuntime,
-        ControlledRuntimeBuilder, Decoder, DrivenSource, DriverStopped, Drivers, Effect,
-        EffectCapability, EffectDescriptor, EffectDriver, EffectFailure, EffectInvocation,
-        EffectOutcome, EffectOutcomeKind, Framed, FramedError, FramedLayer, HttpDriver, HttpError,
-        HttpErrorKind, HttpJsonError, HttpRequest, HttpResponse, HttpResponseError,
-        HttpStatusError, Init, InstalledAssembly, LogicalTime, MpscReceiver, PendingEffect,
-        PendingWork, Port, PortHandle, PortId, PrintStderr, PrintStdout, Program,
-        ProgramBuildError, ProgramBuilder, ReadSystemTime, ReplyWith, RequestError, RequestIntent,
-        RequestOutcome, RequestOutcomeKind, Requirements, RunReport, Runtime, RuntimeBuilder,
-        RuntimeError, RuntimeTask, Shutdown, ShutdownReport, Source, SourceCapability,
-        SourceDescriptor, SourceDriver, SourceEvent, SourceEventKind, SourceSink, StatusCode,
-        StderrDriver, StdinError, StdinErrorKind, StdinLines, StdoutDriver, StreamDescriptor,
-        Subscription, SubscriptionAction, SubscriptionId, Subscriptions, SystemClockDriver,
-        TcpBytes, TcpDriver, TcpError, TcpErrorKind, TraceCommandKind, TraceEvent, TraceId,
-        TraceRecord, VendorsDrivers,
+        ControlledRuntimeBuilder, Decoder, Deliverable, DrivenSource, DriverStopped, Drivers,
+        Effect, EffectBuilder, EffectCapability, EffectDescriptor, EffectDriver, EffectFailure,
+        EffectInvocation, EffectOutcome, EffectOutcomeKind, Framed, FramedError, FramedLayer,
+        HttpDriver, HttpError, HttpErrorKind, HttpJsonError, HttpRequest, HttpResponse,
+        HttpResponseError, HttpStatusError, Init, InstalledAssembly, LogicalTime, MpscReceiver,
+        NoMessage, PendingEffect, PendingWork, Port, PortHandle, PortId, PrintStderr, PrintStdout,
+        Program, ProgramBuildError, ProgramBuilder, ReadSystemTime, ReplyWith, RequestBuilder,
+        RequestError, RequestIntent, RequestOutcome, RequestOutcomeKind, Requirements, RunReport,
+        Runtime, RuntimeBuilder, RuntimeError, RuntimeTask, Shutdown, ShutdownReport, Source,
+        SourceCapability, SourceDescriptor, SourceDriver, SourceEvent, SourceEventKind, SourceSink,
+        StatusCode, StderrDriver, StdinError, StdinErrorKind, StdinLines, StdoutDriver,
+        StreamDescriptor, Subscription, SubscriptionAction, SubscriptionId, Subscriptions,
+        SystemClockDriver, TcpBytes, TcpDriver, TcpError, TcpErrorKind, TraceCommandKind,
+        TraceEvent, TraceId, TraceRecord, VendorsDrivers,
     };
     #[cfg(feature = "fs")]
     pub use crate::{
@@ -1123,6 +1123,8 @@ trait ErasedRequestCommand<Message>: Send {
     fn reply_type_name(&self) -> &'static str;
     fn reply_type_id(&self) -> TypeId;
     fn mapper_type_name(&self) -> &'static str;
+    /// Whether the continuation yields a Message (true) or finishing commands.
+    fn maps_directly_to_message(&self) -> bool;
     fn into_parts(
         self: Box<Self>,
         token: Arc<RequestToken>,
@@ -1135,8 +1137,9 @@ trait ErasedRequestCommand<Message>: Send {
     fn into_inspection(self: Box<Self>) -> (Box<dyn Any + Send>, ErasedRequestMapper<Message>);
 }
 
-type ErasedRequestMapper<Message> =
-    Box<dyn FnOnce(RequestOutcome<Box<dyn Any + Send>>) -> Message + Send + 'static>;
+type ErasedRequestMapper<Message> = Box<
+    dyn FnOnce(RequestOutcome<Box<dyn Any + Send>>) -> EffectContinuation<Message> + Send + 'static,
+>;
 
 fn typed_request_outcome<Reply: Send + 'static>(
     outcome: RequestOutcome<Box<dyn Any + Send>>,
@@ -1157,6 +1160,7 @@ fn typed_request_outcome<Reply: Send + 'static>(
 /// built from the reply token by a constructor the provider published, which
 /// is what fixes the reply type.
 struct AddressedRequest<M: Send + 'static, R, Build, Map> {
+    direct_message: bool,
     address: Address<M>,
     build: Build,
     timeout: Option<Duration>,
@@ -1170,10 +1174,14 @@ where
     M: Send + 'static,
     R: Send + 'static,
     Build: FnOnce(ReplyWith<R>) -> M + Send + 'static,
-    Map: FnOnce(RequestOutcome<R>) -> Message + Send + 'static,
+    Map: FnOnce(RequestOutcome<R>) -> EffectContinuation<Message> + Send + 'static,
 {
     fn target(&self) -> MessageTarget<'_> {
         self.address.target()
+    }
+
+    fn maps_directly_to_message(&self) -> bool {
+        self.direct_message
     }
 
     fn request(&self) -> Option<&dyn Any> {
@@ -1327,12 +1335,17 @@ impl<M, Message> RequestIntent<M, Message> {
     /// `R` must be the reply type the constructor's `ReplyWith<R>` named; a
     /// mismatch panics, since a unit test has nothing else to do with it.
     pub fn reply<R: Send + 'static>(self, outcome: RequestOutcome<R>) -> Message {
-        (self.mapper)(match outcome {
+        match (self.mapper)(match outcome {
             RequestOutcome::Replied(reply) => RequestOutcome::Replied(Box::new(reply)),
             RequestOutcome::TimedOut => RequestOutcome::TimedOut,
             RequestOutcome::Failed(error) => RequestOutcome::Failed(error),
             RequestOutcome::Cancelled => RequestOutcome::Cancelled,
-        })
+        }) {
+            EffectContinuation::Message(message) => message,
+            EffectContinuation::Command(_) => {
+                unreachable!("only Message-producing requests are extracted")
+            }
+        }
     }
 }
 
@@ -1507,12 +1520,7 @@ impl<Message> Command<Message> {
         E: EffectDescriptor,
         Map: FnOnce(EffectOutcome<E::Output, E::Error>) -> Message + Send + 'static,
     {
-        Self(CommandKind::Effect(Box::new(Perform {
-            direct_message: true,
-            capability: capability.token.clone(),
-            effect,
-            map: move |outcome| EffectContinuation::Message(map(outcome)),
-        })))
+        capability.perform(effect).producing(map)
     }
 
     /// Requests an effect without sending its result to the component.
@@ -1531,10 +1539,7 @@ impl<Message> Command<Message> {
     where
         E: EffectDescriptor,
     {
-        Self(CommandKind::Effect(Box::new(PerformDiscardingOutcome {
-            capability: capability.token.clone(),
-            effect,
-        })))
+        capability.perform(effect).discard_outcome()
     }
 
     /// Queues a message for a [`Port`], a [`Connector`], or a [`ComponentRef`].
@@ -1605,13 +1610,7 @@ impl<Message> Command<Message> {
         Build: FnOnce(ReplyWith<R>) -> T::Message + Send + 'static,
         Map: FnOnce(RequestOutcome<R>) -> Message + Send + 'static,
     {
-        Self(CommandKind::Request(Box::new(AddressedRequest {
-            address: target.to_address(),
-            build: request,
-            timeout: None,
-            map,
-            reply: PhantomData,
-        })))
+        target.request(request).producing(map)
     }
 
     /// Sends a request to a [`Port`], [`Connector`], or [`ComponentRef`] with a timeout.
@@ -1633,13 +1632,7 @@ impl<Message> Command<Message> {
         Build: FnOnce(ReplyWith<R>) -> T::Message + Send + 'static,
         Map: FnOnce(RequestOutcome<R>) -> Message + Send + 'static,
     {
-        Self(CommandKind::Request(Box::new(AddressedRequest {
-            address: target.to_address(),
-            build: request,
-            timeout: Some(timeout),
-            map,
-            reply: PhantomData,
-        })))
+        target.request(request).timeout(timeout).producing(map)
     }
 
     /// Replies to a request using its reply token.
@@ -1845,7 +1838,8 @@ impl<Message> Command<Message> {
     {
         match self.0 {
             CommandKind::Request(command)
-                if command.addressed_message_type() == Some(TypeId::of::<M>()) =>
+                if command.maps_directly_to_message()
+                    && command.addressed_message_type() == Some(TypeId::of::<M>()) =>
             {
                 let (message, mapper) = command.into_inspection();
                 let message = match message.downcast::<M>() {
@@ -4000,6 +3994,304 @@ impl<M> fmt::Debug for Connector<M> {
     }
 }
 
+/// The message type of a command that can never deliver a Message.
+///
+/// It has no values and is deliberately not `Send`, so a `Command<NoMessage>`
+/// can hold only work that ends where it is issued: [`ReplyWith::with`],
+/// [`Addressable::send`], an effect finished with
+/// [`EffectBuilder::discard_outcome`], [`Command::none`], and batches of
+/// those. Anything that would need a continuation (`producing`,
+/// `into_command`, `finish_with`, [`Command::after`]) cannot be built for it.
+/// It is what the closure passed to `finish_with` returns, which is why a
+/// finishing continuation is exactly one hop.
+pub struct NoMessage(std::convert::Infallible, PhantomData<*const ()>);
+
+/// A Message type the runtime can deliver to a Component.
+///
+/// Every `Send + 'static` type is one. [`NoMessage`] is not, which is what
+/// stops a `finish_with` continuation from starting further work that would
+/// come back.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot receive the outcome of this work",
+    note = "inside a `finish_with` continuation only work that produces no Message is allowed: reply, send, or an effect with `discard_outcome`"
+)]
+pub trait Deliverable: Send + 'static {}
+
+impl<T: Send + 'static> Deliverable for T {}
+
+impl Command<NoMessage> {
+    /// Re-types finishing work for the Component that issued it.
+    fn widen<Message: Send + 'static>(self) -> Command<Message> {
+        Command(match self.0 {
+            CommandKind::None => CommandKind::None,
+            CommandKind::Effect(effect) => CommandKind::Effect(Box::new(WidenedEffect(effect))),
+            CommandKind::Send(send) => CommandKind::Send(send),
+            CommandKind::Reply(reply) => CommandKind::Reply(reply),
+            CommandKind::Batch(commands) => {
+                CommandKind::Batch(commands.into_iter().map(Command::widen).collect())
+            }
+            CommandKind::Request(_) => {
+                unreachable!("a request needs a continuation, which NoMessage cannot have")
+            }
+            CommandKind::After { message, .. } => match message.0 {},
+        })
+    }
+}
+
+struct WidenedEffect(Box<dyn ErasedEffectCommand<NoMessage>>);
+
+impl<Message: Send + 'static> ErasedEffectCommand<Message> for WidenedEffect {
+    fn capability(&self) -> &CapabilityToken {
+        self.0.capability()
+    }
+
+    fn intent(&self) -> &dyn Any {
+        self.0.intent()
+    }
+
+    fn intent_type_name(&self) -> &'static str {
+        self.0.intent_type_name()
+    }
+
+    fn maps_directly_to_message(&self) -> bool {
+        false
+    }
+
+    fn into_parts(self: Box<Self>) -> (Box<dyn Any + Send>, Option<ErasedEffectMapper<Message>>) {
+        let (descriptor, mapper) = self.0.into_parts();
+        let mapper = mapper.map(|mapper| {
+            Box::new(move |outcome| match mapper(outcome) {
+                EffectContinuation::Message(message) => match message.0 {},
+                EffectContinuation::Command(command) => {
+                    EffectContinuation::Command(command.widen())
+                }
+            }) as ErasedEffectMapper<Message>
+        });
+        (descriptor, mapper)
+    }
+}
+
+/// One effect, described and authorized, waiting to be told how it ends.
+///
+/// Made by [`EffectCapability::perform`] or by a resource capability's
+/// operation such as `file.read()`. It is inert; one of its finishers turns
+/// it into a [`Command`]:
+///
+/// - [`Self::producing`]: the outcome becomes a Message through a pure mapper.
+/// - [`Self::into_command`]: the same, through `Message::from`.
+/// - [`Self::finish_with`]: the outcome becomes finishing commands and no Message.
+/// - [`Self::discard_outcome`]: the outcome goes nowhere.
+///
+/// ```
+/// use samara::prelude::*;
+/// enum Message { Printed(EffectOutcome<(), std::convert::Infallible>) }
+/// let (_program, (output,)) = Program::builder::<(Effect<PrintStdout>,)>();
+/// let command: Command<Message> = output.perform(PrintStdout::line("ready")).producing(Message::Printed);
+/// assert!(command.effect_intent::<PrintStdout>().is_some());
+/// ```
+#[must_use = "finish the effect into a Command with producing, into_command, finish_with, or discard_outcome"]
+pub struct EffectBuilder<D: EffectDescriptor> {
+    capability: EffectCapability<D>,
+    descriptor: D,
+}
+
+impl<D: EffectDescriptor> EffectBuilder<D> {
+    pub(crate) fn new(capability: EffectCapability<D>, descriptor: D) -> Self {
+        Self {
+            capability,
+            descriptor,
+        }
+    }
+
+    /// Issues the effect and maps its outcome to a Message.
+    ///
+    /// `map` runs at most once and may capture context. It must be pure.
+    pub fn producing<Message, Map>(self, map: Map) -> Command<Message>
+    where
+        Message: Deliverable,
+        Map: FnOnce(EffectOutcome<D::Output, D::Error>) -> Message + Send + 'static,
+    {
+        Command(CommandKind::Effect(Box::new(Perform {
+            direct_message: true,
+            capability: self.capability.token,
+            effect: self.descriptor,
+            map: move |outcome| EffectContinuation::Message(map(outcome)),
+        })))
+    }
+
+    /// Issues the effect and converts its outcome with `Message::from`.
+    pub fn into_command<Message>(self) -> Command<Message>
+    where
+        Message: From<EffectOutcome<D::Output, D::Error>> + Deliverable,
+    {
+        self.producing(Message::from)
+    }
+
+    /// The earlier name of [`Self::producing`]; removed once call sites migrate.
+    #[doc(hidden)]
+    pub fn into_command_with<Message, Map>(self, map: Map) -> Command<Message>
+    where
+        Message: Deliverable,
+        Map: FnOnce(EffectOutcome<D::Output, D::Error>) -> Message + Send + 'static,
+    {
+        self.producing(map)
+    }
+
+    /// Issues the effect and finishes with commands that produce no Message.
+    ///
+    /// `finish` receives the outcome and returns work that ends here: a reply,
+    /// a send, an effect whose outcome is discarded, or a batch of those. It
+    /// cannot start anything whose result would come back, so the continuation
+    /// is exactly one hop and holds no hidden state. It must be pure; the
+    /// Model is not visible to it. Use [`Self::producing`] when the outcome
+    /// should change state.
+    ///
+    /// ```
+    /// use samara::prelude::*;
+    /// enum Asked { Size(ReplyWith<usize>) }
+    /// let (_program, (output,)) = Program::builder::<(Effect<PrintStdout>,)>();
+    /// # let reply: Option<ReplyWith<usize>> = None;
+    /// # if let Some(reply) = reply {
+    /// let command: Command<Asked> = output
+    ///     .perform(PrintStdout::line("measuring"))
+    ///     .finish_with(move |_outcome| reply.with(42));
+    /// # drop(command);
+    /// # }
+    /// ```
+    ///
+    /// A continuation that tries to start work with a result does not compile:
+    ///
+    /// ```compile_fail
+    /// use samara::prelude::*;
+    /// let (_program, (output,)) = Program::builder::<(Effect<PrintStdout>,)>();
+    /// let again = output.clone();
+    /// let _: Command<()> = output
+    ///     .perform(PrintStdout::line("one"))
+    ///     .finish_with(move |_| again.perform(PrintStdout::line("two")).producing(|_| unreachable!()));
+    /// ```
+    pub fn finish_with<Message, Finish>(self, finish: Finish) -> Command<Message>
+    where
+        Message: Deliverable,
+        Finish: FnOnce(EffectOutcome<D::Output, D::Error>) -> Command<NoMessage> + Send + 'static,
+    {
+        Command(CommandKind::Effect(Box::new(Perform {
+            direct_message: false,
+            capability: self.capability.token,
+            effect: self.descriptor,
+            map: move |outcome| EffectContinuation::Command(finish(outcome).widen()),
+        })))
+    }
+
+    /// Issues the effect without sending its outcome anywhere.
+    ///
+    /// Samara still tracks the work: Drain waits for it, Cancel aborts it, and
+    /// controlled tests must complete or cancel it.
+    pub fn discard_outcome<Message>(self) -> Command<Message> {
+        Command(CommandKind::Effect(Box::new(PerformDiscardingOutcome {
+            capability: self.capability.token,
+            effect: self.descriptor,
+        })))
+    }
+}
+
+impl<D: EffectDescriptor> EffectCapability<D> {
+    /// Describes performing `descriptor` under this capability.
+    ///
+    /// Returns an inert [`EffectBuilder`]; choose how the outcome ends to get
+    /// a [`Command`].
+    pub fn perform(&self, descriptor: D) -> EffectBuilder<D> {
+        EffectBuilder::new(self.clone(), descriptor)
+    }
+}
+
+/// One request, addressed and described, waiting to be told how its reply ends.
+///
+/// Made by [`Addressable::request`]. Optionally bound with [`Self::timeout`],
+/// then finished with [`Self::producing`], [`Self::into_command`], or
+/// [`Self::finish_with`].
+#[must_use = "finish the request into a Command with producing, into_command, or finish_with"]
+pub struct RequestBuilder<M: Send + 'static, R, Build> {
+    address: Address<M>,
+    build: Build,
+    timeout: Option<Duration>,
+    reply: PhantomData<fn(R)>,
+}
+
+impl<M, R, Build> RequestBuilder<M, R, Build>
+where
+    M: Send + 'static,
+    R: Send + 'static,
+    Build: FnOnce(ReplyWith<R>) -> M + Send + 'static,
+{
+    /// Bounds how long the reply is awaited.
+    ///
+    /// The deadline starts when Samara runs the command. A reply must be
+    /// processed before it; a zero timeout always expires. On expiry the
+    /// continuation receives [`RequestOutcome::TimedOut`], the provider keeps
+    /// running, and later replies are ignored.
+    pub fn timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = Some(timeout);
+        self
+    }
+
+    /// Issues the request and maps its outcome to a Message.
+    pub fn producing<Message, Map>(self, map: Map) -> Command<Message>
+    where
+        Message: Deliverable,
+        Map: FnOnce(RequestOutcome<R>) -> Message + Send + 'static,
+    {
+        Command(CommandKind::Request(Box::new(AddressedRequest {
+            direct_message: true,
+            address: self.address,
+            build: self.build,
+            timeout: self.timeout,
+            map: move |outcome| EffectContinuation::Message(map(outcome)),
+            reply: PhantomData,
+        })))
+    }
+
+    /// Issues the request and converts its outcome with `Message::from`.
+    pub fn into_command<Message>(self) -> Command<Message>
+    where
+        Message: From<RequestOutcome<R>> + Deliverable,
+    {
+        self.producing(Message::from)
+    }
+
+    /// Issues the request and finishes with commands that produce no Message.
+    ///
+    /// The same one-hop rule as [`EffectBuilder::finish_with`]: forward the
+    /// answer to someone, reply to your own caller, and stop.
+    pub fn finish_with<Message, Finish>(self, finish: Finish) -> Command<Message>
+    where
+        Message: Deliverable,
+        Finish: FnOnce(RequestOutcome<R>) -> Command<NoMessage> + Send + 'static,
+    {
+        Command(CommandKind::Request(Box::new(AddressedRequest {
+            direct_message: false,
+            address: self.address,
+            build: self.build,
+            timeout: self.timeout,
+            map: move |outcome| EffectContinuation::Command(finish(outcome).widen()),
+            reply: PhantomData,
+        })))
+    }
+}
+
+impl<Reply: Send + 'static> ReplyWith<Reply> {
+    /// Replies to the request this token came from.
+    ///
+    /// The token is consumed, so a request is answered at most once. Delivery
+    /// happens after the current update returns; a reply after the caller's
+    /// timeout is ignored.
+    pub fn with<Message>(self, reply: Reply) -> Command<Message> {
+        Command(CommandKind::Reply(Box::new(self::Reply {
+            reply_with: self,
+            reply,
+        })))
+    }
+}
+
 /// Something a Command can be addressed to: a [`Port`], a [`Connector`], or a
 /// [`ComponentRef`].
 ///
@@ -4014,6 +4306,36 @@ pub trait Addressable {
 
     /// Erases this destination for a Command to carry.
     fn to_address(&self) -> Address<Self::Message>;
+
+    /// Queues a message for this destination.
+    ///
+    /// The target handles it after the current update returns. No delivery
+    /// result comes back; a routing error faults the runtime.
+    fn send<Message>(&self, message: Self::Message) -> Command<Message> {
+        Command(CommandKind::Send(Box::new(SendTo {
+            address: self.to_address(),
+            message,
+        })))
+    }
+
+    /// Describes a request to this destination.
+    ///
+    /// `request` is a constructor taking the reply token, such as
+    /// `TallyMessage::total` or `|reply| LedgerMessage::Total(reply)`; its
+    /// `ReplyWith<R>` parameter fixes the reply type. Returns an inert
+    /// [`RequestBuilder`] to finish into a [`Command`].
+    fn request<R, Build>(&self, request: Build) -> RequestBuilder<Self::Message, R, Build>
+    where
+        R: Send + 'static,
+        Build: FnOnce(ReplyWith<R>) -> Self::Message + Send + 'static,
+    {
+        RequestBuilder {
+            address: self.to_address(),
+            build: request,
+            timeout: None,
+            reply: PhantomData,
+        }
+    }
 }
 
 impl<M: Send + 'static> Addressable for Port<M> {

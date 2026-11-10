@@ -1587,7 +1587,7 @@ struct PendingEffect {
 enum RequestContinuation {
     Component {
         requester: ComponentId,
-        mapper: ErasedRequestMapper<ErasedValue>,
+        mapper: crate::controlled_runtime::ErasedRequestContinuation,
         message_type: TypeId,
         message_type_name: &'static str,
     },
@@ -2150,8 +2150,8 @@ impl LiveCore {
                     let token = RequestToken::new(correlation, self.program.program.clone());
                     let (port_message, mapper): (_, ErasedRequestMapper<Message>) =
                         command.into_parts(token.clone());
-                    let mapper: ErasedRequestMapper<ErasedValue> =
-                        Box::new(move |reply| Box::new(mapper(reply)));
+                    let mapper: crate::controlled_runtime::ErasedRequestContinuation =
+                        Box::new(move |reply| erase_effect_continuation(mapper(reply)));
                     let message = match route {
                         MessageRoute::Binding(binding_index) => {
                             let binding = &self.program.bindings[binding_index];
@@ -2639,13 +2639,20 @@ impl LiveCore {
                         "Request continuation panicked",
                     )
                 })?;
-                let _ = self.scope.accept_finite(LiveEvent::Message(QueuedMessage {
-                    target: requester,
-                    target_message_type: message_type,
-                    message_type_name,
-                    message: mapped,
-                    source: None,
-                }));
+                match mapped {
+                    ErasedEffectContinuation::Message(message) => {
+                        let _ = self.scope.accept_finite(LiveEvent::Message(QueuedMessage {
+                            target: requester,
+                            target_message_type: message_type,
+                            message_type_name,
+                            message,
+                            source: None,
+                        }));
+                    }
+                    ErasedEffectContinuation::Command(command) => {
+                        command.interpret_live(self, &requester, request.work)?;
+                    }
+                }
             }
             RequestContinuation::Host(completion) => {
                 catch_unwind(AssertUnwindSafe(|| completion(outcome))).map_err(|_| {

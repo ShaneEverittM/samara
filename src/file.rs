@@ -2,9 +2,9 @@
 #[cfg(test)]
 mod tests;
 use crate::{
-    AppendToFile, BoxFuture, CapabilityToken, Command, ControlledRuntime, EffectCapability,
-    EffectDescriptor, EffectDriver, EffectOutcome, FsDriver, FsError, PendingEffect, ReadFile,
-    ReplaceFile, RuntimeError,
+    AppendToFile, BoxFuture, CapabilityToken, ControlledRuntime, EffectCapability,
+    EffectDescriptor, EffectDriver, FsDriver, FsError, PendingEffect, ReadFile, ReplaceFile,
+    RuntimeError,
 };
 use bytes::Bytes;
 use std::{
@@ -252,33 +252,9 @@ impl<P: CanWrite> FileCapability<P> {
 
 /// A typed file operation coupled to the capability that authorized it.
 ///
-/// Convert it to a Command; constructing or inspecting it performs no I/O.
-#[must_use = "convert the file operation into a Command"]
-pub struct FileEffect<D: EffectDescriptor> {
-    capability: EffectCapability<D>,
-    descriptor: D,
-}
-impl<D: EffectDescriptor> FileEffect<D> {
-    /// Issues the operation, converting its typed outcome with Message::from.
-    pub fn into_command<Message>(self) -> Command<Message>
-    where
-        Message: From<EffectOutcome<D::Output, D::Error>> + Send + 'static,
-    {
-        Command::effect(&self.capability, self.descriptor)
-    }
-    /// Issues the operation with a pure outcome-to-Message mapper.
-    pub fn into_command_with<Message, Map>(self, map: Map) -> Command<Message>
-    where
-        Message: Send + 'static,
-        Map: FnOnce(EffectOutcome<D::Output, D::Error>) -> Message + Send + 'static,
-    {
-        Command::effect_with(&self.capability, self.descriptor, map)
-    }
-    /// Issues the operation without an application outcome Message.
-    pub fn discard_outcome<Message: Send + 'static>(self) -> Command<Message> {
-        Command::effect_discarding_outcome(&self.capability, self.descriptor)
-    }
-}
+/// This is the general [`EffectBuilder`](crate::EffectBuilder): finish it with
+/// `producing`, `into_command`, `finish_with`, or `discard_outcome`.
+pub type FileEffect<D> = crate::EffectBuilder<D>;
 
 /// A read of the file selected by its capability, with no target path argument.
 #[derive(Clone, Debug, PartialEq, Eq)]
