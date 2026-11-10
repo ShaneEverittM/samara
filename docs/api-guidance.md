@@ -243,6 +243,32 @@ a Component was registered with, so two capabilities of the same type cannot
 be exchanged by position when they are named separately. A Driver of the
 wrong type does not compile. A capability left without a Driver fails
 `build()`; build the live runtime in a test if you want that caught in CI.
+A real application usually assembles its Program in one function and builds
+its runtime in another, so that tests can take the same Program under
+controlled execution. Capabilities are ordinary values, so a plain struct
+carries their names across that boundary:
+
+```rust,ignore
+struct AppCapabilities {
+    journal: Capabilities<<Journal as Assembly>::Requires>,
+    console: Capabilities<<Monitor as Component>::Requires>,
+}
+
+fn program() -> Result<(Program<AppRequirements>, AppCapabilities), ProgramBuildError> { .. }
+
+fn runtime(program: Program<AppRequirements>, caps: &AppCapabilities) -> Result<Runtime, RuntimeError> {
+    Runtime::builder(program)
+        .with(&caps.journal).supplied_by((FileDriver::new(path), SystemClockDriver))
+        .with(&caps.console).supplied_by((StdinDriver, StdoutDriver::new()))
+        .build()
+}
+```
+
+Which Driver implements a capability is a decision for the code that builds
+the runtime, not for the code that assembles the Program. The check that
+every capability received one is a `build()` error that names the descriptor
+type: guidance at startup, not a compile-time wall (ADR-0027).
+
 Controlled execution uses `control_all()`, deriving all controls from the Program
 while retaining exact resource identities. Both then call `build()`.
 Both profiles retain value-level validation.
