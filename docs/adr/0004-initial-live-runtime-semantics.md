@@ -133,7 +133,10 @@ must not depend on exact counts.
 A normally returning `EffectDriver` result maps exactly once:
 
 - `Ok(output)` becomes `EffectOutcome::Succeeded(output)`; and
-- `Err(error)` becomes `EffectOutcome::Failed(error)`.
+- `Err(error)` becomes `EffectOutcome::Failed(EffectFailure::Error(error))`
+  under [ADR-0020](0020-effect-failure-reasons.md), which groups errors and
+  explicit cancellation under the unsuccessful outcome without changing
+  whole-scope cancellation behavior.
 
 For `Command::effect(&capability, descriptor)`, the originating one-shot mapper
 is then invoked exactly once and its Message re-enters runtime-managed delivery.

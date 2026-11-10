@@ -131,8 +131,8 @@ impl Component for Walker {
                     next(model),
                 ])
             }
-            WalkerMessage::Wrote(EffectOutcome::Failed(error))
-            | WalkerMessage::Read(EffectOutcome::Failed(error)) => {
+            WalkerMessage::Wrote(EffectOutcome::Failed(EffectFailure::Error(error)))
+            | WalkerMessage::Read(EffectOutcome::Failed(EffectFailure::Error(error))) => {
                 model
                     .failures
                     .push((error.operation(), error.kind(), error.path().to_path_buf()));
@@ -146,8 +146,8 @@ impl Component for Walker {
                     },
                 ])
             }
-            WalkerMessage::Wrote(EffectOutcome::Cancelled(_))
-            | WalkerMessage::Read(EffectOutcome::Cancelled(_))
+            WalkerMessage::Wrote(EffectOutcome::Failed(EffectFailure::Cancelled(_)))
+            | WalkerMessage::Read(EffectOutcome::Failed(EffectFailure::Cancelled(_)))
             | WalkerMessage::Reported => Command::none(),
         }
     }
@@ -228,12 +228,12 @@ fn filesystem_effects_are_ordinary_controlled_boundaries() {
     runtime
         .complete(
             second,
-            EffectOutcome::Failed(FsError::new(
+            EffectOutcome::Failed(EffectFailure::Error(FsError::new(
                 FsOperation::Append,
                 FILE,
                 FsErrorKind::PermissionDenied,
                 "read-only volume",
-            )),
+            ))),
         )
         .expect("failure accepted");
     runtime.run_until_idle().expect("failure mapped");

@@ -176,12 +176,16 @@ declaration tokens, not executing capabilities in this sense.
 ### Why Distinguish Error Data from Failure?
 
 
-An Error is typed data that explains what went wrong. A failure is the semantic
-occurrence in which an operation did not complete as intended and may carry
-that Error. This produces natural Rust names such as `TcpError` and
-`EffectOutcome::Failed(error)` without using *failure* for every terminal
-condition. Normal Source ending and cancellation are terminal, but neither is
-automatically a failure.
+An Error is typed data that explains what went wrong. Effect failure means
+that the operation did not produce its successful result. The outer
+`EffectOutcome::Failed(reason)` lets a caller forward unsuccessful completion
+to one handler; `EffectFailure::Error(error)` and
+`EffectFailure::Cancelled(reason)` let that handler distinguish why. The
+failure type has no output parameter, so different successful result types can
+share a handler. Domain mapping and retry decisions remain application policy.
+Normal Source ending is a normal terminal condition, and whole-scope
+cancellation still manufactures no application outcome
+([ADR-0020](adr/0020-effect-failure-reasons.md)).
 
 ## Effects, Layers, and Drivers
 

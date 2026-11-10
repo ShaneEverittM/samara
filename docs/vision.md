@@ -212,8 +212,10 @@ when equivalent controlled outcomes are supplied. A future opt-in tracing facili
 accept a stable mapper descriptor for richer diagnosis; the v0 structural trace imposes
 no such author requirement.
 
-Whenever an EffectOutcome can influence application behavior, its success, failure,
-timeout, or cancellation must be representable as a Component Message. Runtime
+Whenever an EffectOutcome can influence application behavior, its success or
+unsuccessful reason must be representable as a Component Message. EffectFailure
+distinguishes typed errors from explicit cancellation, including deadline
+cancellation (ADR-0020). Runtime
 diagnostics that cannot influence application decisions may remain out of band.
 
 ## Subscriptions

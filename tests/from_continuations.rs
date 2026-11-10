@@ -53,10 +53,14 @@ fn effect_default_uses_from_and_effect_with_preserves_context() {
     let cancelled: Command<EffectMessage> = Command::effect(&probe, ProbeEffect);
     assert_eq!(
         cancelled
-            .map_effect_outcome::<ProbeEffect>(EffectOutcome::Cancelled(CancelReason::Deadline))
+            .map_effect_outcome::<ProbeEffect>(EffectOutcome::Failed(EffectFailure::Cancelled(
+                CancelReason::Deadline
+            )))
             .ok()
             .expect("cancelled default effect command"),
-        EffectMessage::Canonical(EffectOutcome::Cancelled(CancelReason::Deadline))
+        EffectMessage::Canonical(EffectOutcome::Failed(EffectFailure::Cancelled(
+            CancelReason::Deadline
+        )))
     );
 
     let context = "secondary read";

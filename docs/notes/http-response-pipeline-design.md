@@ -102,7 +102,8 @@ Completing the terminal descriptor consumes each layer exactly once, then
 consumes the Message mapper at most once.
 
 Cancellation should bypass `map_result` and remain
-`EffectOutcome::Cancelled(reason)` at every layer. This makes it impossible for
+`EffectOutcome::Failed(EffectFailure::Cancelled(reason))` at every layer
+(ADR-0020). This makes it impossible for
 a status or decoding Layer to reinterpret runtime cancellation accidentally.
 Built-in typed wrappers establish the input/output chain at compile time;
 runtime TypeId validation remains defensive evidence at the erasure boundary.

@@ -88,8 +88,8 @@ impl Component for OutputProbe {
                         model.succeeded += 1;
                         true
                     }
-                    EffectOutcome::Failed(never) => match never {},
-                    EffectOutcome::Cancelled(_) => {
+                    EffectOutcome::Failed(EffectFailure::Error(never)) => match never {},
+                    EffectOutcome::Failed(EffectFailure::Cancelled(_)) => {
                         model.cancelled += 1;
                         false
                     }
@@ -172,7 +172,10 @@ fn standard_output_effects_are_ordinary_controlled_boundaries() {
         .complete(stdout, EffectOutcome::Succeeded(()))
         .expect("stdout success accepted");
     runtime
-        .complete(stderr, EffectOutcome::Cancelled(CancelReason::Superseded))
+        .complete(
+            stderr,
+            EffectOutcome::Failed(EffectFailure::Cancelled(CancelReason::Superseded)),
+        )
         .expect("stderr cancellation accepted");
     runtime.run_until_idle().expect("outcomes mapped");
 

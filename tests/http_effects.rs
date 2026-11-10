@@ -103,8 +103,8 @@ impl Component for HttpSequence {
             HttpMessage::Finished(outcome) => {
                 model.seen.push(match outcome {
                     EffectOutcome::Succeeded(response) => SeenHttp::Response(response),
-                    EffectOutcome::Failed(error) => SeenHttp::Error(error),
-                    EffectOutcome::Cancelled(_) => SeenHttp::Cancelled,
+                    EffectOutcome::Failed(EffectFailure::Error(error)) => SeenHttp::Error(error),
+                    EffectOutcome::Failed(EffectFailure::Cancelled(_)) => SeenHttp::Cancelled,
                 });
                 if let Some(request) = config.requests.get(model.seen.len()) {
                     Command::effect_with(&config.http, request.clone(), HttpMessage::Finished)

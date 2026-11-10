@@ -249,8 +249,10 @@ impl Component for Checker {
 
                 let result = match &outcome {
                     EffectOutcome::Succeeded(response) => CheckResult::Response(response.status()),
-                    EffectOutcome::Failed(e) => CheckResult::Error(e.to_string()),
-                    EffectOutcome::Cancelled(_) => CheckResult::Canceled,
+                    EffectOutcome::Failed(EffectFailure::Error(e)) => {
+                        CheckResult::Error(e.to_string())
+                    }
+                    EffectOutcome::Failed(EffectFailure::Cancelled(_)) => CheckResult::Canceled,
                 };
                 *model = Status::Finished {
                     revision,

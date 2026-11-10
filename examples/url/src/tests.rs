@@ -377,10 +377,16 @@ fn http_error_status_transport_failure_and_cancellation_remain_distinct() -> Res
     for (outcome, expected) in [
         (response(StatusCode::NOT_FOUND), "404 Not Found"),
         (
-            EffectOutcome::Failed(HttpError::new(HttpErrorKind::Transport, "connection reset")),
+            EffectOutcome::Failed(EffectFailure::Error(HttpError::new(
+                HttpErrorKind::Transport,
+                "connection reset",
+            ))),
             "Check failed: HTTP Transport error: connection reset",
         ),
-        (EffectOutcome::Cancelled(CancelReason::Deadline), "Canceled"),
+        (
+            EffectOutcome::Failed(EffectFailure::Cancelled(CancelReason::Deadline)),
+            "Canceled",
+        ),
     ] {
         let (mut runtime, checker) = fixture()?;
         input(&mut runtime, &checker, "url https://google.com")?;

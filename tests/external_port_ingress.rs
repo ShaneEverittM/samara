@@ -137,8 +137,10 @@ impl Component for Provider {
                         EffectOutcome::Succeeded(value) => {
                             ProviderMessage::CompleteDelayed { reply_with, value }
                         }
-                        EffectOutcome::Failed(never) => match never {},
-                        EffectOutcome::Cancelled(_) => ProviderMessage::Signalled,
+                        EffectOutcome::Failed(EffectFailure::Error(never)) => match never {},
+                        EffectOutcome::Failed(EffectFailure::Cancelled(_)) => {
+                            ProviderMessage::Signalled
+                        }
                     }
                 })
             }

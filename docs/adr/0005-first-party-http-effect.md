@@ -121,7 +121,8 @@ trace's terminal outcome kind. This is an API-spelling convention, not a new
 runtime behavior or Command kind.
 
 `HttpResponseError` keeps configuration/transport `HttpError`, selected status
-policy, and JSON decoding failures distinct. `EffectOutcome::Cancelled`
+policy, and JSON decoding failures distinct.
+`EffectOutcome::Failed(EffectFailure::Cancelled(reason))` (ADR-0020)
 continues through the pipeline as cancellation and is never converted into
 response-error data. Operations run in declared order, so
 `require_success().json::<T>()` rejects a non-2xx response before attempting

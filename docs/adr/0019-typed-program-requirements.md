@@ -114,14 +114,21 @@ Additional compile-fail contracts reject incremental live binding and direct
 trait binding. Duplicate and conflicting driver tuples remain integration
 tests; internal registry tests retain foreign exact-capability defenses.
 
-The `pulse` example's append slice verifies separate filename and root
-configuration. A Transition emits one `AppendToFile::line` containing
-`name: from -> to`; its success, failure, or cancellation returns as a Message
-and is retained as the Model's most recently completed append outcome. This
-slice adds no retry or append-ordering policy. Controlled tests inspect the
-configured filename, and live tests verify that it resolves beneath the
-configured root. Recent-history requests remain unfinished, so `pulse` is not
-acceptance evidence for a complete application.
+The `pulse` example verifies separate filename and root configuration. A
+Transition emits one `AppendToFile::line` containing `name: from -> to` and
+discards its outcome without retrying. Recent-history requests issue `ReadFile`
+and return up to the requested number of trailing lines from the returned
+bytes, in file order. They have no ordering guarantee against concurrent
+appends; an unterminated trailing line is included.
+
+Recent replies carry `Result<Vec<String>, journal::Error>`. Under ADR-0020,
+the effect mapper routes success or an `EffectFailure<FsError>` to a Message;
+update maps error and cancellation reasons to the public Journal error
+variants. Controlled tests cover tail boundaries, request correlation,
+completion orders, domain mapping, and discarded append outcomes. Live tests
+verify configured paths, existing-file reads, and missing-file errors.
+Invalid UTF-8 and the application's broader error handling remain unfinished,
+so `pulse` is not acceptance evidence for a complete application.
 
 ## Tradeoffs and rollback
 

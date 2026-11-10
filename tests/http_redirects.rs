@@ -101,7 +101,7 @@ fn redirect_error(runtime: &ControlledRuntime, probe: &ComponentRef<Probe>) {
     let model = runtime.state(probe).unwrap();
     assert_eq!(model.len(), 1);
     assert!(
-        matches!(&model[0], EffectOutcome::Failed(error) if error.kind() == HttpErrorKind::Redirect)
+        matches!(&model[0], EffectOutcome::Failed(EffectFailure::Error(error)) if error.kind() == HttpErrorKind::Redirect)
     );
 }
 
@@ -272,8 +272,11 @@ fn origin_changes_strip_credentials_and_all_hops_remove_routing_headers() {
 #[test]
 fn transport_failure_and_explicit_cancellation_end_the_chain() {
     for outcome in [
-        EffectOutcome::Failed(HttpError::new(HttpErrorKind::Transport, "offline")),
-        EffectOutcome::Cancelled(CancelReason::Superseded),
+        EffectOutcome::Failed(EffectFailure::Error(HttpError::new(
+            HttpErrorKind::Transport,
+            "offline",
+        ))),
+        EffectOutcome::Failed(EffectFailure::Cancelled(CancelReason::Superseded)),
     ] {
         let (mut runtime, probe) = controlled(HttpRequest::get("https://example.test/"), 3);
         finish(&mut runtime, response(302, Some("/next")));
@@ -416,10 +419,13 @@ fn status_and_json_transforms_run_only_after_following_and_keep_typed_errors() {
         );
         match (status, runtime.state(&probe).unwrap().as_ref().unwrap()) {
             (200, EffectOutcome::Succeeded(value)) => assert_eq!(value["value"], 42),
-            (404, EffectOutcome::Failed(HttpResponseError::Status(error))) => {
+            (
+                404,
+                EffectOutcome::Failed(EffectFailure::Error(HttpResponseError::Status(error))),
+            ) => {
                 assert_eq!(error.response().status(), StatusCode::NOT_FOUND)
             }
-            (301, EffectOutcome::Failed(HttpResponseError::Http(error))) => {
+            (301, EffectOutcome::Failed(EffectFailure::Error(HttpResponseError::Http(error)))) => {
                 assert_eq!(error.kind(), HttpErrorKind::Redirect)
             }
             _ => panic!("unexpected pipeline outcome"),

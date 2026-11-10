@@ -136,8 +136,9 @@ declares nothing new, and its private provenance stops it authorizing work in
 another Program.
 
 **EffectOutcome** — The single terminal completion of an effect invocation:
-typed success, failure carrying typed Error data, or cancellation as the
-effect's contract defines. A Command may instead declare that it discards the
+`Succeeded(output)` or `Failed(reason)`. The reason is an
+`EffectFailure<Error>`: typed `Error(error)` or `Cancelled(reason)` as the
+effect's contract defines (ADR-0020). A Command may instead declare that it discards the
 outcome; that is still runtime-owned finite work, not fire and forget. Aborting
 the whole live scope is ownership cleanup and manufactures no outcome
 (ADR-0004).
@@ -166,9 +167,12 @@ platform-neutral; `StdinDriver` selects the exact capability at its
 **Error** — Typed data explaining why an operation could not complete, such as
 `TcpError` or `RequestError`. Payload types use the `Error` noun.
 
-**Failure** — The semantic occurrence of an operation failing, normally
-carrying Error data, as in `EffectOutcome::Failed(error)`. Normal Source ending
-and cancellation are terminal conditions, not failures.
+**Failure** — An operation did not produce its successful result. For an
+effect, `EffectOutcome::Failed` carries an `EffectFailure<Error>` that
+distinguishes `Error(error)` from `Cancelled(reason)`. Whether cancellation
+was expected or warrants recovery is application policy. Normal Source ending
+remains a normal terminal condition; whole-scope cancellation manufactures no
+application outcome (ADR-0020).
 
 **SourceDescriptor** — An inert, typed, comparable description of ongoing event
 production. Comparability exists so reconciliation can tell whether desired

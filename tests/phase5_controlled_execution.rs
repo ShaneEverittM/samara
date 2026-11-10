@@ -251,8 +251,12 @@ impl Component for EffectComponent {
                 model.output = Some(output);
                 Command::none()
             }
-            EffectMessage::Finished(EffectOutcome::Failed(never)) => match never {},
-            EffectMessage::Finished(EffectOutcome::Cancelled(_)) => Command::none(),
+            EffectMessage::Finished(EffectOutcome::Failed(EffectFailure::Error(never))) => {
+                match never {}
+            }
+            EffectMessage::Finished(EffectOutcome::Failed(EffectFailure::Cancelled(_))) => {
+                Command::none()
+            }
         }
     }
 }
@@ -347,7 +351,10 @@ fn v9_effect_cancellation_has_one_outcome() {
     let pending = runtime.next_effect::<ProbeEffect>().unwrap();
 
     runtime
-        .complete(pending, EffectOutcome::Cancelled(CancelReason::Shutdown))
+        .complete(
+            pending,
+            EffectOutcome::Failed(EffectFailure::Cancelled(CancelReason::Shutdown)),
+        )
         .unwrap();
     runtime.run_until_idle().unwrap();
 

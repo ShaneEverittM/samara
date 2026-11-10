@@ -55,10 +55,10 @@ impl Component for Monitor {
                 journal,
                 move |reply| JournalMessage::Recent {
                     count: if s == "5" { 5 } else { 10 },
-                    reply_with: reply,
+                    reply,
                 },
                 |response| match response {
-                    RequestOutcome::Replied(r) => Message::JournalResponse(r),
+                    RequestOutcome::Replied(r) => Message::JournalResponse(r.unwrap()),
                     // This would handle error or cancellation.
                     _ => todo!(),
                 },
@@ -121,10 +121,11 @@ async fn main() -> anyhow::Result<()> {
     let program = builder.build()?;
 
     // Create a runtime for our program...
+    let fs = FsDriver::new("./data");
     let runtime = Runtime::builder(program)
         // ...and install the drivers that actually supply the behavior to the capabilities.
         .with_drivers((
-            (FsDriver::new("./data"), SystemClockDriver),
+            (fs.clone(), SystemClockDriver, fs),
             (StdinDriver, StdoutDriver::new()),
         ))
         .build()?;

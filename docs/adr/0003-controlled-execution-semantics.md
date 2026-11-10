@@ -186,8 +186,9 @@ counts it as pending work, and requires the harness either to complete it with
 one typed `EffectOutcome` or to cancel the controlled scope. Supplying an
 outcome removes the obligation and records the ordinary structural
 `EffectOutcome` trace entry, but schedules no Message and therefore causes no
-Component transition. Supplying `EffectOutcome::Cancelled` follows the same
-rule. Whole-scope controlled cancellation continues to clear the obligation
+Component transition. Supplying
+`EffectOutcome::Failed(EffectFailure::Cancelled(reason))` (ADR-0020) follows
+the same rule. Whole-scope controlled cancellation continues to clear the obligation
 without manufacturing an outcome.
 
 Missing controlled behavior remains a runtime fault even when the outcome

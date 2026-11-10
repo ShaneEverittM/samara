@@ -25,8 +25,8 @@ impl From<EffectOutcome<TimeResponse, HttpResponseError>> for HttpTimeMessage {
 
         Self::PollFinished(match outcome {
             Succeeded(response) => Ok(response.data.iso),
-            Failed(error) => Err(GetTimeError::Response(error)),
-            Cancelled(reason) => Err(GetTimeError::Cancelled(reason)),
+            Failed(EffectFailure::Error(error)) => Err(GetTimeError::Response(error)),
+            Failed(EffectFailure::Cancelled(reason)) => Err(GetTimeError::Cancelled(reason)),
         })
     }
 }

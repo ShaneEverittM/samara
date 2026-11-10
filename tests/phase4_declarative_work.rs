@@ -66,7 +66,7 @@ fn v3_all_effect_outcomes_remain_typed_message_input() {
             outcome,
         }
     })
-    .map_effect_outcome::<PersistValue>(EffectOutcome::Failed(PersistError))
+    .map_effect_outcome::<PersistValue>(EffectOutcome::Failed(EffectFailure::Error(PersistError)))
     .unwrap_or_else(|_| panic!("failure descriptor should match"));
     let cancelled = Command::effect_with(&persist, PersistValue { value: 6 }, |outcome| {
         EffectMessage::Persisted {
@@ -74,21 +74,23 @@ fn v3_all_effect_outcomes_remain_typed_message_input() {
             outcome,
         }
     })
-    .map_effect_outcome::<PersistValue>(EffectOutcome::Cancelled(CancelReason::Shutdown))
+    .map_effect_outcome::<PersistValue>(EffectOutcome::Failed(EffectFailure::Cancelled(
+        CancelReason::Shutdown,
+    )))
     .unwrap_or_else(|_| panic!("cancelled descriptor should match"));
 
     assert_eq!(
         failed,
         EffectMessage::Persisted {
             request: 5,
-            outcome: EffectOutcome::Failed(PersistError),
+            outcome: EffectOutcome::Failed(EffectFailure::Error(PersistError)),
         }
     );
     assert_eq!(
         cancelled,
         EffectMessage::Persisted {
             request: 6,
-            outcome: EffectOutcome::Cancelled(CancelReason::Shutdown),
+            outcome: EffectOutcome::Failed(EffectFailure::Cancelled(CancelReason::Shutdown)),
         }
     );
 }

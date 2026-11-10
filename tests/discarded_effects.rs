@@ -130,7 +130,10 @@ fn controlled_discarded_cancellation_is_traced_without_scheduling_a_message() {
     runtime.run_until_idle().unwrap();
     let pending = runtime.next_effect::<GateEffect>().unwrap();
     runtime
-        .complete(pending, EffectOutcome::Cancelled(CancelReason::Superseded))
+        .complete(
+            pending,
+            EffectOutcome::Failed(EffectFailure::Cancelled(CancelReason::Superseded)),
+        )
         .unwrap();
 
     assert_eq!(runtime.run_until_idle().unwrap().transitions, 0);

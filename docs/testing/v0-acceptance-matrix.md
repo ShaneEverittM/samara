@@ -45,12 +45,18 @@ other names now cite those tests.
 
 ## Scenario Definitions
 
+ADR-0020 adds `tests/effect_outcomes.rs` for V1, V3, V5, and V9: effects with
+different output types route unsuccessful completion to one
+`EffectFailure<E>` Message, domain mapping occurs in update, and controlled
+traces distinguish the Error and Cancelled reasons. Existing live error-parity,
+shutdown, and HTTP pipeline suites retain their lifecycle assertions.
+
 ADR-0019's typed Program trial adds `tests/typed_program.rs` and compile-fail
 rustdoc contracts for V1, V3, V4, V5 and V12. Requirements issue capabilities
 at Program construction, Components receive them separately from Config, and
 runtime construction requires a complete driver tuple or `control_all()`.
 Value-level provenance and binding validation remain required. The `pulse`
-example is intentionally excluded from this trial's migration and checks.
+example exercises the same typed requirements flow for Journal and its host.
 
 The vision states its requirements as these twelve topology-neutral scenarios.
 Each row of the traceability table below cites the evidence for one of them.
@@ -161,8 +167,11 @@ The following evidence must pass before the Phase 2 audit:
   live execution while the Assembly's logical config and controlled setup stay
   independent of those settings.
 - `examples/pulse/src/journal/tests.rs` verifies Journal's default and
-  caller-supplied filenames, typed append outcomes, and live root configuration.
-  These checks cover the append slice; Recent-history requests remain unfinished.
+  caller-supplied filenames, discarded append outcomes, and live root
+  configuration. Recent-history coverage includes tail boundaries, overlapping
+  request correlation, independent append/read completion, and the domain
+  mapping of read errors and cancellation (ADR-0020). Live reads cover existing
+  and missing files.
 - `tests/connectors.rs` validates `Connector` (ADR-0014, ADR-0015): a library
   Assembly exports a `Connector<M>` of its public message type while its Component
   stays private to its module, the application connects it to a Port of its
@@ -387,7 +396,8 @@ Parity and ordering:
 The load scenario is characterization only. It must record workload and result
 without turning queue capacity, throughput, tail latency, or fairness into a
 stable conformance threshold. Tests of explicit controlled
-`EffectOutcome::Cancelled` remain valid: ADR-0004's no-mapper rule
+`EffectOutcome::Failed(EffectFailure::Cancelled(reason))` remain valid:
+ADR-0004's no-mapper rule
 applies specifically to aborting the whole live runtime scope.
 
 ## Active ADR-0009 Standard-Input Scenarios

@@ -59,8 +59,10 @@ impl Component for EffectComponent {
             EffectMessage::Trigger => {
                 Command::effect_with(&config.effect, LateEffect(41), |outcome| match outcome {
                     EffectOutcome::Succeeded(value) => EffectMessage::Finished(value),
-                    EffectOutcome::Failed(never) => match never {},
-                    EffectOutcome::Cancelled(_) => EffectMessage::Finished(0),
+                    EffectOutcome::Failed(EffectFailure::Error(never)) => match never {},
+                    EffectOutcome::Failed(EffectFailure::Cancelled(_)) => {
+                        EffectMessage::Finished(0)
+                    }
                 })
             }
             EffectMessage::Finished(value) => {

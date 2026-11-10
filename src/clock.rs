@@ -12,7 +12,8 @@ use crate::{BoxFuture, EffectDescriptor, EffectDriver};
 
 /// Asks the host what time it is.
 ///
-/// Succeeds with a [`SystemTime`] and cannot fail. Supply [`SystemClockDriver`]
+/// Succeeds with a [`SystemTime`] and has no error payload. Explicit cancellation
+/// remains representable in its outcome. Supply [`SystemClockDriver`]
 /// at its position in [`RuntimeSetup::with_drivers`](crate::RuntimeSetup::with_drivers).
 ///
 /// ```
@@ -23,8 +24,8 @@ use crate::{BoxFuture, EffectDescriptor, EffectDriver};
 /// let command: Command<SystemTime> =
 ///     Command::effect_with(&clock, ReadSystemTime, |outcome| match outcome {
 ///         EffectOutcome::Succeeded(now) => now,
-///         EffectOutcome::Failed(never) => match never {},
-///         EffectOutcome::Cancelled(_) => SystemTime::UNIX_EPOCH,
+///         EffectOutcome::Failed(EffectFailure::Error(never)) => match never {},
+///         EffectOutcome::Failed(EffectFailure::Cancelled(_)) => SystemTime::UNIX_EPOCH,
 ///     });
 /// assert!(command.effect_intent::<ReadSystemTime>().is_some());
 /// ```
