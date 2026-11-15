@@ -70,8 +70,8 @@ impl Component for Writer {
 }
 fn fixture() -> Fixture {
     let mut builder = Program::builder();
-    let first = builder.component::<Writer>("first").finish().unwrap();
-    let second = builder.component::<Writer>("second").finish().unwrap();
+    let first = builder.component::<Writer>("first");
+    let second = builder.component::<Writer>("second");
     let files = [first.io.0.clone(), second.io.0.clone()];
     let reports = [first.io.1.clone(), second.io.1.clone()];
     (
@@ -132,8 +132,8 @@ fn write_authority_narrows_to_existing_permissions() {
     // Reader through `read_only()`, and both operations were selected by the
     // one original file. Here each Component has its own file.
     let mut builder = Program::builder();
-    let writer = builder.component::<Writer>("append").finish().unwrap();
-    let reader = builder.component::<Reader>(()).finish().unwrap();
+    let writer = builder.component::<Writer>("append");
+    let reader = builder.component::<Reader>(());
     let mut runtime = ControlledRuntime::builder(builder.build().unwrap())
         .control_all()
         .build()
@@ -185,8 +185,8 @@ fn replacements_select_the_exact_resource_and_deliver_typed_outcomes() {
     ] {
         let expected = outcome.clone();
         let mut builder = Program::builder();
-        let first = builder.component::<Replacer>("first").finish().unwrap();
-        let second = builder.component::<Replacer>("second").finish().unwrap();
+        let first = builder.component::<Replacer>("first");
+        let second = builder.component::<Replacer>("second");
         let mut runtime = ControlledRuntime::builder(builder.build().unwrap())
             .control_all()
             .build()
@@ -221,8 +221,8 @@ async fn live_write_permissions_replace_existing_contents_at_each_bound_path() {
     let second_path = root.0.join("nested/new.log");
     std::fs::write(&first_path, "old contents must be entirely replaced").unwrap();
     let mut builder = Program::builder();
-    let first = builder.component::<Replacer>("first").finish().unwrap();
-    let second = builder.component::<Replacer>("second").finish().unwrap();
+    let first = builder.component::<Replacer>("first");
+    let second = builder.component::<Replacer>("second");
     let runtime = Runtime::builder(builder.build().unwrap())
         .supply(&first.io, FileDriver::new(&first_path))
         .supply(&second.io, FileDriver::new(&second_path))
@@ -322,7 +322,7 @@ fn foreign_file_selector_does_not_consume_another_files_operation() {
 fn foreign_file_is_rejected_during_component_registration() {
     // Was: `.with(&(foreign, report)).finish()` is an error.
     let mut builder = Program::builder();
-    assert!(builder.component::<Writer>("foreign").finish().is_ok());
+    let _ = builder.component::<Writer>("foreign");
 }
 
 struct Reader;
@@ -353,7 +353,7 @@ fn narrowed_capability_supplies_a_read_only_component_without_another_binding() 
     // Was: a `File<ReadAppend>` narrowed with `read_only()` supplied the
     // Reader, and its read was selected by the original file.
     let mut builder = Program::builder();
-    let reader = builder.component::<Reader>(()).finish().unwrap();
+    let reader = builder.component::<Reader>(());
     let file = reader.io.clone();
     let mut runtime = ControlledRuntime::builder(builder.build().unwrap())
         .control_all()
@@ -436,10 +436,7 @@ fn hidden_foreign_file_is_rejected_at_startup_or_before_controlled_execution() {
     for initial in [true, false] {
         let foreign = <File<ReadOnly>>::detached();
         let mut builder = Program::builder();
-        let target = builder
-            .component::<HiddenFile>((foreign, initial))
-            .finish()
-            .unwrap();
+        let target = builder.component::<HiddenFile>((foreign, initial));
         let runtime = ControlledRuntime::builder(builder.build().unwrap())
             .control_all()
             .build();
@@ -464,10 +461,7 @@ async fn hidden_foreign_file_is_rejected_before_live_execution() {
     for initial in [true, false] {
         let foreign = <File<ReadOnly>>::detached();
         let mut builder = Program::builder();
-        let target = builder
-            .component::<HiddenFile>((foreign, initial))
-            .finish()
-            .unwrap();
+        let target = builder.component::<HiddenFile>((foreign, initial));
         let root = TempRoot::new();
         let runtime = Runtime::builder(builder.build().unwrap())
             .supply(&target.io, FileDriver::new(root.0.join("unread.log")))

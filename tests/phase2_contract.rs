@@ -176,10 +176,9 @@ fn component_kernel_accepts_non_sync_configuration() {
     let mut program = Program::builder();
     let contract = ContractComponentConfig::new();
     let component = program
-        .component::<ContractComponent>(contract)
+        .component_builder::<ContractComponent>()
         .name("contract")
-        .finish()
-        .expect("component registration");
+        .register(contract);
 
     assert_eq!(component.id().name(), "contract");
 }

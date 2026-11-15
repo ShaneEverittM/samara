@@ -254,7 +254,7 @@ impl<S: SourceDescriptor<Terminal = StdinLines>> private::Driver<Source<S>> for 
 ///     fn update(_: &(), _: &Self::Io, _: &mut (), _: ()) -> Command<()> { Command::none() }
 /// }
 /// let mut program = Program::builder();
-/// let clock = program.component::<Clock>(()).finish()?;
+/// let clock = program.component::<Clock>(());
 /// let runtime = Runtime::builder(program.build()?)
 ///     .supply(&clock.io, SystemClockDriver)
 ///     .build()?;
@@ -283,7 +283,7 @@ impl<S: SourceDescriptor<Terminal = StdinLines>> private::Driver<Source<S>> for 
 /// #     fn update(_: &(), _: &Self::Io, _: &mut (), _: ()) -> Command<()> { Command::none() }
 /// # }
 /// let mut program = Program::builder();
-/// program.component::<Clock>(()).name("clock").finish()?;
+/// program.component_builder::<Clock>().name("clock").register(());
 /// let error = Runtime::builder(program.build()?).build().err().unwrap();
 /// assert!(error.to_string().contains("ReadSystemTime"));
 /// assert!(error.to_string().contains("clock"));
@@ -343,10 +343,9 @@ impl ControlledRuntimeSetup {
     }
 }
 
-/// A Component registration.
-///
-/// `finish()` creates the Component's own capabilities and returns a handle
-/// carrying them for the host:
+/// Registers a Component with options. Made by
+/// [`ProgramBuilder::component_builder`]; use [`ProgramBuilder::component`]
+/// when there is nothing to set.
 ///
 /// ```
 /// use samara::prelude::*;
@@ -358,24 +357,25 @@ impl ControlledRuntimeSetup {
 ///     fn update(_: &(), _: &Self::Io, _: &mut (), _: ()) -> Command<()> { Command::none() }
 /// }
 /// let mut program = Program::builder();
-/// let clock = program.component::<Clock>(()).finish()?;
+/// let clock = program.component_builder::<Clock>().name("wall clock").register(());
+/// assert_eq!(clock.id().name(), "wall clock");
 /// let runtime = Runtime::builder(program.build()?)
 ///     .supply(&clock.io.0, SystemClockDriver)
 ///     .build()?;
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
-#[must_use = "finish component registration with .finish()"]
-pub struct ComponentRegistration<'a, C: Component> {
+#[must_use = "register the Component with .register(config)"]
+pub struct ComponentBuilder<'a, C: Component> {
     program: &'a mut ProgramBuilder,
     name: Option<Arc<str>>,
-    config: C::Config,
+    kind: PhantomData<fn() -> C>,
 }
-impl<'a, C: Component> ComponentRegistration<'a, C> {
-    pub(crate) fn new(program: &'a mut ProgramBuilder, config: C::Config) -> Self {
+impl<'a, C: Component> ComponentBuilder<'a, C> {
+    pub(crate) fn new(program: &'a mut ProgramBuilder) -> Self {
         Self {
             program,
             name: None,
-            config,
+            kind: PhantomData,
         }
     }
 
@@ -387,14 +387,12 @@ impl<'a, C: Component> ComponentRegistration<'a, C> {
     }
 
     /// Creates the Component's capabilities, initializes it, and registers it.
-    pub fn finish(self) -> Result<InstalledComponent<C>, ProgramBuildError> {
+    pub fn register(self, config: C::Config) -> InstalledComponent<C> {
         let mark = self.program.requirement_mark();
         let io = declare::<C::Io>(self.program);
-        let reference = self
-            .program
-            .register::<C>(self.name, self.config, io.clone())?;
+        let reference = self.program.register::<C>(self.name, config, io.clone());
         self.program.claim(mark, reference.id());
-        Ok(InstalledComponent { io, reference })
+        InstalledComponent { io, reference }
     }
 }
 
@@ -456,10 +454,7 @@ pub trait Assembly {
     type Io;
     /// Registers the Assembly's Components and returns its exports and its
     /// members' capabilities.
-    fn install(
-        program: &mut ProgramBuilder,
-        config: Self::Config,
-    ) -> Result<(Self::Exports, Self::Io), ProgramBuildError>;
+    fn install(program: &mut ProgramBuilder, config: Self::Config) -> (Self::Exports, Self::Io);
 }
 /// An installed Assembly's exports and capabilities.
 pub struct InstalledAssembly<A: Assembly> {
@@ -495,7 +490,7 @@ where
     ///     type Config = ();
     ///     type Exports = Doors;
     ///     type Io = ();
-    ///     fn install(_: &mut ProgramBuilder, _: ()) -> Result<(Doors, ()), ProgramBuildError> {
+    ///     fn install(_: &mut ProgramBuilder, _: ()) -> (Doors, ()) {
     ///         unimplemented!()
     ///     }
     /// }
@@ -503,8 +498,8 @@ where
     ///     let _ = installed.connector();
     /// }
     /// ```
-    pub fn connector(&self) -> &Connector<M> {
-        &self.exports
+    pub fn connector(&self) -> Connector<M> {
+        self.exports.clone()
     }
 }
 impl<A, M> Addressable for InstalledAssembly<A>
@@ -524,26 +519,11 @@ impl<A: Assembly> fmt::Debug for InstalledAssembly<A> {
             .finish_non_exhaustive()
     }
 }
-/// A staged Assembly installation.
-#[must_use = "finish Assembly installation with .finish()"]
-pub struct AssemblyRegistration<'a, A: Assembly> {
-    program: &'a mut ProgramBuilder,
-    config: A::Config,
-}
 impl ProgramBuilder {
-    /// Starts installing an Assembly with its settings and connections.
-    pub fn install<A: Assembly>(&mut self, config: A::Config) -> AssemblyRegistration<'_, A> {
-        AssemblyRegistration {
-            program: self,
-            config,
-        }
-    }
-}
-impl<A: Assembly> AssemblyRegistration<'_, A> {
-    /// Installs the Assembly. Discard the ProgramBuilder on failure.
-    pub fn finish(self) -> Result<InstalledAssembly<A>, ProgramBuildError> {
-        let (exports, io) = A::install(self.program, self.config)?;
-        Ok(InstalledAssembly { io, exports })
+    /// Installs an Assembly with its settings and connections.
+    pub fn install<A: Assembly>(&mut self, config: A::Config) -> InstalledAssembly<A> {
+        let (exports, io) = A::install(self, config);
+        InstalledAssembly { io, exports }
     }
 }
 /// Optional default live implementations for a library Assembly.

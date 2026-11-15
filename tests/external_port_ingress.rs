@@ -235,10 +235,9 @@ fn counted_binding_program() -> (TestProgram, Port<HostMessage>, Arc<AtomicUsize
     let mut builder = Program::builder();
     let port = builder.port::<HostMessage>(PortId::new("host"));
     let provider = builder
-        .component::<Provider>(())
+        .component_builder::<Provider>()
         .name("provider")
-        .finish()
-        .expect("component registration");
+        .register(());
     let conversions = Arc::new(AtomicUsize::new(0));
     let counter = conversions.clone();
     builder.connect(
@@ -261,10 +260,9 @@ fn selectively_panicking_binding_program() -> (TestProgram, Port<HostMessage>) {
     let mut builder = Program::builder();
     let port = builder.port::<HostMessage>(PortId::new("host"));
     let provider = builder
-        .component::<Provider>(())
+        .component_builder::<Provider>()
         .name("provider")
-        .finish()
-        .expect("component registration");
+        .register(());
     builder.connect(
         &port,
         &provider.accepting(|message| match message {
@@ -283,10 +281,9 @@ fn panicking_binding_program() -> (Program, Port<BindingMessage>) {
     let mut builder = Program::builder();
     let port = builder.port::<BindingMessage>(PortId::new("panicking-binding"));
     let provider = builder
-        .component::<PanickingBindingProvider>(())
+        .component_builder::<PanickingBindingProvider>()
         .name("panicking-binding-provider")
-        .finish()
-        .expect("component registration");
+        .register(());
     builder.connect(
         &port,
         &provider.accepting(|message| {
@@ -388,10 +385,9 @@ async fn cloned_port_handles_deliver_each_send_exactly_once() -> Result<(), Runt
     let mut builder = Program::builder();
     let port = builder.port::<HostMessage>(PortId::new("cloned-host"));
     let provider = builder
-        .component::<Provider>(())
+        .component_builder::<Provider>()
         .name("cloned-provider")
-        .finish()
-        .expect("component registration");
+        .register(());
     builder.connect(&port, &provider.accepting(ProviderMessage::Host));
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
     let (request_observed, _request_observations) = tokio::sync::mpsc::unbounded_channel();
@@ -596,10 +592,9 @@ async fn component_and_port_ingress_share_one_shutdown_cutoff() -> Result<(), Ru
     let mut builder = Program::builder();
     let port = builder.port::<HostMessage>(PortId::new("race-host"));
     let provider = builder
-        .component::<Provider>(())
+        .component_builder::<Provider>()
         .name("race-provider")
-        .finish()
-        .expect("component registration");
+        .register(());
     builder.connect(&port, &provider.accepting(ProviderMessage::Host));
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
     let (request_observed, _request_observations) = tokio::sync::mpsc::unbounded_channel();

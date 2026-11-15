@@ -80,15 +80,9 @@ fn controlled_http_fixture() -> (
 ) {
     let mut builder = Program::builder();
     let port = builder.port(PortId::new(TIME_SERVER_PORT));
-    let server = builder
-        .component::<HttpTimeServer>(HttpTimeServerConfig {})
-        .finish()
-        .expect("component registration");
+    let server = builder.component::<HttpTimeServer>(HttpTimeServerConfig {});
     builder.connect(&port, &server.connector());
-    let reader = builder
-        .component::<TimeReader>(TimeReaderConfig(port))
-        .finish()
-        .expect("component registration");
+    let reader = builder.component::<TimeReader>(TimeReaderConfig(port));
     let runtime = ControlledRuntime::builder(builder.build().unwrap())
         .control_all()
         .build()

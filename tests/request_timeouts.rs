@@ -166,16 +166,14 @@ fn fixture() -> Fixture {
     let mut builder = Program::builder();
     let port = builder.port::<ProbeProtocolMessage>(PortId::new("probe"));
     let provider = builder
-        .component::<Provider>(())
+        .component_builder::<Provider>()
         .name("provider")
-        .finish()
-        .expect("component registration");
+        .register(());
     builder.connect(&port, &provider.connector());
     let requester = builder
-        .component::<Requester>(RequesterConfig { port: port.clone() })
+        .component_builder::<Requester>()
         .name("requester")
-        .finish()
-        .expect("component registration");
+        .register(RequesterConfig { port: port.clone() });
     Fixture {
         program: builder.build().unwrap(),
         observe: requester.io.clone(),

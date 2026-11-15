@@ -172,29 +172,25 @@ fn component_identity_follows_registration_independently_of_names() {
     let (left_first, _, _, _) = KernelComponentConfig::fixture();
     let (left_second, _, _, _) = KernelComponentConfig::fixture();
     let alpha_left = left_program
-        .component::<KernelComponent>(left_first)
+        .component_builder::<KernelComponent>()
         .name("alpha")
-        .finish()
-        .expect("component registration");
+        .register(left_first);
     let beta_left = left_program
-        .component::<KernelComponent>(left_second)
+        .component_builder::<KernelComponent>()
         .name("beta")
-        .finish()
-        .expect("component registration");
+        .register(left_second);
 
     let mut right_program = Program::builder();
     let (right_first, _, _, _) = KernelComponentConfig::fixture();
     let (right_second, _, _, _) = KernelComponentConfig::fixture();
     let beta_right = right_program
-        .component::<KernelComponent>(right_first)
+        .component_builder::<KernelComponent>()
         .name("beta")
-        .finish()
-        .expect("component registration");
+        .register(right_first);
     let alpha_right = right_program
-        .component::<KernelComponent>(right_second)
+        .component_builder::<KernelComponent>()
         .name("alpha")
-        .finish()
-        .expect("component registration");
+        .register(right_second);
 
     assert_eq!(alpha_left.id(), beta_right.id());
     assert_eq!(beta_left.id(), alpha_right.id());
@@ -208,10 +204,9 @@ fn registration_transfers_configuration_and_model_ownership_to_program() {
     let mut builder = Program::builder();
 
     let component_ref = builder
-        .component::<KernelComponent>(component)
+        .component_builder::<KernelComponent>()
         .name("owned")
-        .finish()
-        .expect("component registration");
+        .register(component);
 
     assert_eq!(component_ref.id().name(), "owned");
     assert_eq!(configuration_drops.load(Ordering::SeqCst), 0);

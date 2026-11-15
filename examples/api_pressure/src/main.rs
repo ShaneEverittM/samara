@@ -336,22 +336,16 @@ fn program(increments: StreamDescriptor<u64>) -> (Program, AppRefs) {
     // A named Port is immutable dependency wiring. Naming allows another Quota
     // Port to coexist without a global “one provider per type” rule.
     let quota_port = program.port(PortId::new(QUOTA));
-    let quota = program
-        .component::<Quota>(QuotaConfig { initial: 100 })
-        .finish()
-        .expect("component registration");
+    let quota = program.component::<Quota>(QuotaConfig { initial: 100 });
 
     // Assembly chooses the concrete provider. `QuotaMessage` declares its
     // canonical Port-message conversion through `From`; Counter never needs to
     // know that private Message vocabulary.
     program.connect(&quota_port, &quota.connector());
-    let counter = program
-        .component::<Counter>(CounterConfig {
-            increments: increments.clone(),
-            quota: quota_port,
-        })
-        .finish()
-        .expect("component registration");
+    let counter = program.component::<Counter>(CounterConfig {
+        increments: increments.clone(),
+        quota: quota_port,
+    });
 
     (
         program.build().expect("the example graph is valid"),

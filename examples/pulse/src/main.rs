@@ -86,11 +86,9 @@ async fn main() -> anyhow::Result<()> {
     // A program is dormant, it declares how things are internally connected.
     let mut builder = Program::builder();
 
-    let journal = builder.install::<Journal>(()).finish()?;
+    let journal = builder.install::<Journal>(());
 
-    let monitor = builder
-        .component::<Monitor>(journal.connector().clone())
-        .finish()?;
+    let monitor = builder.component::<Monitor>(journal.connector());
 
     // Assemble the program, this checks things that _can't_ be checked at compile time.
     let program = builder.build()?;

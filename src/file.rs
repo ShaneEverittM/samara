@@ -89,7 +89,7 @@ impl CanWrite for ReadWrite {}
 ///     fn update(_: &(), _: &Self::Io, _: &mut (), _: ()) -> Command<()> { Command::none() }
 /// }
 /// let mut program = Program::builder();
-/// let scribe = program.component::<Scribe>(()).finish()?;
+/// let scribe = program.component::<Scribe>(());
 /// let runtime = Runtime::builder(program.build()?)
 ///     .supply(&scribe.io, FileDriver::new("data/journal.log"))
 ///     .build()?;

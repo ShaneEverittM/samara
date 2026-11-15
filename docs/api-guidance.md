@@ -236,16 +236,15 @@ single capability, or `()`. The derive is the same as writing
 `Capabilities::declare` by hand with one `new.field("name")` per field.
 
 `Program::builder()` declares nothing up front. Registering a Component
-creates its capabilities, and `finish()` returns an `InstalledComponent<C>`
+creates its capabilities, and registration returns an `InstalledComponent<C>`
 whose public `io` field holds them
 ([ADR-0028](adr/0028-a-capability-belongs-to-one-component.md)):
 
 ```rust,ignore
 let mut builder = Program::builder();
-let journal = builder.install::<Journal>(()).finish()?;
+let journal = builder.install::<Journal>(());
 let monitor = builder
-    .component::<Monitor>(journal.connector().clone())
-    .finish()?;
+    .component::<Monitor>(journal.connector());
 let program = builder.build()?;
 ```
 
@@ -303,7 +302,7 @@ binding operation; `build()` validates the completed bindings.
 `Program::manifest()` lists every capability with its owner and field name.
 Its text has one line per capability, such as
 `clock: effect samara::clock::ReadSystemTime` for an unnamed capability of a
-Component registered with `.name("clock")`, and `owner.field: ...` when `Io`
+Component registered through `component_builder` with `.name("clock")`, and `owner.field: ...` when `Io`
 is a named struct.
 
 To call `init`, `update`, or `subscriptions` directly in a unit test without
@@ -926,9 +925,9 @@ impl Assembly for Journal {
     fn install(
         program: &mut ProgramBuilder,
         _: Self::Config,
-    ) -> Result<(Connector<JournalMessage>, JournalIo), ProgramBuildError> {
-        let recorder = program.component::<Recorder>(()).finish()?;
-        Ok((recorder.accepting(Message::Journal), recorder.io.clone()))
+    ) -> (Connector<JournalMessage>, JournalIo) {
+        let recorder = program.component::<Recorder>(());
+        (recorder.accepting(Message::Journal), recorder.io.clone())
     }
 }
 ```
@@ -936,11 +935,11 @@ impl Assembly for Journal {
 | Scope | Declaration | Supplied by |
 | --- | --- | --- |
 | Component settings and connections | `Component::Config` | Its assembler |
-| Component world dependencies | `Component::Io` | Created by `finish()` at registration |
+| Component world dependencies | `Component::Io` | Created at registration |
 | Assembly world dependencies | `Assembly::Io` | Returned by `install` from its members' `io` |
 | Live Drivers | `supply(&capability, driver)` on `Runtime::builder(program)` | The host |
 
-`program.install::<A>(config).finish()?` returns `InstalledAssembly<A>`
+`program.install::<A>(config)` returns `InstalledAssembly<A>`
 holding the exports and a public `io` field. `install` receives no
 capabilities. The Program records every capability, so `build()` on the live
 setup can check that each one was supplied a Driver; controlled execution
@@ -1113,7 +1112,8 @@ the first implementation.
 ## Component names and subscription keys
 
 Component registration needs only configuration. The builder issues an opaque
-identity and returns the typed address. Optional `.name("Primary worker")`
+identity and returns the handle. An optional name is set through
+`component_builder::<C>().name("Primary worker").register(config)` (ADR-0030); it
 improves diagnostics; duplicate names are allowed, and names do not affect
 routing or controlled execution order. Repeated Assembly installations need no
 coordination of private Component names.

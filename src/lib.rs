@@ -38,7 +38,7 @@
 //! }
 //!
 //! let mut builder = Program::builder();
-//! let counter = builder.component::<Counter>(()).finish().expect("component registration");
+//! let counter = builder.component::<Counter>(());
 //! let mut runtime = ControlledRuntime::builder(builder.build()?).control_all().build()?;
 //! runtime.send(&counter, Message::Add(3))?;
 //! runtime.run_until_idle()?;
@@ -2020,7 +2020,7 @@ impl<Message> From<Vec<Subscription<Message>>> for Subscriptions<Message> {
 /// }
 /// fn program() -> Result<(Program, InstalledComponent<Sum>), ProgramBuildError> {
 ///     let mut builder = Program::builder();
-///     let sum = builder.component::<Sum>(()).finish()?;
+///     let sum = builder.component::<Sum>(());
 ///     Ok((builder.build()?, sum))
 /// }
 /// let (program_under_test, sum) = program()?;
@@ -2150,7 +2150,7 @@ impl<T: Send + 'static> StreamSourceDescriptor for StreamDescriptor<T> {
 ///
 /// fn program() -> Result<(Program, InstalledComponent<Reader>), ProgramBuildError> {
 ///     let mut builder = Program::builder();
-///     let reader = builder.component::<Reader>(()).finish()?;
+///     let reader = builder.component::<Reader>(());
 ///     Ok((builder.build()?, reader))
 /// }
 ///
@@ -3674,7 +3674,7 @@ impl<C: Component> ComponentRef<C> {
 ///
 /// let mut program = Program::builder();
 /// let audit = program.port::<AuditMessage>(PortId::new("audit"));
-/// let recorder = program.component::<Recorder>(()).finish().expect("component registration");
+/// let recorder = program.component::<Recorder>(());
 /// let provider: Connector<JournalMessage> = recorder.accepting(RecorderMessage);
 /// program.connect(&audit, &provider.accepting(|message| match message {
 ///     AuditMessage::Changed(what) => JournalMessage::Note(what),
@@ -4254,7 +4254,7 @@ impl Program {
     ///     fn update(_: &(), _: &Self::Io, _: &mut (), _: ()) -> Command<()> { Command::none() }
     /// }
     /// let mut program = Program::builder();
-    /// program.component::<Clock>(()).name("clock").finish()?;
+    /// program.component_builder::<Clock>().name("clock").register(());
     /// let manifest = program.build()?.manifest();
     /// assert_eq!(manifest.to_string(), "clock: effect samara::clock::ReadSystemTime\n");
     /// # Ok::<(), Box<dyn std::error::Error>>(())
@@ -4844,17 +4844,23 @@ impl ProgramBuilder {
         }
     }
 
-    /// Starts registering a Component of kind `C` with its settings and connections.
+    /// Registers a Component of kind `C` with its settings and connections.
     ///
-    /// Call `finish()` to create the Component's capabilities, invoke
-    /// [`Component::init`], and obtain its handle. Optional
-    /// `.name(...)` sets a diagnostic label; duplicate names are allowed. Startup
-    /// work runs when the runtime starts. Registration order determines initial
-    /// controlled work order, with no ordering promise for independent live events.
+    /// Creates the Component's capabilities, invokes [`Component::init`], and
+    /// returns its handle. Startup work runs when the runtime starts.
+    /// Registration order determines initial controlled work order, with no
+    /// ordering promise for independent live events. Use
+    /// [`Self::component_builder`] to set a diagnostic name.
     ///
     /// See the [crate example](crate) or [`Self::connect`].
-    pub fn component<C: Component>(&mut self, config: C::Config) -> ComponentRegistration<'_, C> {
-        ComponentRegistration::new(self, config)
+    pub fn component<C: Component>(&mut self, config: C::Config) -> InstalledComponent<C> {
+        self.component_builder::<C>().register(config)
+    }
+
+    /// Starts registering a Component of kind `C` with options, such as a
+    /// diagnostic `.name(..)`; finish with `.register(config)`.
+    pub fn component_builder<C: Component>(&mut self) -> ComponentBuilder<'_, C> {
+        ComponentBuilder::new(self)
     }
 
     fn register<C: Component>(
@@ -4862,7 +4868,7 @@ impl ProgramBuilder {
         name: Option<Arc<str>>,
         config: C::Config,
         io: C::Io,
-    ) -> Result<ComponentRef<C>, ProgramBuildError> {
+    ) -> ComponentRef<C> {
         let id = ComponentId::new(
             self.components.len() as u64,
             name.unwrap_or_else(|| std::any::type_name::<C>().into()),
@@ -4874,7 +4880,7 @@ impl ProgramBuilder {
         };
         self.components
             .push(Box::new(ComponentKernel::<C>::new(id, config, io)));
-        Ok(component_ref)
+        component_ref
     }
 
     /// Declares a named Port carrying messages of type `P`.
@@ -4952,9 +4958,9 @@ impl ProgramBuilder {
     ///
     /// let mut builder = Program::builder();
     /// let port = builder.port::<CountMessage>(PortId::new("counter"));
-    /// let counter = builder.component::<Counter>(()).finish().expect("component registration");
+    /// let counter = builder.component::<Counter>(());
     /// builder.connect(&port, &counter.accepting(CounterMessage::Count));
-    /// let client = builder.component::<Client>(ClientConfig { counter: port }).finish().expect("component registration");
+    /// let client = builder.component::<Client>(ClientConfig { counter: port });
     /// let mut runtime = ControlledRuntime::builder(builder.build()?).control_all().build()?;
     /// runtime.run_until_idle()?;
     /// assert_eq!(*runtime.state(&client)?, Some(42));
@@ -5077,7 +5083,7 @@ impl ProgramBuilder {
 ///     fn update(_: &(), _: &Self::Io, _: &mut (), _: ()) -> Command<()> { Command::none() }
 /// }
 /// let mut program = Program::builder();
-/// let checker = program.component::<Checker>(()).finish()?;
+/// let checker = program.component::<Checker>(());
 /// let runtime = Runtime::builder(program.build()?).supply(&checker.io, Network).build()?;
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
@@ -5128,7 +5134,7 @@ pub trait EffectDriver<D: EffectDescriptor>: Send + Sync + 'static {
 ///     fn update(_: &(), _: &Self::Io, _: &mut (), _: ()) -> Command<()> { Command::none() }
 /// }
 /// let mut program = Program::builder();
-/// let listener = program.component::<Listener>(()).finish()?;
+/// let listener = program.component::<Listener>(());
 /// let runtime = Runtime::builder(program.build()?).supply(&listener.io, DrivenSource::new(ValueSource)).build()?;
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
@@ -5222,7 +5228,7 @@ impl Error for DriverStopped {}
 ///     fn update(_: &(), _: &Self::Io, _: &mut (), _: ()) -> Command<()> { Command::none() }
 /// }
 /// let mut program = Program::builder();
-/// let clock = program.component::<Clock>(()).finish()?;
+/// let clock = program.component::<Clock>(());
 /// // One capability takes exactly one Driver.
 /// let result = Runtime::builder(program.build()?)
 ///     .supply(&clock.io, SystemClockDriver)
@@ -5341,7 +5347,7 @@ pub(crate) struct RuntimeBuilder {
 /// let tokio = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
 /// tokio.block_on(async {
 ///     let mut builder = Program::builder();
-///     let counter = builder.component::<Counter>(()).finish().expect("component registration");
+///     let counter = builder.component::<Counter>(());
 ///     let runtime = Runtime::builder(builder.build()?).build()?;
 ///     let sender = runtime.handle(&counter)?;
 ///     let task = runtime.spawn();
@@ -5535,7 +5541,7 @@ impl<C: Component> ComponentHandle<C> {
 /// tokio.block_on(async {
 ///     let mut builder = Program::builder();
 ///     let count = builder.port::<CountMessage>(PortId::new("count"));
-///     let counter = builder.component::<Counter>(()).finish().expect("component registration");
+///     let counter = builder.component::<Counter>(());
 ///     builder.connect(&count, &counter.connector());
 ///     let runtime = Runtime::builder(builder.build()?).build()?;
 ///     let client = runtime.port_handle(&count)?;
@@ -5920,7 +5926,7 @@ pub struct ControlledRuntimeBuilder {
 ///     }
 /// }
 /// let mut builder = Program::builder();
-/// let check = builder.component::<Check>(()).finish()?;
+/// let check = builder.component::<Check>(());
 /// let mut runtime = ControlledRuntime::builder(builder.build()?).control_all().build()?;
 /// runtime.run_until_idle()?;
 /// let request = runtime.next_effect::<HttpRequest>()?;
@@ -6097,7 +6103,7 @@ impl ControlledRuntime {
     ///     }
     /// }
     /// let mut builder = Program::builder();
-    /// let timer = builder.component::<Timer>(()).finish().expect("component registration");
+    /// let timer = builder.component::<Timer>(());
     /// let mut runtime = ControlledRuntime::builder(builder.build()?).control_all().build()?;
     /// runtime.advance(Duration::from_secs(1))?;
     /// assert!(!*runtime.state(&timer)?);
@@ -6646,10 +6652,9 @@ mod request_authority_tests {
     fn fixture() -> (Program, ComponentRef<Replier>, ReplyWith<u64>) {
         let mut builder = crate::Program::builder();
         let replier = builder
-            .component::<Replier>(())
+            .component_builder::<Replier>()
             .name("replier")
-            .finish()
-            .expect("component registration");
+            .register(());
         let token = RequestToken::new(0, Arc::new(()));
         token.expire();
         (

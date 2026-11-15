@@ -50,7 +50,7 @@ exists and the installed Assembly is itself `Addressable`), a struct naming
 several doors or a `ComponentRef`, or `()` for an Assembly nobody sends to
 (ADR-0026).
 
-**InstalledComponent / `InstalledComponent<C>`** — What `finish()` returns
+**InstalledComponent / `InstalledComponent<C>`** — What registering a Component returns
 for every registered Component: the `ComponentRef` together with the
 capabilities created for that Component, in the public field `io`. The host
 reads `io` to supply Drivers. The handle derefs to its `ComponentRef`,
@@ -683,6 +683,7 @@ to hold.
 | `Requirements` (sealed trait), `Capabilities<R>` (alias) | The `Capabilities` trait | Removed November 15, 2026 (ADR-0029). `Capabilities` is one function, `declare`, that a person can write by hand or derive; `Capabilities<Self::Requires>` in a signature is now `Self::Io`. |
 | `Program::builder::<R>()` returning `(builder, capabilities)`, `Program<R>`, `ProgramBuilder<R>` | `Program::builder()`; capabilities created by `finish()` | Removed November 15, 2026 (ADR-0028, ADR-0029). Nothing is declared up front and no type carries a requirement parameter; the Program is closed when `build()` returns. |
 | `component::<C>(config).with(&capabilities)`, `install::<A>(config).with(&capabilities)` | `component::<C>(config).finish()`, `install::<A>(config).finish()` | Removed November 15, 2026 (ADR-0028). Nothing accepts an existing capability at registration, so one cannot be given to a second Component. |
+| `component::<C>(config).finish()?`, `.name(..)` on registration, `install::<A>(config).finish()?`, `Assembly::install` returning a `Result`, `InstalledAssembly::connector()` returning a reference | `component::<C>(config)`, `component_builder::<C>().name(..).register(config)`, `install::<A>(config)`, `install` returning `(Exports, Io)`, an owned `Connector` | Changed November 15, 2026 (ADR-0030). Registration can no longer fail and has no staged step, so it returns its handle; a second entry point carries per-instance options. |
 | `with(&capability).supplied_by(driver)` | `supply(&capability, driver)` | Replaced November 15, 2026 (ADR-0029). With named fields the pair reads on one line: `.supply(&journal.io.file, FileDriver::new(path))`. |
 | `Program::capabilities()` | `InstalledComponent::io`, `InstalledAssembly::io` | Removed November 15, 2026 (ADR-0028). Test fixtures return their handles or the `io` values they need. |
 | `File` narrowing: `read_only()`, `append_only()`, `read_append()`, `write_only()` | None | Removed November 15, 2026 (ADR-0028, ADR-0029). Narrowing existed to hand a file to another Component; a file now has one owner and other Components send it Messages. |

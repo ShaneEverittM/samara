@@ -45,15 +45,13 @@ impl Component for Empty {
 fn phase5_program_build_accepts_duplicate_component_names() {
     let mut builder = Program::builder();
     let _ = builder
-        .component::<Empty>(())
+        .component_builder::<Empty>()
         .name("duplicate")
-        .finish()
-        .expect("component registration");
+        .register(());
     let _ = builder
-        .component::<Empty>(())
+        .component_builder::<Empty>()
         .name("duplicate")
-        .finish()
-        .expect("component registration");
+        .register(());
 
     assert!(builder.build().is_ok());
 }
@@ -76,10 +74,9 @@ fn phase5_program_build_requires_exactly_one_binding_per_port() {
     let mut duplicate = Program::builder();
     let port = duplicate.port::<()>(PortId::new("service"));
     let provider = duplicate
-        .component::<Empty>(())
+        .component_builder::<Empty>()
         .name("provider")
-        .finish()
-        .expect("component registration");
+        .register(());
     duplicate.connect(&port, &provider.connector());
     duplicate.connect(&port, &provider.connector());
     assert!(duplicate.build().is_err());
@@ -89,10 +86,9 @@ fn phase5_program_build_requires_exactly_one_binding_per_port() {
 fn phase5_program_build_rejects_provider_from_another_builder() {
     let mut provider_builder = Program::builder();
     let provider = provider_builder
-        .component::<Empty>(())
+        .component_builder::<Empty>()
         .name("provider")
-        .finish()
-        .expect("component registration");
+        .register(());
 
     let mut consumer_builder = Program::builder();
     let port = consumer_builder.port::<()>(PortId::new("service"));
@@ -159,19 +155,17 @@ fn phase5_program_build_allows_port_cycles() {
     let left_port = builder.port::<()>(PortId::new("left"));
     let right_port = builder.port::<()>(PortId::new("right"));
     let left = builder
-        .component::<Left>(LeftConfig {
-            _right: right_port.clone(),
-        })
+        .component_builder::<Left>()
         .name("left")
-        .finish()
-        .expect("component registration");
+        .register(LeftConfig {
+            _right: right_port.clone(),
+        });
     let right = builder
-        .component::<Right>(RightConfig {
-            _left: left_port.clone(),
-        })
+        .component_builder::<Right>()
         .name("right")
-        .finish()
-        .expect("component registration");
+        .register(RightConfig {
+            _left: left_port.clone(),
+        });
     builder.connect(&left_port, &left.connector());
     builder.connect(&right_port, &right.connector());
 
@@ -243,10 +237,9 @@ impl Component for EffectComponent {
 fn effect_program(mapper_calls: Arc<AtomicUsize>) -> (Program, ComponentRef<EffectComponent>) {
     let mut builder = Program::builder();
     let component = builder
-        .component::<EffectComponent>(EffectComponentConfig { mapper_calls })
+        .component_builder::<EffectComponent>()
         .name("effect")
-        .finish()
-        .expect("component registration");
+        .register(EffectComponentConfig { mapper_calls });
     (
         builder.build().expect("valid effect program"),
         component.into(),
@@ -390,10 +383,9 @@ impl Component for MappingComponent {
 fn mapping_program() -> (Program, ComponentRef<MappingComponent>) {
     let mut builder = Program::builder();
     let component = builder
-        .component::<MappingComponent>(())
+        .component_builder::<MappingComponent>()
         .name("mapping")
-        .finish()
-        .expect("component registration");
+        .register(());
     (
         builder.build().expect("valid source program"),
         component.into(),
@@ -670,10 +662,9 @@ impl Component for FramedComponent {
 fn v4_composed_source_plan_reaches_terminal_controlled_behavior() {
     let mut builder = Program::builder();
     let component = builder
-        .component::<FramedComponent>(())
+        .component_builder::<FramedComponent>()
         .name("framed")
-        .finish()
-        .expect("component registration");
+        .register(());
     let program = builder.build().unwrap();
     let mut runtime = ControlledRuntime::builder(program)
         .control_all()
@@ -705,10 +696,9 @@ fn v4_composed_source_plan_reaches_terminal_controlled_behavior() {
 fn v4_composed_source_binding_must_name_the_terminal_descriptor() {
     let mut builder = Program::builder();
     let _component = builder
-        .component::<FramedComponent>(())
+        .component_builder::<FramedComponent>()
         .name("framed")
-        .finish()
-        .expect("component registration");
+        .register(());
     let program = builder.build().unwrap();
     let mut runtime = ControlledRuntime::builder(program)
         .control_all()
@@ -765,27 +755,23 @@ fn timer_program(
     let mut builder = Program::builder();
     let (alpha, beta) = if reverse_registration {
         let beta = builder
-            .component::<TimerComponent>(())
+            .component_builder::<TimerComponent>()
             .name("beta")
-            .finish()
-            .expect("component registration");
+            .register(());
         let alpha = builder
-            .component::<TimerComponent>(())
+            .component_builder::<TimerComponent>()
             .name("alpha")
-            .finish()
-            .expect("component registration");
+            .register(());
         (alpha, beta)
     } else {
         let alpha = builder
-            .component::<TimerComponent>(())
+            .component_builder::<TimerComponent>()
             .name("alpha")
-            .finish()
-            .expect("component registration");
+            .register(());
         let beta = builder
-            .component::<TimerComponent>(())
+            .component_builder::<TimerComponent>()
             .name("beta")
-            .finish()
-            .expect("component registration");
+            .register(());
         (alpha, beta)
     };
     (builder.build().unwrap(), alpha.into(), beta.into())
@@ -884,10 +870,9 @@ impl Component for CausalTimer {
 fn run_causal_timer(automatic: bool) -> (Vec<&'static str>, Vec<TraceRecord>) {
     let mut builder = Program::builder();
     let component = builder
-        .component::<CausalTimer>(())
+        .component_builder::<CausalTimer>()
         .name("causal-timer")
-        .finish()
-        .expect("component registration");
+        .register(());
     let program = builder.build().unwrap();
     let mut runtime = ControlledRuntime::builder(program)
         .control_all()
@@ -965,10 +950,9 @@ impl Component for OverflowTimer {
 fn phase5_timer_deadline_overflow_faults_instead_of_panicking() {
     let mut builder = Program::builder();
     let component = builder
-        .component::<OverflowTimer>(())
+        .component_builder::<OverflowTimer>()
         .name("overflow")
-        .finish()
-        .expect("component registration");
+        .register(());
     let program = builder.build().unwrap();
     let mut runtime = ControlledRuntime::builder(program)
         .control_all()
@@ -1016,10 +1000,9 @@ fn v6_equal_final_state_with_different_structural_trace_is_not_equivalent() {
     fn run(inputs: &[i32]) -> (i32, Vec<TraceRecord>) {
         let mut builder = Program::builder();
         let balance = builder
-            .component::<Balance>(())
+            .component_builder::<Balance>()
             .name("balance")
-            .finish()
-            .expect("component registration");
+            .register(());
         let program = builder.build().unwrap();
         let mut runtime = ControlledRuntime::builder(program)
             .control_all()
@@ -1089,17 +1072,15 @@ impl Component for Forwarder {
 fn v2_cross_component_interaction_reenters_as_message() {
     let mut builder = Program::builder();
     let target = builder
-        .component::<TimerComponent>(())
+        .component_builder::<TimerComponent>()
         .name("target")
-        .finish()
-        .expect("component registration");
+        .register(());
     let forwarder = builder
-        .component::<Forwarder>(ForwarderConfig {
-            target: target.clone(),
-        })
+        .component_builder::<Forwarder>()
         .name("forwarder")
-        .finish()
-        .expect("component registration");
+        .register(ForwarderConfig {
+            target: target.clone(),
+        });
     let program = builder.build().unwrap();
     let mut runtime = ControlledRuntime::builder(program)
         .control_all()
@@ -1192,10 +1173,9 @@ impl Component for DueComponent {
 fn v9_pending_now_counts_ready_messages_and_due_timers() {
     let mut builder = Program::builder();
     let component = builder
-        .component::<DueComponent>(())
+        .component_builder::<DueComponent>()
         .name("due")
-        .finish()
-        .expect("component registration");
+        .register(());
     let program = builder.build().unwrap();
     let mut runtime = ControlledRuntime::builder(program)
         .control_all()
@@ -1293,16 +1273,14 @@ fn ownership_runtime() -> (ControlledRuntime, ComponentRef<OwnershipComponent>) 
     let mut builder = Program::builder();
     let port = builder.port::<EchoProtocolMessage>(PortId::new("echo"));
     let provider = builder
-        .component::<EchoProvider>(EchoProviderConfig { reply: false })
+        .component_builder::<EchoProvider>()
         .name("provider")
-        .finish()
-        .expect("component registration");
+        .register(EchoProviderConfig { reply: false });
     builder.connect(&port, &provider.connector());
     let component = builder
-        .component::<OwnershipComponent>(OwnershipComponentConfig { port })
+        .component_builder::<OwnershipComponent>()
         .name("owner")
-        .finish()
-        .expect("component registration");
+        .register(OwnershipComponentConfig { port });
     let program = builder.build().unwrap();
     let runtime = ControlledRuntime::builder(program)
         .control_all()
@@ -1395,12 +1373,11 @@ fn v9_source_cancellation_emits_no_unpromised_event() {
     let mapper_calls = Arc::new(AtomicUsize::new(0));
     let mut builder = Program::builder();
     let _component = builder
-        .component::<CancellationProbe>(CancellationProbeConfig {
-            mapper_calls: mapper_calls.clone(),
-        })
+        .component_builder::<CancellationProbe>()
         .name("cancellation-probe")
-        .finish()
-        .expect("component registration");
+        .register(CancellationProbeConfig {
+            mapper_calls: mapper_calls.clone(),
+        });
     let program = builder.build().unwrap();
     let runtime = ControlledRuntime::builder(program)
         .control_all()
@@ -1544,16 +1521,14 @@ fn echo_program(reply: bool, requests: usize) -> (Program, ComponentRef<EchoRequ
     let mut builder = Program::builder();
     let port = builder.port::<EchoProtocolMessage>(PortId::new("echo"));
     let provider = builder
-        .component::<EchoProvider>(EchoProviderConfig { reply })
+        .component_builder::<EchoProvider>()
         .name("provider")
-        .finish()
-        .expect("component registration");
+        .register(EchoProviderConfig { reply });
     builder.connect(&port, &provider.connector());
     let requester = builder
-        .component::<EchoRequester>(EchoRequesterConfig { port, requests })
+        .component_builder::<EchoRequester>()
         .name("requester")
-        .finish()
-        .expect("component registration");
+        .register(EchoRequesterConfig { port, requests });
     (builder.build().unwrap(), requester.into())
 }
 

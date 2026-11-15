@@ -98,10 +98,9 @@ fn shared_failure_message_preserves_domain_mapping_and_trace_reasons() {
     for (text_outcome, count_outcome, expected, expected_trace) in cases {
         let mut builder = Program::builder();
         let reader = builder
-            .component::<Reader>(())
+            .component_builder::<Reader>()
             .name("reader")
-            .finish()
-            .unwrap();
+            .register(());
         let mut runtime = ControlledRuntime::builder(builder.build().unwrap())
             .control_all()
             .build()
@@ -170,10 +169,9 @@ impl Component for Stamper {
 fn an_infallible_effect_takes_its_success_directly() {
     let mut builder = Program::builder();
     let stamper = builder
-        .component::<Stamper>(())
+        .component_builder::<Stamper>()
         .name("stamper")
-        .finish()
-        .unwrap();
+        .register(());
     let mut runtime = ControlledRuntime::builder(builder.build().unwrap())
         .control_all()
         .build()

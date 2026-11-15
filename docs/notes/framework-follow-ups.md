@@ -267,7 +267,8 @@ a journal Component; exploratory proposals, not accepted API decisions.
   recorded in its Consequences:
   - `run_until(signal)` in place of spawn, await, and drain.
   - Registering a Component by value when its `Config` is itself.
-  - Registration that does not return a `Result`.
+  - Registration that does not return a `Result`: done, ADR-0030, which
+    also removes `finish()` and adds `component_builder` for names.
   - A generated drivers struct, so a named group can be supplied whole with
     a missing field as a compile error. Field-by-field `supply` is being
     lived with first.

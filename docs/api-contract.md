@@ -54,7 +54,7 @@ The accepted Phase 2 audit constrains Phase 3 to this slice:
   and name-based controlled ordering with successful registration order.
 - The type implementing `Component` names a kind and is never stored. Its
   immutable logical configuration is `Component::Config`, supplied at
-  registration as `component::<Kind>(config).finish()?`; behaviorally relevant
+  registration as `component::<Kind>(config)`; behaviorally relevant
   mutable state belongs in `Component::Model`
   ([ADR-0013](adr/0013-component-kinds-assemblies-and-first-party-effects.md)).
 - `Component::Message` is the only transition input.
@@ -80,7 +80,7 @@ The accepted Phase 2 audit constrains Phase 3 to this slice:
   would prematurely constrain placement.
 - `ComponentRef<C>` is an inert typed logical address. It grants neither model
   access nor live delivery capability.
-- `finish()` returns `InstalledComponent<C>` for every Component. Its public
+- Registration returns `InstalledComponent<C>` for every Component. Its public
   `io` field is the capabilities created for that Component. It derefs to
   `ComponentRef<C>`, converts into one, and is `Addressable`.
 - `ComponentHandle<C>` is a live boundary capability and is deliberately
@@ -523,7 +523,7 @@ around values issued by one `ProgramBuilder`, as amended by
 - `Program::builder()` returns a `ProgramBuilder` and declares nothing up
   front. `Program`, `ProgramBuilder`, `RuntimeSetup`, and
   `ControlledRuntimeSetup` have no type parameter.
-- `component::<C>(config).finish()` creates the capabilities named by
+- `component::<C>(config)` creates the capabilities named by
   `C::Io` through `Capabilities::declare`. A capability can be made only
   through `Declaring`, which only the library constructs. The Program is
   closed when `ProgramBuilder::build()` returns.
@@ -692,13 +692,13 @@ as amended by [ADR-0018](adr/0018-assemblies-export-a-connector.md),
       fn install(
           program: &mut ProgramBuilder,
           _: Self::Config,
-      ) -> Result<(Connector<JournalMessage>, JournalIo), ProgramBuildError> {
-          let recorder = program.component::<Recorder>(()).finish()?;
-          Ok((recorder.accepting(Message::Journal), recorder.io.clone()))
+      ) -> (Connector<JournalMessage>, JournalIo) {
+          let recorder = program.component::<Recorder>(());
+          (recorder.accepting(Message::Journal), recorder.io.clone())
       }
   }
   ```
-- `program.install::<A>(config).finish()?` returns `InstalledAssembly<A>`
+- `program.install::<A>(config)` returns `InstalledAssembly<A>`
   with a public `io` field and `exports()`. When `Exports` is a
   `Connector<M>` it also exposes `connector()` and implements `Addressable`.
   It carries no separate runtime installation obligation.

@@ -69,15 +69,13 @@ fn each_components_own_capability_reaches_callbacks_and_delayed_effects() {
     let mut program = Program::builder();
     let count = Arc::new(AtomicUsize::new(0));
     let first = program
-        .component::<Reader>(count.clone())
+        .component_builder::<Reader>()
         .name("first")
-        .finish()
-        .unwrap();
+        .register(count.clone());
     let second = program
-        .component::<Reader>(count.clone())
+        .component_builder::<Reader>()
         .name("second")
-        .finish()
-        .unwrap();
+        .register(count.clone());
     assert_eq!(count.load(Ordering::SeqCst), 2);
     let mut runtime = ControlledRuntime::builder(program.build().unwrap())
         .control_all()
@@ -104,10 +102,9 @@ fn foreign_registration_fails_before_init_and_leaves_no_component() {
     let count = Arc::new(AtomicUsize::new(0));
     assert_eq!(count.load(Ordering::SeqCst), 0);
     program
-        .component::<Reader>(count.clone())
+        .component_builder::<Reader>()
         .name("reader")
-        .finish()
-        .unwrap();
+        .register(count.clone());
     assert_eq!(count.load(Ordering::SeqCst), 1);
     program.build().unwrap();
 }
@@ -122,15 +119,13 @@ async fn live_drivers_are_supplied_per_component_capability() {
         let mut program = Program::builder();
         let count = Arc::new(AtomicUsize::new(0));
         let first = program
-            .component::<Reader>(count.clone())
+            .component_builder::<Reader>()
             .name("first")
-            .finish()
-            .unwrap();
+            .register(count.clone());
         let second = program
-            .component::<Reader>(count)
+            .component_builder::<Reader>()
             .name("second")
-            .finish()
-            .unwrap();
+            .register(count);
         (program.build().unwrap(), first, second)
     }
     // One Driver no longer serves every capability of its descriptor type.
@@ -159,7 +154,7 @@ async fn live_drivers_are_supplied_per_component_capability() {
 fn two_exact_stream_positions_remain_distinct() {
     type Inputs = (Source<StreamDescriptor<u64>>, Source<StreamDescriptor<u64>>);
     let mut program = Program::builder();
-    let holder = program.component::<Holds<Inputs>>(()).finish().unwrap();
+    let holder = program.component::<Holds<Inputs>>(());
     let (_, first) = tokio::sync::mpsc::channel(1);
     let (_, second) = tokio::sync::mpsc::channel(1);
     let tokio = tokio::runtime::Builder::new_current_thread()
@@ -175,7 +170,7 @@ fn two_exact_stream_positions_remain_distinct() {
         .build()
         .unwrap();
     let mut program = Program::builder();
-    program.component::<Holds<Inputs>>(()).finish().unwrap();
+    program.component::<Holds<Inputs>>(());
     ControlledRuntime::builder(program.build().unwrap())
         .control_all()
         .build()
@@ -187,16 +182,13 @@ impl Assembly for Library {
     type Config = Arc<AtomicUsize>;
     type Exports = ComponentRef<Reader>;
     type Io = (Effect<Read>,);
-    fn install(
-        program: &mut ProgramBuilder,
-        count: Self::Config,
-    ) -> Result<(Self::Exports, Self::Io), ProgramBuildError> {
+    fn install(program: &mut ProgramBuilder, count: Self::Config) -> (Self::Exports, Self::Io) {
         let reader = program
-            .component::<Reader>(count)
+            .component_builder::<Reader>()
             .name("library")
-            .finish()?;
+            .register(count);
         let io = reader.io.clone();
-        Ok((reader.into(), io))
+        (reader.into(), io)
     }
 }
 
@@ -204,8 +196,8 @@ impl Assembly for Library {
 fn repeated_assembly_installations_need_no_component_name_coordination() {
     let mut program = Program::builder();
     let count = Arc::new(AtomicUsize::new(0));
-    let first = program.install::<Library>(count.clone()).finish().unwrap();
-    let second = program.install::<Library>(count.clone()).finish().unwrap();
+    let first = program.install::<Library>(count.clone());
+    let second = program.install::<Library>(count.clone());
     assert_eq!(first.exports().id().name(), second.exports().id().name());
     assert_ne!(first.exports().id(), second.exports().id());
     assert_eq!(count.load(Ordering::SeqCst), 2);
@@ -216,12 +208,9 @@ fn repeated_assembly_installations_need_no_component_name_coordination() {
 fn assembly_carries_a_subset_of_the_programs_capabilities() {
     let mut program = Program::builder();
     // Another Component's capability, outside the Assembly.
-    program
-        .component::<Holds<Source<StreamDescriptor<u64>>>>(())
-        .finish()
-        .unwrap();
+    program.component::<Holds<Source<StreamDescriptor<u64>>>>(());
     let count = Arc::new(AtomicUsize::new(0));
-    let installed = program.install::<Library>(count.clone()).finish().unwrap();
+    let installed = program.install::<Library>(count.clone());
     assert_eq!(count.load(Ordering::SeqCst), 1);
     let _: &(Effect<Read>,) = &installed.io;
     let reader = installed.exports().clone();
@@ -251,6 +240,6 @@ fn foreign_assembly_capabilities_fail_before_installation() {
     let mut program = Program::builder();
     let count = Arc::new(AtomicUsize::new(0));
     assert_eq!(count.load(Ordering::SeqCst), 0);
-    program.install::<Library>(count).finish().unwrap();
+    program.install::<Library>(count);
     program.build().unwrap();
 }

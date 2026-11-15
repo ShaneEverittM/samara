@@ -1,6 +1,8 @@
 # ADR-0029: Capabilities Are Named Values a Component Owns
 
-- Status: Accepted.
+- Status: Accepted. [ADR-0030](0030-registration-returns-its-handle.md)
+  then removed `finish()` and the `Result` from registration; the snippets
+  below use that form.
 - Date: November 15, 2026
 - Deciders: Samara maintainers
 - Completes: [ADR-0028](0028-a-capability-belongs-to-one-component.md)
@@ -92,8 +94,8 @@ removed with sharing.
 
 ```rust,ignore
 let mut builder = Program::builder();
-let journal = builder.install::<Journal>(()).finish()?;
-let monitor = builder.component::<Monitor>(journal.connector().clone()).finish()?;
+let journal = builder.install::<Journal>(());
+let monitor = builder.component::<Monitor>(journal.connector());
 
 Runtime::builder(builder.build()?)
     .supply(&journal.io.file, FileDriver::new("./data/pulse.journal"))
@@ -105,7 +107,7 @@ Runtime::builder(builder.build()?)
 
 - `Program::builder()` takes no type; `Program`, `ProgramBuilder`,
   `RuntimeSetup`, and `ControlledRuntimeSetup` have no type parameter.
-- `finish()` returns `InstalledComponent<C>` for every Component. Its `io`
+- Registration returns `InstalledComponent<C>` for every Component. Its `io`
   field is the value the Component uses. It derefs to `ComponentRef<C>`,
   converts into one, and is an address.
 - `supply(&capability, driver)` replaces ADR-0027's
@@ -124,9 +126,9 @@ impl Assembly for Journal {
     type Config = ();
     type Exports = Connector<JournalMessage>;
     type Io = JournalIo;
-    fn install(program: &mut ProgramBuilder, _: ()) -> Result<(Self::Exports, Self::Io), ProgramBuildError> {
-        let recorder = program.component::<Recorder>(()).finish()?;
-        Ok((recorder.accepting(Message::Journal), recorder.io.clone()))
+    fn install(program: &mut ProgramBuilder, _: ()) -> (Self::Exports, Self::Io) {
+        let recorder = program.component::<Recorder>(());
+        (recorder.accepting(Message::Journal), recorder.io.clone())
     }
 }
 ```

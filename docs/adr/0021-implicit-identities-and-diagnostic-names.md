@@ -1,6 +1,9 @@
 # ADR-0021: Implicit Identities and Diagnostic Names
 
-- Status: Accepted for implementation.
+- Status: Accepted. The spelling is amended by
+  [ADR-0030](0030-registration-returns-its-handle.md): `component::<C>(config)`
+  returns its handle with no `finish()`, and the optional name is set through
+  `component_builder::<C>().name(..).register(config)`.
 - Date: November 9, 2026
 - Amends: ADR-0003, ADR-0008, ADR-0013, and ADR-0019.
 

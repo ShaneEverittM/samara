@@ -152,10 +152,9 @@ impl EffectDescriptor for ObservePipelineResult {
 fn pipeline_program(url: impl Into<String>) -> (Program, InstalledComponent<PipelineComponent>) {
     let mut builder = Program::builder();
     let component = builder
-        .component::<PipelineComponent>(url.into())
+        .component_builder::<PipelineComponent>()
         .name("http-pipeline")
-        .finish()
-        .expect("component registration");
+        .register(url.into());
     (builder.build().expect("valid pipeline program"), component)
 }
 

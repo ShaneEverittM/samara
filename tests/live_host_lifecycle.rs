@@ -50,10 +50,9 @@ async fn live_host_observes_a_later_foreign_effect_fault() {
     let mut program = Program::builder();
     // Deliberately nonconforming Config exercises the runtime provenance defense.
     let probe = program
-        .component::<FaultProbe>(FaultProbeConfig { effect })
+        .component_builder::<FaultProbe>()
         .name("fault")
-        .finish()
-        .unwrap();
+        .register(FaultProbeConfig { effect });
     let runtime = Runtime::builder(program.build().unwrap()).build().unwrap();
     let handle = runtime.handle(&probe).unwrap();
     let mut task = runtime.spawn();
@@ -100,10 +99,9 @@ async fn cancelled_run_forever_observation_preserves_owner_for_explicit_shutdown
     for mode in [Shutdown::Drain, Shutdown::Cancel] {
         let mut program = Program::builder();
         let idle = program
-            .component::<Idle>(())
+            .component_builder::<Idle>()
             .name("host-lifecycle-idle")
-            .finish()
-            .expect("component registration");
+            .register(());
         let runtime = Runtime::builder(program.build().expect("valid program"))
             .build()
             .expect("valid live runtime");
@@ -137,10 +135,9 @@ async fn shutdown_requests_close_ingress_and_preserve_completed_result() {
     for mode in [Shutdown::Drain, Shutdown::Cancel] {
         let mut program = Program::builder();
         let idle = program
-            .component::<Idle>(())
+            .component_builder::<Idle>()
             .name("shutdown-requests")
-            .finish()
-            .expect("component registration");
+            .register(());
         let runtime = Runtime::builder(program.build().expect("valid program"))
             .build()
             .expect("valid live runtime");
@@ -187,10 +184,9 @@ impl Component for RecurringTimer {
 async fn shutdown_grace_period_escalates_recurring_timer_and_joins() {
     let mut program = Program::builder();
     program
-        .component::<RecurringTimer>(())
+        .component_builder::<RecurringTimer>()
         .name("recurring-timer")
-        .finish()
-        .expect("component registration");
+        .register(());
     let mut task = Runtime::builder(program.build().expect("valid program"))
         .build()
         .expect("valid runtime")

@@ -298,10 +298,7 @@ pub fn program() -> Result<(Program, UrlIo), ProgramBuildError> {
 fn assemble() -> Result<(Program, InstalledComponent<Checker>), ProgramBuildError> {
     let mut builder = Program::builder();
 
-    let checker = builder
-        .component::<Checker>(CheckerConfig {})
-        .finish()
-        .expect("component registration");
+    let checker = builder.component::<Checker>(CheckerConfig {});
 
     Ok((builder.build()?, checker))
 }

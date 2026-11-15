@@ -175,20 +175,14 @@ struct Fixture {
 
 fn fixture() -> Fixture {
     let mut builder = Program::builder();
-    let gauge = builder.component::<Gauge>(()).finish().unwrap();
-    let relay = builder
-        .component::<Relay>(gauge.connector())
-        .finish()
-        .unwrap();
+    let gauge = builder.component::<Gauge>(());
+    let relay = builder.component::<Relay>(gauge.connector());
     let relay_port = builder.port::<RelayMessage>(PortId::new("relay"));
     builder.connect(&relay_port, &relay.connector());
-    let client = builder
-        .component::<Client>(ClientConfig {
-            relay: relay.connector(),
-            gauge: gauge.connector(),
-        })
-        .finish()
-        .unwrap();
+    let client = builder.component::<Client>(ClientConfig {
+        relay: relay.connector(),
+        gauge: gauge.connector(),
+    });
     Fixture {
         program: builder.build().unwrap(),
         client: client.into(),
@@ -295,7 +289,7 @@ fn inspectors_see_builder_commands_and_skip_finishing_requests() {
     let Fixture { program, .. } = fixture();
     drop(program);
     let mut builder = Program::builder();
-    let gauge = builder.component::<Gauge>(()).finish().unwrap();
+    let gauge = builder.component::<Gauge>(());
     let probe = gauge.io.clone();
     let gauge = gauge.connector();
 

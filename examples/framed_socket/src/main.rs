@@ -587,21 +587,15 @@ fn program() -> (Program, AppRefs) {
     // A named Port permits multiple independently bound instances of the same
     // message enum; the message's Rust type alone is not a global service key.
     let health_port = program.port(PortId::new(HEALTH));
-    let health = program
-        .component::<Health>(())
-        .finish()
-        .expect("component registration");
+    let health = program.component::<Health>(());
 
     // Assembly selects the provider; `HealthMessage` declares the canonical
     // Port-message conversion through its `From` implementation.
     program.connect(&health_port, &health.connector());
 
-    let telemetry = program
-        .component::<Telemetry>(TelemetryConfig {
-            health: health_port.clone(),
-        })
-        .finish()
-        .expect("component registration");
+    let telemetry = program.component::<Telemetry>(TelemetryConfig {
+        health: health_port.clone(),
+    });
 
     (
         program.build().expect("the example graph is valid"),
@@ -849,10 +843,7 @@ mod tests {
         let mut builder = Program::builder();
         let primary = builder.port::<HealthProtocolMessage>(PortId::new("health/primary"));
         let fallback = builder.port::<HealthProtocolMessage>(PortId::new("health/fallback"));
-        let provider = builder
-            .component::<Health>(())
-            .finish()
-            .expect("component registration");
+        let provider = builder.component::<Health>(());
 
         builder.connect(&primary, &provider.connector());
         builder.connect(&fallback, &provider.connector());

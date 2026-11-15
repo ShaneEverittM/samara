@@ -117,19 +117,17 @@ fn assemble(patience: Option<Duration>) -> (Program, Port<LedgerMessage>, Compon
     let mut program = Program::builder();
     let ledger = program.port::<LedgerMessage>(PortId::new("ledger"));
     let provider = program
-        .component::<Ledger>(())
+        .component_builder::<Ledger>()
         .name("ledger")
-        .finish()
-        .expect("component registration");
+        .register(());
     program.connect(&ledger, &provider.accepting(LedgerProviderMessage::Ledger));
     let clerk = program
-        .component::<Clerk>(ClerkConfig {
+        .component_builder::<Clerk>()
+        .name("clerk")
+        .register(ClerkConfig {
             ledger: ledger.clone(),
             patience,
-        })
-        .name("clerk")
-        .finish()
-        .expect("component registration");
+        });
     (
         program.build().expect("program assembles"),
         ledger,
@@ -249,10 +247,9 @@ fn an_initial_send_to_a_foreign_port_fails_both_profile_builds() {
         let foreign = other.port::<LedgerMessage>(PortId::new("ledger"));
         let mut program = Program::builder();
         program
-            .component::<Eager>(foreign)
+            .component_builder::<Eager>()
             .name("eager")
-            .finish()
-            .expect("component registration");
+            .register(foreign);
         program.build().expect("the hidden Port is ordinary Rust")
     }
     let live = Runtime::builder(program())

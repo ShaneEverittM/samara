@@ -65,7 +65,7 @@ impl Component for Probe {
 
 fn controlled(model: Model) -> (ControlledRuntime, ComponentRef<Probe>, Inputs) {
     let mut builder = Program::builder();
-    let probe = builder.component::<Probe>(model).finish().unwrap();
+    let probe = builder.component::<Probe>(model);
     let caps = probe.io.clone();
     let runtime = ControlledRuntime::builder(builder.build().unwrap())
         .control_all()
@@ -95,19 +95,14 @@ fn lifecycle(runtime: &ControlledRuntime, action: SubscriptionAction) -> usize {
 fn optional_and_duplicate_names_do_not_alias_components() {
     let mut builder = Program::builder();
     let first = builder
-        .component::<Probe>(one(1))
+        .component_builder::<Probe>()
         .name("same")
-        .finish()
-        .unwrap();
+        .register(one(1));
     let second = builder
-        .component::<Probe>(one(1))
+        .component_builder::<Probe>()
         .name("same")
-        .finish()
-        .unwrap();
-    let unnamed = builder
-        .component::<Probe>(Model::default())
-        .finish()
-        .unwrap();
+        .register(one(1));
+    let unnamed = builder.component::<Probe>(Model::default());
     assert_ne!(first.id(), second.id());
     assert_eq!(first.id().name(), "same");
     assert_eq!(unnamed.id().name(), std::any::type_name::<Probe>());
@@ -131,10 +126,9 @@ fn diagnostic_names_do_not_change_semantic_trace() {
         let mut builder = Program::builder();
         for name in names {
             builder
-                .component::<Probe>(one(1))
+                .component_builder::<Probe>()
                 .name(name)
-                .finish()
-                .unwrap();
+                .register(one(1));
         }
         let mut runtime = ControlledRuntime::builder(builder.build().unwrap())
             .control_all()
@@ -191,13 +185,10 @@ fn default_slot_retains_mapper_replaces_descriptor_and_cancels() {
 #[test]
 fn ambiguous_defaults_explain_how_to_supply_keys() {
     let mut builder = Program::builder();
-    builder
-        .component::<Probe>(Model {
-            desired: vec![(1, 1), (2, 2)],
-            ..Model::default()
-        })
-        .finish()
-        .unwrap();
+    builder.component::<Probe>(Model {
+        desired: vec![(1, 1), (2, 2)],
+        ..Model::default()
+    });
     let error = ControlledRuntime::builder(builder.build().unwrap())
         .control_all()
         .build()
@@ -282,9 +273,9 @@ fn dropped_registration_does_not_change_identity_or_startup_trace() {
     fn run(drop_registration: bool) -> Vec<TraceRecord> {
         let mut builder = Program::builder();
         if drop_registration {
-            drop(builder.component::<Probe>(one(99)).name("discarded"));
+            drop(builder.component_builder::<Probe>().name("discarded"));
         }
-        builder.component::<Probe>(one(1)).finish().unwrap();
+        builder.component::<Probe>(one(1));
         let runtime = ControlledRuntime::builder(builder.build().unwrap())
             .control_all()
             .build()
@@ -342,7 +333,7 @@ impl EffectDriver<Report> for ReportDriver {
 async fn default_subscription_runs_unchanged_live_and_controlled() {
     fn program() -> (Program, InstalledComponent<Mirror>) {
         let mut builder = Program::builder();
-        let mirror = builder.component::<Mirror>(()).finish().unwrap();
+        let mirror = builder.component::<Mirror>(());
         (builder.build().unwrap(), mirror)
     }
     let (definition, mirror) = program();

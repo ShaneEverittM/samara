@@ -168,16 +168,10 @@ struct Fixture {
 fn fixture() -> Fixture {
     let mut builder = Program::builder();
     let vault_port = builder.port::<VaultMessage>(PortId::new("vault"));
-    let elder = builder
-        .component::<Elder>(vault_port.clone())
-        .finish()
-        .unwrap();
-    let vault = builder.component::<Vault>(()).finish().unwrap();
+    let elder = builder.component::<Elder>(vault_port.clone());
+    let vault = builder.component::<Vault>(());
     builder.connect(&vault_port, &vault.connector());
-    let asker = builder
-        .component::<Asker>(vault.connector())
-        .finish()
-        .unwrap();
+    let asker = builder.component::<Asker>(vault.connector());
     Fixture {
         program: builder.build().unwrap(),
         elder: elder.into(),

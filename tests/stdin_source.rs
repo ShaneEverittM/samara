@@ -96,10 +96,9 @@ impl Component for StdinProbe {
 fn stdin_program() -> (Program, InstalledComponent<StdinProbe>) {
     let mut builder = Program::builder();
     let probe = builder
-        .component::<StdinProbe>(())
+        .component_builder::<StdinProbe>()
         .name("stdin-probe")
-        .finish()
-        .expect("component registration");
+        .register(());
     (builder.build().expect("valid stdin program"), probe)
 }
 
@@ -125,10 +124,7 @@ impl<C: Capabilities> Component for Owns<C> {
 /// A Program of one Component that owns `C`, and those capabilities.
 fn program_owning<C: Capabilities>() -> (Program, C) {
     let mut builder = Program::builder();
-    let owner = builder
-        .component::<Owns<C>>(())
-        .finish()
-        .expect("component registration");
+    let owner = builder.component::<Owns<C>>(());
     let io = owner.io.clone();
     (builder.build().expect("valid program"), io)
 }

@@ -71,10 +71,9 @@ impl Component for PrintProbe {
 fn controlled_discarded_outcome_is_traced_without_scheduling_a_message() {
     let mut program = Program::builder();
     let probe = program
-        .component::<PrintProbe>(())
+        .component_builder::<PrintProbe>()
         .name("discarded-print")
-        .finish()
-        .expect("component registration");
+        .register(());
     let mut runtime = ControlledRuntime::builder(program.build().unwrap())
         .control_all()
         .build()
@@ -191,10 +190,9 @@ impl EffectDriver<GateEffect> for GatedDriver {
 fn gated_program() -> (Program, InstalledComponent<GateProbe>) {
     let mut program = Program::builder();
     let probe = program
-        .component::<GateProbe>(())
+        .component_builder::<GateProbe>()
         .name("discarded-gate")
-        .finish()
-        .expect("component registration");
+        .register(());
     (program.build().unwrap(), probe)
 }
 

@@ -128,10 +128,9 @@ impl Component for Walker {
 fn walker_program() -> (Program, InstalledComponent<Walker>) {
     let mut builder = Program::builder();
     let walker = builder
-        .component::<Walker>(())
+        .component_builder::<Walker>()
         .name("walker")
-        .finish()
-        .expect("component registration");
+        .register(());
     (builder.build().expect("valid walker program"), walker)
 }
 
@@ -306,10 +305,7 @@ impl<D: EffectDescriptor> Component for Owns<D> {
 #[test]
 fn fs_driver_tuple_binds_declared_effects_and_rejects_duplicates() {
     let mut builder = Program::builder();
-    let appender = builder
-        .component::<Owns<AppendToFile>>(())
-        .finish()
-        .expect("component registration");
+    let appender = builder.component::<Owns<AppendToFile>>(());
     let program = builder.build().expect("append-only program");
     assert!(
         Runtime::builder(program)
@@ -322,14 +318,8 @@ fn fs_driver_tuple_binds_declared_effects_and_rejects_duplicates() {
     // Drivers are bound per capability (ADR-0028): two Components that each
     // own a `ReadFile` effect are each supplied a Driver.
     let mut builder = Program::builder();
-    let first = builder
-        .component::<Owns<ReadFile>>(())
-        .finish()
-        .expect("component registration");
-    let second = builder
-        .component::<Owns<ReadFile>>(())
-        .finish()
-        .expect("component registration");
+    let first = builder.component::<Owns<ReadFile>>(());
+    let second = builder.component::<Owns<ReadFile>>(());
     let program = builder.build().expect("two readers");
     assert!(
         Runtime::builder(program)
@@ -341,10 +331,7 @@ fn fs_driver_tuple_binds_declared_effects_and_rejects_duplicates() {
     );
 
     let mut builder = Program::builder();
-    let reader = builder
-        .component::<Owns<ReadFile>>(())
-        .finish()
-        .expect("component registration");
+    let reader = builder.component::<Owns<ReadFile>>(());
     let error = Runtime::builder(builder.build().expect("one reader"))
         .supply(&reader.io, FsDriver::new("ignored"))
         .supply(&reader.io, FsDriver::new("elsewhere"))

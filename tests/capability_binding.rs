@@ -48,8 +48,8 @@ async fn a_driver_follows_its_capability_value_not_a_position() {
     // The Drivers are supplied against registration order on purpose: with
     // positional binding this is the silent swap of two same-typed files.
     let mut builder = Program::builder();
-    let journal = builder.component::<Scribe>("journal").finish().unwrap();
-    let config = builder.component::<Scribe>("config").finish().unwrap();
+    let journal = builder.component::<Scribe>("journal");
+    let config = builder.component::<Scribe>("config");
 
     let runtime = Runtime::builder(builder.build().unwrap())
         .supply(&config.io.0, FileDriver::new(root.0.join("config.log")))
@@ -92,10 +92,9 @@ impl Component for Keeper {
 fn keeper_program() -> (Program, InstalledComponent<Keeper>) {
     let mut builder = Program::builder();
     let keeper = builder
-        .component::<Keeper>(())
+        .component_builder::<Keeper>()
         .name("keeper")
-        .finish()
-        .unwrap();
+        .register(());
     (builder.build().unwrap(), keeper)
 }
 

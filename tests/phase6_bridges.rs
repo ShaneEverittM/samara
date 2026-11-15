@@ -118,13 +118,12 @@ fn stream_program(
 ) -> (Program, InstalledComponent<StreamProbe>) {
     let mut program = Program::builder();
     let probe = program
-        .component::<StreamProbe>(StreamProbeConfig {
+        .component_builder::<StreamProbe>()
+        .name("stream-0")
+        .register(StreamProbeConfig {
             descriptor,
             claimants,
-        })
-        .name("stream-0")
-        .finish()
-        .expect("component registration");
+        });
     (program.build().expect("valid stream program"), probe)
 }
 
@@ -326,12 +325,11 @@ impl Component for TcpProbe {
 fn tcp_program(endpoint: SocketAddr) -> (Program, InstalledComponent<TcpProbe>) {
     let mut program = Program::builder();
     let probe = program
-        .component::<TcpProbe>(TcpProbeConfig {
-            tcp: TcpBytes::connect(endpoint),
-        })
+        .component_builder::<TcpProbe>()
         .name("tcp-probe")
-        .finish()
-        .expect("component registration");
+        .register(TcpProbeConfig {
+            tcp: TcpBytes::connect(endpoint),
+        });
     (program.build().expect("valid TCP program"), probe)
 }
 

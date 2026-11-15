@@ -23,7 +23,7 @@ impl<C: crate::Capabilities> crate::Component for Holder<C> {
 /// A Program whose one Component owns `C`, and that `C`.
 fn program_owning<C: crate::Capabilities>() -> (Program, C) {
     let mut builder = Program::builder();
-    let holder = builder.component::<Holder<C>>(()).finish().unwrap();
+    let holder = builder.component::<Holder<C>>(());
     (builder.build().unwrap(), holder.io.clone())
 }
 

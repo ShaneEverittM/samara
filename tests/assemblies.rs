@@ -107,22 +107,19 @@ impl Assembly for Recorder {
     type Exports = RecorderExports;
     type Io = RecorderNeeds;
 
-    fn install(
-        program: &mut ProgramBuilder,
-        _: (),
-    ) -> Result<(RecorderExports, RecorderNeeds), ProgramBuildError> {
+    fn install(program: &mut ProgramBuilder, _: ()) -> (RecorderExports, RecorderNeeds) {
         let recorder = program
-            .component::<Recorder>(())
+            .component_builder::<Recorder>()
             .name("recorder")
-            .finish()?;
+            .register(());
         let io = recorder.io.clone();
-        Ok((
+        (
             RecorderExports {
                 ledger: recorder.accepting(RecorderMessage::Ledger),
                 recorder: recorder.into(),
             },
             io,
-        ))
+        )
     }
 }
 
@@ -170,10 +167,7 @@ impl VendorsDrivers for Recorder {
 /// The host names its own Port and connects the Assembly's Connector to it.
 fn assemble() -> (Program, InstalledAssembly<Recorder>, Port<LedgerMessage>) {
     let mut program = Program::builder();
-    let recorder = program
-        .install::<Recorder>(())
-        .finish()
-        .expect("assembly installation");
+    let recorder = program.install::<Recorder>(());
     let ledger = program.port::<LedgerMessage>(PortId::new("ledger"));
     program.connect(&ledger, &recorder.exports().ledger);
     (
@@ -330,13 +324,10 @@ impl Assembly for Telemetry {
     type Exports = TelemetryDoors;
     type Io = ();
 
-    fn install(
-        program: &mut ProgramBuilder,
-        _: (),
-    ) -> Result<(TelemetryDoors, ()), ProgramBuildError> {
-        let ingest = program.component::<Ingest>(()).finish()?;
-        let reader = program.component::<Reader>(()).finish()?;
-        Ok((
+    fn install(program: &mut ProgramBuilder, _: ()) -> (TelemetryDoors, ()) {
+        let ingest = program.component::<Ingest>(());
+        let reader = program.component::<Reader>(());
+        (
             TelemetryDoors {
                 samples: ingest.connector(),
                 queries: reader.connector(),
@@ -344,7 +335,7 @@ impl Assembly for Telemetry {
                 reader: reader.into(),
             },
             (),
-        ))
+        )
     }
 }
 
@@ -375,18 +366,12 @@ impl Component for Probe {
 #[test]
 fn an_assembly_with_two_doors_exports_both_as_peers() {
     let mut program = Program::builder();
-    let telemetry = program
-        .install::<Telemetry>(())
-        .finish()
-        .expect("assembly installation");
+    let telemetry = program.install::<Telemetry>(());
     let doors = telemetry.exports();
-    program
-        .component::<Probe>(ProbeConfig {
-            samples: doors.samples.clone(),
-            queries: doors.queries.clone(),
-        })
-        .finish()
-        .expect("probe registration");
+    program.component::<Probe>(ProbeConfig {
+        samples: doors.samples.clone(),
+        queries: doors.queries.clone(),
+    });
     let (ingest, reader) = (doors.ingest.clone(), doors.reader.clone());
     let mut runtime = ControlledRuntime::builder(program.build().expect("program assembles"))
         .control_all()
@@ -405,19 +390,16 @@ impl Assembly for Background {
     type Exports = ();
     type Io = ();
 
-    fn install(program: &mut ProgramBuilder, _: ()) -> Result<((), ()), ProgramBuildError> {
-        program.component::<Ingest>(()).finish()?;
-        Ok(((), ()))
+    fn install(program: &mut ProgramBuilder, _: ()) -> ((), ()) {
+        program.component::<Ingest>(());
+        ((), ())
     }
 }
 
 #[test]
 fn an_assembly_nobody_sends_to_exports_nothing() {
     let mut program = Program::builder();
-    let background = program
-        .install::<Background>(())
-        .finish()
-        .expect("assembly installation");
+    let background = program.install::<Background>(());
     let () = background.exports();
     program.build().expect("program assembles");
 }

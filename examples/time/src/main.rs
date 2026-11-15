@@ -310,22 +310,16 @@ async fn main() -> Result<()> {
     // Component creates its own capabilities: inert values that are the only
     // way it can issue Effects, returned on the handle as `io` so the host can
     // say below what each one is made of.
-    let http_time_server = builder
-        .component::<HttpTimeServer>(HttpTimeServerConfig {})
-        .finish()
-        .expect("component registration");
+    let http_time_server = builder.component::<HttpTimeServer>(HttpTimeServerConfig {});
 
     // Program assembly chooses which concrete Component provides that service.
     builder.connect(&time_port, &http_time_server.connector());
 
     // Raw terminal lines cross the runtime boundary as an ongoing Source. The
     // CLI owns parsing, presentation, and its dependency on the time service.
-    let cli = builder
-        .component::<Cli>(CliConfig {
-            time_server: time_port,
-        })
-        .finish()
-        .expect("component registration");
+    let cli = builder.component::<Cli>(CliConfig {
+        time_server: time_port,
+    });
 
     // Build the program, this catches errors like unbound ports, etc.
     let program = builder.build()?;

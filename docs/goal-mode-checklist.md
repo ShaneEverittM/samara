@@ -35,6 +35,7 @@ Governing documents:
 - [ADR-0027: Drivers Are Supplied per Capability Value](adr/0027-drivers-are-supplied-per-capability.md)
 - [ADR-0028: A Capability Belongs to One Component](adr/0028-a-capability-belongs-to-one-component.md)
 - [ADR-0029: Capabilities Are Named Values a Component Owns](adr/0029-capabilities-are-named-values-a-component-owns.md)
+- [ADR-0030: Registration Returns Its Handle](adr/0030-registration-returns-its-handle.md)
 - [ADR-0023: Boundary Work Is Named `Kind::verb` and Ends with a Finisher](adr/0023-boundary-work-builders-and-finishers.md)
 - [ADR-0024: Component Shutdown](adr/0024-component-shutdown.md)
 - [ADR-0025: Bare Effect Outcomes](adr/0025-bare-effect-outcomes.md)

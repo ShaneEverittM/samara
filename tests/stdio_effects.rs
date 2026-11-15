@@ -85,10 +85,9 @@ impl Component for OutputProbe {
 fn output_program(observe: bool) -> (Program, InstalledComponent<OutputProbe>) {
     let mut builder = Program::builder();
     let probe = builder
-        .component::<OutputProbe>(OutputProbeConfig { observe })
+        .component_builder::<OutputProbe>()
         .name("standard-output")
-        .finish()
-        .expect("component registration");
+        .register(OutputProbeConfig { observe });
     (builder.build().expect("valid output program"), probe)
 }
 

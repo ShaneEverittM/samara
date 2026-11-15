@@ -119,10 +119,7 @@ impl Component for Counter {
 fn program(increments: StreamDescriptor<u64>) -> (Program, InstalledComponent<Counter>) {
     let mut program = Program::builder();
 
-    let counter = program
-        .component::<Counter>(CounterConfig { increments })
-        .finish()
-        .expect("component registration");
+    let counter = program.component::<Counter>(CounterConfig { increments });
     (
         program.build().expect("the example graph is valid"),
         counter,
