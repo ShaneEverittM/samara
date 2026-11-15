@@ -1,11 +1,16 @@
 use bytes::Bytes;
 use samara::prelude::*;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Records confirmed transitions through the declared filesystem capability.
 struct Recorder;
 
 enum Message {
     Journal(JournalMessage),
+    Time {
+        time: SystemTime,
+        transition: Transition,
+    },
 }
 
 #[derive(Default, Debug)]
@@ -23,29 +28,41 @@ impl Component for Recorder {
 
     fn update(
         _: &(),
-        (file, _clock): &Capabilities<Self::Requires>,
+        (file, clock): &Capabilities<Self::Requires>,
         _: &mut Model,
         message: Message,
     ) -> Command<Message> {
         match message {
-            // Log the transition to the journal.
-            Message::Journal(JournalMessage::Transition { name, from, to }) => {
-                File::append_line(file, format!("{name}: {from} -> {to}")).discard_outcome()
-            }
+            // An external request.
+            Message::Journal(journal) => match journal {
+                JournalMessage::Transition(transition) => Effect::perform(clock, ReadSystemTime)
+                    .producing(|EffectOutcome::Succeeded(time)| Message::Time { time, transition }),
 
-            // Answer with a tail of the journal, straight from the read's outcome.
-            // The reply token rides in the continuation, so no private Message
-            // variant is needed to carry it across the read.
-            Message::Journal(JournalMessage::Recent { count, reply }) => File::read(file)
-                .finish_with(move |outcome| {
-                    Command::reply(
-                        reply,
-                        match outcome {
-                            EffectOutcome::Succeeded(contents) => Ok(tail(&contents, count)),
-                            EffectOutcome::Failed(_) => Err(Error::CouldNotReadJournal),
-                        },
-                    )
-                }),
+                JournalMessage::Recent { count, reply } => {
+                    File::read(file).finish_with(move |outcome| {
+                        Command::reply(
+                            reply,
+                            match outcome {
+                                EffectOutcome::Succeeded(contents) => Ok(tail(&contents, count)),
+                                EffectOutcome::Failed(_) => Err(Error::CouldNotReadJournal),
+                            },
+                        )
+                    })
+                }
+            },
+
+            // Yeah, I got time.
+            Message::Time {
+                time,
+                transition: Transition { name, from, to },
+            } => File::append_line(
+                file,
+                format!(
+                    "[{}]{name}: {from} -> {to}",
+                    time.duration_since(UNIX_EPOCH).unwrap().as_millis()
+                ),
+            )
+            .discard_outcome(),
         }
     }
 }
@@ -72,19 +89,23 @@ pub enum Error {
 /// The Assembly's public name; its Connector accepts `JournalMessage`.
 pub struct Journal;
 
+#[derive(Debug)]
+pub struct Transition {
+    name: String,
+    from: String,
+    to: String,
+}
+
 /// The journal's public vocabulary, accepted by the Assembly's Connector.
 #[derive(Debug)]
 pub enum JournalMessage {
     /// Records one confirmed transition.
-    Transition {
-        name: String,
-        from: String,
-        to: String,
-    },
+    Transition(Transition),
+
     /// Reads up to `count` trailing lines from the returned file contents.
     ///
     /// Concurrent appends may or may not be reflected; an unterminated last
-    /// line is included. Read errors and cancellation become Journal errors.
+    /// line is included. Read errors become Journal errors.
     Recent {
         count: usize,
         reply: ReplyWith<Result<Vec<String>>>,
@@ -96,11 +117,14 @@ impl Assembly for Journal {
     type Exports = Connector<JournalMessage>;
     type Requires = (File<ReadAppend>, Effect<ReadSystemTime>);
 
-    fn install<R: Requirements>(
+    fn install<R>(
         program: &mut ProgramBuilder<R>,
         _: Self::Config,
         capabilities: Capabilities<Self::Requires>,
-    ) -> Result<Connector<JournalMessage>, ProgramBuildError> {
+    ) -> Result<Connector<JournalMessage>, ProgramBuildError>
+    where
+        R: Requirements,
+    {
         let recorder = program
             .component::<Recorder>(())
             .with(&capabilities)

@@ -1,4 +1,5 @@
 //! Journal acceptance: reads and appends use one file capability and do not retry.
+//! A transition reads the clock first and is appended with that time as a prefix.
 //! Recent returns the tail of the supplied read result, including an unterminated
 //! last line. Reads need not wait for appends or complete in request order; each
 //! completion retains its own count and reply token.
@@ -14,12 +15,27 @@ use super::*;
 type JournalNeeds = <Journal as Assembly>::Requires;
 type JournalReply = Result<Vec<String>>;
 
+/// The time every controlled test supplies, and the line it produces.
+const STAMP_MILLIS: u64 = 1_700_000_000_000;
+const STAMPED_LINE: &str = "[1700000000000]pump: idle -> running\n";
+
+/// Answers the Recorder's pending clock read so the append can be issued.
+fn supply_time(runtime: &mut ControlledRuntime) {
+    let clock = runtime.next_effect::<ReadSystemTime>().unwrap();
+    runtime
+        .complete(
+            clock,
+            EffectOutcome::Succeeded(UNIX_EPOCH + Duration::from_millis(STAMP_MILLIS)),
+        )
+        .unwrap();
+}
+
 fn transition() -> JournalMessage {
-    JournalMessage::Transition {
+    JournalMessage::Transition(Transition {
         name: "pump".into(),
         from: "idle".into(),
         to: "running".into(),
-    }
+    })
 }
 
 struct JournalClient;
@@ -60,26 +76,25 @@ impl Component for JournalClient {
     }
 }
 
+/// The Program, a client that talks to the journal, a Port for live hosts,
+/// and the journal's own capabilities for selecting effects and supplying
+/// Drivers.
 fn program() -> (
-    Program<JournalNeeds>,
+    Program,
     ComponentRef<JournalClient>,
     Port<JournalMessage>,
-    FileCapability<ReadAppend>,
+    Capabilities<JournalNeeds>,
 ) {
-    let (mut builder, capabilities) = Program::builder::<JournalNeeds>();
-    let file = capabilities.0.clone();
-    let journal = builder
-        .install::<Journal>(())
-        .with(&capabilities)
-        .finish()
-        .unwrap();
+    let mut builder = ProgramBuilder::new();
+    let journal = builder.install::<Journal>(()).finish().unwrap();
     let port = builder.port::<JournalMessage>(PortId::new("journal"));
     builder.connect(&port, journal.connector());
     let client = builder
         .component::<JournalClient>(journal.connector().clone())
         .finish()
         .unwrap();
-    (builder.build().unwrap(), client, port, file)
+    let capabilities = journal.capabilities().clone();
+    (builder.build().unwrap(), client, port, capabilities)
 }
 
 fn successful_replies(
@@ -99,15 +114,17 @@ fn successful_replies(
 
 #[test]
 fn assembly_appends_through_its_supplied_file_capability() {
-    let (program, client, _, file) = program();
+    let (program, client, _, (file, _)) = program();
     let mut runtime = ControlledRuntime::builder(program)
         .control_all()
         .build()
         .unwrap();
     runtime.send(&client, ClientMessage::Transition).unwrap();
     runtime.run_until_idle().unwrap();
+    supply_time(&mut runtime);
+    runtime.run_until_idle().unwrap();
     let pending = runtime.next_file_append(&file).unwrap();
-    assert_eq!(pending.intent.as_str(), Some("pump: idle -> running\n"));
+    assert_eq!(pending.intent.as_str(), Some(STAMPED_LINE));
     runtime
         .complete(pending, EffectOutcome::Succeeded(()))
         .unwrap();
@@ -118,13 +135,9 @@ fn assembly_appends_through_its_supplied_file_capability() {
 
 #[test]
 fn append_outcomes_are_discarded_without_automatic_retry() {
-    let (mut builder, capabilities) = Program::builder::<JournalNeeds>();
-    let file = capabilities.0.clone();
-    let recorder = builder
-        .component::<Recorder>(())
-        .with(&capabilities)
-        .finish()
-        .unwrap();
+    let mut builder = ProgramBuilder::new();
+    let recorder = builder.component::<Recorder>(()).finish().unwrap();
+    let (file, _) = recorder.capabilities().clone();
     let mut runtime = ControlledRuntime::builder(builder.build().unwrap())
         .control_all()
         .build()
@@ -139,6 +152,8 @@ fn append_outcomes_are_discarded_without_automatic_retry() {
         runtime
             .send(&recorder, Message::Journal(transition()))
             .unwrap();
+        assert_eq!(runtime.run_until_idle().unwrap().transitions, 1);
+        supply_time(&mut runtime);
         assert_eq!(runtime.run_until_idle().unwrap().transitions, 1);
         let pending = runtime.next_file_append(&file).unwrap();
         runtime.complete(pending, outcome).unwrap();
@@ -162,7 +177,7 @@ fn recent_returns_the_requested_tail_of_the_supplied_file() {
         ("first\ncafé\n東京\n", 2, &["café", "東京"]),
     ];
     for &(text, count, expected) in cases {
-        let (program, client, _, file) = program();
+        let (program, client, _, (file, _)) = program();
         let mut runtime = ControlledRuntime::builder(program)
             .control_all()
             .build()
@@ -190,7 +205,7 @@ fn recent_returns_the_requested_tail_of_the_supplied_file() {
 
 #[test]
 fn overlapping_recent_requests_keep_their_counts_and_reply_tokens() {
-    let (program, client, _, file) = program();
+    let (program, client, _, (file, _)) = program();
     let mut runtime = ControlledRuntime::builder(program)
         .control_all()
         .build()
@@ -228,12 +243,14 @@ fn overlapping_recent_requests_keep_their_counts_and_reply_tokens() {
 #[test]
 fn recent_uses_its_read_result_regardless_of_append_completion_order() {
     for append_finishes_first in [false, true] {
-        let (program, client, _, file) = program();
+        let (program, client, _, (file, _)) = program();
         let mut runtime = ControlledRuntime::builder(program)
             .control_all()
             .build()
             .unwrap();
         runtime.send(&client, ClientMessage::Transition).unwrap();
+        runtime.run_until_idle().unwrap();
+        supply_time(&mut runtime);
         runtime.run_until_idle().unwrap();
         let mut append = Some(runtime.next_file_append(&file).unwrap());
         runtime.send(&client, ClientMessage::Recent(1)).unwrap();
@@ -276,7 +293,7 @@ fn read_failures_reply_with_the_journal_domain_error() {
         FsErrorKind::PermissionDenied,
         "read denied by fixture",
     );
-    let (program, client, _, file) = program();
+    let (program, client, _, (file, _)) = program();
     let mut runtime = ControlledRuntime::builder(program)
         .control_all()
         .build()
@@ -322,8 +339,7 @@ impl Drop for TestRoot {
 async fn file_binding_selects_the_journal_target() {
     let root = TestRoot::new();
     let file = "custom/events.log";
-    let (program, _, port, _) = program();
-    let capabilities = program.capabilities().clone();
+    let (program, _, port, capabilities) = program();
     let runtime = Runtime::builder(program)
         .with(&capabilities)
         .supplied_by((FileDriver::new(root.0.join(file)), SystemClockDriver))
@@ -337,10 +353,14 @@ async fn file_binding_selects_the_journal_target() {
     let task = runtime.spawn();
     journal.send(transition()).await.unwrap();
     assert!(task.shutdown(Shutdown::Drain).await.unwrap().is_clean());
-    assert_eq!(
-        std::fs::read_to_string(root.0.join(file)).unwrap(),
-        "pump: idle -> running\n"
-    );
+    // The live clock supplies a real time, so check the shape of the line.
+    let written = std::fs::read_to_string(root.0.join(file)).unwrap();
+    let (stamp, entry) = written
+        .strip_prefix('[')
+        .and_then(|rest| rest.split_once(']'))
+        .expect("the line starts with a bracketed timestamp");
+    assert!(stamp.parse::<u128>().is_ok(), "{stamp}");
+    assert_eq!(entry, "pump: idle -> running\n");
 }
 
 #[tokio::test]
@@ -349,8 +369,7 @@ async fn recent_reads_existing_entries_through_the_standard_driver() {
     let file = "custom/events.log";
     std::fs::create_dir_all(root.0.join("custom")).unwrap();
     std::fs::write(root.0.join(file), "first\nsecond\nthird\n").unwrap();
-    let (program, _, port, _) = program();
-    let capabilities = program.capabilities().clone();
+    let (program, _, port, capabilities) = program();
     let runtime = Runtime::builder(program)
         .with(&capabilities)
         .supplied_by((FileDriver::new(root.0.join(file)), SystemClockDriver))

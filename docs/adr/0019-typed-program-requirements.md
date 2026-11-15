@@ -126,8 +126,8 @@ trait binding. Duplicate and conflicting driver tuples remain integration
 tests; internal registry tests retain foreign exact-capability defenses.
 
 The `pulse` example verifies one host-bound file target (ADR-0022). A
-Transition emits one `FileAppend` containing `name: from -> to` and
-discards its outcome without retrying. Recent-history requests issue `FileRead`
+Transition reads the clock, then emits one `FileAppend` containing
+`[millis]name: from -> to` and discards its outcome without retrying. Recent-history requests issue `FileRead`
 and return up to the requested number of trailing lines from the returned
 bytes, in file order. They have no ordering guarantee against concurrent
 appends; an unterminated trailing line is included.

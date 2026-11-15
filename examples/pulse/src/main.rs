@@ -1,7 +1,7 @@
 use samara::{
-    Assembly, Capabilities, Command, Component, Connector, Effect, FileDriver, Init, PrintStdout,
-    Program, RequestOutcome, Runtime, Shutdown, Source, SourceEvent, StdinDriver, StdinLines,
-    StdoutDriver, Subscription, Subscriptions, SystemClockDriver,
+    Capabilities, Command, Component, Connector, Effect, FileDriver, Init, PrintStdout,
+    ProgramBuilder, RequestOutcome, Runtime, Shutdown, Source, SourceEvent, StdinDriver,
+    StdinLines, StdoutDriver, Subscription, Subscriptions, SystemClockDriver,
 };
 
 // This is a "library assembly", that is a subsection of a Program (discussed later)
@@ -10,10 +10,6 @@ use pulse::journal::{Journal, JournalMessage};
 
 // This is the component of our application>
 struct Monitor;
-
-struct Config {
-    journal: Connector<JournalMessage>,
-}
 
 // Stateless for now.
 struct Model;
@@ -29,7 +25,7 @@ impl Component for Monitor {
     type Requires = (Source<StdinLines>, Effect<PrintStdout>);
 
     // What this component needs as static config, including program connections.
-    type Config = Config;
+    type Config = Connector<JournalMessage>;
 
     // The only thing this component can mutate directly.
     type Model = Model;
@@ -45,7 +41,7 @@ impl Component for Monitor {
     }
 
     fn update(
-        Config { journal }: &Self::Config,
+        journal: &Self::Config,
         (_, stdout): &Capabilities<Self::Requires>,
         _: &mut Self::Model,
         message: Self::Message,
@@ -81,33 +77,15 @@ impl Component for Monitor {
     }
 }
 
-// Declare you applications requirements, it can be manual,
-// or a composition of Components and Assemblies requirements
-// as shown here.
-type AppRequirements = (
-    <Journal as Assembly>::Requires,
-    <Monitor as Component>::Requires,
-);
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // A program is dormant, it declares how things are internally connected.
-    let (mut builder, (journal_caps, monitor_caps)) = Program::builder::<AppRequirements>();
+    let mut builder = ProgramBuilder::new();
 
-    // Re-use the library assembly...
-    let journal = builder
-        .install::<Journal>(())
-        // ...failing to compile if you don't give it its declared capabilities.
-        .with(&journal_caps)
-        .finish()?;
+    let journal = builder.install::<Journal>(()).finish()?;
 
-    // Install our application component...
-    let _monitor = builder
-        .component::<Monitor>(Config {
-            journal: journal.connector().clone(),
-        })
-        // ...that also requires its capabilities.
-        .with(&monitor_caps)
+    let monitor = builder
+        .component::<Monitor>(journal.connector().clone())
         .finish()?;
 
     // Assemble the program, this checks things that _can't_ be checked at compile time.
@@ -115,11 +93,9 @@ async fn main() -> anyhow::Result<()> {
 
     // Create a runtime for our program...
     let runtime = Runtime::builder(program)
-        // ...and supply each set of capabilities with the drivers that implement it.
-        // Order is free; a capability left out fails the build below.
-        .with(&journal_caps)
+        .with(journal.capabilities())
         .supplied_by((FileDriver::new("./data/pulse.journal"), SystemClockDriver))
-        .with(&monitor_caps)
+        .with(monitor.capabilities())
         .supplied_by((StdinDriver, StdoutDriver::new()))
         .build()?;
 
