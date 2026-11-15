@@ -1,4 +1,5 @@
 //! ADR-0019 acceptance: the Program owns its typed binding obligations.
+//! ADR-0028: each obligation is a capability created for one Component.
 use samara::prelude::*;
 use std::convert::Infallible;
 use std::sync::{
@@ -16,19 +17,16 @@ impl EffectDescriptor for Read {
 struct Reader;
 impl Component for Reader {
     type Config = Arc<AtomicUsize>;
-    type Requires = (Effect<Read>,);
+    type Io = (Effect<Read>,);
     type Model = Vec<u64>;
     type Message = Option<u64>;
-    fn init(
-        count: &Self::Config,
-        _: &Capabilities<Self::Requires>,
-    ) -> Init<Self::Model, Self::Message> {
+    fn init(count: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
         count.fetch_add(1, Ordering::SeqCst);
         Init::default()
     }
     fn update(
         _: &Self::Config,
-        (read,): &Capabilities<Self::Requires>,
+        (read,): &Self::Io,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -50,20 +48,34 @@ impl EffectDriver<Read> for ReadDriver {
     }
 }
 
+/// Owns capabilities and never uses them: for tests about what a Program
+/// obliges its host to supply.
+struct Holds<C>(std::marker::PhantomData<fn() -> C>);
+impl<C: Capabilities> Component for Holds<C> {
+    type Config = ();
+    type Io = C;
+    type Model = ();
+    type Message = ();
+    fn init(_: &(), _: &C) -> Init<(), ()> {
+        Init::new(())
+    }
+    fn update(_: &(), _: &C, (): &mut (), (): ()) -> Command<()> {
+        Command::none()
+    }
+}
+
 #[test]
-fn shared_capability_reaches_callbacks_and_delayed_effects() {
-    let (mut program, (read,)) = Program::builder::<(Effect<Read>,)>();
+fn each_components_own_capability_reaches_callbacks_and_delayed_effects() {
+    let mut program = Program::builder();
     let count = Arc::new(AtomicUsize::new(0));
     let first = program
         .component::<Reader>(count.clone())
         .name("first")
-        .with(&(read.clone(),))
         .finish()
         .unwrap();
     let second = program
         .component::<Reader>(count.clone())
         .name("second")
-        .with(&(read,))
         .finish()
         .unwrap();
     assert_eq!(count.load(Ordering::SeqCst), 2);
@@ -85,23 +97,15 @@ fn shared_capability_reaches_callbacks_and_delayed_effects() {
 }
 
 #[test]
+#[ignore = "ADR-0028: registration creates capabilities, so none can be handed to it and ProgramBuildError::ForeignCapability is unreachable"]
 fn foreign_registration_fails_before_init_and_leaves_no_component() {
-    let (_, foreign) = Program::builder::<(Effect<Read>,)>();
-    let (mut program, own) = Program::builder::<(Effect<Read>,)>();
+    // Was: `.with(&foreign).finish()` is an error and init never ran.
+    let mut program = Program::builder();
     let count = Arc::new(AtomicUsize::new(0));
-    assert!(
-        program
-            .component::<Reader>(count.clone())
-            .name("reader")
-            .with(&foreign)
-            .finish()
-            .is_err()
-    );
     assert_eq!(count.load(Ordering::SeqCst), 0);
     program
         .component::<Reader>(count.clone())
         .name("reader")
-        .with(&own)
         .finish()
         .unwrap();
     assert_eq!(count.load(Ordering::SeqCst), 1);
@@ -109,24 +113,40 @@ fn foreign_registration_fails_before_init_and_leaves_no_component() {
 }
 
 #[tokio::test]
-async fn live_tuple_binds_one_driver_for_shared_capabilities() {
-    let (mut program, (read,)) = Program::builder::<(Effect<Read>,)>();
-    let count = Arc::new(AtomicUsize::new(0));
-    let first = program
-        .component::<Reader>(count.clone())
-        .name("first")
-        .with(&(read.clone(),))
-        .finish()
-        .unwrap();
-    program
-        .component::<Reader>(count)
-        .name("second")
-        .with(&(read.clone(),))
-        .finish()
-        .unwrap();
-    let runtime = Runtime::builder(program.build().unwrap())
-        .with(&read)
-        .supplied_by(ReadDriver)
+async fn live_drivers_are_supplied_per_component_capability() {
+    fn readers() -> (
+        Program,
+        InstalledComponent<Reader>,
+        InstalledComponent<Reader>,
+    ) {
+        let mut program = Program::builder();
+        let count = Arc::new(AtomicUsize::new(0));
+        let first = program
+            .component::<Reader>(count.clone())
+            .name("first")
+            .finish()
+            .unwrap();
+        let second = program
+            .component::<Reader>(count)
+            .name("second")
+            .finish()
+            .unwrap();
+        (program.build().unwrap(), first, second)
+    }
+    // One Driver no longer serves every capability of its descriptor type.
+    let (program, first, _second) = readers();
+    let error = Runtime::builder(program)
+        .supply(&first.io.0, ReadDriver)
+        .build()
+        .err()
+        .expect("the second Reader's capability has no Driver")
+        .to_string();
+    assert!(error.contains("second"), "{error}");
+
+    let (program, first, second) = readers();
+    let runtime = Runtime::builder(program)
+        .supply(&first.io, (ReadDriver,))
+        .supply(&second.io, (ReadDriver,))
         .build()
         .unwrap();
     let handle = runtime.handle(&first).unwrap();
@@ -138,7 +158,8 @@ async fn live_tuple_binds_one_driver_for_shared_capabilities() {
 #[test]
 fn two_exact_stream_positions_remain_distinct() {
     type Inputs = (Source<StreamDescriptor<u64>>, Source<StreamDescriptor<u64>>);
-    let (program, inputs) = Program::builder::<Inputs>();
+    let mut program = Program::builder();
+    let holder = program.component::<Holds<Inputs>>(()).finish().unwrap();
     let (_, first) = tokio::sync::mpsc::channel(1);
     let (_, second) = tokio::sync::mpsc::channel(1);
     let tokio = tokio::runtime::Builder::new_current_thread()
@@ -147,11 +168,14 @@ fn two_exact_stream_positions_remain_distinct() {
         .unwrap();
     let _guard = tokio.enter();
     Runtime::builder(program.build().unwrap())
-        .with(&inputs)
-        .supplied_by((MpscReceiver::new(first), MpscReceiver::new(second)))
+        .supply(
+            &holder.io,
+            (MpscReceiver::new(first), MpscReceiver::new(second)),
+        )
         .build()
         .unwrap();
-    let (program, _) = Program::builder::<Inputs>();
+    let mut program = Program::builder();
+    program.component::<Holds<Inputs>>(()).finish().unwrap();
     ControlledRuntime::builder(program.build().unwrap())
         .control_all()
         .build()
@@ -162,35 +186,26 @@ struct Library;
 impl Assembly for Library {
     type Config = Arc<AtomicUsize>;
     type Exports = ComponentRef<Reader>;
-    type Requires = (Effect<Read>,);
-    fn install<R: Requirements>(
-        program: &mut ProgramBuilder<R>,
+    type Io = (Effect<Read>,);
+    fn install(
+        program: &mut ProgramBuilder,
         count: Self::Config,
-        caps: Capabilities<Self::Requires>,
-    ) -> Result<Self::Exports, ProgramBuildError> {
+    ) -> Result<(Self::Exports, Self::Io), ProgramBuildError> {
         let reader = program
             .component::<Reader>(count)
             .name("library")
-            .with(&caps)
             .finish()?;
-        Ok(reader)
+        let io = reader.io.clone();
+        Ok((reader.into(), io))
     }
 }
 
 #[test]
 fn repeated_assembly_installations_need_no_component_name_coordination() {
-    let (mut program, caps) = Program::builder::<(Effect<Read>,)>();
+    let mut program = Program::builder();
     let count = Arc::new(AtomicUsize::new(0));
-    let first = program
-        .install::<Library>(count.clone())
-        .with(&caps)
-        .finish()
-        .unwrap();
-    let second = program
-        .install::<Library>(count.clone())
-        .with(&caps)
-        .finish()
-        .unwrap();
+    let first = program.install::<Library>(count.clone()).finish().unwrap();
+    let second = program.install::<Library>(count.clone()).finish().unwrap();
     assert_eq!(first.exports().id().name(), second.exports().id().name());
     assert_ne!(first.exports().id(), second.exports().id());
     assert_eq!(count.load(Ordering::SeqCst), 2);
@@ -198,19 +213,22 @@ fn repeated_assembly_installations_need_no_component_name_coordination() {
 }
 
 #[test]
-fn assembly_forwards_a_subset_of_nested_program_requirements() {
-    let (mut program, (reader_caps, _input)) =
-        Program::builder::<((Effect<Read>,), Source<StreamDescriptor<u64>>)>();
-    let count = Arc::new(AtomicUsize::new(0));
-    let installed = program
-        .install::<Library>(count.clone())
-        .with(&reader_caps)
+fn assembly_carries_a_subset_of_the_programs_capabilities() {
+    let mut program = Program::builder();
+    // Another Component's capability, outside the Assembly.
+    program
+        .component::<Holds<Source<StreamDescriptor<u64>>>>(())
         .finish()
         .unwrap();
+    let count = Arc::new(AtomicUsize::new(0));
+    let installed = program.install::<Library>(count.clone()).finish().unwrap();
     assert_eq!(count.load(Ordering::SeqCst), 1);
+    let _: &(Effect<Read>,) = &installed.io;
     let reader = installed.exports().clone();
     drop(installed); // The Program itself carries all binding obligations.
-    let mut runtime = ControlledRuntime::builder(program.build().unwrap())
+    let program = program.build().unwrap();
+    assert_eq!(program.manifest().entries().len(), 2);
+    let mut runtime = ControlledRuntime::builder(program)
         .control_all()
         .build()
         .unwrap();
@@ -226,22 +244,13 @@ fn assembly_forwards_a_subset_of_nested_program_requirements() {
 }
 
 #[test]
+#[ignore = "ADR-0028: an Assembly's members create their own capabilities, so none can be handed to an installation"]
 fn foreign_assembly_capabilities_fail_before_installation() {
-    let (_, foreign) = Program::builder::<(Effect<Read>,)>();
-    let (mut program, own) = Program::builder::<(Effect<Read>,)>();
+    // Was: `.install::<Library>(..).with(&foreign).finish()` is an error and
+    // no member's init ran.
+    let mut program = Program::builder();
     let count = Arc::new(AtomicUsize::new(0));
-    assert!(
-        program
-            .install::<Library>(count.clone())
-            .with(&foreign)
-            .finish()
-            .is_err()
-    );
     assert_eq!(count.load(Ordering::SeqCst), 0);
-    program
-        .install::<Library>(count)
-        .with(&own)
-        .finish()
-        .unwrap();
+    program.install::<Library>(count).finish().unwrap();
     program.build().unwrap();
 }

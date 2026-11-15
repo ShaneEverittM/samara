@@ -39,7 +39,7 @@ impl From<EffectOutcome<u64, Infallible>> for EffectMessage {
 
 #[test]
 fn effect_default_uses_from_and_effect_with_preserves_context() {
-    let (_program, (declared_0,)) = samara::Program::builder::<(samara::Effect<ProbeEffect>,)>();
+    let (declared_0,) = <(samara::Effect<ProbeEffect>,) as samara::Capabilities>::detached();
     let probe = declared_0;
     let default: Command<EffectMessage> = Effect::perform(&probe, ProbeEffect).into_command();
     assert_eq!(
@@ -92,8 +92,8 @@ impl From<SourceEvent<u64, Infallible>> for SourceMessage {
 
 #[test]
 fn source_default_is_reusable_and_source_with_preserves_context() {
-    let (_program, (declared_0,)) =
-        samara::Program::builder::<(samara::Source<StreamDescriptor<u64>>,)>();
+    let (declared_0,) =
+        <(samara::Source<StreamDescriptor<u64>>,) as samara::Capabilities>::detached();
     let source = declared_0;
     let descriptor = StreamDescriptor::<u64>::named("from/default");
     let default: Subscription<SourceMessage> =
@@ -156,7 +156,7 @@ fn http_response(body: &'static [u8]) -> HttpResponse {
 
 #[test]
 fn http_pipeline_default_uses_from_and_into_command_with_is_explicit() {
-    let (_program, (declared_0,)) = samara::Program::builder::<(samara::Effect<HttpRequest>,)>();
+    let (declared_0,) = <(samara::Effect<HttpRequest>,) as samara::Capabilities>::detached();
     let http = declared_0;
     let default: Command<HttpMessage> = HttpRequest::get("https://example.test/default")
         .on_response()
@@ -201,21 +201,18 @@ impl From<EchoProtocolMessage> for ProviderMessage {
 struct EchoProvider;
 
 impl Component for EchoProvider {
-    type Requires = ();
+    type Io = ();
     type Config = ();
     type Model = ();
     type Message = ProviderMessage;
 
-    fn init(
-        _config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
-    ) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
         Init::new(())
     }
 
     fn update(
         _config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
+        _: &Self::Io,
         _model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -253,21 +250,18 @@ struct RequesterConfig {
 }
 
 impl Component for Requester {
-    type Requires = ();
+    type Io = ();
     type Config = RequesterConfig;
     type Model = RequesterModel;
     type Message = RequesterMessage;
 
-    fn init(
-        _config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
-    ) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
         Init::new(RequesterModel::default())
     }
 
     fn update(
         config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
+        _: &Self::Io,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -299,7 +293,7 @@ impl Component for Requester {
 
 #[test]
 fn request_to_with_message_from_uses_from_and_a_closure_preserves_context() {
-    let (mut builder, ()) = samara::Program::builder::<()>();
+    let mut builder = Program::builder();
     let echo = builder.port::<EchoProtocolMessage>(PortId::new("echo"));
     let provider = builder
         .component::<EchoProvider>(())

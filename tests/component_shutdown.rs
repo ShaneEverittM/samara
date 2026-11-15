@@ -37,18 +37,18 @@ struct VaultModel {
 }
 
 impl Component for Vault {
-    type Requires = Effect<Farewell>;
+    type Io = Effect<Farewell>;
     type Config = ();
     type Model = VaultModel;
     type Message = VaultMessage;
 
-    fn init(_: &(), _: &Capabilities<Self::Requires>) -> Init<VaultModel, VaultMessage> {
+    fn init(_: &(), _: &Self::Io) -> Init<VaultModel, VaultMessage> {
         Init::default()
     }
 
     fn update(
         _: &(),
-        _: &Capabilities<Self::Requires>,
+        _: &Self::Io,
         model: &mut VaultModel,
         message: VaultMessage,
     ) -> Command<VaultMessage> {
@@ -62,11 +62,7 @@ impl Component for Vault {
 
     /// Answers every held caller and writes one farewell. The forgotten
     /// tokens are dropped with the Model.
-    fn shutdown(
-        _: &(),
-        farewell: &Capabilities<Self::Requires>,
-        model: VaultModel,
-    ) -> Command<NoMessage> {
+    fn shutdown(_: &(), farewell: &Self::Io, model: VaultModel) -> Command<NoMessage> {
         let mut finishing: Vec<Command<NoMessage>> = model
             .held
             .into_iter()
@@ -112,7 +108,7 @@ where
 struct Elder;
 
 impl Component for Elder {
-    type Requires = ();
+    type Io = ();
     type Config = Port<VaultMessage>;
     type Model = Vec<RequestOutcome<&'static str>>;
     type Message = AskerMessage;
@@ -136,7 +132,7 @@ impl Component for Elder {
 struct Asker;
 
 impl Component for Asker {
-    type Requires = ();
+    type Io = ();
     type Config = Connector<VaultMessage>;
     type Model = Vec<RequestOutcome<&'static str>>;
     type Message = AskerMessage;
@@ -159,12 +155,10 @@ impl Component for Asker {
     }
 }
 
-type Needs = <Vault as Component>::Requires;
-
 struct Fixture {
-    program: Program<Needs>,
+    program: Program,
     elder: ComponentRef<Elder>,
-    vault: ComponentRef<Vault>,
+    vault: InstalledComponent<Vault>,
     asker: ComponentRef<Asker>,
     vault_port: Port<VaultMessage>,
 }
@@ -172,17 +166,13 @@ struct Fixture {
 /// Registered in the order elder, vault, asker. Drain stops them in reverse:
 /// asker, vault, elder.
 fn fixture() -> Fixture {
-    let (mut builder, capabilities) = Program::builder::<Needs>();
+    let mut builder = Program::builder();
     let vault_port = builder.port::<VaultMessage>(PortId::new("vault"));
     let elder = builder
         .component::<Elder>(vault_port.clone())
         .finish()
         .unwrap();
-    let vault = builder
-        .component::<Vault>(())
-        .with(&capabilities)
-        .finish()
-        .unwrap();
+    let vault = builder.component::<Vault>(()).finish().unwrap();
     builder.connect(&vault_port, &vault.connector());
     let asker = builder
         .component::<Asker>(vault.connector())
@@ -190,14 +180,14 @@ fn fixture() -> Fixture {
         .unwrap();
     Fixture {
         program: builder.build().unwrap(),
-        elder,
+        elder: elder.into(),
         vault,
-        asker,
+        asker: asker.into(),
         vault_port,
     }
 }
 
-fn controlled(program: Program<Needs>) -> ControlledRuntime {
+fn controlled(program: Program) -> ControlledRuntime {
     ControlledRuntime::builder(program)
         .control_all()
         .build()
@@ -381,14 +371,13 @@ impl EffectDriver<Farewell> for RecordingFarewell {
 async fn live_drain_completes_when_a_provider_holds_a_reply_token() -> Result<(), RuntimeError> {
     let Fixture {
         program,
+        vault,
         vault_port,
         ..
     } = fixture();
     let written = Arc::new(Mutex::new(Vec::new()));
-    let caps = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with(&caps)
-        .supplied_by(RecordingFarewell(written.clone()))
+        .supply(&vault.io, RecordingFarewell(written.clone()))
         .build()?;
     let vault = runtime.port_handle(&vault_port)?;
     let task = runtime.spawn();

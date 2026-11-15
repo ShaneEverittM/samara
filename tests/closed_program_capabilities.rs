@@ -1,10 +1,5 @@
-//! Executable contract for ADR-0008's closed Program assembly.
-
-type TestProgram = Program<(samara::Effect<LateEffect>,)>;
-type TestProgram2 = Program<(samara::Source<LateSource>,)>;
-type TestProgram3 =
-    Program<(samara::Source<samara::Framed<samara::StreamDescriptor<u64>, IncrementDecoder>>,)>;
-type TestProgram4 = Program<(samara::Source<samara::Framed<LateSource, IdentityDecoder>>,)>;
+//! Executable contract for ADR-0008's closed Program assembly, with the
+//! capabilities of ADR-0028: each belongs to the Component it was created for.
 
 use std::{
     convert::Infallible,
@@ -15,6 +10,37 @@ use std::{
 };
 
 use samara::prelude::*;
+
+/// Owns capabilities and never uses them: for tests about what a Program
+/// obliges its host to supply or control.
+struct Holds<C>(std::marker::PhantomData<fn() -> C>);
+
+impl<C: Capabilities> Component for Holds<C> {
+    type Io = C;
+    type Config = ();
+    type Model = ();
+    type Message = ();
+
+    fn init(_: &(), _: &C) -> Init<(), ()> {
+        Init::new(())
+    }
+
+    fn update(_: &(), _: &C, (): &mut (), (): ()) -> Command<()> {
+        Command::none()
+    }
+}
+
+/// Capabilities created for a Component of some other Program.
+fn from_another_program<C: Capabilities>() -> C {
+    let mut foreign = Program::builder();
+    foreign
+        .component::<Holds<C>>(())
+        .name("foreign")
+        .finish()
+        .expect("component registration")
+        .io
+        .clone()
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct LateEffect(u64);
@@ -32,32 +58,33 @@ enum EffectMessage {
 
 struct EffectComponent;
 
+/// Uses its own capability unless a test smuggles another one in here.
+#[derive(Default)]
 struct EffectComponentConfig {
-    effect: EffectCapability<LateEffect>,
+    smuggled: Option<Effect<LateEffect>>,
 }
 
 impl Component for EffectComponent {
-    type Requires = ();
+    type Io = (Effect<LateEffect>,);
     type Config = EffectComponentConfig;
     type Model = Option<u64>;
     type Message = EffectMessage;
 
-    fn init(
-        _config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
-    ) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
         Init::new(None)
     }
 
     fn update(
         config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
+        (own,): &Self::Io,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
         match message {
-            EffectMessage::Trigger => Effect::perform(&config.effect, LateEffect(41))
-                .producing(|EffectOutcome::Succeeded(value)| EffectMessage::Finished(value)),
+            EffectMessage::Trigger => {
+                Effect::perform(config.smuggled.as_ref().unwrap_or(own), LateEffect(41))
+                    .producing(|EffectOutcome::Succeeded(value)| EffectMessage::Finished(value))
+            }
             EffectMessage::Finished(value) => {
                 *model = Some(value);
                 Command::none()
@@ -66,18 +93,18 @@ impl Component for EffectComponent {
     }
 }
 
-fn effect_program() -> (TestProgram, ComponentRef<EffectComponent>) {
-    let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<LateEffect>,)>();
-    let effect = declared_0;
+fn effect_program() -> (Program, InstalledComponent<EffectComponent>) {
+    let mut program = Program::builder();
     let component = program
-        .component::<EffectComponent>(EffectComponentConfig { effect })
+        .component::<EffectComponent>(EffectComponentConfig::default())
         .name("effect")
         .finish()
         .expect("component registration");
     (program.build().expect("valid closed Program"), component)
 }
 
-// Missing tuples are covered by RuntimeSetup and ControlledRuntimeSetup compile-fail contracts.
+// A capability left without a Driver fails `RuntimeSetup::build`; see
+// tests/capability_binding.rs and tests/owned_capabilities.rs.
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct LateSource;
@@ -96,27 +123,26 @@ enum SourceMessage {
 
 struct SourceComponent;
 
+/// Subscribes through its own capability unless a test smuggles another one
+/// in here.
 struct SourceComponentConfig {
-    source: SourceCapability<LateSource>,
+    smuggled: Option<Source<LateSource>>,
     initially_enabled: bool,
 }
 
 impl Component for SourceComponent {
-    type Requires = ();
+    type Io = (Source<LateSource>,);
     type Config = SourceComponentConfig;
     type Model = bool;
     type Message = SourceMessage;
 
-    fn init(
-        config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
-    ) -> Init<Self::Model, Self::Message> {
+    fn init(config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
         Init::new(config.initially_enabled)
     }
 
     fn update(
         _config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
+        _: &Self::Io,
         enabled: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -129,13 +155,17 @@ impl Component for SourceComponent {
 
     fn subscriptions(
         config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
+        (own,): &Self::Io,
         enabled: &Self::Model,
     ) -> Subscriptions<Self::Message> {
         if *enabled {
             Subscriptions::one(
-                Subscription::source_with(&config.source, LateSource, SourceMessage::Event)
-                    .key("late"),
+                Subscription::source_with(
+                    config.smuggled.as_ref().unwrap_or(own),
+                    LateSource,
+                    SourceMessage::Event,
+                )
+                .key("late"),
             )
         } else {
             Subscriptions::none()
@@ -143,12 +173,11 @@ impl Component for SourceComponent {
     }
 }
 
-fn source_program() -> (TestProgram2, ComponentRef<SourceComponent>) {
-    let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Source<LateSource>,)>();
-    let source = declared_0;
+fn source_program() -> (Program, InstalledComponent<SourceComponent>) {
+    let mut program = Program::builder();
     let component = program
         .component::<SourceComponent>(SourceComponentConfig {
-            source,
+            smuggled: None,
             initially_enabled: false,
         })
         .name("source")
@@ -157,7 +186,8 @@ fn source_program() -> (TestProgram2, ComponentRef<SourceComponent>) {
     (program.build().expect("valid closed Program"), component)
 }
 
-// Missing tuples are covered by RuntimeSetup and ControlledRuntimeSetup compile-fail contracts.
+// A capability left without a Driver fails `RuntimeSetup::build`; see
+// tests/capability_binding.rs and tests/owned_capabilities.rs.
 
 #[test]
 fn declared_source_runs_in_controlled_execution() -> Result<(), RuntimeError> {
@@ -176,17 +206,15 @@ fn declared_source_runs_in_controlled_execution() -> Result<(), RuntimeError> {
     Ok(())
 }
 
+/// The Component owns a Source of its own, which the host binds or controls,
+/// but subscribes through one from another Program.
 fn foreign_source_program(
     initially_enabled: bool,
-) -> (TestProgram2, ComponentRef<SourceComponent>) {
-    let (_foreign, (declared_0,)) = samara::Program::builder::<(samara::Source<LateSource>,)>();
-    let foreign_source = declared_0;
-
-    let (mut owner, (declared_0,)) = samara::Program::builder::<(samara::Source<LateSource>,)>();
-    let _owner_source = declared_0;
+) -> (Program, InstalledComponent<SourceComponent>) {
+    let mut owner = Program::builder();
     let component = owner
         .component::<SourceComponent>(SourceComponentConfig {
-            source: foreign_source,
+            smuggled: Some(from_another_program()),
             initially_enabled,
         })
         .name("foreign-source")
@@ -209,13 +237,14 @@ impl SourceDriver<LateSource> for CountingSourceDriver {
 #[test]
 fn initially_visible_foreign_source_capability_is_rejected_during_profile_build() {
     let starts = Arc::new(AtomicUsize::new(0));
-    let (program, _) = foreign_source_program(true);
-    let caps = program.capabilities().clone();
+    let (program, component) = foreign_source_program(true);
     let error = Runtime::builder(program)
-        .with(&caps)
-        .supplied_by((samara::DrivenSource::new(CountingSourceDriver {
-            starts: starts.clone(),
-        }),))
+        .supply(
+            &component.io,
+            (samara::DrivenSource::new(CountingSourceDriver {
+                starts: starts.clone(),
+            }),),
+        )
         .build()
         .err()
         .expect("initial foreign Source must fail live build");
@@ -248,12 +277,13 @@ async fn dynamically_reached_foreign_source_faults_before_terminal_behavior() {
 
     let starts = Arc::new(AtomicUsize::new(0));
     let (program, component) = foreign_source_program(false);
-    let caps = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with(&caps)
-        .supplied_by((samara::DrivenSource::new(CountingSourceDriver {
-            starts: starts.clone(),
-        }),))
+        .supply(
+            &component.io,
+            (samara::DrivenSource::new(CountingSourceDriver {
+                starts: starts.clone(),
+            }),),
+        )
         .build()
         .expect("the owner's declared Source requirement is bound");
     let handle = runtime.handle(&component).expect("registered Component");
@@ -303,12 +333,13 @@ fn declared_effect_runs_in_controlled_execution() -> Result<(), RuntimeError> {
 async fn declared_effect_runs_in_live_execution() -> Result<(), RuntimeError> {
     let (program, component) = effect_program();
     let calls = Arc::new(AtomicUsize::new(0));
-    let caps = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with(&caps)
-        .supplied_by((CountingEffectDriver {
-            calls: calls.clone(),
-        },))
+        .supply(
+            &component.io,
+            (CountingEffectDriver {
+                calls: calls.clone(),
+            },),
+        )
         .build()?;
     let handle = runtime.handle(&component)?;
     let runtime = runtime.spawn();
@@ -323,25 +354,22 @@ async fn declared_effect_runs_in_live_execution() -> Result<(), RuntimeError> {
 struct InitialEffectComponent;
 
 struct InitialEffectComponentConfig {
-    effect: EffectCapability<LateEffect>,
+    effect: Effect<LateEffect>,
 }
 
 impl Component for InitialEffectComponent {
-    type Requires = ();
+    type Io = (Effect<LateEffect>,);
     type Config = InitialEffectComponentConfig;
     type Model = ();
     type Message = ();
 
-    fn init(
-        config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
-    ) -> Init<Self::Model, Self::Message> {
+    fn init(config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
         Init::new(()).with_command(Effect::perform(&config.effect, LateEffect(1)).discard_outcome())
     }
 
     fn update(
         _config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
+        _: &Self::Io,
         _model: &mut Self::Model,
         _message: Self::Message,
     ) -> Command<Self::Message> {
@@ -349,39 +377,41 @@ impl Component for InitialEffectComponent {
     }
 }
 
-fn initial_foreign_effect_program() -> TestProgram {
-    let (_foreign, (declared_0,)) = samara::Program::builder::<(samara::Effect<LateEffect>,)>();
-    let foreign_effect = declared_0;
-
-    let (mut owner, (declared_0,)) = samara::Program::builder::<(samara::Effect<LateEffect>,)>();
-    let _owner_effect = declared_0;
-    owner
+/// The Component owns an Effect of its own, which the host binds or
+/// controls, but its startup command uses one from another Program.
+fn initial_foreign_effect_program() -> (Program, InstalledComponent<InitialEffectComponent>) {
+    let mut owner = Program::builder();
+    let component = owner
         .component::<InitialEffectComponent>(InitialEffectComponentConfig {
-            effect: foreign_effect,
+            effect: from_another_program(),
         })
         .name("initial-foreign-effect")
         .finish()
         .expect("component registration");
-    owner.build().expect("the hidden field is ordinary Rust")
+    (
+        owner.build().expect("the hidden field is ordinary Rust"),
+        component,
+    )
 }
 
 #[test]
 fn initially_visible_foreign_effect_capability_is_rejected_during_profile_build() {
     let calls = Arc::new(AtomicUsize::new(0));
-    let program = initial_foreign_effect_program();
-    let caps = program.capabilities().clone();
+    let (program, component) = initial_foreign_effect_program();
     let live_error = Runtime::builder(program)
-        .with(&caps)
-        .supplied_by((CountingEffectDriver {
-            calls: calls.clone(),
-        },))
+        .supply(
+            &component.io,
+            (CountingEffectDriver {
+                calls: calls.clone(),
+            },),
+        )
         .build()
         .err()
         .expect("initial foreign capability must fail live build");
     assert!(live_error.to_string().contains("another Program"));
     assert_eq!(calls.load(Ordering::SeqCst), 0);
 
-    let controlled_error = ControlledRuntime::builder(initial_foreign_effect_program())
+    let controlled_error = ControlledRuntime::builder(initial_foreign_effect_program().0)
         .control_all()
         .build()
         .err()
@@ -392,21 +422,18 @@ fn initially_visible_foreign_effect_capability_is_rejected_during_profile_build(
 struct UnitComponent;
 
 impl Component for UnitComponent {
-    type Requires = ();
+    type Io = ();
     type Config = ();
     type Model = ();
     type Message = ();
 
-    fn init(
-        _config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
-    ) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
         Init::new(())
     }
 
     fn update(
         _config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
+        _: &Self::Io,
         _model: &mut Self::Model,
         _message: Self::Message,
     ) -> Command<Self::Message> {
@@ -421,21 +448,18 @@ struct InitialForeignSendConfig {
 }
 
 impl Component for InitialForeignSend {
-    type Requires = ();
+    type Io = ();
     type Config = InitialForeignSendConfig;
     type Model = ();
     type Message = ();
 
-    fn init(
-        config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
-    ) -> Init<Self::Model, Self::Message> {
+    fn init(config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
         Init::new(()).with_command(Command::send(&config.target, ()))
     }
 
     fn update(
         _config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
+        _: &Self::Io,
         _model: &mut Self::Model,
         _message: Self::Message,
     ) -> Command<Self::Message> {
@@ -444,16 +468,18 @@ impl Component for InitialForeignSend {
 }
 
 fn initial_foreign_send_program() -> Program {
-    let (mut foreign, ()) = samara::Program::builder::<()>();
+    let mut foreign = Program::builder();
     let target = foreign
         .component::<UnitComponent>(())
         .name("foreign-target")
         .finish()
         .expect("component registration");
 
-    let (mut owner, ()) = samara::Program::builder::<()>();
+    let mut owner = Program::builder();
     owner
-        .component::<InitialForeignSend>(InitialForeignSendConfig { target })
+        .component::<InitialForeignSend>(InitialForeignSendConfig {
+            target: target.into(),
+        })
         .name("initial-foreign-send")
         .finish()
         .expect("component registration");
@@ -476,21 +502,18 @@ struct InitialForeignPortSendConfig {
 }
 
 impl Component for InitialForeignPortSend {
-    type Requires = ();
+    type Io = ();
     type Config = InitialForeignPortSendConfig;
     type Model = ();
     type Message = ();
 
-    fn init(
-        config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
-    ) -> Init<Self::Model, Self::Message> {
+    fn init(config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
         Init::new(()).with_command(Command::send(&config.port, ForeignMessage::Signal))
     }
 
     fn update(
         _config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
+        _: &Self::Io,
         _model: &mut Self::Model,
         _message: Self::Message,
     ) -> Command<Self::Message> {
@@ -505,22 +528,19 @@ struct InitialForeignRequestConfig {
 }
 
 impl Component for InitialForeignRequest {
-    type Requires = ();
+    type Io = ();
     type Config = InitialForeignRequestConfig;
     type Model = ();
     type Message = ();
 
-    fn init(
-        config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
-    ) -> Init<Self::Model, Self::Message> {
+    fn init(config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
         Init::new(())
             .with_command(Command::request(&config.port, ForeignMessage::Read).producing(|_| ()))
     }
 
     fn update(
         _config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
+        _: &Self::Io,
         _model: &mut Self::Model,
         _message: Self::Message,
     ) -> Command<Self::Message> {
@@ -529,9 +549,9 @@ impl Component for InitialForeignRequest {
 }
 
 fn initial_foreign_port_program(request: bool) -> Program {
-    let (mut foreign, ()) = samara::Program::builder::<()>();
+    let mut foreign = Program::builder();
     let port = foreign.port::<ForeignMessage>(PortId::new("foreign"));
-    let (mut owner, ()) = samara::Program::builder::<()>();
+    let mut owner = Program::builder();
     if request {
         owner
             .component::<InitialForeignRequest>(InitialForeignRequestConfig { port })
@@ -578,14 +598,10 @@ fn initially_visible_foreign_component_and_port_capabilities_fail_profile_build(
 
 #[test]
 fn dynamically_used_foreign_effect_capability_is_rejected_before_controlled_behavior() {
-    let (_foreign, (declared_0,)) = samara::Program::builder::<(samara::Effect<LateEffect>,)>();
-    let foreign_effect = declared_0;
-
-    let (mut owner, (declared_0,)) = samara::Program::builder::<(samara::Effect<LateEffect>,)>();
-    let _owner_requirement = declared_0;
+    let mut owner = Program::builder();
     let component = owner
         .component::<EffectComponent>(EffectComponentConfig {
-            effect: foreign_effect,
+            smuggled: Some(from_another_program()),
         })
         .name("foreign-effect")
         .finish()
@@ -608,26 +624,23 @@ fn dynamically_used_foreign_effect_capability_is_rejected_before_controlled_beha
 
 #[tokio::test]
 async fn run_forever_surfaces_dynamic_foreign_capability_before_live_driver() {
-    let (_foreign, (declared_0,)) = samara::Program::builder::<(samara::Effect<LateEffect>,)>();
-    let foreign_effect = declared_0;
-
-    let (mut owner, (declared_0,)) = samara::Program::builder::<(samara::Effect<LateEffect>,)>();
-    let _owner_requirement = declared_0;
+    let mut owner = Program::builder();
     let component = owner
         .component::<EffectComponent>(EffectComponentConfig {
-            effect: foreign_effect,
+            smuggled: Some(from_another_program()),
         })
         .name("foreign-live-effect")
         .finish()
         .expect("component registration");
     let calls = Arc::new(AtomicUsize::new(0));
     let program = owner.build().expect("valid owner Program");
-    let caps = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with(&caps)
-        .supplied_by((CountingEffectDriver {
-            calls: calls.clone(),
-        },))
+        .supply(
+            &component.io,
+            (CountingEffectDriver {
+                calls: calls.clone(),
+            },),
+        )
         .build()
         .expect("the owner's declared requirement is bound");
     let handle = runtime.handle(&component).expect("registered Component");
@@ -647,12 +660,12 @@ async fn run_forever_surfaces_dynamic_foreign_capability_before_live_driver() {
 
 #[test]
 fn controlled_exact_stream_binding_rejects_a_foreign_capability_during_build() {
-    let (_foreign, (declared_0,)) =
-        samara::Program::builder::<(samara::Source<StreamDescriptor<u64>>,)>();
-    let foreign_stream = declared_0;
-    let (owner, (declared_0,)) =
-        samara::Program::builder::<(samara::Source<StreamDescriptor<u64>>,)>();
-    let _owner_stream = declared_0;
+    let foreign_stream: Source<StreamDescriptor<u64>> = from_another_program();
+    let mut owner = Program::builder();
+    owner
+        .component::<Holds<Source<StreamDescriptor<u64>>>>(())
+        .finish()
+        .expect("component registration");
     let program = owner.build().expect("valid owner Program");
     let error = ControlledRuntime::builder(program)
         .control_all()
@@ -665,31 +678,31 @@ fn controlled_exact_stream_binding_rejects_a_foreign_capability_during_build() {
 
 #[test]
 fn two_exact_stream_capabilities_of_one_type_bind_independently() -> Result<(), RuntimeError> {
-    let (program, (declared_0, declared_1)) = samara::Program::builder::<(
-        samara::Source<StreamDescriptor<u64>>,
-        samara::Source<StreamDescriptor<u64>>,
-    )>();
-    let _first = declared_0;
-    let _second = declared_1;
+    type TwoStreams = (Source<StreamDescriptor<u64>>, Source<StreamDescriptor<u64>>);
+    let mut program = Program::builder();
+    let holder = program
+        .component::<Holds<TwoStreams>>(())
+        .finish()
+        .expect("component registration");
     let program = program.build().expect("valid closed Program");
     let (_first_sender, first_receiver) = tokio::sync::mpsc::channel(1);
     let (_second_sender, second_receiver) = tokio::sync::mpsc::channel(1);
 
-    let caps = program.capabilities().clone();
     Runtime::builder(program)
-        .with(&caps)
-        .supplied_by((
-            samara::MpscReceiver::new(first_receiver),
-            samara::MpscReceiver::new(second_receiver),
-        ))
+        .supply(
+            &holder.io,
+            (
+                samara::MpscReceiver::new(first_receiver),
+                samara::MpscReceiver::new(second_receiver),
+            ),
+        )
         .build()?;
 
-    let (program, (declared_0, declared_1)) = samara::Program::builder::<(
-        samara::Source<StreamDescriptor<u64>>,
-        samara::Source<StreamDescriptor<u64>>,
-    )>();
-    let _first = declared_0;
-    let _second = declared_1;
+    let mut program = Program::builder();
+    program
+        .component::<Holds<TwoStreams>>(())
+        .finish()
+        .expect("component registration");
     let program = program.build().expect("valid closed Program");
     ControlledRuntime::builder(program).control_all().build()?;
     Ok(())
@@ -697,10 +710,18 @@ fn two_exact_stream_capabilities_of_one_type_bind_independently() -> Result<(), 
 
 #[test]
 fn controlled_exact_stream_rejects_duplicate_and_type_wide_ambiguity() {
-    let (program, (declared_0,)) =
-        samara::Program::builder::<(samara::Source<StreamDescriptor<u64>>,)>();
-    let stream = declared_0;
-    let program = program.build().expect("valid closed Program");
+    fn one_stream() -> (Program, Source<StreamDescriptor<u64>>) {
+        let mut program = Program::builder();
+        let holder = program
+            .component::<Holds<Source<StreamDescriptor<u64>>>>(())
+            .finish()
+            .expect("component registration");
+        (
+            program.build().expect("valid closed Program"),
+            holder.io.clone(),
+        )
+    }
+    let (program, stream) = one_stream();
     let duplicate = ControlledRuntime::builder(program)
         .control_all()
         .control_stream(&stream)
@@ -709,10 +730,7 @@ fn controlled_exact_stream_rejects_duplicate_and_type_wide_ambiguity() {
         .expect("one exact capability cannot be controlled twice");
     assert!(duplicate.to_string().contains("duplicate"));
 
-    let (program, (declared_0,)) =
-        samara::Program::builder::<(samara::Source<StreamDescriptor<u64>>,)>();
-    let _stream = declared_0;
-    let program = program.build().expect("valid closed Program");
+    let (program, _stream) = one_stream();
     let ambiguous = ControlledRuntime::builder(program)
         .control_all()
         .control_source::<StreamDescriptor<u64>>()
@@ -755,63 +773,48 @@ impl EffectDriver<RecordDualStream> for RecordDualStreamDriver {
 struct DualStreamComponent;
 
 struct DualStreamComponentConfig {
-    first: SourceCapability<StreamDescriptor<u64>>,
-    second: SourceCapability<StreamDescriptor<u64>>,
     descriptor: StreamDescriptor<u64>,
-    observe: Option<EffectCapability<RecordDualStream>>,
+    observe: bool,
 }
 
+/// Two streams of one type, and an Effect that reports what each delivered.
+type DualStreamIo = (
+    Source<StreamDescriptor<u64>>,
+    Source<StreamDescriptor<u64>>,
+    Effect<RecordDualStream>,
+);
+
 impl Component for DualStreamComponent {
-    type Requires = ();
+    type Io = DualStreamIo;
     type Config = DualStreamComponentConfig;
     type Model = (u64, u64);
     type Message = DualStreamMessage;
 
-    fn init(
-        _config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
-    ) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
         Init::new((0, 0))
     }
 
     fn update(
         config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
+        (_, _, observe): &Self::Io,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
+        let record = |lane, value| {
+            if config.observe {
+                Effect::perform(observe, RecordDualStream { lane, value }).discard_outcome()
+            } else {
+                Command::none()
+            }
+        };
         match message {
             DualStreamMessage::First(SourceEvent::Item(value)) => {
                 model.0 += value;
-                config
-                    .observe
-                    .as_ref()
-                    .map_or_else(Command::none, |observe| {
-                        Effect::perform(
-                            observe,
-                            RecordDualStream {
-                                lane: "first",
-                                value,
-                            },
-                        )
-                        .discard_outcome()
-                    })
+                record("first", value)
             }
             DualStreamMessage::Second(SourceEvent::Item(value)) => {
                 model.1 += value;
-                config
-                    .observe
-                    .as_ref()
-                    .map_or_else(Command::none, |observe| {
-                        Effect::perform(
-                            observe,
-                            RecordDualStream {
-                                lane: "second",
-                                value,
-                            },
-                        )
-                        .discard_outcome()
-                    })
+                record("second", value)
             }
             DualStreamMessage::First(SourceEvent::Failed(never))
             | DualStreamMessage::Second(SourceEvent::Failed(never)) => match never {},
@@ -822,22 +825,14 @@ impl Component for DualStreamComponent {
 
     fn subscriptions(
         config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
+        (first, second, _): &Self::Io,
         _model: &Self::Model,
     ) -> Subscriptions<Self::Message> {
         vec![
-            Subscription::source_with(
-                &config.first,
-                config.descriptor.clone(),
-                DualStreamMessage::First,
-            )
-            .key("first"),
-            Subscription::source_with(
-                &config.second,
-                config.descriptor.clone(),
-                DualStreamMessage::Second,
-            )
-            .key("second"),
+            Subscription::source_with(first, config.descriptor.clone(), DualStreamMessage::First)
+                .key("first"),
+            Subscription::source_with(second, config.descriptor.clone(), DualStreamMessage::Second)
+                .key("second"),
         ]
         .into()
     }
@@ -846,22 +841,16 @@ impl Component for DualStreamComponent {
 #[test]
 fn exact_stream_input_is_disambiguated_by_capability_not_equal_descriptor()
 -> Result<(), RuntimeError> {
-    let (mut program, (declared_0, declared_1)) = samara::Program::builder::<(
-        samara::Source<StreamDescriptor<u64>>,
-        samara::Source<StreamDescriptor<u64>>,
-    )>();
-    let first = declared_0;
-    let second = declared_1;
+    let mut program = Program::builder();
     let component = program
         .component::<DualStreamComponent>(DualStreamComponentConfig {
-            first: first.clone(),
-            second: second.clone(),
             descriptor: StreamDescriptor::named("same-descriptor"),
-            observe: None,
+            observe: false,
         })
         .name("dual-stream")
         .finish()
         .expect("component registration");
+    let (first, second, _) = component.io.clone();
     let mut runtime = ControlledRuntime::builder(program.build().expect("valid Program"))
         .control_all()
         .build()?;
@@ -876,20 +865,11 @@ fn exact_stream_input_is_disambiguated_by_capability_not_equal_descriptor()
 #[tokio::test]
 async fn live_exact_streams_with_equal_descriptors_route_by_capability() -> Result<(), RuntimeError>
 {
-    let (mut program, (declared_0, declared_1, declared_2)) = samara::Program::builder::<(
-        samara::Source<StreamDescriptor<u64>>,
-        samara::Source<StreamDescriptor<u64>>,
-        samara::Effect<RecordDualStream>,
-    )>();
-    let first = declared_0;
-    let second = declared_1;
-    let observe = declared_2;
-    program
+    let mut program = Program::builder();
+    let component = program
         .component::<DualStreamComponent>(DualStreamComponentConfig {
-            first: first.clone(),
-            second: second.clone(),
             descriptor: StreamDescriptor::named("same-descriptor"),
-            observe: Some(observe),
+            observe: true,
         })
         .name("live-dual-stream")
         .finish()
@@ -898,14 +878,15 @@ async fn live_exact_streams_with_equal_descriptors_route_by_capability() -> Resu
     let (second_sender, second_receiver) = tokio::sync::mpsc::channel(1);
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
     let program = program.build().expect("valid Program");
-    let caps = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with(&caps)
-        .supplied_by((
-            samara::MpscReceiver::new(first_receiver),
-            samara::MpscReceiver::new(second_receiver),
-            RecordDualStreamDriver { observed },
-        ))
+        .supply(
+            &component.io,
+            (
+                samara::MpscReceiver::new(first_receiver),
+                samara::MpscReceiver::new(second_receiver),
+                RecordDualStreamDriver { observed },
+            ),
+        )
         .build()?;
     let task = runtime.spawn();
 
@@ -992,26 +973,22 @@ type FramedStream = Framed<StreamDescriptor<u64>, IncrementDecoder>;
 struct FramedStreamComponent;
 
 struct FramedStreamComponentConfig {
-    source: SourceCapability<FramedStream>,
-    observe: Option<EffectCapability<RecordDualStream>>,
+    observe: bool,
 }
 
 impl Component for FramedStreamComponent {
-    type Requires = ();
+    type Io = (Source<FramedStream>, Effect<RecordDualStream>);
     type Config = FramedStreamComponentConfig;
     type Model = Vec<u64>;
     type Message = FramedStreamMessage;
 
-    fn init(
-        _config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
-    ) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
         Init::new(Vec::new())
     }
 
     fn update(
         config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
+        (_, observe): &Self::Io,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -1019,19 +996,18 @@ impl Component for FramedStreamComponent {
         match event {
             SourceEvent::Item(value) => {
                 model.push(value);
-                config
-                    .observe
-                    .as_ref()
-                    .map_or_else(Command::none, |observe| {
-                        Effect::perform(
-                            observe,
-                            RecordDualStream {
-                                lane: "framed",
-                                value,
-                            },
-                        )
-                        .discard_outcome()
-                    })
+                if config.observe {
+                    Effect::perform(
+                        observe,
+                        RecordDualStream {
+                            lane: "framed",
+                            value,
+                        },
+                    )
+                    .discard_outcome()
+                } else {
+                    Command::none()
+                }
             }
             SourceEvent::Failed(FramedError::Source(never))
             | SourceEvent::Failed(FramedError::Decode(never)) => match never {},
@@ -1040,13 +1016,13 @@ impl Component for FramedStreamComponent {
     }
 
     fn subscriptions(
-        config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
+        _config: &Self::Config,
+        (source, _): &Self::Io,
         _model: &Self::Model,
     ) -> Subscriptions<Self::Message> {
         Subscriptions::one(
             Subscription::source_with(
-                &config.source,
+                source,
                 Framed::new(StreamDescriptor::named("raw"), IncrementDecoder),
                 FramedStreamMessage::Event,
             )
@@ -1055,22 +1031,24 @@ impl Component for FramedStreamComponent {
     }
 }
 
-fn framed_stream_program() -> (
-    TestProgram3,
-    ComponentRef<FramedStreamComponent>,
-    SourceCapability<FramedStream>,
+fn framed_stream_program(
+    observe: bool,
+) -> (
+    Program,
+    InstalledComponent<FramedStreamComponent>,
+    Source<FramedStream>,
 ) {
-    let (mut program, (declared_0,)) =
-        samara::Program::builder::<(samara::Source<FramedStream>,)>();
-    let source = declared_0;
+    let mut program = Program::builder();
     let component = program
-        .component::<FramedStreamComponent>(FramedStreamComponentConfig {
-            source: source.clone(),
-            observe: None,
+        .component::<FramedStreamComponent>(FramedStreamComponentConfig { observe })
+        .name(if observe {
+            "live-framed-stream"
+        } else {
+            "framed-stream"
         })
-        .name("framed-stream")
         .finish()
         .expect("component registration");
+    let source = component.io.0.clone();
     (
         program.build().expect("valid composed stream Program"),
         component,
@@ -1080,15 +1058,16 @@ fn framed_stream_program() -> (
 
 #[test]
 fn exact_stream_bridge_accepts_a_composed_source_capability() -> Result<(), RuntimeError> {
-    let (program, _component, _source) = framed_stream_program();
+    let (program, component, source) = framed_stream_program(false);
     let (_sender, receiver) = tokio::sync::mpsc::channel(1);
-    let caps = program.capabilities().clone();
+    // The Component also owns its (here unused) observation Effect.
+    let (observed, _observations) = tokio::sync::mpsc::unbounded_channel();
     Runtime::builder(program)
-        .with(&caps)
-        .supplied_by((samara::MpscReceiver::new(receiver),))
+        .supply(&source, samara::MpscReceiver::new(receiver))
+        .supply(&component.io.1, RecordDualStreamDriver { observed })
         .build()?;
 
-    let (program, component, source) = framed_stream_program();
+    let (program, component, source) = framed_stream_program(false);
     let mut runtime = ControlledRuntime::builder(program).control_all().build()?;
     runtime.emit_stream(&source, 9)?;
     runtime.close_stream(&source)?;
@@ -1100,30 +1079,17 @@ fn exact_stream_bridge_accepts_a_composed_source_capability() -> Result<(), Runt
 #[tokio::test]
 async fn live_exact_stream_bridge_runs_composed_layers_before_component_mapping()
 -> Result<(), RuntimeError> {
-    let (mut program, (declared_0, declared_1)) = samara::Program::builder::<(
-        samara::Source<FramedStream>,
-        samara::Effect<RecordDualStream>,
-    )>();
-    let source = declared_0;
-    let observe = declared_1;
-    program
-        .component::<FramedStreamComponent>(FramedStreamComponentConfig {
-            source: source.clone(),
-            observe: Some(observe),
-        })
-        .name("live-framed-stream")
-        .finish()
-        .expect("component registration");
+    let (program, component, _source) = framed_stream_program(true);
     let (sender, receiver) = tokio::sync::mpsc::channel(1);
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
-    let program = program.build().expect("valid composed stream Program");
-    let caps = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with(&caps)
-        .supplied_by((
-            samara::MpscReceiver::new(receiver),
-            RecordDualStreamDriver { observed },
-        ))
+        .supply(
+            &component.io,
+            (
+                samara::MpscReceiver::new(receiver),
+                RecordDualStreamDriver { observed },
+            ),
+        )
         .build()?;
     let task = runtime.spawn();
 
@@ -1149,23 +1115,28 @@ impl SourceDriver<LateSource> for LateSourceDriver {
     }
 }
 
-fn composed_source_program() -> TestProgram4 {
-    let (program, (declared_0,)) =
-        samara::Program::builder::<(samara::Source<Framed<LateSource, IdentityDecoder>>,)>();
-    let _source = declared_0;
-    program.build().expect("valid composed Source declaration")
+type ComposedSource = Source<Framed<LateSource, IdentityDecoder>>;
+
+fn composed_source_program() -> (Program, ComposedSource) {
+    let mut program = Program::builder();
+    let holder = program
+        .component::<Holds<ComposedSource>>(())
+        .finish()
+        .expect("component registration");
+    (
+        program.build().expect("valid composed Source declaration"),
+        holder.io.clone(),
+    )
 }
 
 #[test]
 fn composed_source_capability_declares_only_its_terminal_requirement() -> Result<(), RuntimeError> {
-    let program = composed_source_program();
-    let caps = program.capabilities().clone();
+    let (program, source) = composed_source_program();
     Runtime::builder(program)
-        .with(&caps)
-        .supplied_by((samara::DrivenSource::new(LateSourceDriver),))
+        .supply(&source, samara::DrivenSource::new(LateSourceDriver))
         .build()?;
 
-    ControlledRuntime::builder(composed_source_program())
+    ControlledRuntime::builder(composed_source_program().0)
         .control_all()
         .build()?;
     Ok(())

@@ -1,13 +1,5 @@
 #![cfg(feature = "fs")]
 
-type TestProgram = Program<(
-    Effect<AppendToFile>,
-    Effect<ReplaceFile>,
-    Effect<ReadFile>,
-    Effect<RemoveFile>,
-    Effect<Report>,
-)>;
-
 use std::convert::Infallible;
 use std::path::{Path, PathBuf};
 
@@ -42,13 +34,13 @@ const FILE: &str = "notes/journal.log";
 /// the only ordering the effects promise today.
 struct Walker;
 
-struct WalkerConfig {
-    append: EffectCapability<AppendToFile>,
-    replace: EffectCapability<ReplaceFile>,
-    read: EffectCapability<ReadFile>,
-    remove: EffectCapability<RemoveFile>,
-    report: EffectCapability<Report>,
-}
+type WalkerIo = (
+    Effect<AppendToFile>,
+    Effect<ReplaceFile>,
+    Effect<ReadFile>,
+    Effect<RemoveFile>,
+    Effect<Report>,
+);
 
 #[derive(Debug, Default, PartialEq, Eq)]
 struct WalkerModel {
@@ -66,45 +58,42 @@ enum WalkerMessage {
 }
 
 impl Component for Walker {
-    type Requires = ();
-    type Config = WalkerConfig;
+    type Io = WalkerIo;
+    type Config = ();
     type Model = WalkerModel;
     type Message = WalkerMessage;
 
-    fn init(
-        _: &WalkerConfig,
-        _: &samara::Capabilities<Self::Requires>,
-    ) -> Init<WalkerModel, WalkerMessage> {
+    fn init(_: &(), _: &Self::Io) -> Init<WalkerModel, WalkerMessage> {
         Init::new(WalkerModel::default())
     }
 
     fn update(
-        config: &WalkerConfig,
-        _: &samara::Capabilities<Self::Requires>,
+        _: &(),
+        (append, replace, read, remove, report): &Self::Io,
         model: &mut WalkerModel,
         message: WalkerMessage,
     ) -> Command<WalkerMessage> {
         let next = |model: &mut WalkerModel| -> Command<WalkerMessage> {
             model.step += 1;
             match model.step {
-                1 => Effect::perform(&config.append, AppendToFile::line(FILE, "first"))
+                1 => Effect::perform(append, AppendToFile::line(FILE, "first"))
                     .producing(WalkerMessage::Wrote),
-                2 => Effect::perform(&config.append, AppendToFile::line(FILE, "second"))
+                2 => Effect::perform(append, AppendToFile::line(FILE, "second"))
                     .producing(WalkerMessage::Wrote),
-                3 | 5 | 7 => Effect::perform(&config.read, ReadFile::new(FILE))
-                    .producing(WalkerMessage::Read),
-                4 => Effect::perform(&config.replace, ReplaceFile::text(FILE, "replaced"))
+                3 | 5 | 7 => {
+                    Effect::perform(read, ReadFile::new(FILE)).producing(WalkerMessage::Read)
+                }
+                4 => Effect::perform(replace, ReplaceFile::text(FILE, "replaced"))
                     .producing(WalkerMessage::Wrote),
-                6 => Effect::perform(&config.remove, RemoveFile::new(FILE))
-                    .producing(WalkerMessage::Wrote),
-                _ => Effect::perform(&config.report, Report("done".into()))
+                6 => Effect::perform(remove, RemoveFile::new(FILE)).producing(WalkerMessage::Wrote),
+                _ => Effect::perform(report, Report("done".into()))
                     .producing(|_| WalkerMessage::Reported),
             }
         };
         match message {
             WalkerMessage::Start => next(model),
             WalkerMessage::Escape => {
-                Effect::perform(&config.append, AppendToFile::line("../escape.log", "nope"))
+                Effect::perform(append, AppendToFile::line("../escape.log", "nope"))
                     .producing(WalkerMessage::Wrote)
             }
             WalkerMessage::Wrote(EffectOutcome::Succeeded(())) => next(model),
@@ -112,8 +101,7 @@ impl Component for Walker {
                 let text = String::from_utf8_lossy(&bytes).into_owned();
                 model.seen.push(text.clone());
                 Command::batch([
-                    Effect::perform(&config.report, Report(text))
-                        .producing(|_| WalkerMessage::Reported),
+                    Effect::perform(report, Report(text)).producing(|_| WalkerMessage::Reported),
                     next(model),
                 ])
             }
@@ -124,8 +112,7 @@ impl Component for Walker {
                     .push((error.operation(), error.kind(), error.path().to_path_buf()));
                 let line = format!("{:?} {:?}", error.operation(), error.kind());
                 Command::batch([
-                    Effect::perform(&config.report, Report(line))
-                        .producing(|_| WalkerMessage::Reported),
+                    Effect::perform(report, Report(line)).producing(|_| WalkerMessage::Reported),
                     if model.step == 7 {
                         next(model)
                     } else {
@@ -138,24 +125,10 @@ impl Component for Walker {
     }
 }
 
-fn walker_program() -> (TestProgram, ComponentRef<Walker>) {
-    let (mut builder, (declared_0, declared_1, declared_2, declared_3, declared_4)) =
-        samara::Program::builder::<(
-            samara::Effect<AppendToFile>,
-            samara::Effect<ReplaceFile>,
-            samara::Effect<ReadFile>,
-            samara::Effect<RemoveFile>,
-            samara::Effect<Report>,
-        )>();
-    let config = WalkerConfig {
-        append: declared_0,
-        replace: declared_1,
-        read: declared_2,
-        remove: declared_3,
-        report: declared_4,
-    };
+fn walker_program() -> (Program, InstalledComponent<Walker>) {
+    let mut builder = Program::builder();
     let walker = builder
-        .component::<Walker>(config)
+        .component::<Walker>(())
         .name("walker")
         .finish()
         .expect("component registration");
@@ -246,16 +219,17 @@ async fn bound_driver_appends_reads_replaces_and_removes_under_the_root() {
     let root = unique_root("walk");
     let (program, walker) = walker_program();
     let (sender, mut reports) = tokio::sync::mpsc::unbounded_channel();
-    let caps = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with(&caps)
-        .supplied_by((
-            FsDriver::new(&root),
-            FsDriver::new(&root),
-            FsDriver::new(&root),
-            FsDriver::new(&root),
-            Reporter(sender),
-        ))
+        .supply(
+            &walker.io,
+            (
+                FsDriver::new(&root),
+                FsDriver::new(&root),
+                FsDriver::new(&root),
+                FsDriver::new(&root),
+                Reporter(sender),
+            ),
+        )
         .build()
         .expect("valid live bindings");
     let handle = runtime.handle(&walker).expect("walker handle");
@@ -287,16 +261,17 @@ async fn bound_driver_rejects_paths_outside_the_root_without_touching_disk() {
     let root = unique_root("escape");
     let (program, walker) = walker_program();
     let (sender, mut reports) = tokio::sync::mpsc::unbounded_channel();
-    let caps = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with(&caps)
-        .supplied_by((
-            FsDriver::new(&root),
-            FsDriver::new(&root),
-            FsDriver::new(&root),
-            FsDriver::new(&root),
-            Reporter(sender),
-        ))
+        .supply(
+            &walker.io,
+            (
+                FsDriver::new(&root),
+                FsDriver::new(&root),
+                FsDriver::new(&root),
+                FsDriver::new(&root),
+                Reporter(sender),
+            ),
+        )
         .build()
         .expect("valid live bindings");
     let handle = runtime.handle(&walker).expect("walker handle");
@@ -310,27 +285,73 @@ async fn bound_driver_rejects_paths_outside_the_root_without_touching_disk() {
     assert!(task.shutdown(Shutdown::Drain).await.unwrap().is_clean());
 }
 
+/// Owns one filesystem effect and never uses it; only its declaration matters.
+struct Owns<D>(std::marker::PhantomData<fn() -> D>);
+
+impl<D: EffectDescriptor> Component for Owns<D> {
+    type Io = Effect<D>;
+    type Config = ();
+    type Model = ();
+    type Message = ();
+
+    fn init(_: &(), _: &Self::Io) -> Init<(), ()> {
+        Init::default()
+    }
+
+    fn update(_: &(), _: &Self::Io, _: &mut (), _: ()) -> Command<()> {
+        Command::none()
+    }
+}
+
 #[test]
 fn fs_driver_tuple_binds_declared_effects_and_rejects_duplicates() {
-    let (builder, (append,)) = samara::Program::builder::<(samara::Effect<AppendToFile>,)>();
+    let mut builder = Program::builder();
+    let appender = builder
+        .component::<Owns<AppendToFile>>(())
+        .finish()
+        .expect("component registration");
     let program = builder.build().expect("append-only program");
     assert!(
         Runtime::builder(program)
-            .with(&append)
-            .supplied_by(samara::FsDriver::new("ignored"))
+            .supply(&appender.io, samara::FsDriver::new("ignored"))
             .build()
             .is_ok(),
         "a program that only appends needs no Read, Replace, or Remove binding"
     );
 
-    let (program, caps) =
-        Program::builder::<(samara::Effect<ReadFile>, samara::Effect<ReadFile>)>();
+    // Drivers are bound per capability (ADR-0028): two Components that each
+    // own a `ReadFile` effect are each supplied a Driver.
+    let mut builder = Program::builder();
+    let first = builder
+        .component::<Owns<ReadFile>>(())
+        .finish()
+        .expect("component registration");
+    let second = builder
+        .component::<Owns<ReadFile>>(())
+        .finish()
+        .expect("component registration");
+    let program = builder.build().expect("two readers");
     assert!(
-        Runtime::builder(program.build().unwrap())
-            .with(&caps)
-            .supplied_by((FsDriver::new("ignored"), FsDriver::new("elsewhere"),))
+        Runtime::builder(program)
+            .supply(&first.io, FsDriver::new("ignored"))
+            .supply(&second.io, FsDriver::new("elsewhere"))
             .build()
-            .is_err(),
-        "a second ReadFile binding is a duplicate"
+            .is_ok(),
+        "each ReadFile capability takes its own Driver"
     );
+
+    let mut builder = Program::builder();
+    let reader = builder
+        .component::<Owns<ReadFile>>(())
+        .finish()
+        .expect("component registration");
+    let error = Runtime::builder(builder.build().expect("one reader"))
+        .supply(&reader.io, FsDriver::new("ignored"))
+        .supply(&reader.io, FsDriver::new("elsewhere"))
+        .build()
+        .err()
+        .expect("a second Driver for the same ReadFile capability is a duplicate");
+    let error = error.to_string();
+    assert!(error.contains("duplicate"), "{error}");
+    assert!(error.contains("ReadFile"), "{error}");
 }

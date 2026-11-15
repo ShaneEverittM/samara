@@ -1,6 +1,11 @@
 # ADR-0019: Typed Program Requirements
 
-- Status: Accepted for implementation trial.
+- Status: Superseded in its central mechanism by
+  [ADR-0028](0028-a-capability-belongs-to-one-component.md) and
+  [ADR-0029](0029-capabilities-are-named-values-a-component-owns.md):
+  there is no `Program<R>`, no `Requires`, and no up-front declaration. The
+  `Component` signature decided here stands, with `io: &Self::Io` in place
+  of the capabilities parameter.
 - Date: November 9, 2026
 - Amends: ADR-0005, ADR-0008, ADR-0009, ADR-0013, and ADR-0018.
 

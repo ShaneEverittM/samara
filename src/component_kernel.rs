@@ -19,18 +19,14 @@ use crate::{Command, Component, ComponentId, Init, SubscriptionId};
 pub(crate) struct ComponentKernel<C: Component> {
     id: ComponentId,
     config: C::Config,
-    capabilities: crate::Capabilities<C::Requires>,
+    capabilities: C::Io,
     model: Option<C::Model>,
     initial_command: Option<Command<C::Message>>,
     subscriptions: SubscriptionReconciler<C::Message>,
 }
 
 impl<C: Component> ComponentKernel<C> {
-    pub(crate) fn new(
-        id: ComponentId,
-        config: C::Config,
-        capabilities: crate::Capabilities<C::Requires>,
-    ) -> Self {
+    pub(crate) fn new(id: ComponentId, config: C::Config, capabilities: C::Io) -> Self {
         let Init { model, command } = C::init(&config, &capabilities);
         let subscriptions = SubscriptionReconciler::new(id.clone());
 
@@ -255,21 +251,18 @@ mod tests {
     }
 
     impl Component for ProbeComponent {
-        type Requires = ();
+        type Io = ();
         type Config = ProbeComponentConfig;
         type Model = Vec<usize>;
         type Message = usize;
 
-        fn init(
-            _config: &Self::Config,
-            _: &crate::Capabilities<Self::Requires>,
-        ) -> Init<Self::Model, Self::Message> {
+        fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
             Init::new(Vec::new())
         }
 
         fn update(
             _config: &Self::Config,
-            _: &crate::Capabilities<Self::Requires>,
+            _: &Self::Io,
             model: &mut Self::Model,
             message: Self::Message,
         ) -> Command<Self::Message> {
@@ -347,21 +340,18 @@ mod tests {
         struct Startup;
 
         impl Component for Startup {
-            type Requires = ();
+            type Io = ();
             type Config = ();
             type Model = ();
             type Message = ();
 
-            fn init(
-                _config: &Self::Config,
-                _: &crate::Capabilities<Self::Requires>,
-            ) -> Init<Self::Model, Self::Message> {
+            fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
                 Init::new(()).with_command(Command::after(Duration::ZERO, ()))
             }
 
             fn update(
                 _config: &Self::Config,
-                _: &crate::Capabilities<Self::Requires>,
+                _: &Self::Io,
                 _model: &mut Self::Model,
                 _message: Self::Message,
             ) -> Command<Self::Message> {

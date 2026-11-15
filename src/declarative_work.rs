@@ -125,7 +125,7 @@ mod tests {
     use super::{SubscriptionChange, SubscriptionReconciler};
     use crate::component_kernel::ComponentKernel;
     use crate::{
-        Command, Component, ComponentId, EffectDescriptor, EffectOutcome, Init, SourceCapability,
+        Command, Component, ComponentId, EffectDescriptor, EffectOutcome, Init, Source,
         SourceEvent, StreamDescriptor, Subscription, SubscriptionId, Subscriptions,
     };
 
@@ -150,7 +150,7 @@ mod tests {
     }
 
     fn desired(
-        source: &SourceCapability<StreamDescriptor<u64>>,
+        source: &Source<StreamDescriptor<u64>>,
         binding: &'static str,
     ) -> Subscriptions<Message> {
         Subscriptions::one(
@@ -166,7 +166,7 @@ mod tests {
     struct DesiredComponent;
 
     struct DesiredComponentConfig {
-        source: SourceCapability<StreamDescriptor<u64>>,
+        source: Source<StreamDescriptor<u64>>,
     }
 
     enum DesiredMessage {
@@ -176,21 +176,18 @@ mod tests {
     }
 
     impl Component for DesiredComponent {
-        type Requires = ();
+        type Io = ();
         type Config = DesiredComponentConfig;
         type Model = Option<&'static str>;
         type Message = DesiredMessage;
 
-        fn init(
-            _config: &Self::Config,
-            _: &crate::Capabilities<Self::Requires>,
-        ) -> Init<Self::Model, Self::Message> {
+        fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
             Init::new(Some("one"))
         }
 
         fn update(
             _config: &Self::Config,
-            _: &crate::Capabilities<Self::Requires>,
+            _: &Self::Io,
             model: &mut Self::Model,
             message: Self::Message,
         ) -> Command<Self::Message> {
@@ -204,7 +201,7 @@ mod tests {
 
         fn subscriptions(
             config: &Self::Config,
-            _: &crate::Capabilities<Self::Requires>,
+            _: &Self::Io,
             model: &Self::Model,
         ) -> Subscriptions<Self::Message> {
             match model {
@@ -223,8 +220,7 @@ mod tests {
 
     #[test]
     fn v3_batched_effect_occurrences_keep_distinct_one_shot_mappers() {
-        let (_program, (declared_0,)) = crate::Program::builder::<(crate::Effect<Write>,)>();
-        let write = declared_0;
+        let write = <crate::Effect<Write> as crate::Capabilities>::detached();
         let command = Command::batch([
             crate::Effect::perform(&write, Write(7))
                 .producing(|EffectOutcome::Succeeded(output)| Written { request: 1, output }),
@@ -262,9 +258,7 @@ mod tests {
 
     #[test]
     fn v4_component_kernel_reconciles_the_committed_model_projection() {
-        let (_program, (declared_0,)) =
-            crate::Program::builder::<(crate::Source<StreamDescriptor<u64>>,)>();
-        let source = declared_0;
+        let source = <crate::Source<StreamDescriptor<u64>> as crate::Capabilities>::detached();
         let mut kernel = ComponentKernel::<DesiredComponent>::new(
             ComponentId::new(0, "desired"),
             DesiredComponentConfig { source },
@@ -306,9 +300,7 @@ mod tests {
 
     #[test]
     fn v4_new_equal_changed_and_removed_descriptors_reconcile_lifecycle() {
-        let (_program, (declared_0,)) =
-            crate::Program::builder::<(crate::Source<StreamDescriptor<u64>>,)>();
-        let source = declared_0;
+        let source = <crate::Source<StreamDescriptor<u64>> as crate::Capabilities>::detached();
         let mut reconciler = SubscriptionReconciler::new(ComponentId::new(0, "alpha"));
 
         assert!(matches!(
@@ -343,9 +335,7 @@ mod tests {
 
     #[test]
     fn v4_subscription_identity_is_local_to_one_component() {
-        let (_program, (declared_0,)) =
-            crate::Program::builder::<(crate::Source<StreamDescriptor<u64>>,)>();
-        let source = declared_0;
+        let source = <crate::Source<StreamDescriptor<u64>> as crate::Capabilities>::detached();
         let mut alpha = SubscriptionReconciler::new(ComponentId::new(0, "alpha"));
         let mut beta = SubscriptionReconciler::new(ComponentId::new(1, "beta"));
 
@@ -369,9 +359,7 @@ mod tests {
 
     #[test]
     fn duplicate_desired_identity_is_rejected_before_bookkeeping_changes() {
-        let (_program, (declared_0,)) =
-            crate::Program::builder::<(crate::Source<StreamDescriptor<u64>>,)>();
-        let source = declared_0;
+        let source = <crate::Source<StreamDescriptor<u64>> as crate::Capabilities>::detached();
         let mut reconciler = SubscriptionReconciler::new(ComponentId::new(0, "alpha"));
         let duplicate = vec![
             Subscription::source_with(&source, StreamDescriptor::<u64>::named("one"), Message::Old)
@@ -397,7 +385,7 @@ mod tests {
 
     #[test]
     fn ambiguous_default_slots_do_not_change_existing_bookkeeping() {
-        let (_, (source,)) = crate::Program::builder::<(crate::Source<StreamDescriptor<u64>>,)>();
+        let source = <crate::Source<StreamDescriptor<u64>> as crate::Capabilities>::detached();
         let mut reconciler = SubscriptionReconciler::new(ComponentId::new(0, "probe"));
         let input =
             || Subscription::source_with(&source, StreamDescriptor::named("one"), Message::Old);
@@ -414,9 +402,7 @@ mod tests {
 
     #[test]
     fn v4_retention_preserves_new_mapper_as_unselected_candidate_data() {
-        let (_program, (declared_0,)) =
-            crate::Program::builder::<(crate::Source<StreamDescriptor<u64>>,)>();
-        let source = declared_0;
+        let source = <crate::Source<StreamDescriptor<u64>> as crate::Capabilities>::detached();
         let mut reconciler = SubscriptionReconciler::new(ComponentId::new(0, "alpha"));
         let _ = reconciler
             .reconcile(desired(&source, "one"))
@@ -445,12 +431,10 @@ mod tests {
 
     #[test]
     fn v4_equal_descriptor_with_another_capability_replaces_source() {
-        let (_program, (declared_0, declared_1)) = crate::Program::builder::<(
+        let (first, second) = <(
             crate::Source<StreamDescriptor<u64>>,
             crate::Source<StreamDescriptor<u64>>,
-        )>();
-        let first = declared_0;
-        let second = declared_1;
+        ) as crate::Capabilities>::detached();
         let mut reconciler = SubscriptionReconciler::new(ComponentId::new(0, "alpha"));
 
         let _ = reconciler

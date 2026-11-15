@@ -1,14 +1,3 @@
-type TestProgram = Program<(
-    Effect<IngressObserved>,
-    Effect<RequestObserved>,
-    Effect<AwaitRelease>,
-)>;
-type TestProgram2 = Program<(
-    samara::Effect<IngressObserved>,
-    samara::Effect<RequestObserved>,
-    samara::Effect<AwaitRelease>,
-)>;
-
 use std::{
     convert::Infallible,
     sync::{
@@ -44,21 +33,18 @@ struct PanickingBindingProviderMessage;
 struct PanickingBindingProvider;
 
 impl Component for PanickingBindingProvider {
-    type Requires = ();
+    type Io = ();
     type Config = ();
     type Model = ();
     type Message = PanickingBindingProviderMessage;
 
-    fn init(
-        _config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
-    ) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
         Init::new(())
     }
 
     fn update(
         _config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
+        _: &Self::Io,
         _model: &mut Self::Model,
         _message: Self::Message,
     ) -> Command<Self::Message> {
@@ -78,28 +64,32 @@ enum ProviderMessage {
 
 struct Provider;
 
-struct ProviderConfig {
-    ingress_observed: EffectCapability<IngressObserved>,
-    request_observed: EffectCapability<RequestObserved>,
-    await_release: EffectCapability<AwaitRelease>,
+type ProviderIo = (
+    Effect<IngressObserved>,
+    Effect<RequestObserved>,
+    Effect<AwaitRelease>,
+);
+
+/// A built Program together with its provider's capabilities, which a live
+/// host needs to supply Drivers.
+struct TestProgram {
+    program: Program,
+    io: ProviderIo,
 }
 
 impl Component for Provider {
-    type Requires = ();
-    type Config = ProviderConfig;
+    type Io = ProviderIo;
+    type Config = ();
     type Model = u64;
     type Message = ProviderMessage;
 
-    fn init(
-        _config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
-    ) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
         Init::new(0)
     }
 
     fn update(
-        config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
+        _config: &Self::Config,
+        (ingress_observed, request_observed, await_release): &Self::Io,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -110,7 +100,7 @@ impl Component for Provider {
             }
             ProviderMessage::Host(HostMessage::RecordIngress(value))
             | ProviderMessage::RecordIngressDirect(value) => {
-                Effect::perform(&config.ingress_observed, IngressObserved(value)).discard_outcome()
+                Effect::perform(ingress_observed, IngressObserved(value)).discard_outcome()
             }
             ProviderMessage::Host(HostMessage::Read(reply_with)) => {
                 Command::reply(reply_with, *model)
@@ -122,7 +112,7 @@ impl Component for Provider {
                     Duration::from_millis(10)
                 };
                 Command::batch([
-                    Effect::perform(&config.request_observed, RequestObserved)
+                    Effect::perform(request_observed, RequestObserved)
                         .producing(|_| ProviderMessage::Signalled),
                     Command::after(
                         delay,
@@ -131,7 +121,7 @@ impl Component for Provider {
                 ])
             }
             ProviderMessage::Host(HostMessage::Held(value, reply_with)) => {
-                Effect::perform(&config.await_release, AwaitRelease(value)).producing(
+                Effect::perform(await_release, AwaitRelease(value)).producing(
                     move |EffectOutcome::Succeeded(value)| ProviderMessage::CompleteDelayed {
                         reply_with,
                         value,
@@ -139,7 +129,7 @@ impl Component for Provider {
                 )
             }
             ProviderMessage::Host(HostMessage::Never(_reply_with)) => {
-                Effect::perform(&config.request_observed, RequestObserved)
+                Effect::perform(request_observed, RequestObserved)
                     .producing(|_| ProviderMessage::Signalled)
             }
             ProviderMessage::Host(HostMessage::Crash(_reply_with)) => {
@@ -241,22 +231,11 @@ fn program() -> (TestProgram, Port<HostMessage>) {
 
 /// A Program whose Port binding counts every conversion it performs, so a
 /// test can tell whether a rejected ingress reached the binding at all.
-fn counted_binding_program() -> (TestProgram2, Port<HostMessage>, Arc<AtomicUsize>) {
-    let (mut builder, (declared_0, declared_1, declared_2)) = samara::Program::builder::<(
-        samara::Effect<IngressObserved>,
-        samara::Effect<RequestObserved>,
-        samara::Effect<AwaitRelease>,
-    )>();
+fn counted_binding_program() -> (TestProgram, Port<HostMessage>, Arc<AtomicUsize>) {
+    let mut builder = Program::builder();
     let port = builder.port::<HostMessage>(PortId::new("host"));
-    let ingress_observed = declared_0;
-    let request_observed = declared_1;
-    let await_release = declared_2;
     let provider = builder
-        .component::<Provider>(ProviderConfig {
-            ingress_observed,
-            request_observed,
-            await_release,
-        })
+        .component::<Provider>(())
         .name("provider")
         .finish()
         .expect("component registration");
@@ -269,27 +248,20 @@ fn counted_binding_program() -> (TestProgram2, Port<HostMessage>, Arc<AtomicUsiz
             ProviderMessage::Host(message)
         }),
     );
-    (builder.build().expect("valid Program"), port, conversions)
+    let program = TestProgram {
+        program: builder.build().expect("valid Program"),
+        io: provider.io.clone(),
+    };
+    (program, port, conversions)
 }
 
 /// A Program whose Port binding panics only when converting `Set(0)`, so
 /// earlier sends land before the poisoned one faults the runtime.
-fn selectively_panicking_binding_program() -> (TestProgram2, Port<HostMessage>) {
-    let (mut builder, (declared_0, declared_1, declared_2)) = samara::Program::builder::<(
-        samara::Effect<IngressObserved>,
-        samara::Effect<RequestObserved>,
-        samara::Effect<AwaitRelease>,
-    )>();
+fn selectively_panicking_binding_program() -> (TestProgram, Port<HostMessage>) {
+    let mut builder = Program::builder();
     let port = builder.port::<HostMessage>(PortId::new("host"));
-    let ingress_observed = declared_0;
-    let request_observed = declared_1;
-    let await_release = declared_2;
     let provider = builder
-        .component::<Provider>(ProviderConfig {
-            ingress_observed,
-            request_observed,
-            await_release,
-        })
+        .component::<Provider>(())
         .name("provider")
         .finish()
         .expect("component registration");
@@ -300,11 +272,15 @@ fn selectively_panicking_binding_program() -> (TestProgram2, Port<HostMessage>) 
             other => ProviderMessage::Host(other),
         }),
     );
-    (builder.build().expect("valid Program"), port)
+    let program = TestProgram {
+        program: builder.build().expect("valid Program"),
+        io: provider.io.clone(),
+    };
+    (program, port)
 }
 
 fn panicking_binding_program() -> (Program, Port<BindingMessage>) {
-    let (mut builder, ()) = samara::Program::builder::<()>();
+    let mut builder = Program::builder();
     let port = builder.port::<BindingMessage>(PortId::new("panicking-binding"));
     let provider = builder
         .component::<PanickingBindingProvider>(())
@@ -328,16 +304,18 @@ fn runtime_with_observer(
 ) -> (Runtime, tokio::sync::mpsc::UnboundedReceiver<()>) {
     let (observed, observations) = tokio::sync::mpsc::unbounded_channel();
     let (ingress_observed, _ingress_observations) = tokio::sync::mpsc::unbounded_channel();
-    let caps = program.capabilities().clone();
+    let TestProgram { program, io: caps } = program;
     let runtime = Runtime::builder(program)
-        .with(&caps)
-        .supplied_by((
-            IngressObserver {
-                observed: ingress_observed,
-            },
-            ObservationDriver { observed },
-            ImmediateReleaseDriver,
-        ))
+        .supply(
+            &caps,
+            (
+                IngressObserver {
+                    observed: ingress_observed,
+                },
+                ObservationDriver { observed },
+                ImmediateReleaseDriver,
+            ),
+        )
         .build()
         .expect("valid live bindings");
     (runtime, observations)
@@ -346,18 +324,20 @@ fn runtime_with_observer(
 fn runtime_with_default_effects(program: TestProgram) -> Runtime {
     let (request_observed, _request_observations) = tokio::sync::mpsc::unbounded_channel();
     let (ingress_observed, _ingress_observations) = tokio::sync::mpsc::unbounded_channel();
-    let caps = program.capabilities().clone();
+    let TestProgram { program, io: caps } = program;
     Runtime::builder(program)
-        .with(&caps)
-        .supplied_by((
-            IngressObserver {
-                observed: ingress_observed,
-            },
-            ObservationDriver {
-                observed: request_observed,
-            },
-            ImmediateReleaseDriver,
-        ))
+        .supply(
+            &caps,
+            (
+                IngressObserver {
+                    observed: ingress_observed,
+                },
+                ObservationDriver {
+                    observed: request_observed,
+                },
+                ImmediateReleaseDriver,
+            ),
+        )
         .build()
         .expect("valid default live bindings")
 }
@@ -367,7 +347,7 @@ fn live_port_handle_rejects_a_port_from_another_program() {
     let (program, _) = program();
     let runtime = runtime_with_default_effects(program);
 
-    let (mut foreign_builder, ()) = samara::Program::builder::<()>();
+    let mut foreign_builder = Program::builder();
     let foreign_port = foreign_builder.port::<HostMessage>(PortId::new("host"));
 
     let error = runtime
@@ -405,21 +385,10 @@ async fn live_port_handle_sends_and_returns_typed_request_replies() -> Result<()
 
 #[tokio::test]
 async fn cloned_port_handles_deliver_each_send_exactly_once() -> Result<(), RuntimeError> {
-    let (mut builder, (declared_0, declared_1, declared_2)) = samara::Program::builder::<(
-        samara::Effect<IngressObserved>,
-        samara::Effect<RequestObserved>,
-        samara::Effect<AwaitRelease>,
-    )>();
+    let mut builder = Program::builder();
     let port = builder.port::<HostMessage>(PortId::new("cloned-host"));
-    let ingress_observed = declared_0;
-    let request_observed = declared_1;
-    let await_release = declared_2;
     let provider = builder
-        .component::<Provider>(ProviderConfig {
-            ingress_observed,
-            request_observed,
-            await_release,
-        })
+        .component::<Provider>(())
         .name("cloned-provider")
         .finish()
         .expect("component registration");
@@ -427,16 +396,18 @@ async fn cloned_port_handles_deliver_each_send_exactly_once() -> Result<(), Runt
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
     let (request_observed, _request_observations) = tokio::sync::mpsc::unbounded_channel();
     let program = builder.build().expect("valid cloned-handle Program");
-    let caps = program.capabilities().clone();
+    let caps = provider.io.clone();
     let runtime = Runtime::builder(program)
-        .with(&caps)
-        .supplied_by((
-            IngressObserver { observed },
-            ObservationDriver {
-                observed: request_observed,
-            },
-            ImmediateReleaseDriver,
-        ))
+        .supply(
+            &caps,
+            (
+                IngressObserver { observed },
+                ObservationDriver {
+                    observed: request_observed,
+                },
+                ImmediateReleaseDriver,
+            ),
+        )
         .build()?;
     let host = runtime.port_handle(&port)?;
     let task = runtime.spawn();
@@ -551,21 +522,23 @@ async fn dropping_the_waiter_does_not_cancel_runtime_owned_request_work() -> Res
     let (release, request_release) = tokio::sync::oneshot::channel();
     let (request_observed, _request_observations) = tokio::sync::mpsc::unbounded_channel();
     let (ingress_observed, _ingress_observations) = tokio::sync::mpsc::unbounded_channel();
-    let caps = program.capabilities().clone();
+    let TestProgram { program, io: caps } = program;
     let runtime = Runtime::builder(program)
-        .with(&caps)
-        .supplied_by((
-            IngressObserver {
-                observed: ingress_observed,
-            },
-            ObservationDriver {
-                observed: request_observed,
-            },
-            ReleaseDriver {
-                started: Mutex::new(Some(started)),
-                release: Mutex::new(Some(request_release)),
-            },
-        ))
+        .supply(
+            &caps,
+            (
+                IngressObserver {
+                    observed: ingress_observed,
+                },
+                ObservationDriver {
+                    observed: request_observed,
+                },
+                ReleaseDriver {
+                    started: Mutex::new(Some(started)),
+                    release: Mutex::new(Some(request_release)),
+                },
+            ),
+        )
         .build()?;
     let host = runtime.port_handle(&port)?;
     let task = runtime.spawn();
@@ -620,21 +593,10 @@ async fn dropping_the_runtime_owner_wakes_an_external_request_waiter() -> Result
 
 #[tokio::test]
 async fn component_and_port_ingress_share_one_shutdown_cutoff() -> Result<(), RuntimeError> {
-    let (mut builder, (declared_0, declared_1, declared_2)) = samara::Program::builder::<(
-        samara::Effect<IngressObserved>,
-        samara::Effect<RequestObserved>,
-        samara::Effect<AwaitRelease>,
-    )>();
+    let mut builder = Program::builder();
     let port = builder.port::<HostMessage>(PortId::new("race-host"));
-    let ingress_observed = declared_0;
-    let request_observed = declared_1;
-    let await_release = declared_2;
     let provider = builder
-        .component::<Provider>(ProviderConfig {
-            ingress_observed,
-            request_observed,
-            await_release,
-        })
+        .component::<Provider>(())
         .name("race-provider")
         .finish()
         .expect("component registration");
@@ -642,16 +604,18 @@ async fn component_and_port_ingress_share_one_shutdown_cutoff() -> Result<(), Ru
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
     let (request_observed, _request_observations) = tokio::sync::mpsc::unbounded_channel();
     let program = builder.build().expect("valid race Program");
-    let caps = program.capabilities().clone();
+    let caps = provider.io.clone();
     let runtime = Runtime::builder(program)
-        .with(&caps)
-        .supplied_by((
-            IngressObserver { observed },
-            ObservationDriver {
-                observed: request_observed,
-            },
-            ImmediateReleaseDriver,
-        ))
+        .supply(
+            &caps,
+            (
+                IngressObserver { observed },
+                ObservationDriver {
+                    observed: request_observed,
+                },
+                ImmediateReleaseDriver,
+            ),
+        )
         .build()?;
     let component = runtime.handle(&provider)?;
     let protocol = runtime.port_handle(&port)?;

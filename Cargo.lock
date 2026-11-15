@@ -995,10 +995,20 @@ dependencies = [
  "http",
  "nix",
  "reqwest",
+ "samara-derive",
  "serde",
  "serde_json",
  "thiserror",
  "tokio",
+]
+
+[[package]]
+name = "samara-derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]

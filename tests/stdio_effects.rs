@@ -1,9 +1,3 @@
-type TestProgram = Program<(
-    Effect<PrintStdout>,
-    Effect<PrintStderr>,
-    Effect<ObserveOutput>,
-)>;
-
 use std::convert::Infallible;
 
 use samara::prelude::*;
@@ -43,42 +37,40 @@ enum OutputMessage {
 
 struct OutputProbe;
 
+/// Whether each finished write is reported through `ObserveOutput`.
 struct OutputProbeConfig {
-    stdout: EffectCapability<PrintStdout>,
-    stderr: EffectCapability<PrintStderr>,
-    observe: Option<EffectCapability<ObserveOutput>>,
+    observe: bool,
 }
 
 impl Component for OutputProbe {
-    type Requires = ();
+    type Io = (
+        Effect<PrintStdout>,
+        Effect<PrintStderr>,
+        Effect<ObserveOutput>,
+    );
     type Config = OutputProbeConfig;
     type Model = OutputModel;
     type Message = OutputMessage;
 
-    fn init(
-        _config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
-    ) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
         Init::new(OutputModel::default())
     }
 
     fn update(
         config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
+        (stdout, stderr, observe): &Self::Io,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
         match message {
             OutputMessage::Start => Command::batch([
-                Effect::perform(&config.stdout, PrintStdout::text(""))
-                    .producing(OutputMessage::Finished),
-                Effect::perform(&config.stderr, PrintStderr::text(""))
-                    .producing(OutputMessage::Finished),
+                Effect::perform(stdout, PrintStdout::text("")).producing(OutputMessage::Finished),
+                Effect::perform(stderr, PrintStderr::text("")).producing(OutputMessage::Finished),
             ]),
             OutputMessage::Finished(outcome) => {
                 let EffectOutcome::Succeeded(()) = outcome;
                 model.succeeded += 1;
-                if let Some(observe) = &config.observe {
+                if config.observe {
                     Effect::perform(observe, ObserveOutput(true))
                         .producing(|_| OutputMessage::Observed)
                 } else {
@@ -90,21 +82,10 @@ impl Component for OutputProbe {
     }
 }
 
-fn output_program(observe: bool) -> (TestProgram, ComponentRef<OutputProbe>) {
-    let (mut builder, (declared_0, declared_1, declared_2)) = samara::Program::builder::<(
-        samara::Effect<PrintStdout>,
-        samara::Effect<PrintStderr>,
-        samara::Effect<ObserveOutput>,
-    )>();
-    let stdout = declared_0;
-    let stderr = declared_1;
-    let observe = observe.then_some(declared_2);
+fn output_program(observe: bool) -> (Program, InstalledComponent<OutputProbe>) {
+    let mut builder = Program::builder();
     let probe = builder
-        .component::<OutputProbe>(OutputProbeConfig {
-            stdout,
-            stderr,
-            observe,
-        })
+        .component::<OutputProbe>(OutputProbeConfig { observe })
         .name("standard-output")
         .finish()
         .expect("component registration");
@@ -168,16 +149,17 @@ fn standard_output_effects_are_ordinary_controlled_boundaries() {
 async fn bound_standard_output_drivers_write_and_flush_successfully() {
     let (program, probe) = output_program(true);
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
-    let caps = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with(&caps)
-        .supplied_by((
-            samara::StdoutDriver::new(),
-            samara::StderrDriver::new(),
-            OutputObserver {
-                observations: observed,
-            },
-        ))
+        .supply(
+            &probe.io,
+            (
+                samara::StdoutDriver::new(),
+                samara::StderrDriver::new(),
+                OutputObserver {
+                    observations: observed,
+                },
+            ),
+        )
         .build()
         .expect("valid live output bindings");
     let handle = runtime.handle(&probe).expect("registered output probe");
@@ -202,20 +184,26 @@ impl EffectDriver<PrintStdout> for DuplicateStdoutDriver {
 
 #[test]
 fn stdio_driver_tuple_rejects_duplicate_bindings() {
-    let (program, caps) = Program::builder::<(
-        samara::Effect<PrintStdout>,
-        samara::Effect<PrintStderr>,
-        samara::Effect<PrintStdout>,
-    )>();
-    assert!(
-        Runtime::builder(program.build().unwrap())
-            .with(&caps)
-            .supplied_by((
+    // Drivers are bound per capability (ADR-0028): a second Driver for the
+    // same `Effect<PrintStdout>` is the duplicate.
+    let (program, probe) = output_program(true);
+    let (observed, _observations) = tokio::sync::mpsc::unbounded_channel();
+    let error = Runtime::builder(program)
+        .supply(
+            &probe.io,
+            (
                 samara::StdoutDriver::new(),
                 samara::StderrDriver::new(),
-                DuplicateStdoutDriver,
-            ))
-            .build()
-            .is_err()
-    );
+                OutputObserver {
+                    observations: observed,
+                },
+            ),
+        )
+        .supply(&probe.io.0, DuplicateStdoutDriver)
+        .build()
+        .err()
+        .expect("two Drivers for one capability");
+    let error = error.to_string();
+    assert!(error.contains("duplicate"), "{error}");
+    assert!(error.contains("PrintStdout"), "{error}");
 }

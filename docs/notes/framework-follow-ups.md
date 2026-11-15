@@ -58,7 +58,9 @@ Related research: [Lessons from TypeScript Effect](effect-ts-research.md).
   capabilities; notification delivery-failure semantics; domain-payload trace
   capture, typed trace projections, a public live observer, and durable trace
   storage; exact shutdown diagnostic counts. Each was listed in the vision or
-  glossary before November 8, 2026 and now lives only here.
+  glossary before November 8, 2026 and now lives only here. Since then,
+  named capability structs landed with ADR-0029, and live Drivers are bound
+  per capability, not type-wide (ADR-0028).
 
 ## URL Checker API Exercise — September 23, 2026
 
@@ -157,9 +159,10 @@ a journal Component; exploratory proposals, not accepted API decisions.
   the [Assembly design note](assembly-design.md). Amended November 9 by
   ADR-0018 and ADR-0026: an Assembly declares no Ports and exports one
   value, usually a `Connector`. ADR-0021 resolves Component identity scoping with builder-issued IDs
-  and optional diagnostic names. Still open: named `Requires` positions and a
-  Port-level controlled ingress so an Assembly can be tested from outside its
-  module.
+  and optional diagnostic names. Still open: a Port-level controlled ingress
+  so an Assembly can be tested from outside its module. Named `Requires`
+  positions were resolved November 15, 2026 by ADR-0029: `Requires` is now
+  `Io`, which can be a struct with named fields, and `install` returns it.
 
 - [x] **Connectors as first-class addresses.** Landed November 8, 2026
   (ADR-0014): `Command::send(&target, ..)` over any address, `Command::request(&target, ctor)` and
@@ -187,16 +190,22 @@ a journal Component; exploratory proposals, not accepted API decisions.
 
 - [ ] **Capability manifest, next steps.** `Program::manifest()` landed
   November 15, 2026 as the first piece of capability-based review: it lists
-  kind, descriptor type, and owner. It reports a file as one row per
-  permitted operation and cannot say which of two same-typed capabilities
-  is which; both improve once capabilities have names (next item). An
-  Assembly's capabilities are attributed to the Assembly, not to the member
-  that uses them, until `install` changes under ADR-0028. Descriptor names
-  come from `type_name`, which is stable in practice but not guaranteed.
-  Nothing is enforced by the manifest; sandboxing is a separate question.
+  kind, descriptor type, owner, and field name. Resolved the same day by
+  ADR-0028 and ADR-0029: a row carries the field name when `Io` is a named
+  struct, so two same-typed capabilities can be told apart, and the owner
+  is the Component that uses the capability, not the Assembly that
+  installed it. Still open: a file is reported as one row per permitted
+  operation. Descriptor names come from `type_name`, which is stable in
+  practice but not guaranteed. Nothing is enforced by the manifest;
+  sandboxing is a separate question.
 
-- [ ] **Capability identity within one Component (decide before naming
-  capabilities).** ADR-0028 gives each Component its own capabilities, so
+- [x] **Capability identity within one Component (decide before naming
+  capabilities).** Decided November 15, 2026 by
+  [ADR-0029](../adr/0029-capabilities-are-named-values-a-component-owns.md):
+  the carrier is a name. A Component's `Io` can be a struct with named
+  fields, hand-written or through `#[derive(Capabilities)]`, and the host
+  supplies Drivers field by field. A generated drivers struct was deferred
+  (see the ADR-0029 follow-ups below). Original statement: ADR-0028 gives each Component its own capabilities, so
   two Components can no longer be confused with each other. Inside one
   Component, two capabilities of the same type are still told apart only by
   tuple position: `(File<ReadAppend>, File<ReadAppend>)` accepts its two
@@ -211,8 +220,14 @@ a journal Component; exploratory proposals, not accepted API decisions.
   derive crate are needed at all, so it comes before both. It also bears on
   the ADR-0028 cut-over, which replaces `Requires`.
 
-- [ ] **Finish ADR-0028 (a capability belongs to one Component).**
-  Decided November 15, 2026: registration creates capabilities, nothing is
+- [x] **Finish ADR-0028 (a capability belongs to one Component).**
+  Done November 15, 2026 with the ADR-0029 cut-over: the up-front builder,
+  `Program<R>`, `with(&capabilities)` on registration,
+  `Program::capabilities()`, and the `File` narrowing methods are removed;
+  `Assembly::install` receives no capabilities and returns its members'
+  `Io`; every capability has its own live Driver; using another Component's
+  capability is a runtime fault; the handles expose a public `io` field.
+  Original statement: Decided November 15, 2026: registration creates capabilities, nothing is
   shared, the installed handle carries them for the host, and plain effects
   are bound per capability. The host-facing half landed beside the old API
   (`ProgramBuilder::new()`, bare `finish()`, `InstalledComponent`,
@@ -223,8 +238,14 @@ a journal Component; exploratory proposals, not accepted API decisions.
   usage. The items under ADR-0027 below about type-wide
   binding and the unnamed missing-Driver error are resolved by it.
 
-- [ ] **After ADR-0027 (Drivers supplied per capability value).**
-  Plain `Effect<D>` and type-wide Sources are still bound type-wide: one
+- [x] **After ADR-0027 (Drivers supplied per capability value).**
+  Resolved November 15, 2026 (ADR-0028, ADR-0029). Every capability is
+  bound to its own live Driver, so two clocks can have different Drivers.
+  The missing-Driver error names the owning Component, the field, and the
+  descriptor type. Compile-time completeness was not restored; a generated
+  drivers struct is listed in the ADR-0029 follow-ups below. Controlled
+  execution still controls type-wide sources per descriptor type, also
+  listed there. Original statement: Plain `Effect<D>` and type-wide Sources are still bound type-wide: one
   Driver serves every capability of that descriptor type and a second is a
   duplicate error, so two clocks cannot have different Drivers. Binding by
   value makes exact per-capability binding the natural rule for them too.
@@ -232,14 +253,31 @@ a journal Component; exploratory proposals, not accepted API decisions.
   no name or position to report. Named requirement structs (a macro) would
   restore compile-time completeness and are compatible with this.
 
-- [ ] **Unused declared capabilities go unnoticed.** A capability listed in
-  `Requires` must be driven by every host even if `update` never touches it;
-  pulse's journal requires a clock it binds as `_clock`. Only the
-  unused-variable lint could say so, and the underscore silences it. Likely
-  acceptable; recorded so `Requires` drifting ahead of use is a known shape.
+- [ ] **Unused declared capabilities go unnoticed.** A capability named in
+  `Io` (formerly `Requires`) must be supplied a Driver by every host even if
+  `update` never touches it. When this was recorded, pulse's journal
+  required a clock it bound as `_clock`; only the unused-variable lint could
+  say so, and the underscore silenced it. The journal now uses its clock.
+  Likely acceptable; recorded so `Io` drifting ahead of use is a known shape.
   Also from the journal: answering a request from an effect result costs two
   private Message variants to carry the reply token, more evidence for the
   composition item below.
+
+- [ ] **Follow-ups named by ADR-0029.** Left out of the cut-over or
+  recorded in its Consequences:
+  - `run_until(signal)` in place of spawn, await, and drain.
+  - Registering a Component by value when its `Config` is itself.
+  - Registration that does not return a `Result`.
+  - A generated drivers struct, so a named group can be supplied whole with
+    a missing field as a compile error. Field-by-field `supply` is being
+    lived with first.
+  - Controlled execution still controls type-wide sources per descriptor
+    type, so a controlled test cannot address one of two same-typed
+    type-wide sources separately.
+  - `control_all()` is now redundant: every capability is controlled, and
+    `ControlledRuntime::builder(program).build()` does the same thing.
+  - A file still appears in the manifest as one row per permitted
+    operation.
 
 - [ ] **Leftover spellings after ADR-0023.** The audit accepted the
   `Kind::verb` entry points and the four finishers, and ADR-0023 now records
@@ -259,8 +297,8 @@ a journal Component; exploratory proposals, not accepted API decisions.
   trait or a second Command form.
 
 - [ ] **Single-Component Assembly shortcut (wait for a pattern).** Pulse's
-  Journal has a three-line `install`: register one Component, pass every
-  capability through, export `accepting(map)`. That is the degenerate case of
+  Journal has a two-line `install`: register one Component, then return
+  `accepting(map)` and the Component's `io`. That is the degenerate case of
   a general mechanism, not evidence the mechanism is too strong; `install`
   earns its shape when an Assembly splits authority, wires its own Ports, or
   chooses its front door. If several single-Component Assemblies appear, the

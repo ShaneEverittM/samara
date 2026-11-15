@@ -1,6 +1,9 @@
 # ADR-0026: Assemblies Export One Value
 
-- Status: Accepted. Supersedes the `Accepts` associated type and the tuple
+- Status: Accepted. Amended by
+  [ADR-0029](0029-capabilities-are-named-values-a-component-owns.md):
+  `install` takes no capabilities and returns `(Exports, Io)`, where `Io` is
+  its members' capabilities. `Exports` is unchanged. Supersedes the `Accepts` associated type and the tuple
   result of [ADR-0018](0018-assemblies-export-a-connector.md). ADR-0018's
   rule that Assemblies declare no Ports continues as guidance.
 - Date: November 9, 2026

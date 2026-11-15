@@ -1,7 +1,5 @@
 //! ADR-0011: one request outcome, runtime-owned deadlines, and harmless late replies.
 
-type TestProgram = Program<(Effect<Observation>,)>;
-
 use std::{convert::Infallible, time::Duration};
 
 use samara::prelude::*;
@@ -44,21 +42,18 @@ impl From<ProbeProtocolMessage> for ProviderMessage {
 struct Provider;
 
 impl Component for Provider {
-    type Requires = ();
+    type Io = ();
     type Config = ();
     type Model = Vec<u64>;
     type Message = ProviderMessage;
 
-    fn init(
-        _config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
-    ) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
         Init::default()
     }
 
     fn update(
         _config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
+        _: &Self::Io,
         seen: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -112,25 +107,21 @@ struct Requester;
 
 struct RequesterConfig {
     port: Port<ProbeProtocolMessage>,
-    observe: EffectCapability<Observation>,
 }
 
 impl Component for Requester {
-    type Requires = ();
+    type Io = Effect<Observation>;
     type Config = RequesterConfig;
     type Model = Vec<Observation>;
     type Message = RequesterMessage;
 
-    fn init(
-        _config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
-    ) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
         Init::default()
     }
 
     fn update(
         config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
+        observe: &Self::Io,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -157,23 +148,23 @@ impl Component for Requester {
             },
             RequesterMessage::Outcome(observation) => {
                 model.push(observation.clone());
-                Effect::perform(&config.observe, observation).discard_outcome()
+                Effect::perform(observe, observation).discard_outcome()
             }
         }
     }
 }
 
 struct Fixture {
-    program: TestProgram,
+    program: Program,
+    observe: Effect<Observation>,
     requester: ComponentRef<Requester>,
     provider: ComponentRef<Provider>,
     port: Port<ProbeProtocolMessage>,
 }
 
 fn fixture() -> Fixture {
-    let (mut builder, (declared_0,)) = samara::Program::builder::<(samara::Effect<Observation>,)>();
+    let mut builder = Program::builder();
     let port = builder.port::<ProbeProtocolMessage>(PortId::new("probe"));
-    let observe = declared_0;
     let provider = builder
         .component::<Provider>(())
         .name("provider")
@@ -181,17 +172,15 @@ fn fixture() -> Fixture {
         .expect("component registration");
     builder.connect(&port, &provider.connector());
     let requester = builder
-        .component::<Requester>(RequesterConfig {
-            port: port.clone(),
-            observe,
-        })
+        .component::<Requester>(RequesterConfig { port: port.clone() })
         .name("requester")
         .finish()
         .expect("component registration");
     Fixture {
         program: builder.build().unwrap(),
-        requester,
-        provider,
+        observe: requester.io.clone(),
+        requester: requester.into(),
+        provider: provider.into(),
         port,
     }
 }
@@ -461,13 +450,14 @@ impl EffectDriver<Observation> for Observer {
     }
 }
 
-fn live(program: TestProgram) -> (Runtime, tokio::sync::mpsc::UnboundedReceiver<Observation>) {
+fn live(
+    program: Program,
+    observe: &Effect<Observation>,
+) -> (Runtime, tokio::sync::mpsc::UnboundedReceiver<Observation>) {
     let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
-    let caps = program.capabilities().clone();
     (
         Runtime::builder(program)
-            .with(&caps)
-            .supplied_by((Observer(sender),))
+            .supply(observe, Observer(sender))
             .build()
             .unwrap(),
         receiver,
@@ -477,9 +467,12 @@ fn live(program: TestProgram) -> (Runtime, tokio::sync::mpsc::UnboundedReceiver<
 #[tokio::test(start_paused = true)]
 async fn live_component_timeout_and_late_reply_drain_cleanly() {
     let Fixture {
-        program, requester, ..
+        program,
+        requester,
+        observe,
+        ..
     } = fixture();
-    let (runtime, mut observed) = live(program);
+    let (runtime, mut observed) = live(program, &observe);
     let handle = runtime.handle(&requester).unwrap();
     let task = runtime.spawn();
     handle
@@ -505,9 +498,12 @@ async fn live_component_timeout_and_late_reply_drain_cleanly() {
 #[tokio::test(start_paused = true)]
 async fn live_reply_cancels_deadline_task_without_delaying_drain() {
     let Fixture {
-        program, requester, ..
+        program,
+        requester,
+        observe,
+        ..
     } = fixture();
-    let (runtime, mut observed) = live(program);
+    let (runtime, mut observed) = live(program, &observe);
     let handle = runtime.handle(&requester).unwrap();
     let task = runtime.spawn();
     let before = tokio::time::Instant::now();
@@ -531,8 +527,13 @@ async fn live_reply_cancels_deadline_task_without_delaying_drain() {
 
 #[tokio::test(start_paused = true)]
 async fn host_timeout_includes_time_queued_before_owner_starts() {
-    let Fixture { program, port, .. } = fixture();
-    let (runtime, _observed) = live(program);
+    let Fixture {
+        program,
+        port,
+        observe,
+        ..
+    } = fixture();
+    let (runtime, _observed) = live(program, &observe);
     let port = runtime.port_handle(&port).unwrap();
     let mut request = Box::pin(port.request_to_timeout(ask(7, Some(Duration::ZERO)), SECOND));
     assert!(futures_util::poll!(request.as_mut()).is_pending());
@@ -544,8 +545,13 @@ async fn host_timeout_includes_time_queued_before_owner_starts() {
 
 #[tokio::test(start_paused = true)]
 async fn dropped_host_waiter_keeps_deadline_and_drain_releases_unanswered_request() {
-    let Fixture { program, port, .. } = fixture();
-    let (runtime, _observed) = live(program);
+    let Fixture {
+        program,
+        port,
+        observe,
+        ..
+    } = fixture();
+    let (runtime, _observed) = live(program, &observe);
     let port = runtime.port_handle(&port).unwrap();
     let mut request = Box::pin(port.request_to_timeout(ask(7, None), SECOND));
     assert!(futures_util::poll!(request.as_mut()).is_pending());
@@ -566,8 +572,13 @@ async fn dropped_host_waiter_keeps_deadline_and_drain_releases_unanswered_reques
 #[tokio::test(start_paused = true)]
 async fn live_zero_and_equal_deadlines_timeout() {
     for duration in [Duration::ZERO, SECOND] {
-        let Fixture { program, port, .. } = fixture();
-        let (runtime, _observed) = live(program);
+        let Fixture {
+            program,
+            port,
+            observe,
+            ..
+        } = fixture();
+        let (runtime, _observed) = live(program, &observe);
         let port = runtime.port_handle(&port).unwrap();
         let task = runtime.spawn();
         assert_eq!(
@@ -582,8 +593,13 @@ async fn live_zero_and_equal_deadlines_timeout() {
 
 #[tokio::test(start_paused = true)]
 async fn live_concurrent_host_timeouts_keep_correlation() {
-    let Fixture { program, port, .. } = fixture();
-    let (runtime, _observed) = live(program);
+    let Fixture {
+        program,
+        port,
+        observe,
+        ..
+    } = fixture();
+    let (runtime, _observed) = live(program, &observe);
     let port = runtime.port_handle(&port).unwrap();
     let task = runtime.spawn();
     let (late, early) = tokio::join!(
@@ -601,9 +617,10 @@ async fn live_scope_cancel_does_not_manufacture_timeout() {
         program,
         requester,
         port,
+        observe,
         ..
     } = fixture();
-    let (runtime, mut observed) = live(program);
+    let (runtime, mut observed) = live(program, &observe);
     let handle = runtime.handle(&requester).unwrap();
     let port = runtime.port_handle(&port).unwrap();
     let task = runtime.spawn();
@@ -621,8 +638,13 @@ async fn live_scope_cancel_does_not_manufacture_timeout() {
 
 #[tokio::test(start_paused = true)]
 async fn live_timeout_preserves_runtime_fault_and_rejects_overflow() {
-    let Fixture { program, port, .. } = fixture();
-    let (runtime, _observed) = live(program);
+    let Fixture {
+        program,
+        port,
+        observe,
+        ..
+    } = fixture();
+    let (runtime, _observed) = live(program, &observe);
     let port = runtime.port_handle(&port).unwrap();
     let task = runtime.spawn();
     let overflow = port

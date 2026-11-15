@@ -2,7 +2,14 @@ use bytes::Bytes;
 use samara::prelude::*;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Records confirmed transitions through the declared filesystem capability.
+/// Everything the journal can reach: its file and the clock.
+#[derive(Clone, Capabilities)]
+pub struct JournalIo {
+    pub file: File<ReadAppend>,
+    pub clock: Effect<ReadSystemTime>,
+}
+
+/// Records confirmed transitions through its file.
 struct Recorder;
 
 enum Message {
@@ -17,29 +24,27 @@ enum Message {
 struct Model;
 
 impl Component for Recorder {
-    type Requires = (File<ReadAppend>, Effect<ReadSystemTime>);
+    type Io = JournalIo;
     type Config = ();
     type Model = Model;
     type Message = Message;
 
-    fn init(_: &(), _: &Capabilities<Self::Requires>) -> Init<Model, Message> {
+    fn init(_: &(), _: &Self::Io) -> Init<Model, Message> {
         Init::default()
     }
 
-    fn update(
-        _: &(),
-        (file, clock): &Capabilities<Self::Requires>,
-        _: &mut Model,
-        message: Message,
-    ) -> Command<Message> {
+    fn update(_: &(), io: &JournalIo, _: &mut Model, message: Message) -> Command<Message> {
         match message {
             // An external request.
             Message::Journal(journal) => match journal {
-                JournalMessage::Transition(transition) => Effect::perform(clock, ReadSystemTime)
-                    .producing(|EffectOutcome::Succeeded(time)| Message::Time { time, transition }),
+                JournalMessage::Transition(transition) => {
+                    Effect::perform(&io.clock, ReadSystemTime).producing(
+                        |EffectOutcome::Succeeded(time)| Message::Time { time, transition },
+                    )
+                }
 
                 JournalMessage::Recent { count, reply } => {
-                    File::read(file).finish_with(move |outcome| {
+                    File::read(&io.file).finish_with(move |outcome| {
                         Command::reply(
                             reply,
                             match outcome {
@@ -56,7 +61,7 @@ impl Component for Recorder {
                 time,
                 transition: Transition { name, from, to },
             } => File::append_line(
-                file,
+                &io.file,
                 format!(
                     "[{}]{name}: {from} -> {to}",
                     time.duration_since(UNIX_EPOCH).unwrap().as_millis()
@@ -115,21 +120,14 @@ pub enum JournalMessage {
 impl Assembly for Journal {
     type Config = ();
     type Exports = Connector<JournalMessage>;
-    type Requires = (File<ReadAppend>, Effect<ReadSystemTime>);
+    type Io = JournalIo;
 
-    fn install<R>(
-        program: &mut ProgramBuilder<R>,
+    fn install(
+        program: &mut ProgramBuilder,
         _: Self::Config,
-        capabilities: Capabilities<Self::Requires>,
-    ) -> Result<Connector<JournalMessage>, ProgramBuildError>
-    where
-        R: Requirements,
-    {
-        let recorder = program
-            .component::<Recorder>(())
-            .with(&capabilities)
-            .finish()?;
-        Ok(recorder.accepting(Message::Journal))
+    ) -> Result<(Connector<JournalMessage>, JournalIo), ProgramBuildError> {
+        let recorder = program.component::<Recorder>(()).finish()?;
+        Ok((recorder.accepting(Message::Journal), recorder.io.clone()))
     }
 }
 

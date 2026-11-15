@@ -31,15 +31,12 @@ impl EffectDriver<Tag> for NamedDriver {
 /// Tags itself once at startup and remembers who answered.
 struct Asker;
 impl Component for Asker {
-    type Requires = (Effect<Tag>,);
+    type Io = (Effect<Tag>,);
     type Config = &'static str;
     type Model = Option<&'static str>;
     type Message = &'static str;
 
-    fn init(
-        label: &&'static str,
-        (tag,): &Capabilities<Self::Requires>,
-    ) -> Init<Self::Model, Self::Message> {
+    fn init(label: &&'static str, (tag,): &Self::Io) -> Init<Self::Model, Self::Message> {
         Init::new(None).with_command(
             Effect::perform(tag, Tag(label)).producing(|EffectOutcome::Succeeded(by)| by),
         )
@@ -47,7 +44,7 @@ impl Component for Asker {
 
     fn update(
         _: &&'static str,
-        _: &Capabilities<Self::Requires>,
+        _: &Self::Io,
         answered_by: &mut Self::Model,
         by: &'static str,
     ) -> Command<Self::Message> {
@@ -58,22 +55,26 @@ impl Component for Asker {
 
 #[tokio::test]
 async fn two_components_with_the_same_effect_each_get_their_own_driver() {
-    let mut builder = ProgramBuilder::new();
+    let mut builder = Program::builder();
     let first = builder.component::<Asker>("first").finish().unwrap();
     let second = builder.component::<Asker>("second").finish().unwrap();
 
     let seen = Seen::default();
     let runtime = Runtime::builder(builder.build().unwrap())
-        .with(second.capabilities())
-        .supplied_by((NamedDriver {
-            name: "driver for second",
-            seen: seen.clone(),
-        },))
-        .with(first.capabilities())
-        .supplied_by((NamedDriver {
-            name: "driver for first",
-            seen: seen.clone(),
-        },))
+        .supply(
+            &second.io,
+            (NamedDriver {
+                name: "driver for second",
+                seen: seen.clone(),
+            },),
+        )
+        .supply(
+            &first.io,
+            (NamedDriver {
+                name: "driver for first",
+                seen: seen.clone(),
+            },),
+        )
         .build()
         .expect("each capability has its own Driver");
 
@@ -93,27 +94,30 @@ async fn two_components_with_the_same_effect_each_get_their_own_driver() {
 
 #[test]
 fn a_component_left_without_its_driver_fails_the_build() {
-    let mut builder = ProgramBuilder::new();
+    let mut builder = Program::builder();
     let first = builder.component::<Asker>("first").finish().unwrap();
     let _second = builder.component::<Asker>("second").finish().unwrap();
 
     let error = Runtime::builder(builder.build().unwrap())
-        .with(first.capabilities())
-        .supplied_by((NamedDriver {
-            name: "only one",
-            seen: Seen::default(),
-        },))
+        .supply(
+            &first.io,
+            (NamedDriver {
+                name: "only one",
+                seen: Seen::default(),
+            },),
+        )
         .build()
         .err()
         .expect("the second Component has no Driver")
         .to_string();
     assert!(error.contains("Tag"), "{error}");
+    assert!(error.contains("owned_capabilities::Asker"), "{error}");
     assert!(error.contains("0 live bindings"), "{error}");
 }
 
 #[test]
 fn controlled_execution_controls_capabilities_created_at_registration() {
-    let mut builder = ProgramBuilder::new();
+    let mut builder = Program::builder();
     let first = builder.component::<Asker>("first").finish().unwrap();
     let second = builder.component::<Asker>("second").finish().unwrap();
 
@@ -135,44 +139,44 @@ fn controlled_execution_controls_capabilities_created_at_registration() {
     assert_eq!(*runtime.state(&second).unwrap(), Some("two"));
 }
 
-/// A one-Component Assembly, written as Assemblies are today.
+/// A one-Component Assembly: its capabilities are its member's.
 struct Tagging;
 impl Assembly for Tagging {
     type Config = &'static str;
     type Exports = Connector<&'static str>;
-    type Requires = (Effect<Tag>,);
+    type Io = (Effect<Tag>,);
 
-    fn install<R: Requirements>(
-        program: &mut ProgramBuilder<R>,
+    fn install(
+        program: &mut ProgramBuilder,
         label: &'static str,
-        capabilities: Capabilities<Self::Requires>,
-    ) -> Result<Self::Exports, ProgramBuildError> {
-        let asker = program
-            .component::<Asker>(label)
-            .with(&capabilities)
-            .finish()?;
-        Ok(asker.connector())
+    ) -> Result<(Self::Exports, Self::Io), ProgramBuildError> {
+        let asker = program.component::<Asker>(label).finish()?;
+        Ok((asker.connector(), asker.io.clone()))
     }
 }
 
 #[tokio::test]
 async fn an_installed_assembly_carries_its_capabilities_for_the_host() {
-    let mut builder = ProgramBuilder::new();
+    let mut builder = Program::builder();
     let left = builder.install::<Tagging>("left").finish().unwrap();
     let right = builder.install::<Tagging>("right").finish().unwrap();
 
     let seen = Seen::default();
     let runtime = Runtime::builder(builder.build().unwrap())
-        .with(left.capabilities())
-        .supplied_by((NamedDriver {
-            name: "left driver",
-            seen: seen.clone(),
-        },))
-        .with(right.capabilities())
-        .supplied_by((NamedDriver {
-            name: "right driver",
-            seen: seen.clone(),
-        },))
+        .supply(
+            &left.io,
+            (NamedDriver {
+                name: "left driver",
+                seen: seen.clone(),
+            },),
+        )
+        .supply(
+            &right.io,
+            (NamedDriver {
+                name: "right driver",
+                seen: seen.clone(),
+            },),
+        )
         .build()
         .expect("each installation has its own Driver");
 
@@ -186,35 +190,48 @@ async fn an_installed_assembly_carries_its_capabilities_for_the_host() {
 
 struct Quiet;
 impl Component for Quiet {
-    type Requires = ();
+    type Io = ();
     type Config = ();
     type Model = ();
     type Message = ();
 
-    fn init(_: &(), _: &Capabilities<()>) -> Init<(), ()> {
+    fn init(_: &(), _: &()) -> Init<(), ()> {
         Init::new(())
     }
 
-    fn update(_: &(), _: &Capabilities<()>, (): &mut (), (): ()) -> Command<()> {
+    fn update(_: &(), _: &(), (): &mut (), (): ()) -> Command<()> {
         Command::none()
     }
 }
 
 #[test]
-fn a_component_that_requires_nothing_returns_its_plain_reference() {
-    let mut builder = ProgramBuilder::new();
-    let quiet: ComponentRef<Quiet> = builder.component::<Quiet>(()).finish().unwrap();
+fn a_component_with_no_capabilities_is_installed_like_any_other() {
+    let mut builder = Program::builder();
+    let quiet: InstalledComponent<Quiet> = builder.component::<Quiet>(()).finish().unwrap();
     let asker: InstalledComponent<Asker> = builder.component::<Asker>("asker").finish().unwrap();
+    let () = quiet.io;
     // The handle is an address and offers what a ComponentRef does.
     let _: Connector<&'static str> = asker.connector();
     let _: &ComponentRef<Asker> = asker.reference();
+    let _: &ComponentRef<Quiet> = quiet.reference();
     assert_ne!(quiet.id(), asker.id());
+    // Nothing needs a Driver on Quiet's account.
+    let error = Runtime::builder(builder.build().unwrap())
+        .build()
+        .err()
+        .expect("only the Asker's Tag is unsupplied")
+        .to_string();
+    assert!(error.contains("owned_capabilities::Asker"), "{error}");
 }
 
 #[test]
 fn a_program_lists_every_capability_it_declared_and_who_owns_it() {
-    let mut builder = ProgramBuilder::new();
-    builder.component::<Asker>("first").finish().unwrap();
+    let mut builder = Program::builder();
+    builder
+        .component::<Asker>("first")
+        .name("first")
+        .finish()
+        .unwrap();
     builder.component::<Quiet>(()).finish().unwrap();
     builder.install::<Tagging>("left").finish().unwrap();
     let manifest = builder.build().unwrap().manifest();
@@ -222,29 +239,225 @@ fn a_program_lists_every_capability_it_declared_and_who_owns_it() {
     let owners: Vec<_> = manifest
         .entries()
         .iter()
-        .map(|entry| (entry.owner.as_deref().unwrap(), entry.kind))
+        .map(|entry| (entry.owner.as_str(), entry.name.as_deref(), entry.kind))
         .collect();
     assert_eq!(
         owners,
         [
-            ("owned_capabilities::Asker", CapabilityKind::Effect),
-            ("owned_capabilities::Tagging", CapabilityKind::Effect),
+            ("first", None, CapabilityKind::Effect),
+            ("owned_capabilities::Asker", None, CapabilityKind::Effect),
         ]
     );
     assert_eq!(
         manifest.to_string(),
-        "owned_capabilities::Asker: effect owned_capabilities::Tag\n\
-         owned_capabilities::Tagging: effect owned_capabilities::Tag\n"
+        "first: effect owned_capabilities::Tag\n\
+         owned_capabilities::Asker: effect owned_capabilities::Tag\n"
+    );
+}
+
+/// Ongoing ticks from the world.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Ticks;
+impl SourceDescriptor for Ticks {
+    type Terminal = Self;
+    type Item = u8;
+    type Error = Infallible;
+}
+
+struct SilentTicks;
+impl SourceDriver<Ticks> for SilentTicks {
+    fn run(&self, _: Ticks, _: SourceSink<Ticks>) -> BoxFuture<()> {
+        Box::pin(std::future::pending())
+    }
+}
+
+/// Two capabilities, each with a name.
+#[derive(Clone, Capabilities)]
+struct DeskIo {
+    tag: Effect<Tag>,
+    ticks: Source<Ticks>,
+}
+
+struct Desk;
+impl Component for Desk {
+    type Io = DeskIo;
+    type Config = ();
+    type Model = ();
+    type Message = SourceEvent<u8, Infallible>;
+
+    fn init(_: &(), io: &DeskIo) -> Init<(), Self::Message> {
+        Init::new(()).with_command(Effect::perform(&io.tag, Tag("desk")).discard_outcome())
+    }
+
+    fn update(_: &(), _: &DeskIo, (): &mut (), _: Self::Message) -> Command<Self::Message> {
+        Command::none()
+    }
+
+    fn subscriptions(_: &(), io: &DeskIo, (): &()) -> Subscriptions<Self::Message> {
+        Subscriptions::one(Subscription::source(&io.ticks, Ticks))
+    }
+}
+
+fn desk_program() -> (Program, InstalledComponent<Desk>) {
+    let mut builder = Program::builder();
+    let desk = builder.component::<Desk>(()).name("desk").finish().unwrap();
+    (builder.build().unwrap(), desk)
+}
+
+#[test]
+fn every_capability_in_the_manifest_has_an_owner() {
+    // ADR-0028: there is no up-front declaration, so no capability is
+    // ownerless. Named fields add the field to the owner.
+    let (program, _desk) = desk_program();
+    let manifest = program.manifest();
+    assert_eq!(
+        manifest
+            .entries()
+            .iter()
+            .map(|entry| (entry.owner.as_str(), entry.name.as_deref(), entry.kind))
+            .collect::<Vec<_>>(),
+        [
+            ("desk", Some("tag"), CapabilityKind::Effect),
+            ("desk", Some("ticks"), CapabilityKind::Source),
+        ]
+    );
+    assert_eq!(
+        manifest.to_string(),
+        "desk.tag: effect owned_capabilities::Tag\n\
+         desk.ticks: source owned_capabilities::Ticks\n"
     );
 }
 
 #[test]
-fn a_capability_declared_up_front_has_no_owner_in_the_manifest() {
-    let (builder, _) = Program::builder::<(Effect<Tag>, Source<StdinLines>)>();
-    let manifest = builder.build().unwrap().manifest();
-    assert_eq!(
-        manifest.to_string(),
-        "(declared up front): effect owned_capabilities::Tag\n\
-         (declared up front): source samara::StdinLines\n"
+fn a_missing_driver_for_a_named_field_is_reported_as_owner_dot_field() {
+    let (program, _desk) = desk_program();
+    let error = Runtime::builder(program)
+        .build()
+        .err()
+        .expect("nothing was supplied")
+        .to_string();
+    assert!(error.contains("Effect capability desk.tag"), "{error}");
+    assert!(error.contains("0 live bindings"), "{error}");
+
+    let (program, desk) = desk_program();
+    let error = Runtime::builder(program)
+        .supply(
+            &desk.io.tag,
+            NamedDriver {
+                name: "desk driver",
+                seen: Seen::default(),
+            },
+        )
+        .build()
+        .err()
+        .expect("the ticks Source has no Driver")
+        .to_string();
+    assert!(error.contains("Source capability desk.ticks"), "{error}");
+    assert!(error.contains("0 live bindings"), "{error}");
+
+    let (program, desk) = desk_program();
+    Runtime::builder(program)
+        .supply(
+            &desk.io.tag,
+            NamedDriver {
+                name: "desk driver",
+                seen: Seen::default(),
+            },
+        )
+        .supply(&desk.io.ticks, DrivenSource::new(SilentTicks))
+        .build()
+        .expect("both named capabilities are supplied");
+}
+
+/// Owns a Tag of its own but, when told to, uses one that was created for
+/// another Component and smuggled in through Config.
+struct Borrower;
+impl Component for Borrower {
+    type Io = (Effect<Tag>,);
+    type Config = (Effect<Tag>,);
+    type Model = ();
+    type Message = ();
+
+    fn init(_: &Self::Config, _: &Self::Io) -> Init<(), ()> {
+        Init::new(())
+    }
+
+    fn update((theirs,): &Self::Config, _: &Self::Io, (): &mut (), (): ()) -> Command<()> {
+        Effect::perform(theirs, Tag("borrower")).discard_outcome()
+    }
+}
+
+fn borrowing_program() -> (
+    Program,
+    InstalledComponent<Asker>,
+    InstalledComponent<Borrower>,
+) {
+    let mut builder = Program::builder();
+    let owner = builder.component::<Asker>("owner").finish().unwrap();
+    let borrower = builder
+        .component::<Borrower>(owner.io.clone())
+        .finish()
+        .unwrap();
+    (builder.build().unwrap(), owner, borrower)
+}
+
+#[test]
+fn using_another_components_capability_faults_in_controlled_execution() {
+    let (program, _owner, borrower) = borrowing_program();
+    let mut runtime = ControlledRuntime::builder(program)
+        .control_all()
+        .build()
+        .expect("every capability is controlled");
+    runtime.run_until_idle().unwrap();
+    let owners_own = runtime
+        .next_effect::<Tag>()
+        .expect("the owner's startup Tag");
+    assert_eq!(owners_own.intent.0, "owner");
+
+    runtime.send(&borrower, ()).unwrap();
+    let error = runtime
+        .run_until_idle()
+        .expect_err("the capability was created for the owner")
+        .to_string();
+    assert!(error.contains("belongs to another Component"), "{error}");
+    assert!(runtime.next_effect::<Tag>().is_err());
+}
+
+#[tokio::test]
+async fn using_another_components_capability_faults_in_live_execution() {
+    let (program, owner, borrower) = borrowing_program();
+    let seen = Seen::default();
+    let runtime = Runtime::builder(program)
+        .supply(
+            &owner.io,
+            (NamedDriver {
+                name: "owner driver",
+                seen: seen.clone(),
+            },),
+        )
+        .supply(
+            &borrower.io,
+            (NamedDriver {
+                name: "borrower driver",
+                seen: seen.clone(),
+            },),
+        )
+        .build()
+        .expect("each capability has its own Driver");
+    let handle = runtime.handle(&borrower).unwrap();
+    let mut task = runtime.spawn();
+    handle.send(()).await.unwrap();
+    let error = tokio::time::timeout(std::time::Duration::from_secs(2), task.run_forever())
+        .await
+        .expect("the fault must surface promptly")
+        .expect_err("the capability was created for the owner")
+        .to_string();
+    assert!(error.contains("belongs to another Component"), "{error}");
+    // Neither Driver ran on the Borrower's behalf.
+    assert!(
+        seen.lock()
+            .unwrap()
+            .iter()
+            .all(|(_, asker)| *asker != "borrower")
     );
 }

@@ -1,0 +1,13 @@
+[package]
+name = "samara-derive"
+version = "0.1.0"
+edition = "2024"
+description = "Derive macros for samara"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["derive"] }

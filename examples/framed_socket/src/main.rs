@@ -20,11 +20,6 @@
 
 #![allow(dead_code)]
 
-type AppProgram = Program<(
-    Effect<StoreFrame>,
-    Source<samara::Framed<TcpBytes, U16LengthDelimited>>,
-)>;
-
 use std::{future::pending, sync::Arc};
 
 use samara::prelude::*;
@@ -264,21 +259,18 @@ impl From<HealthProtocolMessage> for HealthMessage {
 struct Health;
 
 impl Component for Health {
-    type Requires = ();
+    type Io = ();
     type Config = ();
     type Model = HealthModel;
     type Message = HealthMessage;
 
-    fn init(
-        _config: &Self::Config,
-        _: &Capabilities<Self::Requires>,
-    ) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
         Init::new(HealthModel::default())
     }
 
     fn update(
         _config: &Self::Config,
-        _: &Capabilities<Self::Requires>,
+        _: &Self::Io,
         model: &mut Self::Model,
         HealthMessage::Protocol(message): Self::Message,
     ) -> Command<Self::Message> {
@@ -415,6 +407,17 @@ struct TelemetryConfig {
     health: Port<HealthProtocolMessage>,
 }
 
+/// Everything one Telemetry Component can reach in the world. Registration
+/// creates these for it alone; the host supplies a live Driver for each.
+#[derive(Clone, Capabilities)]
+struct TelemetryIo {
+    /// Authority to store decoded frames.
+    storage: Effect<StoreFrame>,
+
+    /// Authority for the framed socket feed.
+    socket: Source<TelemetryFeed>,
+}
+
 /// Builds the pure continuation for one asynchronous health request.
 ///
 /// Ordinary function calls get dynamic correlation from the call stack. A
@@ -428,21 +431,18 @@ fn health_checked(
 }
 
 impl Component for Telemetry {
-    type Requires = (Effect<StoreFrame>, Source<TelemetryFeed>);
+    type Io = TelemetryIo;
     type Config = TelemetryConfig;
     type Model = TelemetryModel;
     type Message = TelemetryMessage;
 
-    fn init(
-        _config: &Self::Config,
-        _capabilities: &Capabilities<Self::Requires>,
-    ) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config, _io: &Self::Io) -> Init<Self::Model, Self::Message> {
         Init::new(TelemetryModel::default())
     }
 
     fn update(
         telemetry: &Self::Config,
-        capabilities: &Capabilities<Self::Requires>,
+        io: &Self::Io,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -469,7 +469,7 @@ impl Component for Telemetry {
                 // performing either operation inline.
                 Command::batch([
                     Command::send(&telemetry.health, HealthProtocolMessage::FrameSeen),
-                    Effect::perform(&capabilities.0, StoreFrame { frame })
+                    Effect::perform(&io.storage, StoreFrame { frame })
                         .producing(TelemetryMessage::Stored),
                 ])
             }
@@ -512,7 +512,7 @@ impl Component for Telemetry {
 
     fn subscriptions(
         _telemetry: &Self::Config,
-        capabilities: &Capabilities<Self::Requires>,
+        io: &Self::Io,
         model: &Self::Model,
     ) -> Subscriptions<Self::Message> {
         // Subscriptions are a pure projection of current Model state, analogous
@@ -526,7 +526,7 @@ impl Component for Telemetry {
         // descriptor replaces it while keeping the logical subscription
         // identity.
         Subscriptions::one(Subscription::source_with(
-            &capabilities.1,
+            &io.socket,
             Framed::new(
                 TcpBytes {
                     endpoint: config.endpoint.clone(),
@@ -565,16 +565,15 @@ impl EffectDriver<StoreFrame> for LiveFrameStore {
 /// inspect the named dependency without exposing provider internals to consumers.
 struct AppRefs {
     /// Direct low-level reference to the health Component.
-    health: ComponentRef<Health>,
+    health: InstalledComponent<Health>,
 
     /// Named Port bound to the health provider.
     health_port: Port<HealthProtocolMessage>,
 
-    /// Reference used by the host to send telemetry messages.
-    telemetry: ComponentRef<Telemetry>,
-
-    /// Source capability retained for controlled input selection.
-    socket: SourceCapability<TelemetryFeed>,
+    /// Reference used by the host to send telemetry messages. Its `io` holds
+    /// Telemetry's capabilities, which live execution supplies Drivers for
+    /// and controlled execution uses to select input.
+    telemetry: InstalledComponent<Telemetry>,
 }
 
 /// Declares the Component graph and resolves Port dependency injection.
@@ -582,9 +581,8 @@ struct AppRefs {
 /// Port declaration, provider binding, and consumer construction happen in one
 /// explicit composition root. The runtime receives a closed `Program` rather
 /// than asking Components to discover dependencies dynamically.
-fn program() -> (AppProgram, AppRefs) {
-    let (mut program, (storage, socket)) =
-        Program::builder::<(Effect<StoreFrame>, Source<TelemetryFeed>)>();
+fn program() -> (Program, AppRefs) {
+    let mut program = Program::builder();
 
     // A named Port permits multiple independently bound instances of the same
     // message enum; the message's Rust type alone is not a global service key.
@@ -602,7 +600,6 @@ fn program() -> (AppProgram, AppRefs) {
         .component::<Telemetry>(TelemetryConfig {
             health: health_port.clone(),
         })
-        .with(&(storage, socket.clone()))
         .finish()
         .expect("component registration");
 
@@ -612,7 +609,6 @@ fn program() -> (AppProgram, AppRefs) {
             health,
             health_port,
             telemetry,
-            socket,
         },
     )
 }
@@ -630,10 +626,12 @@ fn config(endpoint: &str, generation: u64) -> FeedConfig {
 /// structured shutdown through the runtime owner.
 async fn live_shape() -> Result<(), RuntimeError> {
     let (program, refs) = program();
-    let caps = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with(&caps)
-        .supplied_by((LiveFrameStore, samara::DrivenSource::new(TokioTcpBytes)))
+        .supply(&refs.telemetry.io.storage, LiveFrameStore)
+        .supply(
+            &refs.telemetry.io.socket,
+            samara::DrivenSource::new(TokioTcpBytes),
+        )
         .build()?;
 
     let telemetry = runtime.handle(&refs.telemetry)?;
@@ -669,7 +667,7 @@ fn controlled_shape() -> Result<(), RuntimeError> {
 
     // Controlled execution exposes declared runtime state for assertions; it
     // does not require poking at a Driver's private task or socket.
-    let socket = &refs.socket;
+    let socket = &refs.telemetry.io.socket;
     let active: TelemetryFeed = runtime.source_descriptor(&refs.telemetry, socket)?;
     assert_eq!(active.source.endpoint, Endpoint::new("simulated:7000"));
 
@@ -737,6 +735,14 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A Telemetry Component's wiring and capabilities for calling its
+    /// functions directly. The capabilities belong to no Program, which is
+    /// enough to inspect the Commands and Subscriptions they produce.
+    fn telemetry_fixture() -> (TelemetryConfig, TelemetryIo) {
+        let health = Program::builder().port(PortId::new(HEALTH));
+        (TelemetryConfig { health }, TelemetryIo::detached())
+    }
 
     /// Activates the controlled path through Port sends, composed Source
     /// Layers, typed effects, replacement, and failure input.
@@ -809,30 +815,26 @@ mod tests {
     /// logical subscription retains the same stable identity.
     #[test]
     fn same_subscription_identity_exposes_changed_configuration() {
-        let (mut builder, (declared_0, declared_1)) =
-            Program::builder::<(Effect<StoreFrame>, Source<TelemetryFeed>)>();
-        let health = builder.port(PortId::new(HEALTH));
-        let (component, component_capabilities) =
-            (TelemetryConfig { health }, (declared_0, declared_1));
-        let mut model = Telemetry::init(&component, &component_capabilities).model;
-        let id = &component_capabilities.1;
+        let (component, io) = telemetry_fixture();
+        let mut model = Telemetry::init(&component, &io).model;
+        let id = &io.socket;
 
         let _ = Telemetry::update(
             &component,
-            &component_capabilities,
+            &io,
             &mut model,
             TelemetryMessage::Connect(config("one:7000", 1)),
         );
-        let first = Telemetry::subscriptions(&component, &component_capabilities, &model);
+        let first = Telemetry::subscriptions(&component, &io, &model);
         let first = first.find::<TelemetryFeed>(id).unwrap();
 
         let _ = Telemetry::update(
             &component,
-            &component_capabilities,
+            &io,
             &mut model,
             TelemetryMessage::Connect(config("two:7000", 2)),
         );
-        let second = Telemetry::subscriptions(&component, &component_capabilities, &model);
+        let second = Telemetry::subscriptions(&component, &io, &model);
         let second = second.find::<TelemetryFeed>(id).unwrap();
 
         assert_ne!(first, second);
@@ -844,7 +846,7 @@ mod tests {
     /// assembly time, so one message enum may have multiple bindings.
     #[test]
     fn named_ports_bind_independently_even_for_the_same_message_enum() {
-        let (mut builder, ()) = Program::builder::<()>();
+        let mut builder = Program::builder();
         let primary = builder.port::<HealthProtocolMessage>(PortId::new("health/primary"));
         let fallback = builder.port::<HealthProtocolMessage>(PortId::new("health/fallback"));
         let provider = builder
@@ -870,16 +872,12 @@ mod tests {
     /// constructing the provider's private `HealthMessage` vocabulary.
     #[test]
     fn telemetry_sends_port_messages_without_provider_messages() {
-        let (mut builder, (declared_0, declared_1)) =
-            Program::builder::<(Effect<StoreFrame>, Source<TelemetryFeed>)>();
-        let health = builder.port(PortId::new(HEALTH));
-        let (component, component_capabilities) =
-            (TelemetryConfig { health }, (declared_0, declared_1));
-        let mut model = Telemetry::init(&component, &component_capabilities).model;
+        let (component, io) = telemetry_fixture();
+        let mut model = Telemetry::init(&component, &io).model;
 
         let command = Telemetry::update(
             &component,
-            &component_capabilities,
+            &io,
             &mut model,
             TelemetryMessage::Connect(config("one:7000", 1)),
         );
@@ -944,12 +942,8 @@ mod tests {
         );
         assert!(runtime.cancel()?.is_clean());
 
-        let (mut builder, (declared_0, declared_1)) =
-            Program::builder::<(Effect<StoreFrame>, Source<TelemetryFeed>)>();
-        let health = builder.port(PortId::new(HEALTH));
-        let (component, component_capabilities) =
-            (TelemetryConfig { health }, (declared_0, declared_1));
-        let mut model = Telemetry::init(&component, &component_capabilities).model;
+        let (component, io) = telemetry_fixture();
+        let mut model = Telemetry::init(&component, &io).model;
 
         let snapshot = HealthSnapshot {
             status: "receiving".to_owned(),
@@ -958,8 +952,8 @@ mod tests {
         let first = health_checked(ProbeId(17))(RequestOutcome::Replied(snapshot.clone()));
         let second = health_checked(ProbeId(29))(RequestOutcome::TimedOut);
 
-        let _ = Telemetry::update(&component, &component_capabilities, &mut model, second);
-        let _ = Telemetry::update(&component, &component_capabilities, &mut model, first);
+        let _ = Telemetry::update(&component, &io, &mut model, second);
+        let _ = Telemetry::update(&component, &io, &mut model, first);
         assert_eq!(
             model.health_checks,
             vec![

@@ -1,6 +1,7 @@
-//! Acceptance evidence for `Assembly`, `Requirements`, and `Drivers`: a
-//! Assembly lists its boundaries once as a type; the live builder takes a
-//! matching tuple of drivers and the controlled builder takes nothing.
+//! Acceptance evidence for `Assembly`, `Capabilities`, and `Drivers`: an
+//! Assembly returns its members' capabilities as its `Io`; the live builder
+//! is supplied a matching tuple of Drivers for them and the controlled
+//! builder takes nothing.
 
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -48,18 +49,18 @@ impl From<LedgerMessage> for RecorderMessage {
 }
 
 impl Component for Recorder {
-    type Requires = RecorderNeeds;
+    type Io = RecorderNeeds;
     type Config = ();
     type Model = Vec<String>;
     type Message = RecorderMessage;
 
-    fn init(_: &(), _: &Capabilities<RecorderNeeds>) -> Init<Vec<String>, RecorderMessage> {
+    fn init(_: &(), _: &RecorderNeeds) -> Init<Vec<String>, RecorderMessage> {
         Init::new(Vec::new())
     }
 
     fn update(
         _: &(),
-        (stamp, _pulses): &Capabilities<RecorderNeeds>,
+        (stamp, _pulses): &RecorderNeeds,
         entries: &mut Vec<String>,
         message: RecorderMessage,
     ) -> Command<RecorderMessage> {
@@ -85,7 +86,7 @@ impl Component for Recorder {
 
     fn subscriptions(
         _: &(),
-        (_stamp, pulses): &Capabilities<RecorderNeeds>,
+        (_stamp, pulses): &RecorderNeeds,
         _: &Vec<String>,
     ) -> Subscriptions<RecorderMessage> {
         Subscriptions::one(
@@ -104,22 +105,24 @@ struct RecorderExports {
 impl Assembly for Recorder {
     type Config = ();
     type Exports = RecorderExports;
-    type Requires = (Effect<Stamp>, Source<Pulses>);
+    type Io = RecorderNeeds;
 
-    fn install<R: Requirements>(
-        program: &mut ProgramBuilder<R>,
+    fn install(
+        program: &mut ProgramBuilder,
         _: (),
-        (stamp, pulses): Capabilities<RecorderNeeds>,
-    ) -> Result<RecorderExports, ProgramBuildError> {
+    ) -> Result<(RecorderExports, RecorderNeeds), ProgramBuildError> {
         let recorder = program
             .component::<Recorder>(())
             .name("recorder")
-            .with(&(stamp, pulses))
             .finish()?;
-        Ok(RecorderExports {
-            ledger: recorder.accepting(RecorderMessage::Ledger),
-            recorder,
-        })
+        let io = recorder.io.clone();
+        Ok((
+            RecorderExports {
+                ledger: recorder.accepting(RecorderMessage::Ledger),
+                recorder: recorder.into(),
+            },
+            io,
+        ))
     }
 }
 
@@ -148,26 +151,27 @@ impl SourceDriver<Pulses> for SilentPulses {
 
 impl VendorsDrivers for Recorder {
     type DriverConfig = Arc<AtomicUsize>;
-    type Drivers = (CountingStamp, DrivenSource<SilentPulses>);
 
-    fn drivers(executions: Self::DriverConfig) -> Self::Drivers {
-        (
-            CountingStamp { executions },
-            DrivenSource::new(SilentPulses),
+    fn supply(
+        setup: samara::RuntimeSetup,
+        io: &Self::Io,
+        executions: Self::DriverConfig,
+    ) -> samara::RuntimeSetup {
+        setup.supply(
+            io,
+            (
+                CountingStamp { executions },
+                DrivenSource::new(SilentPulses),
+            ),
         )
     }
 }
 
 /// The host names its own Port and connects the Assembly's Connector to it.
-fn assemble() -> (
-    Program<RecorderNeeds>,
-    InstalledAssembly<Recorder>,
-    Port<LedgerMessage>,
-) {
-    let (mut program, caps) = Program::builder::<RecorderNeeds>();
+fn assemble() -> (Program, InstalledAssembly<Recorder>, Port<LedgerMessage>) {
+    let mut program = Program::builder();
     let recorder = program
         .install::<Recorder>(())
-        .with(&caps)
         .finish()
         .expect("assembly installation");
     let ledger = program.port::<LedgerMessage>(PortId::new("ledger"));
@@ -192,12 +196,13 @@ fn install_returns_a_token_carrying_the_exports() {
 
 #[tokio::test]
 async fn live_builder_binds_every_requirement_through_with_assembly() {
-    let (program, _recorder, ledger) = assemble();
+    let (program, recorder, ledger) = assemble();
     let stamp = CountingStamp::default();
-    let caps = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with(&caps)
-        .supplied_by((stamp.clone(), DrivenSource::new(SilentPulses)))
+        .supply(
+            &recorder.io,
+            (stamp.clone(), DrivenSource::new(SilentPulses)),
+        )
         .build()
         .expect("every requirement is bound");
     let client = runtime.port_handle(&ledger).expect("ledger handle");
@@ -223,12 +228,9 @@ async fn live_builder_binds_every_requirement_through_with_assembly() {
 
 #[tokio::test]
 async fn live_builder_accepts_the_drivers_a_assembly_vendors() {
-    let (program, _recorder, ledger) = assemble();
+    let (program, recorder, ledger) = assemble();
     let executions = Arc::new(AtomicUsize::new(7));
-    let caps = program.capabilities().clone();
-    let runtime = Runtime::builder(program)
-        .with(&caps)
-        .supplied_by(Recorder::drivers(executions.clone()))
+    let runtime = Recorder::supply(Runtime::builder(program), &recorder.io, executions.clone())
         .build()
         .expect("vendored drivers satisfy the requirements");
     let client = runtime.port_handle(&ledger).unwrap();
@@ -278,21 +280,16 @@ struct Query(&'static str);
 
 struct Ingest;
 impl Component for Ingest {
-    type Requires = ();
+    type Io = ();
     type Config = ();
     type Model = Vec<u8>;
     type Message = Sample;
 
-    fn init(_: &(), _: &Capabilities<()>) -> Init<Vec<u8>, Sample> {
+    fn init(_: &(), _: &()) -> Init<Vec<u8>, Sample> {
         Init::new(Vec::new())
     }
 
-    fn update(
-        _: &(),
-        _: &Capabilities<()>,
-        seen: &mut Vec<u8>,
-        Sample(value): Sample,
-    ) -> Command<Sample> {
+    fn update(_: &(), _: &(), seen: &mut Vec<u8>, Sample(value): Sample) -> Command<Sample> {
         seen.push(value);
         Command::none()
     }
@@ -300,18 +297,18 @@ impl Component for Ingest {
 
 struct Reader;
 impl Component for Reader {
-    type Requires = ();
+    type Io = ();
     type Config = ();
     type Model = Vec<&'static str>;
     type Message = Query;
 
-    fn init(_: &(), _: &Capabilities<()>) -> Init<Vec<&'static str>, Query> {
+    fn init(_: &(), _: &()) -> Init<Vec<&'static str>, Query> {
         Init::new(Vec::new())
     }
 
     fn update(
         _: &(),
-        _: &Capabilities<()>,
+        _: &(),
         asked: &mut Vec<&'static str>,
         Query(question): Query,
     ) -> Command<Query> {
@@ -331,21 +328,23 @@ struct Telemetry;
 impl Assembly for Telemetry {
     type Config = ();
     type Exports = TelemetryDoors;
-    type Requires = ();
+    type Io = ();
 
-    fn install<R: Requirements>(
-        program: &mut ProgramBuilder<R>,
+    fn install(
+        program: &mut ProgramBuilder,
         _: (),
-        _: Capabilities<()>,
-    ) -> Result<TelemetryDoors, ProgramBuildError> {
+    ) -> Result<(TelemetryDoors, ()), ProgramBuildError> {
         let ingest = program.component::<Ingest>(()).finish()?;
         let reader = program.component::<Reader>(()).finish()?;
-        Ok(TelemetryDoors {
-            samples: ingest.connector(),
-            queries: reader.connector(),
-            ingest,
-            reader,
-        })
+        Ok((
+            TelemetryDoors {
+                samples: ingest.connector(),
+                queries: reader.connector(),
+                ingest: ingest.into(),
+                reader: reader.into(),
+            },
+            (),
+        ))
     }
 }
 
@@ -356,26 +355,26 @@ struct ProbeConfig {
     queries: Connector<Query>,
 }
 impl Component for Probe {
-    type Requires = ();
+    type Io = ();
     type Config = ProbeConfig;
     type Model = ();
     type Message = ();
 
-    fn init(config: &ProbeConfig, _: &Capabilities<()>) -> Init<(), ()> {
+    fn init(config: &ProbeConfig, _: &()) -> Init<(), ()> {
         Init::new(()).with_command(Command::batch([
             Command::send(&config.samples, Sample(7)),
             Command::send(&config.queries, Query("latest")),
         ]))
     }
 
-    fn update(_: &ProbeConfig, _: &Capabilities<()>, (): &mut (), (): ()) -> Command<()> {
+    fn update(_: &ProbeConfig, _: &(), (): &mut (), (): ()) -> Command<()> {
         Command::none()
     }
 }
 
 #[test]
 fn an_assembly_with_two_doors_exports_both_as_peers() {
-    let (mut program, ()) = Program::builder::<()>();
+    let mut program = Program::builder();
     let telemetry = program
         .install::<Telemetry>(())
         .finish()
@@ -404,21 +403,17 @@ struct Background;
 impl Assembly for Background {
     type Config = ();
     type Exports = ();
-    type Requires = ();
+    type Io = ();
 
-    fn install<R: Requirements>(
-        program: &mut ProgramBuilder<R>,
-        _: (),
-        _: Capabilities<()>,
-    ) -> Result<(), ProgramBuildError> {
+    fn install(program: &mut ProgramBuilder, _: ()) -> Result<((), ()), ProgramBuildError> {
         program.component::<Ingest>(()).finish()?;
-        Ok(())
+        Ok(((), ()))
     }
 }
 
 #[test]
 fn an_assembly_nobody_sends_to_exports_nothing() {
-    let (mut program, ()) = Program::builder::<()>();
+    let mut program = Program::builder();
     let background = program
         .install::<Background>(())
         .finish()

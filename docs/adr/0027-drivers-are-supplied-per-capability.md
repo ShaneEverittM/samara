@@ -1,6 +1,10 @@
 # ADR-0027: Drivers Are Supplied per Capability Value
 
-- Status: Accepted.
+- Status: Accepted. The spelling is amended by
+  [ADR-0029](0029-capabilities-are-named-values-a-component-owns.md):
+  `supply(&capability, driver)` replaces `with(&capability).supplied_by(driver)`,
+  registration no longer takes capabilities at all, and
+  `Program::capabilities()` is removed.
 - Date: November 10, 2026
 - Deciders: Samara maintainers
 - Amends: [ADR-0019](0019-typed-program-requirements.md) (live binding and

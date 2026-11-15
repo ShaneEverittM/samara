@@ -55,21 +55,25 @@ struct HttpTimeServer;
 
 struct HttpTimeServerConfig {}
 
+/// What the time server can reach in the world.
+#[derive(Clone, Capabilities)]
+struct HttpTimeServerIo {
+    http: Effect<HttpRequest>,
+    stderr: Effect<PrintStderr>,
+}
+
 impl HttpTimeServer {
     const TICK: Command<HttpTimeMessage> =
         Command::after(Duration::from_secs(1), HttpTimeMessage::Tick);
 }
 
 impl Component for HttpTimeServer {
-    type Requires = (Effect<HttpRequest>, Effect<PrintStderr>);
+    type Io = HttpTimeServerIo;
     type Config = HttpTimeServerConfig;
     type Model = HttpTimeModel;
     type Message = HttpTimeMessage;
 
-    fn init(
-        _config: &Self::Config,
-        _capabilities: &Capabilities<Self::Requires>,
-    ) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config, _io: &Self::Io) -> Init<Self::Model, Self::Message> {
         Init::new(HttpTimeModel::Idle { current_time: None }).with_command(Command::after(
             Duration::from_secs(1),
             HttpTimeMessage::Tick,
@@ -78,7 +82,7 @@ impl Component for HttpTimeServer {
 
     fn update(
         _config: &Self::Config,
-        capabilities: &Capabilities<Self::Requires>,
+        io: &Self::Io,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -95,7 +99,7 @@ impl Component for HttpTimeServer {
                     .on_response()
                     .require_success()
                     .json::<TimeResponse>()
-                    .into_command(&capabilities.0);
+                    .into_command(&io.http);
 
                 Command::batch([get, Self::TICK])
             }
@@ -108,7 +112,7 @@ impl Component for HttpTimeServer {
                     Ok(time) => (Some(time), Command::none()),
                     Err(error) => (
                         state.current_time(),
-                        samara::eprintln!(&capabilities.1, "Failed to get time: {error}"),
+                        samara::eprintln!(&io.stderr, "Failed to get time: {error}"),
                     ),
                 };
                 *state = Idle { current_time };
@@ -182,38 +186,43 @@ struct CliConfig {
     time_server: Port<TimeServerMessage>,
 }
 
+/// What the CLI can reach in the world.
+#[derive(Clone, Capabilities)]
+struct CliIo {
+    stdin: Source<StdinLines>,
+    stdout: Effect<PrintStdout>,
+    stderr: Effect<PrintStderr>,
+}
+
 impl Component for Cli {
-    type Requires = (Source<StdinLines>, Effect<PrintStdout>, Effect<PrintStderr>);
+    type Io = CliIo;
     type Config = CliConfig;
     type Model = CliModel;
     type Message = CliMessage;
 
-    fn init(
-        _config: &Self::Config,
-        capabilities: &Capabilities<Self::Requires>,
-    ) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config, io: &Self::Io) -> Init<Self::Model, Self::Message> {
         Init::default().with_command(samara::println!(
-            &capabilities.1,
+            &io.stdout,
             "Commands: `print <text>` or `time`"
         ))
     }
 
     fn update(
         config: &Self::Config,
-        capabilities: &Capabilities<Self::Requires>,
+        io: &Self::Io,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
         match message {
             CliMessage::Command(CliCommand::Print(text)) => {
-                samara::println!(&capabilities.1, "{text}")
+                samara::println!(&io.stdout, "{text}")
             }
             CliMessage::Command(CliCommand::GetTime) => {
                 Command::request(&config.time_server, TimeServerMessage::GetCurrentTime)
                     .producing(CliMessage::TimeReceived)
             }
             CliMessage::InvalidCommand(command) => samara::eprintln!(
-                &capabilities.2,
+                &io.stderr,
                 "Unknown command `{command}`; use `print <text>` or `time`"
             ),
             CliMessage::InputEnded => {
@@ -222,32 +231,29 @@ impl Component for Cli {
             }
             CliMessage::InputFailed(error) => {
                 model.input_closed = true;
-                samara::eprintln!(&capabilities.2, "Failed to read standard input: {error}")
+                samara::eprintln!(&io.stderr, "Failed to read standard input: {error}")
             }
             CliMessage::TimeReceived(RequestOutcome::Replied(Some(time))) => {
-                samara::println!(&capabilities.1, "Current time: {time}")
+                samara::println!(&io.stdout, "Current time: {time}")
             }
             CliMessage::TimeReceived(RequestOutcome::Replied(None)) => {
-                samara::println!(
-                    &capabilities.1,
-                    "The time server has not received a value yet"
-                )
+                samara::println!(&io.stdout, "The time server has not received a value yet")
             }
             CliMessage::TimeReceived(RequestOutcome::Failed(error)) => {
-                samara::eprintln!(&capabilities.2, "Time request failed: {error:?}")
+                samara::eprintln!(&io.stderr, "Time request failed: {error:?}")
             }
             CliMessage::TimeReceived(RequestOutcome::TimedOut) => {
-                samara::eprintln!(&capabilities.2, "Time request timed out")
+                samara::eprintln!(&io.stderr, "Time request timed out")
             }
             CliMessage::TimeReceived(RequestOutcome::Cancelled) => {
-                samara::eprintln!(&capabilities.2, "Time request was cancelled")
+                samara::eprintln!(&io.stderr, "Time request was cancelled")
             }
         }
     }
 
     fn subscriptions(
         _config: &Self::Config,
-        capabilities: &Capabilities<Self::Requires>,
+        io: &Self::Io,
         model: &Self::Model,
     ) -> Subscriptions<Self::Message> {
         if model.input_closed {
@@ -255,7 +261,7 @@ impl Component for Cli {
         }
 
         Subscriptions::one(Subscription::source_with(
-            &capabilities.0,
+            &io.stdin,
             StdinLines::new(),
             |event| match event {
                 SourceEvent::Item(line) => parse_cli_command(line),
@@ -295,24 +301,17 @@ enum TimeServerMessage {
 #[tokio::main]
 async fn main() -> Result<()> {
     // Start building a Samara program, which is a declaration of the topology.
-    let (mut builder, (http, stdout, stderr, cli_input)) = Program::builder::<(
-        Effect<HttpRequest>,
-        Effect<PrintStdout>,
-        Effect<PrintStderr>,
-        Source<StdinLines>,
-    )>();
-
-    // Declare every world boundary before constructing Components. These inert
-    // capabilities are both the dependency declarations and the only way the
-    // Component can issue the corresponding Effects.
+    let mut builder = Program::builder();
 
     // A Port names the provider-neutral time service consumed by the CLI.
     let time_port = builder.port::<TimeServerMessage>(PortId::new(TIME_SERVER_PORT));
 
-    // The concrete provider happens to obtain time over HTTP.
+    // The concrete provider happens to obtain time over HTTP. Registering a
+    // Component creates its own capabilities: inert values that are the only
+    // way it can issue Effects, returned on the handle as `io` so the host can
+    // say below what each one is made of.
     let http_time_server = builder
         .component::<HttpTimeServer>(HttpTimeServerConfig {})
-        .with(&(http.clone(), stderr.clone()))
         .finish()
         .expect("component registration");
 
@@ -321,27 +320,23 @@ async fn main() -> Result<()> {
 
     // Raw terminal lines cross the runtime boundary as an ongoing Source. The
     // CLI owns parsing, presentation, and its dependency on the time service.
-    builder
+    let cli = builder
         .component::<Cli>(CliConfig {
             time_server: time_port,
         })
-        .with(&(cli_input.clone(), stdout.clone(), stderr.clone()))
         .finish()
         .expect("component registration");
 
     // Build the program, this catches errors like unbound ports, etc.
     let program = builder.build()?;
 
-    // Configure a runtime for real usage...
+    // Configure a runtime for real usage: every capability gets its live Driver.
     let runtime = Runtime::builder(program)
-        .with(&http)
-        .supplied_by(samara::HttpDriver::new())
-        .with(&stdout)
-        .supplied_by(samara::StdoutDriver::new())
-        .with(&stderr)
-        .supplied_by(samara::StderrDriver::new())
-        .with(&cli_input)
-        .supplied_by(samara::StdinDriver)
+        .supply(&http_time_server.io.http, samara::HttpDriver::new())
+        .supply(&http_time_server.io.stderr, samara::StderrDriver::new())
+        .supply(&cli.io.stdin, samara::StdinDriver)
+        .supply(&cli.io.stdout, samara::StdoutDriver::new())
+        .supply(&cli.io.stderr, samara::StderrDriver::new())
         .build()?;
 
     // We've now set up the program, runtime, and ingress points, so start the runtime.
@@ -381,14 +376,15 @@ mod polling_tests;
 mod tests {
     use super::*;
 
-    fn cli_fixture() -> (CliConfig, Capabilities<<Cli as Component>::Requires>) {
-        let (mut builder, (declared_0, declared_1, declared_2)) =
-            Program::builder::<(Source<StdinLines>, Effect<PrintStdout>, Effect<PrintStderr>)>();
+    /// A CLI's wiring and capabilities for calling its functions directly;
+    /// no Program is built or run.
+    fn cli_fixture() -> (CliConfig, CliIo) {
+        let mut builder = Program::builder();
         (
             CliConfig {
                 time_server: builder.port(PortId::new(TIME_SERVER_PORT)),
             },
-            (declared_0, declared_1, declared_2),
+            CliIo::detached(),
         )
     }
 

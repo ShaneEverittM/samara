@@ -47,10 +47,9 @@ use crate::{
     BoxFuture, CapabilityToken, Command, CommandKind, ComponentId, DriverStopped, EffectDescriptor,
     EffectDriver, EffectOutcome, ErasedRequestMapper, ErasedSourceEvent, HttpError, HttpRequest,
     HttpResponse, MessageRoute, MessageTarget, Port, PortId, PrintStderr, PrintStdout, Program,
-    ReplyWith, RequestOutcome, RequestToken, RuntimeError, Shutdown, ShutdownReport,
-    SourceCapability, SourceDescriptor, SourceDriver, SourceEvent, SourcePlan, SourceRequirement,
-    SourceSink, StreamDescriptor, StreamSourceDescriptor, SubscriptionId, TcpBytes, TcpError,
-    TraceId,
+    ReplyWith, RequestOutcome, RequestToken, RuntimeError, Shutdown, ShutdownReport, Source,
+    SourceDescriptor, SourceDriver, SourceEvent, SourcePlan, SourceRequirement, SourceSink,
+    StreamDescriptor, StreamSourceDescriptor, SubscriptionId, TcpBytes, TcpError, TraceId,
 };
 #[cfg(unix)]
 use crate::{StdinError, StdinLines};
@@ -82,8 +81,7 @@ pub(crate) trait ErasedEffectBinding: Send + Sync {
     }
 
     fn satisfies(&self, requirement: &crate::EffectRequirement) -> bool {
-        self.exact_capability().is_some() == requirement.exact
-            && self.matches(&requirement.token, requirement.descriptor_type)
+        self.matches(&requirement.token, requirement.descriptor_type)
     }
 }
 
@@ -173,6 +171,7 @@ pub(crate) trait ErasedSourceBinding: Send + Sync {
 
 struct TypedSourceBinding<D, Driver> {
     driver: Driver,
+    capability: CapabilityToken,
     marker: std::marker::PhantomData<fn() -> D>,
 }
 
@@ -190,23 +189,27 @@ where
     }
 
     fn is_type_wide(&self) -> bool {
-        true
+        false
     }
 
     fn exact_capability(&self) -> Option<&CapabilityToken> {
-        None
+        Some(&self.capability)
     }
 
     fn matches(&self, plan: &SourcePlan) -> bool {
-        plan.terminal_type_id() == TypeId::of::<D>()
+        plan.terminal_type_id() == TypeId::of::<D>() && self.capability.same_as(plan.capability())
     }
 
     fn satisfies(&self, requirement: &SourceRequirement) -> bool {
         requirement.terminal_type == TypeId::of::<D>()
+            && self.capability.same_as(&requirement.token)
     }
 
     fn conflicts(&self, other: &dyn ErasedSourceBinding) -> bool {
         other.descriptor_type() == TypeId::of::<D>()
+            && other
+                .exact_capability()
+                .is_none_or(|capability| capability.same_as(&self.capability))
     }
 
     fn run(
@@ -792,7 +795,7 @@ async fn run_stdin_reader(
 /// Terminal Tokio TCP source Driver.
 ///
 /// Supply `DrivenSource::new(TcpDriver)` through
-/// [`RuntimeSetup::with`](crate::RuntimeSetup::with).
+/// [`RuntimeSetup::supply`](crate::RuntimeSetup::supply).
 /// Each input connects once to its configured IP address and port. No DNS,
 /// retry, or reconnect is performed; see [`TcpBytes`] for the descriptor.
 pub struct TokioTcpDriver;
@@ -800,7 +803,7 @@ pub struct TokioTcpDriver;
 /// Terminal HTTP Driver with a shared connection pool.
 ///
 /// Supply [`HttpDriver::new`](Self::new) through
-/// [`RuntimeSetup::with`](crate::RuntimeSetup::with).
+/// [`RuntimeSetup::supply`](crate::RuntimeSetup::supply).
 /// Each effect makes one request and buffers the response, returning every
 /// HTTP status. The Driver performs no retries, redirects, proxy discovery,
 /// or decompression, and imposes no request timeout or body-size limit.
@@ -868,7 +871,7 @@ impl EffectDriver<HttpRequest> for TokioHttpDriver {
 /// Serialized standard-output Driver.
 ///
 /// Supply this Driver through
-/// [`RuntimeSetup::with`](crate::RuntimeSetup::with).
+/// [`RuntimeSetup::supply`](crate::RuntimeSetup::supply).
 /// Each effect attempts to write all text and flush stdout, ignoring I/O errors.
 /// Writes through this binding do not interleave. Independent commands, other
 /// bindings, and direct process writes have no ordering guarantee.
@@ -896,7 +899,7 @@ impl EffectDriver<PrintStdout> for TokioPrintStdoutDriver {
 /// Serialized standard-error Driver.
 ///
 /// Supply this Driver through
-/// [`RuntimeSetup::with`](crate::RuntimeSetup::with).
+/// [`RuntimeSetup::supply`](crate::RuntimeSetup::supply).
 /// Each effect attempts to write all text and flush stderr, ignoring I/O errors.
 /// Writes through this binding do not interleave. Independent commands, other
 /// bindings, and direct process writes have no ordering guarantee.
@@ -998,19 +1001,7 @@ impl LiveBindings {
         }
     }
 
-    pub(crate) fn bind_effect<D, Driver>(&mut self, driver: Driver)
-    where
-        D: EffectDescriptor,
-        Driver: EffectDriver<D>,
-    {
-        self.effects.push(Arc::new(TypedEffectBinding::<D, Driver> {
-            driver,
-            capability: None,
-            marker: std::marker::PhantomData,
-        }));
-    }
-
-    pub(crate) fn bind_exact_effect<D: EffectDescriptor, Driver: EffectDriver<D>>(
+    pub(crate) fn bind_effect<D: EffectDescriptor, Driver: EffectDriver<D>>(
         &mut self,
         capability: &CapabilityToken,
         driver: Driver,
@@ -1022,20 +1013,21 @@ impl LiveBindings {
         }));
     }
 
-    pub(crate) fn bind_source<D, Driver>(&mut self, driver: Driver)
+    pub(crate) fn bind_source<D, Driver>(&mut self, capability: &CapabilityToken, driver: Driver)
     where
         D: SourceDescriptor,
         Driver: SourceDriver<D>,
     {
         self.sources.push(Arc::new(TypedSourceBinding::<D, Driver> {
             driver,
+            capability: capability.clone(),
             marker: std::marker::PhantomData,
         }));
     }
 
     pub(crate) fn bind_mpsc<S>(
         &mut self,
-        capability: &SourceCapability<S>,
+        capability: &Source<S>,
         receiver: mpsc::Receiver<S::StreamItem>,
     ) where
         S: StreamSourceDescriptor,
@@ -1049,7 +1041,7 @@ impl LiveBindings {
     #[cfg(unix)]
     pub(crate) fn bind_stdin_capability<S: SourceDescriptor<Terminal = StdinLines>>(
         &mut self,
-        capability: &SourceCapability<S>,
+        capability: &Source<S>,
     ) {
         self.sources.push(Arc::new(StdinBinding {
             capability: capability.token.clone(),
@@ -1073,13 +1065,14 @@ impl LiveBindings {
             }
             if let Some(capability) = binding.exact_capability() {
                 if !capability.belongs_to(&program.program) {
-                    return Err(RuntimeError::harness(
-                        "exact live Effect binding uses a capability from another Program",
-                    ));
+                    return Err(RuntimeError::harness(format!(
+                        "live Driver for {} was supplied for a capability from another Program",
+                        binding.descriptor_type_name()
+                    )));
                 }
-                if !program
+                if program
                     .effect_requirement(capability, binding.descriptor_type())
-                    .is_some_and(|requirement| requirement.exact)
+                    .is_none()
                 {
                     return Err(RuntimeError::harness(
                         "exact live Effect binding has no matching resource operation declaration",
@@ -1133,8 +1126,8 @@ impl LiveBindings {
                 .count();
             if count != 1 {
                 return Err(RuntimeError::harness(format!(
-                    "declared Effect capability for {} has {count} live bindings; expected exactly one",
-                    requirement.descriptor_type_name
+                    "Effect capability {} has {count} live bindings; expected exactly one",
+                    requirement.describe()
                 )));
             }
         }
@@ -1146,8 +1139,9 @@ impl LiveBindings {
                 .count();
             if count != 1 {
                 return Err(RuntimeError::harness(format!(
-                    "declared Source capability for {} (terminal {}) has {count} live bindings; expected exactly one",
-                    requirement.descriptor_type_name, requirement.terminal_type_name
+                    "Source capability {} (terminal {}) has {count} live bindings; expected exactly one",
+                    requirement.describe(),
+                    requirement.terminal_type_name
                 )));
             }
         }
@@ -1805,6 +1799,14 @@ impl LiveCore {
                 "Source capability belongs to another Program or has inconsistent terminal metadata",
             ));
         }
+        if !self.program.source_owned_by(plan.capability(), component) {
+            return Err(self.runtime_fault(
+                component.clone(),
+                Some(plan.terminal_type_name()),
+                work,
+                "Source capability belongs to another Component",
+            ));
+        }
         let binding = self.bindings.source(&plan).map_err(|reason| {
             self.runtime_fault(
                 component.clone(),
@@ -1954,6 +1956,18 @@ impl LiveCore {
                             Some(descriptor_type_name),
                             work,
                             "Effect capability belongs to another Program",
+                        ));
+                    }
+                    if !self.program.effect_owned_by(
+                        command.capability(),
+                        descriptor_type,
+                        component,
+                    ) {
+                        return Err(self.runtime_fault(
+                            component.clone(),
+                            Some(descriptor_type_name),
+                            work,
+                            "Effect capability belongs to another Component",
                         ));
                     }
                     let binding = self
@@ -3100,13 +3114,25 @@ mod tests {
 
     #[test]
     fn exact_stream_binding_rejects_a_foreign_capability_during_build() {
-        let (_, (foreign,)) = Program::builder::<(crate::Source<StreamDescriptor<u64>>,)>();
-        let (owner, (own,)) = Program::builder::<(crate::Source<StreamDescriptor<u64>>,)>();
+        struct Listener;
+        impl Component for Listener {
+            type Io = crate::Source<StreamDescriptor<u64>>;
+            type Config = ();
+            type Model = ();
+            type Message = ();
+            fn init(_: &(), _: &Self::Io) -> Init<(), ()> {
+                Init::default()
+            }
+            fn update(_: &(), _: &Self::Io, _: &mut (), _: ()) -> Command<()> {
+                Command::none()
+            }
+        }
+        let foreign = <crate::Source<StreamDescriptor<u64>> as crate::Capabilities>::detached();
+        let mut owner = Program::builder();
+        let own = owner.component::<Listener>(()).finish().unwrap();
         let mut runtime = crate::Runtime::builder(owner.build().unwrap())
-            .with(&own)
-            .supplied_by(crate::MpscReceiver::new(mpsc::channel(1).1));
-        // Exercise the registry's defense directly, past the provenance check
-        // the public path performs when a capability is named.
+            .supply(&own.io, crate::MpscReceiver::new(mpsc::channel(1).1));
+        // Exercise the registry's defense directly.
         runtime
             .builder
             .bindings
@@ -3130,33 +3156,26 @@ mod tests {
 
     struct CutoffComponent;
 
-    struct CutoffComponentConfig {
-        effect: crate::EffectCapability<CutoffIntent>,
-    }
-
     impl Component for CutoffComponent {
-        type Requires = ();
-        type Config = CutoffComponentConfig;
+        type Io = crate::Effect<CutoffIntent>;
+        type Config = ();
         type Model = bool;
         type Message = CutoffMessage;
 
-        fn init(
-            _config: &Self::Config,
-            _: &crate::Capabilities<Self::Requires>,
-        ) -> Init<Self::Model, Self::Message> {
+        fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
             Init::new(false)
         }
 
         fn update(
-            config: &Self::Config,
-            _: &crate::Capabilities<Self::Requires>,
+            _: &Self::Config,
+            effect: &Self::Io,
             started: &mut Self::Model,
             message: Self::Message,
         ) -> Command<Self::Message> {
             match message {
                 CutoffMessage::Start => {
                     *started = true;
-                    crate::Effect::perform(&config.effect, CutoffIntent)
+                    crate::Effect::perform(effect, CutoffIntent)
                         .producing(|_| CutoffMessage::Outcome)
                 }
                 CutoffMessage::Outcome => Command::none(),
@@ -3186,20 +3205,13 @@ mod tests {
 
     struct GenerationComponent;
 
-    struct GenerationComponentConfig {
-        source: crate::SourceCapability<GenerationSource>,
-    }
-
     impl Component for GenerationComponent {
-        type Requires = ();
-        type Config = GenerationComponentConfig;
+        type Io = crate::Source<GenerationSource>;
+        type Config = ();
         type Model = GenerationModel;
         type Message = GenerationMessage;
 
-        fn init(
-            _config: &Self::Config,
-            _: &crate::Capabilities<Self::Requires>,
-        ) -> Init<Self::Model, Self::Message> {
+        fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
             Init::new(GenerationModel {
                 generation: 1,
                 items: Vec::new(),
@@ -3208,7 +3220,7 @@ mod tests {
 
         fn update(
             _config: &Self::Config,
-            _: &crate::Capabilities<Self::Requires>,
+            _: &Self::Io,
             model: &mut Self::Model,
             message: Self::Message,
         ) -> Command<Self::Message> {
@@ -3222,13 +3234,13 @@ mod tests {
         }
 
         fn subscriptions(
-            config: &Self::Config,
-            _: &crate::Capabilities<Self::Requires>,
+            _config: &Self::Config,
+            source: &Self::Io,
             model: &Self::Model,
         ) -> Subscriptions<Self::Message> {
             Subscriptions::one(
                 Subscription::source_with(
-                    &config.source,
+                    source,
                     GenerationSource(model.generation),
                     GenerationMessage::Event,
                 )
@@ -3283,26 +3295,22 @@ mod tests {
     struct FramedDrainComponent;
 
     struct FramedDrainComponentConfig {
-        source: crate::SourceCapability<Framed<GenerationSource, DrainFailDecoder>>,
         decoder: DrainFailDecoder,
     }
 
     impl Component for FramedDrainComponent {
-        type Requires = ();
+        type Io = crate::Source<Framed<GenerationSource, DrainFailDecoder>>;
         type Config = FramedDrainComponentConfig;
         type Model = ();
         type Message = SourceEvent<u64, FramedError<Infallible, &'static str>>;
 
-        fn init(
-            _config: &Self::Config,
-            _: &crate::Capabilities<Self::Requires>,
-        ) -> Init<Self::Model, Self::Message> {
+        fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
             Init::new(())
         }
 
         fn update(
             _config: &Self::Config,
-            _: &crate::Capabilities<Self::Requires>,
+            _: &Self::Io,
             _model: &mut Self::Model,
             _message: Self::Message,
         ) -> Command<Self::Message> {
@@ -3311,12 +3319,12 @@ mod tests {
 
         fn subscriptions(
             config: &Self::Config,
-            _: &crate::Capabilities<Self::Requires>,
+            source: &Self::Io,
             _model: &Self::Model,
         ) -> Subscriptions<Self::Message> {
             Subscriptions::one(
                 Subscription::source_with(
-                    &config.source,
+                    source,
                     Framed::new(GenerationSource(1), config.decoder.clone()),
                     std::convert::identity,
                 )
@@ -3365,11 +3373,9 @@ mod tests {
     }
 
     fn generation_core() -> GenerationFixture {
-        let (mut builder, (declared_0,)) =
-            crate::Program::builder::<(crate::Source<GenerationSource>,)>();
-        let source = declared_0;
+        let mut builder = crate::Program::builder();
         let component = builder
-            .component::<GenerationComponent>(GenerationComponentConfig { source })
+            .component::<GenerationComponent>(())
             .name("generation")
             .finish()
             .expect("component registration");
@@ -3377,12 +3383,15 @@ mod tests {
         let id = component.id().clone();
         let sinks = Arc::new(Mutex::new(Vec::new()));
         let mut bindings = LiveBindings::new();
-        bindings.bind_source::<GenerationSource, _>(CapturingSourceDriver {
-            sinks: sinks.clone(),
-        });
+        bindings.bind_source::<GenerationSource, _>(
+            &component.io.token,
+            CapturingSourceDriver {
+                sinks: sinks.clone(),
+            },
+        );
         let (sender, receiver) = mpsc::unbounded_channel();
         let scope = Arc::new(LiveScope::new(sender));
-        let mut core = LiveCore::new(program.erase(), bindings, scope.clone(), receiver);
+        let mut core = LiveCore::new(program, bindings, scope.clone(), receiver);
         let index = core
             .component_index(&id, TypeId::of::<GenerationMessage>())
             .expect("registered generation Component");
@@ -3436,11 +3445,9 @@ mod tests {
 
     #[tokio::test]
     async fn phase6_cancel_cutoff_starts_no_work_from_a_committed_transition() {
-        let (mut builder, (declared_0,)) =
-            crate::Program::builder::<(crate::Effect<CutoffIntent>,)>();
-        let effect = declared_0;
+        let mut builder = crate::Program::builder();
         let component = builder
-            .component::<CutoffComponent>(CutoffComponentConfig { effect })
+            .component::<CutoffComponent>(())
             .name("cancel-cutoff")
             .finish()
             .expect("component registration");
@@ -3448,12 +3455,7 @@ mod tests {
         let id = component.id().clone();
         let (sender, receiver) = mpsc::unbounded_channel();
         let scope = Arc::new(LiveScope::new(sender));
-        let mut core = LiveCore::new(
-            program.erase(),
-            LiveBindings::new(),
-            scope.clone(),
-            receiver,
-        );
+        let mut core = LiveCore::new(program, LiveBindings::new(), scope.clone(), receiver);
         let index = core
             .component_index(&id, TypeId::of::<CutoffMessage>())
             .expect("registered cutoff Component");
@@ -3576,13 +3578,9 @@ mod tests {
     #[tokio::test]
     async fn phase6_drain_does_not_finalize_after_an_earlier_decode_failure() {
         let finish_calls = Arc::new(AtomicUsize::new(0));
-        let (mut builder, (declared_0,)) = crate::Program::builder::<(
-            crate::Source<Framed<GenerationSource, DrainFailDecoder>>,
-        )>();
-        let source = declared_0;
-        let _ = builder
+        let mut builder = crate::Program::builder();
+        let component = builder
             .component::<FramedDrainComponent>(FramedDrainComponentConfig {
-                source,
                 decoder: DrainFailDecoder {
                     finish_calls: finish_calls.clone(),
                 },
@@ -3593,12 +3591,15 @@ mod tests {
         let program = builder.build().expect("valid framed Drain Program");
         let sinks = Arc::new(Mutex::new(Vec::new()));
         let mut bindings = LiveBindings::new();
-        bindings.bind_source::<GenerationSource, _>(CapturingSourceDriver {
-            sinks: sinks.clone(),
-        });
+        bindings.bind_source::<GenerationSource, _>(
+            &component.io.token,
+            CapturingSourceDriver {
+                sinks: sinks.clone(),
+            },
+        );
         let (sender, receiver) = mpsc::unbounded_channel();
         let scope = Arc::new(LiveScope::new(sender));
-        let mut core = LiveCore::new(program.erase(), bindings, scope.clone(), receiver);
+        let mut core = LiveCore::new(program, bindings, scope.clone(), receiver);
         core.initialize().expect("framed Source activates");
         let sink = lock(&sinks)
             .first()
@@ -3639,23 +3640,24 @@ mod tests {
 
     #[tokio::test]
     async fn phase6_drain_preserves_a_source_panic_completed_before_cutoff() {
-        let (mut builder, (declared_0,)) =
-            crate::Program::builder::<(crate::Source<GenerationSource>,)>();
-        let source = declared_0;
+        let mut builder = crate::Program::builder();
         let component = builder
-            .component::<GenerationComponent>(GenerationComponentConfig { source })
+            .component::<GenerationComponent>(())
             .name("drain-panic")
             .finish()
             .expect("component registration");
         let program = builder.build().expect("valid Source panic Program");
         let (entered, entered_rx) = tokio::sync::oneshot::channel();
         let mut bindings = LiveBindings::new();
-        bindings.bind_source::<GenerationSource, _>(PanickingSourceAtCutoff {
-            entered: Mutex::new(Some(entered)),
-        });
+        bindings.bind_source::<GenerationSource, _>(
+            &component.io.token,
+            PanickingSourceAtCutoff {
+                entered: Mutex::new(Some(entered)),
+            },
+        );
         let (sender, receiver) = mpsc::unbounded_channel();
         let scope = Arc::new(LiveScope::new(sender));
-        let mut core = LiveCore::new(program.erase(), bindings, scope.clone(), receiver);
+        let mut core = LiveCore::new(program, bindings, scope.clone(), receiver);
         core.initialize().expect("Source task starts");
         entered_rx
             .await
@@ -3685,23 +3687,24 @@ mod tests {
     #[tokio::test]
     async fn shutdown_escalation_preserves_source_fault_completed_before_cancel() {
         for observe_drain in [false, true] {
-            let (mut builder, (declared_0,)) =
-                crate::Program::builder::<(crate::Source<GenerationSource>,)>();
-            let source = declared_0;
+            let mut builder = crate::Program::builder();
             let component = builder
-                .component::<GenerationComponent>(GenerationComponentConfig { source })
+                .component::<GenerationComponent>(())
                 .name("escalation-panic")
                 .finish()
                 .expect("component registration");
             let (entered, entered_rx) = tokio::sync::oneshot::channel();
             let mut bindings = LiveBindings::new();
-            bindings.bind_source::<GenerationSource, _>(PanickingSourceAtCutoff {
-                entered: Mutex::new(Some(entered)),
-            });
+            bindings.bind_source::<GenerationSource, _>(
+                &component.io.token,
+                PanickingSourceAtCutoff {
+                    entered: Mutex::new(Some(entered)),
+                },
+            );
             let (sender, receiver) = mpsc::unbounded_channel();
             let scope = Arc::new(LiveScope::new(sender));
             let mut core = LiveCore::new(
-                builder.build().expect("valid program").erase(),
+                builder.build().expect("valid program"),
                 bindings,
                 scope.clone(),
                 receiver,
@@ -3739,8 +3742,7 @@ mod tests {
     async fn phase6_timer_task_panic_is_a_runtime_fault() {
         let (sender, receiver) = mpsc::unbounded_channel();
         let scope = Arc::new(LiveScope::new(sender));
-        let program = Program::builder::<()>()
-            .0
+        let program = Program::builder()
             .build()
             .expect("empty timer test Program");
         let mut core = LiveCore::new(program, LiveBindings::new(), scope, receiver);
@@ -3837,8 +3839,7 @@ mod tests {
     async fn phase6_cancel_maps_only_effect_outcomes_accepted_before_cutoff() {
         let (sender, receiver) = mpsc::unbounded_channel();
         let scope = Arc::new(LiveScope::new(sender));
-        let program = crate::Program::builder::<()>()
-            .0
+        let program = crate::Program::builder()
             .build()
             .expect("empty test Program is valid");
         let mut core = LiveCore::new(program, LiveBindings::new(), scope.clone(), receiver);
@@ -3926,8 +3927,8 @@ mod tests {
 
     #[tokio::test]
     async fn phase6_mpsc_receiver_is_consumed_at_activation_not_first_poll() {
-        let mut builder = crate::Program::builder::<()>().0;
-        let capability = builder.source::<StreamDescriptor<u8>>();
+        let mut builder = crate::Program::builder();
+        let capability = builder.source::<StreamDescriptor<u8>>(None);
         let descriptor = StreamDescriptor::<u8>::named("activation/one-shot");
         let (_sender, receiver) = mpsc::channel::<u8>(1);
         let binding = MpscBinding {
@@ -4221,8 +4222,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn stdin_binding_rejects_concurrent_then_allows_sequential_realization() {
-        let mut builder = crate::Program::builder::<()>().0;
-        let capability = builder.source::<StdinLines>();
+        let mut builder = crate::Program::builder();
+        let capability = builder.source::<StdinLines>(None);
         let active = Arc::new(AtomicBool::new(false));
         let binding = StdinBinding {
             capability: capability.token.clone(),

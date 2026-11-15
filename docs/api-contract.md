@@ -40,10 +40,12 @@ new acceptance scenarios and do not become observable topology.
 
 ## Frozen for Phase 3: Component Kernel
 
-ADR-0022 adds a filesystem resource requirement `File<P>`: one Program-issued
-identity with sealed read/append/write permissions, operation-specific typed outcomes,
-and one host path binding. Exact Effect dispatch and controlled selection retain
-that resource identity. Existing `Effect<D>` type-wide requirements are unchanged.
+ADR-0022 adds a filesystem resource capability `File<P>`: one identity with
+sealed read/append/write permissions, operation-specific typed outcomes, and
+one host path binding. Exact Effect dispatch and controlled selection retain
+that resource identity. Under ADR-0028 and ADR-0029 a `File<P>` is created at
+registration for the one Component that owns it and cannot be narrowed or
+handed to another Component.
 
 The accepted Phase 2 audit constrains Phase 3 to this slice:
 
@@ -52,19 +54,25 @@ The accepted Phase 2 audit constrains Phase 3 to this slice:
   and name-based controlled ordering with successful registration order.
 - The type implementing `Component` names a kind and is never stored. Its
   immutable logical configuration is `Component::Config`, supplied at
-  registration as `component::<Kind>(config).with(&caps).finish()?`; behaviorally relevant
+  registration as `component::<Kind>(config).finish()?`; behaviorally relevant
   mutable state belongs in `Component::Model`
   ([ADR-0013](adr/0013-component-kinds-assemblies-and-first-party-effects.md)).
 - `Component::Message` is the only transition input.
-- `Component::init(&Config, &Capabilities<Requires>) -> Init<Model, Message>` declares initial state and
+- `Component::Io` names the capabilities the Component owns. It implements
+  `Capabilities`: `()`, `Effect<D>`, `Source<S>`, `File<P>`, a tuple of
+  those, or a struct with `#[derive(Clone, Capabilities)]`
+  ([ADR-0029](adr/0029-capabilities-are-named-values-a-component-owns.md)).
+  Registration creates the value and passes it by reference to every
+  callback. Capabilities are not kept in `Config`.
+- `Component::init(&Config, &Io) -> Init<Model, Message>` declares initial state and
   optional startup work.
-- `Component::update(&Config, &Capabilities<Requires>, &mut Model, Message) -> Command<Message>` is the
+- `Component::update(&Config, &Io, &mut Model, Message) -> Command<Message>` is the
   v0 Rust spelling of the conceptual pure transition. Exclusively owned
   in-place mutation is observationally equivalent to returning a new Model.
 - One composable `Command<Message>` is returned. `Command::none` represents no
   finite work and `Command::batch` groups declarations; batching does not
   promise completion order.
-- `Component::subscriptions(&Config, &Capabilities<Requires>, &Model) -> Subscriptions<Message>` is a
+- `Component::subscriptions(&Config, &Io, &Model) -> Subscriptions<Message>` is a
   pure projection with an empty default.
 - The base Component contract requires movable `Config`, Model, and Messages,
   but does not require `Config` to be `Sync`. Per-Component serialization does
@@ -72,6 +80,9 @@ The accepted Phase 2 audit constrains Phase 3 to this slice:
   would prematurely constrain placement.
 - `ComponentRef<C>` is an inert typed logical address. It grants neither model
   access nor live delivery capability.
+- `finish()` returns `InstalledComponent<C>` for every Component. Its public
+  `io` field is the capabilities created for that Component. It derefs to
+  `ComponentRef<C>`, converts into one, and is `Addressable`.
 - `ComponentHandle<C>` is a live boundary capability and is deliberately
   distinct from `ComponentRef<C>`.
 
@@ -360,8 +371,8 @@ Both descriptors own text, provide `text` for exact UTF-8 and `line` for UTF-8
 followed by `\n`, produce `()`, and use `Infallible` as their Error type. The
 values contain no handles and perform no work when constructed.
 
-`supplied_by` accepts `StdoutDriver::new()` and `StderrDriver::new()` at
-the corresponding declared effect positions.
+`supply` accepts `StdoutDriver::new()` for an `Effect<PrintStdout>`
+capability and `StderrDriver::new()` for an `Effect<PrintStderr>` capability.
 Each Driver serializes its own Samara-issued print attempts within one live
 binding, writes the complete text, and flushes the selected stream. An
 operating-system I/O error is intentionally discarded rather than becoming an
@@ -377,7 +388,7 @@ streams. These descriptors add no formatting, logging, buffering, routing, or
 retry policy to the runtime.
 
 The root-qualified `samara::print!`, `samara::println!`, `samara::eprint!`, and
-`samara::eprintln!` macros take the matching `EffectCapability` as their first
+`samara::eprintln!` macros take the matching `Effect` capability as their first
 argument, accept familiar Rust formatting syntax, own the resulting `String` in
 the matching descriptor, and return an ordinary
 `.discard_outcome()`. They are deliberately absent from
@@ -410,11 +421,10 @@ failure is not followed by `Ended`. The initial descriptor has no line-length
 limit. Bounded or byte-oriented acquisition therefore requires another
 terminal descriptor; a Layer above `StdinLines` sees only complete lines.
 
-On Unix, `StdinDriver` supplied for the capability binds process stdin to the
-exact capability at its position. That position must declare a source whose
-terminal descriptor is `StdinLines`.
+On Unix, `supply(&capability, StdinDriver)` binds process stdin to that exact
+capability, which must be a source whose terminal descriptor is `StdinLines`.
 The capability may be direct or a built-in composition such as
-`SourceCapability<Framed<StdinLines, D>>`. A live runtime may contain only one
+`Source<Framed<StdinLines, D>>`. A live runtime may contain only one
 such binding, even for distinct capability values, and a second concurrent
 realization faults rather than racing for lines or inventing broadcast
 semantics. First-party bindings in separate live runtimes share that active
@@ -506,21 +516,37 @@ tracing remain deferred.
 ## Accepted for ADR-0008: Closed Program Capabilities
 
 [ADR-0008](adr/0008-closed-program-capabilities.md) closes Program assembly
-around values issued by one `ProgramBuilder`:
+around values issued by one `ProgramBuilder`, as amended by
+[ADR-0028](adr/0028-a-capability-belongs-to-one-component.md) and
+[ADR-0029](adr/0029-capabilities-are-named-values-a-component-owns.md):
 
-- `Program::builder::<R>()` returns `(ProgramBuilder<R>, Capabilities<R>)`.
-  The sealed requirement shape declares every dependency and produces the
-  authority to issue work through it. No public declaration method can expand
-  this inventory later ([ADR-0019](adr/0019-typed-program-requirements.md)).
+- `Program::builder()` returns a `ProgramBuilder` and declares nothing up
+  front. `Program`, `ProgramBuilder`, `RuntimeSetup`, and
+  `ControlledRuntimeSetup` have no type parameter.
+- `component::<C>(config).finish()` creates the capabilities named by
+  `C::Io` through `Capabilities::declare`. A capability can be made only
+  through `Declaring`, which only the library constructs. The Program is
+  closed when `ProgramBuilder::build()` returns.
+- A capability belongs to the Component it was created for. Nothing accepts
+  an existing capability at registration, so one cannot be shared, and the
+  `File` narrowing methods are removed.
+- `Capabilities::detached()` returns capability values that belong to no
+  Program, for calling `init`, `update`, or `subscriptions` directly in a
+  unit test. They cannot be supplied with Drivers, and a runtime faults if a
+  Component uses one.
+- `Program::manifest()` lists every declared capability in declaration
+  order with its owner's diagnostic name, its field name when `Io` is a
+  struct with named fields, its kind, and its descriptor type. A `File`
+  appears once per permitted operation.
 - Component references and Ports remain the corresponding Program-issued
   values for concrete and provider-neutral Component communication.
 - The kernel stores these inert values separately from Config and passes
-  `&Capabilities<Component::Requires>` to every callback. They expose no I/O,
+  `&Component::Io` to every callback. They expose no I/O,
   runtime handle, Driver, or controlled-world operation.
 - `Effect::perform(&capability, descriptor).into_command()`,
   `Effect::perform(&capability, descriptor).producing(mapper)`, and
   `Effect::perform(&capability, descriptor).discard_outcome()` are the only
-  primitive public Effect issuance paths. Under ADR-0022, `FileCapability<P>`
+  primitive public Effect issuance paths. Under ADR-0022, `File<P>`
   constructs bound `FileEffect<D>` values whose command conversion methods
   lower through these same paths, retaining the resource's exact identity.
 - `Subscription::source(&capability, descriptor)` and
@@ -533,33 +559,48 @@ around values issued by one `ProgramBuilder`:
 - Capability identity participates in Source reconciliation. Equal
   Subscription identity and descriptor with another Source capability replaces
   the Source.
-- One `SourceCapability<Framed<S, D>>` declaration records the terminal `S`
+- One `Source<Framed<S, D>>` capability records the terminal `S`
   requirement. Applications do not separately declare or bind the inner
   descriptor or Layer stack.
 
-The requirement shape fixes the capability inventory at builder creation.
-`ProgramBuilder::build()` closes the Component and connection graph. `RuntimeSetup::build()` and
+`ProgramBuilder::build()` closes the Component and connection graph and the
+capability inventory. `RuntimeSetup::build()` and
 `ControlledRuntimeBuilder::build()` synchronously require exactly one
-applicable terminal behavior for every declaration. Ordinary `Effect<D>` Drivers
-and controlled registrations are type-wide. `File<P>` uses one exact binding
-for all permitted operations, with no type-wide fallback; controlled
-`next_file_read`, `next_file_append`, and `next_file_replace` retain that selection. The one-shot `mpsc` bridge uses an
-exact Source capability selected by the `MpscReceiver::new(receiver)` tuple
-position. `control_all()` retains that identity. Controlled `emit_stream` and `close_stream`
-operations select that same exact capability. These exact APIs also accept a
-composed capability such as `SourceCapability<Framed<StreamDescriptor<T>, D>>`;
+applicable terminal behavior for every capability. In live execution every
+capability is bound to its own Driver with `supply(&capability, driver)`,
+including plain `Effect<D>` capabilities and sources whose Driver is wrapped
+in `DrivenSource`; two Components that read the clock are each supplied a
+Driver, and the host may supply clones of one. A capability with no Driver
+fails `build()` with an error naming its owner, its field, and its
+descriptor type, for example
+`Effect capability Recorder.file (FileAppend) has 0 live bindings; expected exactly one`.
+`File<P>` uses one binding for all permitted operations; controlled
+`next_file_read`, `next_file_append`, and `next_file_replace` select by the
+file capability. The one-shot `mpsc` bridge binds the Source capability that
+`MpscReceiver::new(receiver)` is supplied for. Controlled `emit_stream` and
+`close_stream` operations select that same capability. These APIs also accept
+a composed capability such as `Source<Framed<StreamDescriptor<T>, D>>`;
 raw items and ending enter at the terminal stream and traverse the declared
-Layers. Unix `StdinDriver` is another exact live
-binding, but it is unique across the process-input descriptor type rather than
+Layers. Unix `StdinDriver` is bound to one capability in the same way, but it
+is unique across the process-input descriptor type rather than
 one of several independently bindable receivers.
+
+Controlled execution controls every capability. `control_all()` and `build()`
+on `ControlledRuntimeSetup` do the same thing. Effects, files, and stream
+sources are selected per capability. Other sources are still controlled per
+terminal descriptor type, so a controlled test cannot yet address one of two
+same-typed sources of that kind separately.
 
 Raw descriptors cannot construct Commands or Subscriptions. HTTP pipeline
 lowering, standard-output macros, and Source bridge helpers also require their
 matching capability so a convenience API cannot reopen an undeclared path.
-Initial foreign Effect, Source, ComponentRef, and Port capabilities and foreign
-exact bindings fail profile build. A deliberately hidden foreign capability
-first reached after execution starts is a Component-conformance fault rejected
-before Driver or controlled behavior, not a supported form of dynamic assembly.
+Initial foreign Effect, Source, ComponentRef, and Port capabilities and
+Drivers supplied for a capability from another Program fail profile build. A
+deliberately hidden foreign capability first reached after execution starts
+is a Component-conformance fault rejected before Driver or controlled
+behavior, not a supported form of dynamic assembly. The same check rejects a
+capability created for another Component of the same Program: the runtime
+faults with "belongs to another Component".
 
 ## Accepted and Implemented Contract: Ports and Connectors
 
@@ -629,50 +670,78 @@ interaction and leaves one way for a Command to reach a Component:
 
 [ADR-0013](adr/0013-component-kinds-assemblies-and-first-party-effects.md)
 as amended by [ADR-0018](adr/0018-assemblies-export-a-connector.md),
-[ADR-0019](adr/0019-typed-program-requirements.md), and
-[ADR-0026](adr/0026-assemblies-export-one-value.md):
+[ADR-0026](adr/0026-assemblies-export-one-value.md),
+[ADR-0027](adr/0027-drivers-are-supplied-per-capability.md),
+[ADR-0028](adr/0028-a-capability-belongs-to-one-component.md), and
+[ADR-0029](adr/0029-capabilities-are-named-values-a-component-owns.md):
 
-- `Assembly` has `Config`, `Exports`, and `Requires`. Its generic
-  `install<R>(&mut ProgramBuilder<R>, Config, Capabilities<Self::Requires>)`
-  returns `Result<Exports, ProgramBuildError>`.
-  It installs Components using supplied capabilities, and declares no Ports or drivers.
-- `program.install::<A>(config).with(&caps).finish()?` returns
-  `InstalledAssembly<A>` exposing `exports()`. When `Exports` is a
-  `Connector<M>` it also exposes `connector()` and implements `Addressable`. It carries no separate runtime installation obligation.
-- The enclosing `Program<R>` carries all binding obligations. Live setup
-  supplies Drivers per capability value
-  ([ADR-0027](adr/0027-drivers-are-supplied-per-capability.md)):
-  `Runtime::builder(program).with(&caps).supplied_by(drivers)...build()?`,
-  in any order, for single capabilities or tuples of them. A Driver of the
-  wrong type does not compile, nor does a named capability left without
-  Drivers; a capability with no Driver, with two, or from another Program
-  fails `build()` with an error naming its descriptor type.
-  `Program::capabilities()` returns the whole capability tuple. Controlled setup uses
-  `ControlledRuntime::builder(program).control_all().build()?`, which has no
-  `build` before `control_all` except for the empty shape.
-- `with(&capabilities)` on Component and Assembly registration (formerly
-  `with_capabilities`) takes
-  `&Capabilities<_>`, so the host keeps the values to supply later. `VendorsDrivers::drivers(driver_config)` can supply a
-  matching tuple. Its `DriverConfig` associated type is separate from the
-  Assembly's logical `Config`; controlled execution requires no driver config.
-- `with(..).supplied_by(..)` is the only public live binding operation.
-  `RuntimeSetup` exposes no other binding methods, and the sealed
-  `Drivers<R>` marker exposes no binding operation. Validation remains inside
-  the runtime's private registry.
-- `DrivenSource::new(driver)` selects a type-wide terminal source implementation;
-  `MpscReceiver::new(receiver)` binds the exact capability at that position;
-  `StdinDriver` selects the process reader for its position. Controlled stream
-  requirements select exact identities and other sources select their terminal types.
-- Missing or incorrectly typed tuples fail compilation. Provenance, duplicate
-  identities, conflicting bindings and invalid startup work still fail synchronous
-  validation. Component and Assembly capability provenance is checked before init/install.
+- `Assembly` has `Config`, `Exports`, and `Io`.
+  `install(&mut ProgramBuilder, Config)` returns
+  `Result<(Exports, Io), ProgramBuildError>`. It registers Components, each of
+  which is given its own capabilities, and returns the capabilities the host
+  must supply Drivers for. It receives no capabilities and declares no Ports
+  or Drivers. `Io` has no trait bound: it is one member's `Io`, a struct of
+  several, or `()`.
+
+  ```rust,ignore
+  impl Assembly for Journal {
+      type Config = ();
+      type Exports = Connector<JournalMessage>;
+      type Io = JournalIo;
+
+      fn install(
+          program: &mut ProgramBuilder,
+          _: Self::Config,
+      ) -> Result<(Connector<JournalMessage>, JournalIo), ProgramBuildError> {
+          let recorder = program.component::<Recorder>(()).finish()?;
+          Ok((recorder.accepting(Message::Journal), recorder.io.clone()))
+      }
+  }
+  ```
+- `program.install::<A>(config).finish()?` returns `InstalledAssembly<A>`
+  with a public `io` field and `exports()`. When `Exports` is a
+  `Connector<M>` it also exposes `connector()` and implements `Addressable`.
+  It carries no separate runtime installation obligation.
+- Live setup supplies one Driver per capability:
+
+  ```rust,ignore
+  let runtime = Runtime::builder(program)
+      .supply(&journal.io.file, FileDriver::new("./data/pulse.journal"))
+      .supply(&journal.io.clock, SystemClockDriver)
+      .supply(&monitor.io.input, StdinDriver)
+      .supply(&monitor.io.output, StdoutDriver::new())
+      .build()?;
+  ```
+
+  Calls may come in any order. `supply` takes one capability or a tuple of
+  them with a matching tuple of Drivers. A Driver of the wrong type does not
+  compile. A capability with no Driver or with two fails `build()` with an
+  error naming its owner, its field, and its descriptor type; a Driver
+  supplied for a capability from another Program also fails `build()`.
+  Controlled setup uses `ControlledRuntime::builder(program).build()?`;
+  `control_all().build()` does the same thing.
+- `VendorsDrivers::supply(setup, io, driver_config) -> RuntimeSetup` supplies
+  an Assembly's capabilities with its default live Drivers. Its
+  `DriverConfig` associated type is separate from the Assembly's logical
+  `Config`; controlled execution requires no driver config.
+- `supply` is the only public live binding operation. `RuntimeSetup` exposes
+  no other binding methods, and the sealed `Drivers<C>` marker exposes no
+  binding operation. Validation remains inside the runtime's private registry.
+- `DrivenSource::new(driver)` wraps a terminal `SourceDriver` for the source
+  capability it is supplied for; `MpscReceiver::new(receiver)` transfers a
+  channel receiver into a stream source capability; `StdinDriver` selects the
+  process reader. Controlled stream sources are selected per capability and
+  other sources by their terminal descriptor type.
+- A Driver of the wrong type fails compilation. Completeness, provenance,
+  duplicate bindings, and invalid startup work fail synchronous validation
+  in `build()`.
 
 ## Accepted and Implemented Contract: Boundary Work Builders and Finishers
 
 [ADR-0023](adr/0023-boundary-work-builders-and-finishers.md):
 
 - Entry points are `Kind::verb`. World-facing work is rooted at the
-  requirement that grants it and everything else at `Command`:
+  capability type that grants it and everything else at `Command`:
   `Effect::perform(&capability, descriptor)` and resource operations such as
   `File::read(&file)` return an inert `EffectBuilder`; `Command::request(&target, ctor)`
   returns an inert `RequestBuilder`, optionally bounded with `.timeout(d)`;
@@ -695,7 +764,7 @@ as amended by [ADR-0018](adr/0018-assemblies-export-a-connector.md),
 
 [ADR-0024](adr/0024-component-shutdown.md):
 
-- `Component::shutdown(config, capabilities, model) -> Command<NoMessage>`
+- `Component::shutdown(config, io, model) -> Command<NoMessage>`
   takes the Model by value and returns finishing work only. The default does
   nothing. It is pure.
 - Only Drain calls it. Stopping begins when no messages are queued and no
@@ -730,8 +799,8 @@ accidental promises made by a placeholder type or variant:
   timers, batches, and stored message mappers.
 - The detailed error taxonomy for closed logical assembly, complete
   profile-binding validation, and later foreign-capability conformance faults.
-- General Layer and profile-binding abstractions beyond ADR-0008's type-wide
-  Driver and exact Source-capability forms.
+- General Layer and profile-binding abstractions beyond per-capability
+  `supply` and the first-party Driver forms.
 - Descriptor/message payload tracing, typed trace projections, streaming and
   public live observer APIs, and any durable trace representation. A public
   live observer is explicitly outside v0 under ADR-0004.

@@ -12,7 +12,6 @@ use std::time::Duration;
 
 use super::*;
 
-type JournalNeeds = <Journal as Assembly>::Requires;
 type JournalReply = Result<Vec<String>>;
 
 /// The time every controlled test supplies, and the line it produces.
@@ -47,7 +46,7 @@ enum ClientMessage {
 }
 
 impl Component for JournalClient {
-    type Requires = ();
+    type Io = ();
     type Config = Connector<JournalMessage>;
     type Model = Vec<(usize, RequestOutcome<JournalReply>)>;
     type Message = ClientMessage;
@@ -83,9 +82,9 @@ fn program() -> (
     Program,
     ComponentRef<JournalClient>,
     Port<JournalMessage>,
-    Capabilities<JournalNeeds>,
+    JournalIo,
 ) {
-    let mut builder = ProgramBuilder::new();
+    let mut builder = Program::builder();
     let journal = builder.install::<Journal>(()).finish().unwrap();
     let port = builder.port::<JournalMessage>(PortId::new("journal"));
     builder.connect(&port, journal.connector());
@@ -93,8 +92,8 @@ fn program() -> (
         .component::<JournalClient>(journal.connector().clone())
         .finish()
         .unwrap();
-    let capabilities = journal.capabilities().clone();
-    (builder.build().unwrap(), client, port, capabilities)
+    let io = journal.io.clone();
+    (builder.build().unwrap(), client.into(), port, io)
 }
 
 fn successful_replies(
@@ -114,7 +113,7 @@ fn successful_replies(
 
 #[test]
 fn assembly_appends_through_its_supplied_file_capability() {
-    let (program, client, _, (file, _)) = program();
+    let (program, client, _, JournalIo { file, .. }) = program();
     let mut runtime = ControlledRuntime::builder(program)
         .control_all()
         .build()
@@ -135,9 +134,9 @@ fn assembly_appends_through_its_supplied_file_capability() {
 
 #[test]
 fn append_outcomes_are_discarded_without_automatic_retry() {
-    let mut builder = ProgramBuilder::new();
+    let mut builder = Program::builder();
     let recorder = builder.component::<Recorder>(()).finish().unwrap();
-    let (file, _) = recorder.capabilities().clone();
+    let file = recorder.io.file.clone();
     let mut runtime = ControlledRuntime::builder(builder.build().unwrap())
         .control_all()
         .build()
@@ -177,7 +176,7 @@ fn recent_returns_the_requested_tail_of_the_supplied_file() {
         ("first\ncafé\n東京\n", 2, &["café", "東京"]),
     ];
     for &(text, count, expected) in cases {
-        let (program, client, _, (file, _)) = program();
+        let (program, client, _, JournalIo { file, .. }) = program();
         let mut runtime = ControlledRuntime::builder(program)
             .control_all()
             .build()
@@ -205,7 +204,7 @@ fn recent_returns_the_requested_tail_of_the_supplied_file() {
 
 #[test]
 fn overlapping_recent_requests_keep_their_counts_and_reply_tokens() {
-    let (program, client, _, (file, _)) = program();
+    let (program, client, _, JournalIo { file, .. }) = program();
     let mut runtime = ControlledRuntime::builder(program)
         .control_all()
         .build()
@@ -243,7 +242,7 @@ fn overlapping_recent_requests_keep_their_counts_and_reply_tokens() {
 #[test]
 fn recent_uses_its_read_result_regardless_of_append_completion_order() {
     for append_finishes_first in [false, true] {
-        let (program, client, _, (file, _)) = program();
+        let (program, client, _, JournalIo { file, .. }) = program();
         let mut runtime = ControlledRuntime::builder(program)
             .control_all()
             .build()
@@ -293,7 +292,7 @@ fn read_failures_reply_with_the_journal_domain_error() {
         FsErrorKind::PermissionDenied,
         "read denied by fixture",
     );
-    let (program, client, _, (file, _)) = program();
+    let (program, client, _, JournalIo { file, .. }) = program();
     let mut runtime = ControlledRuntime::builder(program)
         .control_all()
         .build()
@@ -339,10 +338,10 @@ impl Drop for TestRoot {
 async fn file_binding_selects_the_journal_target() {
     let root = TestRoot::new();
     let file = "custom/events.log";
-    let (program, _, port, capabilities) = program();
+    let (program, _, port, io) = program();
     let runtime = Runtime::builder(program)
-        .with(&capabilities)
-        .supplied_by((FileDriver::new(root.0.join(file)), SystemClockDriver))
+        .supply(&io.file, FileDriver::new(root.0.join(file)))
+        .supply(&io.clock, SystemClockDriver)
         .build()
         .unwrap();
     let journal = runtime.port_handle(&port).unwrap();
@@ -369,10 +368,10 @@ async fn recent_reads_existing_entries_through_the_standard_driver() {
     let file = "custom/events.log";
     std::fs::create_dir_all(root.0.join("custom")).unwrap();
     std::fs::write(root.0.join(file), "first\nsecond\nthird\n").unwrap();
-    let (program, _, port, capabilities) = program();
+    let (program, _, port, io) = program();
     let runtime = Runtime::builder(program)
-        .with(&capabilities)
-        .supplied_by((FileDriver::new(root.0.join(file)), SystemClockDriver))
+        .supply(&io.file, FileDriver::new(root.0.join(file)))
+        .supply(&io.clock, SystemClockDriver)
         .build()
         .unwrap();
     let journal = runtime.port_handle(&port).unwrap();
@@ -411,8 +410,8 @@ fn the_journal_reaches_one_file_and_the_clock() {
     let (program, ..) = program();
     assert_eq!(
         program.manifest().to_string(),
-        "pulse::journal::Journal: effect samara::file::FileRead\n\
-         pulse::journal::Journal: effect samara::file::FileAppend\n\
-         pulse::journal::Journal: effect samara::clock::ReadSystemTime\n"
+        "pulse::journal::Recorder.file: effect samara::file::FileRead\n\
+         pulse::journal::Recorder.file: effect samara::file::FileAppend\n\
+         pulse::journal::Recorder.clock: effect samara::clock::ReadSystemTime\n"
     );
 }

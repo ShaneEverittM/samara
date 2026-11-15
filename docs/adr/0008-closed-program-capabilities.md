@@ -12,6 +12,14 @@
 > Amendment note (November 2026): Effect and request call spellings below are the originals; the current
 > spellings are in [ADR-0023](0023-boundary-work-builders-and-finishers.md).
 
+> Amendment note (November 15, 2026):
+> [ADR-0028](0028-a-capability-belongs-to-one-component.md) and
+> [ADR-0029](0029-capabilities-are-named-values-a-component-owns.md) keep the
+> closed Program (every capability needs exactly one Driver or control, checked
+> before execution) but change how it closes: capabilities are created when a
+> Component is registered, each belongs to that Component, and the set is
+> closed when `build()` returns.
+
 > Runtime construction amendment (November 9, 2026):
 > [ADR-0019](0019-typed-program-requirements.md) declares capabilities through
 > `Program::builder::<R>()` and supplies all live Drivers through `with_drivers`.

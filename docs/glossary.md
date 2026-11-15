@@ -12,7 +12,8 @@ The concepts below are canonical unless marked historical. Accepted API slices
 and the Phase 5 controlled-execution contract follow these spellings. Accepted
 ADR-0004 uses them for the active initial live-runtime contract.
 ADR-0008 closes Program assembly around Program-issued Component, Port,
-Effect, and Source capabilities.
+Effect, and Source capabilities. ADR-0028 and ADR-0029 give each capability
+one owning Component and a name.
 `api-contract.md` records which slice is frozen for each
 implementation phase and which policy-bearing surfaces remain provisional.
 
@@ -27,15 +28,17 @@ dependency after build.
 **Program assembly** — The construction of a Samara program: Component
 registration, issuance of ComponentRefs, Ports, and Effect and Source
 capabilities, Port binding, and profile selection. `ProgramBuilder::build()`
-rejects logical assembly errors. `Program::builder::<R>()` fixes the capability
-inventory and issues its values at construction; profile setup carries `R` until
-a full driver tuple or `control_all()` completes it (ADR-0019).
+rejects logical assembly errors. `Program::builder()` declares nothing up
+front: registering a Component creates that Component's capabilities, and the
+Program is closed when `build()` returns (ADR-0028, ADR-0029).
 
-**Assembly** — A reusable slice of Program assembly: a type whose `install`
-registers its own Components using capabilities supplied by the enclosing
-`ProgramBuilder<R>`, hands back its `Exports`, and lists the world
-boundaries the host must drive as `Requires`. It declares no Ports; the host
-names its own and connects the Assembly's Connector to them (ADR-0018,
+**Assembly** — A reusable slice of Program assembly: a type whose
+`install(program, config)` registers its own Components and returns
+`(Exports, Io)`. `Io` is the capabilities of the Components it registered,
+which the host must supply Drivers for: one member's `Io`, a struct of
+several, or `()`. `install` receives no capabilities; each Component it
+registers is given its own (ADR-0028, ADR-0029). It declares no Ports; the
+host names its own and connects the Assembly's Connector to them (ADR-0018,
 ADR-0026). The unit of reuse in Samara is an
 Assembly, not a Component. It leaves no trace at runtime: the Components it
 installs are ordinary peers. Not a *SubComponent*: Samara has no
@@ -47,34 +50,62 @@ exists and the installed Assembly is itself `Addressable`), a struct naming
 several doors or a `ComponentRef`, or `()` for an Assembly nobody sends to
 (ADR-0026).
 
-**InstalledComponent** — What registering a Component with a bare `finish()`
-returns when it requires anything: the `ComponentRef` together with the
-capabilities created for that Component. The host reads `capabilities()` to
-supply Drivers; other Components are given the reference or a Connector,
-never the capabilities (ADR-0028). `InstalledAssembly` carries
-`capabilities()` the same way.
+**InstalledComponent / `InstalledComponent<C>`** — What `finish()` returns
+for every registered Component: the `ComponentRef` together with the
+capabilities created for that Component, in the public field `io`. The host
+reads `io` to supply Drivers. The handle derefs to its `ComponentRef`,
+converts into one, and is `Addressable`. Other Components are given the
+reference or a Connector, never the capabilities (ADR-0028, ADR-0029).
+`InstalledAssembly<A>` has a public `io` field in the same way, holding
+`Assembly::Io`.
+
+**Io / `Component::Io`** — The associated type naming the capabilities a
+Component owns: its whole access to the world. It is `()`, one `Effect<D>`,
+`Source<S>`, or `File<P>`, a tuple of those, or a struct with named fields
+and `#[derive(Clone, Capabilities)]`. Registration creates one fresh value
+for the Component, passes it by reference to every `init`, `update`,
+`subscriptions`, and `shutdown` call, and exposes the same value as
+`InstalledComponent::io` (ADR-0029). `Assembly::Io` is the corresponding
+type for an Assembly and has no trait bound. *Requires* is the historical
+name.
+
+**Capabilities (trait)** — The trait a `Component::Io` type implements. Its
+one required function, `declare(&mut Declaring)`, creates one fresh
+capability per field; `Declaring::field("name")` records the field name.
+The library implements it for `Effect<D>`, `Source<S>`, `File<P>`, `()`, and
+tuples up to eight; `#[derive(Capabilities)]` implements it for a struct
+with named fields. A capability can be made only through `Declaring`, which
+only the library constructs. `Capabilities::detached()` returns capability
+values that belong to no Program, for calling `init`, `update`, or
+`subscriptions` directly in a unit test; they cannot be supplied with
+Drivers, and a runtime faults if a Component uses one (ADR-0029).
+
+**Capability ownership** — A capability belongs to the one Component it was
+created for. It cannot be handed to a second Component at registration,
+cannot be narrowed, and may not be kept in `Config`. A Component that uses a
+capability created for another Component faults the runtime with "belongs to
+another Component". Two Components that need the same file do not each hold
+it: one owns it and the others send it Messages. Whether two capabilities
+are backed by one real resource is the host's choice when it supplies
+Drivers (ADR-0028).
 
 **Capability manifest** — `Program::manifest()`: every capability a Program
 declared, in declaration order, each with its kind (effect or source), its
-descriptor type, and the Component or Assembly it was created for. A Program
-can reach the world only through declared capabilities, so the list is
-complete. Print it at startup or pin its text in a test so new world access
-shows up in review.
+descriptor type, the diagnostic name of the Component that owns it, and its
+field name when the Component's `Io` is a struct with named fields. A
+Program can reach the world only through declared capabilities, so the list
+is complete. A `File` appears as one row per permitted operation. Print it
+at startup or pin its text in a test so new world access shows up in review.
 
-**Requires** — A type-level shape of `Effect<D>`, `Source<S>`, `()`, or nested
-tuples. A `Program<R>` declares its full world boundary; Components and
-Assemblies use `Requires` to describe the capability values they receive.
-`Capabilities<R>` is the corresponding value tuple. Live setup pairs
-capability values with Drivers through
-`with(&capabilities).supplied_by(drivers)` (ADR-0027), while controlled
-setup's `control_all()`
-derives every control (ADR-0019).
+**Requires** — Historical. See *Io*.
 
-**VendorsDrivers** — An optional trait an Assembly implements to supply concrete
-live Drivers for its `Requires` through `drivers(driver_config)`. Its
-`DriverConfig` contains live binding settings independently of `Assembly::Config`.
-The caller supplies that tuple for the Assembly's capabilities with `supplied_by`. A library normally
-feature-gates the implementation.
+**VendorsDrivers** — An optional trait an Assembly implements to supply its
+default live Drivers: `supply(setup, io, driver_config) -> RuntimeSetup`
+calls `setup.supply(..)` for each capability in the Assembly's `Io`. Its
+`DriverConfig` contains live binding settings independently of
+`Assembly::Config`. The host calls
+`A::supply(Runtime::builder(program), &installed.io, driver_config)`. A
+library normally feature-gates the implementation.
 
 **Program boundary** — The scope within which Samara's guarantees apply. Code
 outside this boundary is part of the surrounding world and interacts with the
@@ -97,9 +128,10 @@ and `component::<C>(..)` name the kind.
 
 **Component configuration / `Component::Config`** — The immutable value a
 kind is registered with. It holds logical wiring and declarative
-configuration, such as Ports and SourceDescriptors. Capabilities are stored
-separately as `Capabilities<Component::Requires>`; both are passed by shared
-reference, signaling that it is observationally read-only during execution.
+configuration, such as Ports and SourceDescriptors. Capabilities are not
+kept in it: they are the separate `Component::Io` value. Both are passed by
+shared reference, signaling that they are observationally read-only during
+execution.
 Because Rust permits interior mutability, preserving that property is also a
 conformance obligation. Behaviorally relevant mutable state does not belong
 here.
@@ -146,11 +178,12 @@ interaction. Each Command occurrence is a distinct invocation even when two
 descriptors hold equal data, so descriptors need not be comparable or
 cloneable.
 
-**EffectCapability / `EffectCapability<D>`** — An inert Program-issued value
-declaring that its Program may issue descriptor type `D`. Required by every
-Effect Command constructor; performs no I/O and holds no handle. Cloning it
-declares nothing new, and its private provenance stops it authorizing work in
-another Program.
+**Effect capability / `Effect<D>`** — An inert value, created at
+registration for one Component, declaring that the Component may issue
+descriptor type `D`. Required by every Effect Command constructor; performs
+no I/O and holds no handle. Cloning it declares nothing new, and its private
+provenance stops it authorizing work in another Program or for another
+Component.
 
 **EffectOutcome** — The single terminal completion of an effect invocation:
 `Succeeded(output)` or `Failed(error)`, where the error is the Driver's typed
@@ -196,10 +229,19 @@ exists, adds its reason where the Component asks for it (ADR-0025).
 production. Comparability exists so reconciliation can tell whether desired
 work is unchanged; it holds no live resource and no Subscription identity.
 
-**SourceCapability / `SourceCapability<S>`** — An inert Program-issued value
-declaring that its Program may subscribe to descriptor type `S`. For a
-composed `S` it also records the lowered terminal requirement, so applications
-never declare inner descriptors or Layers separately.
+**Source capability / `Source<S>`** — An inert value, created at
+registration for one Component, declaring that the Component may subscribe
+to descriptor type `S`. For a composed `S` it also records the lowered
+terminal requirement, so applications never declare inner descriptors or
+Layers separately. The type `Source<S>` is the capability; the unqualified
+word *Source* below remains the runtime-scoped realization.
+
+**File capability / `File<P>`** — An inert value, created at registration
+for one Component, for one file resource with permissions `P`, such as
+`File<ReadAppend>`. `File::read(&file)` and the other operations lower to
+effects that keep the resource's identity. One `FileDriver` supplies every
+permitted operation. There is one `File` type and no narrowing (ADR-0022,
+ADR-0029).
 
 **Terminal descriptor** — A descriptor realized directly by a Driver or by
 terminal controlled behavior. `TcpBytes` is one.
@@ -215,7 +257,7 @@ running Source.
 
 **Subscription / `Subscription<Message>`** — A Component's declarative desire
 to maintain a Source for a SourceDescriptor under a stable Component-local
-identity, through a SourceCapability, with a reusable mapper from SourceEvents
+identity, through a Source capability, with a reusable mapper from SourceEvents
 to Messages. Declaring one starts nothing.
 
 **Source** — The runtime-scoped ongoing realization behind a SourceDescriptor.
@@ -266,11 +308,22 @@ assembly rather than attached to a Component. `EffectDriver<D>` and
 outcome or terminal event; a panic faults the runtime instead of inventing an
 application result.
 
-**Type-wide binding** — One Driver or controlled registration satisfying every
-capability that lowers to the same terminal descriptor type.
+**Live binding** — The pairing of one capability with one Driver, made with
+`Runtime::builder(program).supply(&capability, driver)`. Every capability
+needs exactly one, including plain effects and sources whose Driver handles
+a whole descriptor type; two Components that read the clock are each
+supplied a Driver. The live `build()` rejects a missing or duplicate binding
+with an error naming the owning Component, the field, and the descriptor
+type (ADR-0027, ADR-0029).
+
+**Type-wide source** — A source whose Driver, wrapped in `DrivenSource`, is
+written for a terminal descriptor type, not for one concrete resource. Live
+execution still binds it per capability. Controlled execution still controls
+it per descriptor type.
 
 **Exact binding** — A binding tied to one capability identity because it owns
-one concrete resource, such as a one-shot `mpsc` receiver or process stdin.
+one concrete resource, such as a `File`, a one-shot `mpsc` receiver, or
+process stdin.
 
 **Mechanism** — A reusable execution capability owned by the runtime or a
 low-level Layer or Driver: scheduling, transport I/O, cancellation, task
@@ -292,12 +345,12 @@ shutdown, and fault do not invoke it (ADR-0004).
 The two lifecycles are parallel only where their semantics are:
 
 ```text
-Command + EffectCapability + EffectDescriptor
+Command + Effect capability + EffectDescriptor
     -> zero or more Layers -> terminal Driver or controlled behavior
     -> EffectOutcome exactly once (whole-scope abort may produce none)
     -> one-shot mapper -> Message, or discarded -> no Message
 
-Subscription(identity + SourceCapability + SourceDescriptor + mapper)
+Subscription(identity + Source capability + SourceDescriptor + mapper)
     -> reconciliation -> SourcePlan -> terminal Driver or controlled behavior
     -> Source -> SourceEvent zero or more times
     -> reusable mapper -> Message
@@ -316,7 +369,7 @@ because `Source` is reserved for the runtime-scoped realization.
 `StreamDescriptor<T>` uses the otherwise optional `Descriptor` suffix to avoid
 confusion with a running stream. It names logical event production independently
 of the live adapter; `MpscReceiver::new(receiver)` names one
-concrete Tokio realization for the exact SourceCapability it is supplied for, whose terminal descriptor is
+concrete Tokio realization for the exact Source capability it is supplied for, whose terminal descriptor is
 `StreamDescriptor<T>`. That capability may itself describe a built-in composed
 Source, in which case stream items still traverse its Layers.
 
@@ -413,7 +466,7 @@ values.
 `Command` by saying how its outcome ends: `producing(map)` (a Message),
 `into_command()` (a Message through `From`), `finish_with(f)` (finishing
 commands and no Message), or `discard_outcome()` (nothing; effects only).
-The interaction itself is named `Kind::verb`, rooted at the requirement for
+The interaction itself is named `Kind::verb`, rooted at the capability type for
 world-facing work and at `Command` otherwise:
 `Effect::perform(&capability, descriptor)`, `File::read(&file)`, `Command::request(&target, ctor)`
 (ADR-0023).
@@ -581,10 +634,11 @@ to hold.
 | Do not collapse | Distinction |
 | --- | --- |
 | Command and EffectDescriptor | A Command is the broader finite-work envelope; an EffectDescriptor is one typed world-facing intent it may contain. |
-| EffectCapability and EffectDescriptor | The capability declares one closed Program dependency; each descriptor carries one concrete finite intent. |
-| EffectCapability or SourceCapability and a live Handle | Descriptor capabilities are inert Component wiring that only authorizes declarative work; ComponentHandle and PortHandle cross live external ingress. |
+| Effect capability and EffectDescriptor | The capability declares one dependency of the Component that owns it; each descriptor carries one concrete finite intent. |
+| Effect or Source capability and a live Handle | Capabilities are inert values a Component owns that only authorize declarative work; ComponentHandle and PortHandle cross live external ingress. |
+| `Config` and `Io` | `Config` is wiring and settings the host passes in; `Io` is the capabilities registration creates. A capability is never kept in `Config`. |
 | EffectOutcome and SourceEvent | An EffectOutcome terminates one invocation; a SourceEvent is one of zero or more occurrences from ongoing work. |
-| SourceCapability, SourceDescriptor, Subscription, SourcePlan, and Source | A SourceCapability declares one closed Program dependency, a SourceDescriptor describes concrete ongoing production, a Subscription adds desire, identity, and mapping, a SourcePlan lowers that desire to ordered Layers and a terminal descriptor, and a Source is the runtime-scoped realization. |
+| Source capability (`Source<S>`), SourceDescriptor, Subscription, SourcePlan, and Source | A Source capability declares one dependency of the Component that owns it, a SourceDescriptor describes concrete ongoing production, a Subscription adds desire, identity, and mapping, a SourcePlan lowers that desire to ordered Layers and a terminal descriptor, and a Source is the runtime-scoped realization. |
 | Layer and Driver | A Layer composes declarations inside the program boundary; a Driver terminates a descriptor into the selected live world. |
 | Adapter and a code abstraction | Adapter is the conceptual category; Layer and Driver are the code-level roles Samara currently names. |
 | Component Message and Port message | A Component Message is private transition input; a Port message is a value of the provider-neutral vocabulary crossing a Port. A library written the Elm way makes one opaque type serve as both. |
@@ -624,6 +678,17 @@ to hold.
 | Recipient, Address | Connector | Working names while the provider-owned address was designed; *Connector* pairs with *Port* and names the thing held rather than a role. |
 | An Assembly exporting a `Port` | A `Connector` in `Exports` | Removed November 9, 2026 (ADR-0018). Assemblies declare no Ports; the host names its own and connects the Assembly's Connector. |
 | `RuntimeSetup::with_drivers(tuple)`, public `RuntimeBuilder`, registration's `with_capabilities(caps)` by value | `Runtime::builder(program).with(&capabilities).supplied_by(drivers)`, and `component::<C>(config).with(&capabilities)` on registration | Replaced November 10, 2026 (ADR-0027). Registration and the runtime builder take the same capability value through the same word. A positional tuple let two same-typed capabilities swap Drivers silently; Drivers now follow the capability value, and completeness is checked by `build()` instead of the compiler. |
+| `Requires` (`Component::Requires`, `Assembly::Requires`) | `Io` (`Component::Io`, `Assembly::Io`) | Renamed November 15, 2026 (ADR-0029). `Io` is a tuple or a struct with `#[derive(Clone, Capabilities)]`, so capabilities have field names in `update`, at the host, in the manifest, and in startup errors. |
+| `EffectCapability<D>`, `SourceCapability<S>`, `FileCapability<P>`, and the `Effect`, `Source`, `File` requirement markers | One `Effect<D>`, `Source<S>`, `File<P>` type each | Merged November 15, 2026 (ADR-0029). The type written in `Io` is the capability value; `Effect::perform(&effect, ..)` and `File::read(&file)` read as before. |
+| `Requirements` (sealed trait), `Capabilities<R>` (alias) | The `Capabilities` trait | Removed November 15, 2026 (ADR-0029). `Capabilities` is one function, `declare`, that a person can write by hand or derive; `Capabilities<Self::Requires>` in a signature is now `Self::Io`. |
+| `Program::builder::<R>()` returning `(builder, capabilities)`, `Program<R>`, `ProgramBuilder<R>` | `Program::builder()`; capabilities created by `finish()` | Removed November 15, 2026 (ADR-0028, ADR-0029). Nothing is declared up front and no type carries a requirement parameter; the Program is closed when `build()` returns. |
+| `component::<C>(config).with(&capabilities)`, `install::<A>(config).with(&capabilities)` | `component::<C>(config).finish()`, `install::<A>(config).finish()` | Removed November 15, 2026 (ADR-0028). Nothing accepts an existing capability at registration, so one cannot be given to a second Component. |
+| `with(&capability).supplied_by(driver)` | `supply(&capability, driver)` | Replaced November 15, 2026 (ADR-0029). With named fields the pair reads on one line: `.supply(&journal.io.file, FileDriver::new(path))`. |
+| `Program::capabilities()` | `InstalledComponent::io`, `InstalledAssembly::io` | Removed November 15, 2026 (ADR-0028). Test fixtures return their handles or the `io` values they need. |
+| `File` narrowing: `read_only()`, `append_only()`, `read_append()`, `write_only()` | None | Removed November 15, 2026 (ADR-0028, ADR-0029). Narrowing existed to hand a file to another Component; a file now has one owner and other Components send it Messages. |
+| `InstalledAssembly::capabilities()`, `InstalledComponent::capabilities()` | The public `io` field | Renamed November 15, 2026 (ADR-0029). The accessor was the interim ADR-0028 spelling. |
+| `VendorsDrivers::drivers(driver_config)` returning a driver tuple | `VendorsDrivers::supply(setup, io, driver_config)` | Replaced November 15, 2026 (ADR-0029). The Assembly supplies its own named capabilities, so no tuple order is exposed. |
+| Type-wide binding (one Driver for every capability of a descriptor type) | Live binding, one Driver per capability | Removed for live execution November 15, 2026 (ADR-0028). Controlled execution still controls type-wide sources per descriptor type. |
 | `Assembly::Accepts`, `install` returning `(Connector<Accepts>, Exports)` | `type Exports = Connector<M>` (or a struct, or `()`) | Removed November 9, 2026 (ADR-0026). A required door ranked peer doors and gave a door to Assemblies nobody sends to; `installed.connector()` now exists exactly when `Exports` is a Connector. |
 | `Installed<A>` | `InstalledAssembly<A>` | Renamed November 8, 2026 so `with_assembly(installed_assembly)` reads as a sentence; ADR-0019 subsequently removed its runtime token role; it retains the Connector and exports. |
 | `LiveRuntime`, `LiveRuntimeBuilder` | `Runtime`, `RuntimeBuilder` | Renamed November 9, 2026: the live profile is the one every application names, so it carries no qualifier; *live execution* remains the glossary term for the profile, and `ControlledRuntime` keeps its adjective. |

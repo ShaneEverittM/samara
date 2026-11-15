@@ -105,31 +105,33 @@ struct Checker;
 
 struct CheckerConfig {}
 
+/// Everything the URL checker can reach in the world. [`program`] returns
+/// these so the host can supply a live Driver for each.
+#[derive(Clone, Capabilities)]
+pub struct UrlIo {
+    pub stdin: Source<StdinLines>,
+    pub stdout: Effect<PrintStdout>,
+    pub stderr: Effect<PrintStderr>,
+    pub http: Effect<HttpRequest>,
+}
+
 impl Checker {
     const DELAY: Duration = Duration::from_millis(500);
 }
 
 impl Component for Checker {
-    type Requires = (
-        Source<StdinLines>,
-        Effect<PrintStdout>,
-        Effect<PrintStderr>,
-        Effect<HttpRequest>,
-    );
+    type Io = UrlIo;
     type Config = CheckerConfig;
     type Model = Status;
     type Message = Message;
 
-    fn init(
-        _: &CheckerConfig,
-        _capabilities: &Capabilities<Self::Requires>,
-    ) -> Init<Status, Message> {
+    fn init(_: &CheckerConfig, _io: &Self::Io) -> Init<Status, Message> {
         Init::new(Status::Idle { revision: 0 })
     }
 
     fn update(
         _config: &CheckerConfig,
-        capabilities: &Capabilities<Self::Requires>,
+        io: &Self::Io,
         model: &mut Status,
         message: Message,
     ) -> Command<Message> {
@@ -137,8 +139,8 @@ impl Component for Checker {
             Message::Input(event) => {
                 let command = match event {
                     InputEvent::Command(command) => command,
-                    InputEvent::Malformed(e) => return eprintln!(&capabilities.2, "{e}"),
-                    InputEvent::Error(e) => return eprintln!(&capabilities.2, "{e:?}"),
+                    InputEvent::Malformed(e) => return eprintln!(&io.stderr, "{e}"),
+                    InputEvent::Error(e) => return eprintln!(&io.stderr, "{e:?}"),
                     // This should return stop, and the runtime could perhaps exit
                     // if all components have stopped.
                     InputEvent::Eof => return Command::none(),
@@ -157,11 +159,8 @@ impl Component for Checker {
                             revision: next,
                         };
 
-                        let log = println!(
-                            &capabilities.1,
-                            "Waiting {:?} before checking...",
-                            Self::DELAY
-                        );
+                        let log =
+                            println!(&io.stdout, "Waiting {:?} before checking...", Self::DELAY);
                         let check = Command::after(
                             Self::DELAY,
                             Message::CheckDue {
@@ -179,31 +178,31 @@ impl Component for Checker {
                         *model = Status::Idle {
                             revision: revision.checked_add(1).expect("revision overflow"),
                         };
-                        println!(&capabilities.1, "Cleared")
+                        println!(&io.stdout, "Cleared")
                     }
 
                     UrlCommand::Status => match &model {
                         Status::Idle { .. } => {
                             println!(
-                                &capabilities.1,
+                                &io.stdout,
                                 "URL: {}\nState: {}\nLast result: {}", "none", "idle", "none"
                             )
                         }
                         Status::Pending { url, .. } => {
                             println!(
-                                &capabilities.1,
+                                &io.stdout,
                                 "URL: {}\nState: {}\nLast result: {}", url, "waiting", "none"
                             )
                         }
                         Status::InFlight { url, .. } => {
                             println!(
-                                &capabilities.1,
+                                &io.stdout,
                                 "URL: {}\nState: {}\nLast result: {}", url, "checking", "none"
                             )
                         }
                         Status::Finished { url, result, .. } => {
                             println!(
-                                &capabilities.1,
+                                &io.stdout,
                                 "URL: {}\nState: {}\nLast result: {}", url, "idle", result
                             )
                         }
@@ -225,9 +224,9 @@ impl Component for Checker {
                     url: Arc::clone(&url),
                     revision,
                 };
-                let log = println!(&capabilities.1, "Checking {}", url);
+                let log = println!(&io.stdout, "Checking {}", url);
                 let request =
-                    request.into_command_with(&capabilities.3, move |r| Message::CheckFinished {
+                    request.into_command_with(&io.http, move |r| Message::CheckFinished {
                         url,
                         revision,
                         outcome: r,
@@ -254,18 +253,14 @@ impl Component for Checker {
                     url: Arc::clone(&url),
                     result: result.clone(),
                 };
-                println!(&capabilities.1, "{}: {}", url, result)
+                println!(&io.stdout, "{}: {}", url, result)
             }
         }
     }
 
-    fn subscriptions(
-        _config: &CheckerConfig,
-        capabilities: &Capabilities<Self::Requires>,
-        _: &Status,
-    ) -> Subscriptions<Message> {
+    fn subscriptions(_config: &CheckerConfig, io: &Self::Io, _: &Status) -> Subscriptions<Message> {
         Subscriptions::one(Subscription::source_with(
-            &capabilities.0,
+            &io.stdin,
             StdinLines::new(),
             |event| {
                 Message::Input(match event {
@@ -278,59 +273,37 @@ impl Component for Checker {
     }
 }
 
-/// The URL checker's complete world-boundary requirement shape.
-pub type UrlRequirements = (
-    Effect<HttpRequest>,
-    Effect<PrintStdout>,
-    Effect<PrintStderr>,
-    Source<StdinLines>,
-);
-
-/// Assembles the URL checker for live or controlled execution.
+/// Assembles the URL checker for live or controlled execution, returning the
+/// Program and the capabilities a live host supplies Drivers for.
 ///
 /// ```
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// let program = urlchecker::program()?;
-/// let caps = program.capabilities().clone();
+/// let (program, io) = urlchecker::program()?;
 /// let runtime = samara::Runtime::builder(program)
-///     .with(&caps)
-///     .supplied_by((
-///         samara::HttpDriver::new(),
-///         samara::StdoutDriver::new(),
-///         samara::StderrDriver::new(),
-///         samara::StdinDriver,
-///     ))
+///     .supply(&io.stdin, samara::StdinDriver)
+///     .supply(&io.stdout, samara::StdoutDriver::new())
+///     .supply(&io.stderr, samara::StderrDriver::new())
+///     .supply(&io.http, samara::HttpDriver::new())
 ///     .build()?;
 /// // Inside Tokio, call runtime.spawn() and use its RuntimeTask for shutdown.
 /// # Ok(())
 /// # }
 /// ```
-pub fn program() -> Result<Program<UrlRequirements>, ProgramBuildError> {
-    let (program, _, _) = assemble()?;
-    Ok(program)
+pub fn program() -> Result<(Program, UrlIo), ProgramBuildError> {
+    let (program, checker) = assemble()?;
+    Ok((program, checker.io))
 }
 
-// Tests retain addresses and the input capability without exposing internals.
-type Assembled = (
-    Program<UrlRequirements>,
-    ComponentRef<Checker>,
-    SourceCapability<StdinLines>,
-);
-fn assemble() -> Result<Assembled, ProgramBuildError> {
-    let (mut builder, (http, stdout, stderr, input)) = Program::builder::<(
-        Effect<HttpRequest>,
-        Effect<PrintStdout>,
-        Effect<PrintStderr>,
-        Source<StdinLines>,
-    )>();
+// Tests retain the Checker's address and capabilities without exposing internals.
+fn assemble() -> Result<(Program, InstalledComponent<Checker>), ProgramBuildError> {
+    let mut builder = Program::builder();
 
     let checker = builder
         .component::<Checker>(CheckerConfig {})
-        .with(&(input.clone(), stdout, stderr, http))
         .finish()
         .expect("component registration");
 
-    Ok((builder.build()?, checker, input))
+    Ok((builder.build()?, checker))
 }
 
 #[cfg(test)]

@@ -37,13 +37,15 @@ intent.
 
 A **Samara program** is a closed, declared collection of Components and the capabilities
 through which they may communicate or interact with the world. `ProgramBuilder` issues
-Component references, Ports, Effect capabilities, and Source capabilities during
-assembly. Those inert values are threaded into immutable Component configuration; after
-the Program is built, execution cannot add another dependency.
+Component references and Ports during assembly, and registering a Component creates the
+Effect, Source, and File capabilities that Component owns. References and Ports are
+threaded into immutable Component configuration. A capability stays with the one
+Component it was created for. After the Program is built, execution cannot add another
+dependency.
 
 EffectDescriptors and SourceDescriptors still carry the concrete, Model-derived intent
-for each occurrence. Capabilities declare which descriptor kinds the Program is allowed
-to issue. A concrete execution binds their terminal descriptor requirements to live
+for each occurrence. Capabilities declare which descriptor kinds each Component is
+allowed to issue. A concrete execution binds their terminal descriptor requirements to live
 Drivers or controlled behavior, plus a runtime configuration and a surrounding world.
 Both execution profiles validate every declared requirement synchronously before
 execution begins. Samara's guarantees apply within that assembled boundary.
@@ -95,8 +97,9 @@ equivalent to producing a new model value.
 
 The Rust type and `impl Component` form the Component implementation. A particular
 immutable value of that type is its Component configuration and may contain logical
-wiring such as Ports, EffectCapabilities, SourceCapabilities, and declarative descriptor
-configuration. Receiving `&self` signals observational
+wiring such as Ports and declarative descriptor configuration. Capabilities are not part
+of it: a Component names them as its `Io`, and the runtime passes that value alongside
+the configuration. Receiving `&self` signals observational
 immutability; because Rust permits interior mutability, conformance still requires that
 behaviorally relevant mutable state belong in the Model.
 
@@ -183,7 +186,7 @@ guarantees it forfeits are deferred.
 ## Commands and Effects
 
 A `Command<Message>` is an inert typed description of finite work. For a world-facing
-interaction, it composes a Program-issued `EffectCapability<D>`, an explicit descriptor
+interaction, it composes an `Effect<D>` capability owned by the Component, an explicit descriptor
 `D`, and a deterministic one-shot message mapper. The capability is inert authorization
 to describe work, not a handle that performs I/O.
 
@@ -194,7 +197,7 @@ Pure synchronous closures or function pointers may transform typed EffectOutcome
 Component Messages. For example:
 
 ```text
-Effect::perform(&self.socket_read, SocketRead { socket }).producing(bytes -> SocketMessage::Frames(decode(bytes)))
+Effect::perform(&io.socket_read, SocketRead { socket }).producing(bytes -> SocketMessage::Frames(decode(bytes)))
 ```
 
 In this example, `SocketRead` is the interceptable EffectDescriptor. Live execution uses

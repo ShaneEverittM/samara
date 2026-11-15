@@ -76,8 +76,16 @@ forces policy into the Driver instead of the Component.
   `Result`, since reads can fail (ADR-0020).
 - Capabilities moved out of Component configuration into
   `Component::Requires`, typed on the Program (ADR-0019), so a host that
-  forgets a driver fails to compile rather than at `build()`. Component names
-  are optional diagnostics (ADR-0021).
+  forgot a driver failed to compile. Component names are optional
+  diagnostics (ADR-0021).
+- `Requires` became `Io`, and the Program lost its type parameter (ADR-0028,
+  0029). The journal's capabilities are a named struct, `JournalIo`, with a
+  `file` and a `clock`; Monitor's are `MonitorIo`, with an `input` and an
+  `output`. Registration creates them, `Journal::install` returns the
+  recorder's `io`, and the host supplies one Driver per field:
+  `.supply(&journal.io.file, FileDriver::new("./data/pulse.journal"))`. A
+  forgotten Driver now fails at `build()` with an error naming the owner,
+  the field, and the descriptor type.
 
 ## Status
 

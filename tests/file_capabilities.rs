@@ -10,11 +10,13 @@ use std::{
 };
 
 type Needs = (File<ReadAppend>, Effect<Report>);
-type ProgramNeeds = (File<ReadAppend>, File<ReadAppend>, Effect<Report>);
+/// The Program, its two Writers, each Writer's own file, and each Writer's
+/// own report effect.
 type Fixture = (
-    Program<ProgramNeeds>,
+    Program,
     [ComponentRef<Writer>; 2],
-    [FileCapability<ReadAppend>; 2],
+    [File<ReadAppend>; 2],
+    [Effect<Report>; 2],
 );
 struct Report(String);
 impl EffectDescriptor for Report {
@@ -38,16 +40,16 @@ enum Message {
     Read(EffectOutcome<Bytes, FsError>),
 }
 impl Component for Writer {
-    type Requires = Needs;
+    type Io = Needs;
     type Config = &'static str;
     type Model = Bytes;
     type Message = Message;
-    fn init(_: &Self::Config, _: &Capabilities<Needs>) -> Init<Bytes, Message> {
+    fn init(_: &Self::Config, _: &Needs) -> Init<Bytes, Message> {
         Init::default()
     }
     fn update(
         text: &Self::Config,
-        (file, report): &Capabilities<Needs>,
+        (file, report): &Needs,
         model: &mut Bytes,
         message: Message,
     ) -> Command<Message> {
@@ -67,23 +69,22 @@ impl Component for Writer {
     }
 }
 fn fixture() -> Fixture {
-    let (mut builder, (left, right, report)) = Program::builder::<ProgramNeeds>();
-    let first = builder
-        .component::<Writer>("first")
-        .with(&(left.clone(), report.clone()))
-        .finish()
-        .unwrap();
-    let second = builder
-        .component::<Writer>("second")
-        .with(&(right.clone(), report))
-        .finish()
-        .unwrap();
-    (builder.build().unwrap(), [first, second], [left, right])
+    let mut builder = Program::builder();
+    let first = builder.component::<Writer>("first").finish().unwrap();
+    let second = builder.component::<Writer>("second").finish().unwrap();
+    let files = [first.io.0.clone(), second.io.0.clone()];
+    let reports = [first.io.1.clone(), second.io.1.clone()];
+    (
+        builder.build().unwrap(),
+        [first.into(), second.into()],
+        files,
+        reports,
+    )
 }
 
 #[test]
 fn file_operations_are_inert_and_preserve_their_typed_results() {
-    let (_, file) = Program::builder::<File<ReadAppend>>();
+    let file = <File<ReadAppend>>::detached();
     let append: Command<EffectOutcome<(), FsError>> =
         File::append_line(&file, "hello").into_command();
     assert_eq!(
@@ -100,45 +101,52 @@ fn file_operations_are_inert_and_preserve_their_typed_results() {
 }
 
 #[test]
-fn write_authority_constructs_typed_replacements_and_narrows_to_existing_permissions() {
-    let (mut builder, (file, report)) = Program::builder::<(File<ReadWrite>, Effect<Report>)>();
+fn write_authority_constructs_typed_replacements() {
+    let file = <File<ReadWrite>>::detached();
     let replace: Command<EffectOutcome<(), FsError>> =
         File::replace_text(&file, "new contents").into_command();
     assert_eq!(
         replace.effect_intent::<FileReplace>().unwrap().as_str(),
         Some("new contents")
     );
-    let binary = File::replace_bytes(&file.write_only(), Bytes::from_static(&[0, 255]))
-        .discard_outcome::<()>();
+    let write_only = <File<WriteOnly>>::detached();
+    let binary =
+        File::replace_bytes(&write_only, Bytes::from_static(&[0, 255])).discard_outcome::<()>();
     assert_eq!(
         binary.effect_intent::<FileReplace>().unwrap().as_bytes(),
         &[0, 255]
     );
-    let append = File::append_text(&file.write_only(), "tail").discard_outcome::<()>();
+    let append = File::append_text(&write_only, "tail").discard_outcome::<()>();
     assert_eq!(
         append.effect_intent::<FileAppend>().unwrap().as_str(),
         Some("tail")
     );
-    // Both existing component permission sets accept narrower views of this resource.
-    let writer = builder
-        .component::<Writer>("append")
-        .with(&(file.read_append(), report))
-        .finish()
-        .unwrap();
-    builder
-        .component::<Reader>(())
-        .with(&file.read_only())
-        .finish()
-        .unwrap();
+}
+
+#[test]
+#[ignore = "ADR-0028: a File cannot be narrowed and handed to other Components; each Component owns its own File"]
+fn write_authority_narrows_to_existing_permissions() {
+    // Was the second half of
+    // `write_authority_constructs_typed_replacements_and_narrows_to_existing_permissions`:
+    // one `File<ReadWrite>` supplied a Writer through `read_append()` and a
+    // Reader through `read_only()`, and both operations were selected by the
+    // one original file. Here each Component has its own file.
+    let mut builder = Program::builder();
+    let writer = builder.component::<Writer>("append").finish().unwrap();
+    let reader = builder.component::<Reader>(()).finish().unwrap();
     let mut runtime = ControlledRuntime::builder(builder.build().unwrap())
         .control_all()
         .build()
         .unwrap();
     runtime.send(&writer, Message::Start).unwrap();
     runtime.run_until_idle().unwrap();
-    assert!(runtime.next_file_read(&file).is_ok());
+    assert!(runtime.next_file_read(&reader.io).is_ok());
     assert_eq!(
-        runtime.next_file_append(&file).unwrap().intent.as_str(),
+        runtime
+            .next_file_append(&writer.io.0)
+            .unwrap()
+            .intent
+            .as_str(),
         Some("append\n")
     );
     assert!(runtime.cancel().unwrap().is_clean());
@@ -146,19 +154,16 @@ fn write_authority_constructs_typed_replacements_and_narrows_to_existing_permiss
 
 struct Replacer;
 impl Component for Replacer {
-    type Requires = File<WriteOnly>;
+    type Io = File<WriteOnly>;
     type Config = &'static str;
     type Message = EffectOutcome<(), FsError>;
     type Model = Option<Self::Message>;
-    fn init(
-        text: &Self::Config,
-        file: &Capabilities<Self::Requires>,
-    ) -> Init<Self::Model, Self::Message> {
+    fn init(text: &Self::Config, file: &Self::Io) -> Init<Self::Model, Self::Message> {
         Init::new(None).with_command(File::replace_text(file, *text).into_command())
     }
     fn update(
         _: &Self::Config,
-        _: &Capabilities<Self::Requires>,
+        _: &Self::Io,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -179,27 +184,19 @@ fn replacements_select_the_exact_resource_and_deliver_typed_outcomes() {
         )),
     ] {
         let expected = outcome.clone();
-        let (mut builder, (left, right)) = Program::builder::<(File<ReadWrite>, File<WriteOnly>)>();
-        let first = builder
-            .component::<Replacer>("first")
-            .with(&left.write_only())
-            .finish()
-            .unwrap();
-        let second = builder
-            .component::<Replacer>("second")
-            .with(&right)
-            .finish()
-            .unwrap();
+        let mut builder = Program::builder();
+        let first = builder.component::<Replacer>("first").finish().unwrap();
+        let second = builder.component::<Replacer>("second").finish().unwrap();
         let mut runtime = ControlledRuntime::builder(builder.build().unwrap())
             .control_all()
             .build()
             .unwrap();
         runtime.run_until_idle().unwrap();
-        let (_, foreign) = Program::builder::<File<WriteOnly>>();
+        let foreign = <File<WriteOnly>>::detached();
         assert!(runtime.next_file_replace(&foreign).is_err());
-        let second_replace = runtime.next_file_replace(&right).unwrap();
+        let second_replace = runtime.next_file_replace(&second.io).unwrap();
         assert_eq!(second_replace.intent.as_str(), Some("second"));
-        let first_replace = runtime.next_file_replace(&left.write_only()).unwrap();
+        let first_replace = runtime.next_file_replace(&first.io).unwrap();
         assert_eq!(first_replace.intent.as_str(), Some("first"));
         runtime.complete(second_replace, outcome).unwrap();
         runtime
@@ -223,22 +220,12 @@ async fn live_write_permissions_replace_existing_contents_at_each_bound_path() {
     let first_path = root.0.join("existing.log");
     let second_path = root.0.join("nested/new.log");
     std::fs::write(&first_path, "old contents must be entirely replaced").unwrap();
-    let (mut builder, (left, right)) = Program::builder::<(File<ReadWrite>, File<WriteOnly>)>();
-    builder
-        .component::<Replacer>("first")
-        .with(&left.write_only())
-        .finish()
-        .unwrap();
-    builder
-        .component::<Replacer>("second")
-        .with(&right)
-        .finish()
-        .unwrap();
+    let mut builder = Program::builder();
+    let first = builder.component::<Replacer>("first").finish().unwrap();
+    let second = builder.component::<Replacer>("second").finish().unwrap();
     let runtime = Runtime::builder(builder.build().unwrap())
-        .with(&left)
-        .supplied_by(FileDriver::new(&first_path))
-        .with(&right)
-        .supplied_by(FileDriver::new(&second_path))
+        .supply(&first.io, FileDriver::new(&first_path))
+        .supply(&second.io, FileDriver::new(&second_path))
         .build()
         .unwrap();
     assert_eq!(
@@ -259,8 +246,8 @@ async fn live_write_permissions_replace_existing_contents_at_each_bound_path() {
 }
 
 #[test]
-fn controlled_effects_select_the_exact_file_and_keep_narrowed_identity() {
-    let (program, components, files) = fixture();
+fn controlled_effects_select_the_exact_file() {
+    let (program, components, files, _) = fixture();
     let mut runtime = ControlledRuntime::builder(program)
         .control_all()
         .build()
@@ -270,7 +257,7 @@ fn controlled_effects_select_the_exact_file_and_keep_narrowed_identity() {
     }
     runtime.run_until_idle().unwrap();
     // Take the later operation first by resource, not the type-wide issue order.
-    let second = runtime.next_file_append(&files[1].append_only()).unwrap();
+    let second = runtime.next_file_append(&files[1]).unwrap();
     assert_eq!(second.intent.as_bytes(), b"second\n");
     let first = runtime.next_file_append(&files[0]).unwrap();
     assert_eq!(first.intent.as_bytes(), b"first\n");
@@ -281,7 +268,7 @@ fn controlled_effects_select_the_exact_file_and_keep_narrowed_identity() {
         .complete(first, EffectOutcome::Succeeded(()))
         .unwrap();
     runtime.run_until_idle().unwrap();
-    let first_read = runtime.next_file_read(&files[0].read_only()).unwrap();
+    let first_read = runtime.next_file_read(&files[0]).unwrap();
     let second_read = runtime.next_file_read(&files[1]).unwrap();
     runtime
         .complete(
@@ -303,8 +290,8 @@ fn controlled_effects_select_the_exact_file_and_keep_narrowed_identity() {
 
 #[test]
 fn foreign_file_selector_does_not_consume_another_files_operation() {
-    let (program, components, files) = fixture();
-    let (_, foreign) = Program::builder::<File<ReadAppend>>();
+    let (program, components, files, _) = fixture();
+    let foreign = <File<ReadAppend>>::detached();
     let mut runtime = ControlledRuntime::builder(program)
         .control_all()
         .build()
@@ -331,30 +318,25 @@ fn foreign_file_selector_does_not_consume_another_files_operation() {
 }
 
 #[test]
+#[ignore = "ADR-0028: registration creates a Component's File, so a foreign one cannot be handed to it"]
 fn foreign_file_is_rejected_during_component_registration() {
-    let (_, foreign) = Program::builder::<File<ReadAppend>>();
-    let (mut builder, (_, _, report)) = Program::builder::<ProgramNeeds>();
-    assert!(
-        builder
-            .component::<Writer>("foreign")
-            .with(&(foreign, report))
-            .finish()
-            .is_err()
-    );
+    // Was: `.with(&(foreign, report)).finish()` is an error.
+    let mut builder = Program::builder();
+    assert!(builder.component::<Writer>("foreign").finish().is_ok());
 }
 
 struct Reader;
 impl Component for Reader {
-    type Requires = File<ReadOnly>;
+    type Io = File<ReadOnly>;
     type Config = ();
     type Model = Bytes;
     type Message = EffectOutcome<Bytes, FsError>;
-    fn init(_: &(), file: &Capabilities<Self::Requires>) -> Init<Bytes, Self::Message> {
+    fn init(_: &(), file: &Self::Io) -> Init<Bytes, Self::Message> {
         Init::new(Bytes::new()).with_command(File::read(file).into_command())
     }
     fn update(
         _: &(),
-        _: &Capabilities<Self::Requires>,
+        _: &Self::Io,
         model: &mut Bytes,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -366,13 +348,13 @@ impl Component for Reader {
 }
 
 #[test]
+#[ignore = "ADR-0028: a File cannot be narrowed to supply another Component; the Reader owns its own File<ReadOnly>"]
 fn narrowed_capability_supplies_a_read_only_component_without_another_binding() {
-    let (mut builder, file) = Program::builder::<File<ReadAppend>>();
-    let reader = builder
-        .component::<Reader>(())
-        .with(&file.read_only())
-        .finish()
-        .unwrap();
+    // Was: a `File<ReadAppend>` narrowed with `read_only()` supplied the
+    // Reader, and its read was selected by the original file.
+    let mut builder = Program::builder();
+    let reader = builder.component::<Reader>(()).finish().unwrap();
+    let file = reader.io.clone();
     let mut runtime = ControlledRuntime::builder(builder.build().unwrap())
         .control_all()
         .build()
@@ -393,7 +375,7 @@ fn narrowed_capability_supplies_a_read_only_component_without_another_binding() 
 #[test]
 fn controlled_file_traces_repeat_for_identical_inputs() {
     fn trace() -> Vec<TraceRecord> {
-        let (program, components, files) = fixture();
+        let (program, components, files, _) = fixture();
         let mut runtime = ControlledRuntime::builder(program)
             .control_all()
             .build()
@@ -426,20 +408,21 @@ fn controlled_file_traces_repeat_for_identical_inputs() {
     assert_eq!(trace(), trace());
 }
 
+/// Owns a file it never uses, and reads one smuggled in through Config.
 struct HiddenFile;
 impl Component for HiddenFile {
-    type Requires = ();
-    type Config = (FileCapability<ReadOnly>, bool);
+    type Io = File<ReadOnly>;
+    type Config = (File<ReadOnly>, bool);
     type Model = ();
     type Message = bool;
-    fn init(config: &Self::Config, _: &()) -> Init<(), bool> {
+    fn init(config: &Self::Config, _: &Self::Io) -> Init<(), bool> {
         Init::new(()).with_command(if config.1 {
             File::read(&config.0).producing(|_| false)
         } else {
             Command::none()
         })
     }
-    fn update(config: &Self::Config, _: &(), _: &mut (), start: bool) -> Command<bool> {
+    fn update(config: &Self::Config, _: &Self::Io, _: &mut (), start: bool) -> Command<bool> {
         if start {
             File::read(&config.0).producing(|_| false)
         } else {
@@ -451,8 +434,8 @@ impl Component for HiddenFile {
 #[test]
 fn hidden_foreign_file_is_rejected_at_startup_or_before_controlled_execution() {
     for initial in [true, false] {
-        let (_, foreign) = Program::builder::<File<ReadOnly>>();
-        let (mut builder, _) = Program::builder::<File<ReadOnly>>();
+        let foreign = <File<ReadOnly>>::detached();
+        let mut builder = Program::builder();
         let target = builder
             .component::<HiddenFile>((foreign, initial))
             .finish()
@@ -479,16 +462,15 @@ fn hidden_foreign_file_is_rejected_at_startup_or_before_controlled_execution() {
 #[tokio::test]
 async fn hidden_foreign_file_is_rejected_before_live_execution() {
     for initial in [true, false] {
-        let (_, foreign) = Program::builder::<File<ReadOnly>>();
-        let (mut builder, declared) = Program::builder::<File<ReadOnly>>();
+        let foreign = <File<ReadOnly>>::detached();
+        let mut builder = Program::builder();
         let target = builder
             .component::<HiddenFile>((foreign, initial))
             .finish()
             .unwrap();
         let root = TempRoot::new();
         let runtime = Runtime::builder(builder.build().unwrap())
-            .with(&declared)
-            .supplied_by(FileDriver::new(root.0.join("unread.log")))
+            .supply(&target.io, FileDriver::new(root.0.join("unread.log")))
             .build();
         if initial {
             assert!(runtime.is_err());
@@ -526,16 +508,13 @@ impl Drop for TempRoot {
 #[tokio::test]
 async fn same_type_files_bind_independently_and_read_their_own_appends() {
     let root = TempRoot::new();
-    let (program, components, _) = fixture();
+    let (program, components, files, report_effects) = fixture();
     let (sender, mut reports) = tokio::sync::mpsc::unbounded_channel();
-    let caps = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with(&caps)
-        .supplied_by((
-            FileDriver::new(root.0.join("left/events.log")),
-            FileDriver::new(root.0.join("right/events.log")),
-            Reporter(sender),
-        ))
+        .supply(&files[0], FileDriver::new(root.0.join("left/events.log")))
+        .supply(&files[1], FileDriver::new(root.0.join("right/events.log")))
+        .supply(&report_effects[0], Reporter(sender.clone()))
+        .supply(&report_effects[1], Reporter(sender))
         .build()
         .unwrap();
     assert!(!root.0.exists(), "binding a file must not perform I/O");

@@ -110,8 +110,9 @@ should become a Component.
 
 The `Model` contains mutable behavioral state. `Component::Config` holds
 immutable settings and connections, such as Ports and SourceDescriptors.
-The kernel stores `Capabilities<Component::Requires>` separately and passes
-it by shared reference alongside `&Config`; after registration, the configuration is observationally
+Capabilities do not go in `Config`. The kernel stores the Component's
+`Component::Io` value separately and passes it by shared reference alongside
+`&Config`; after registration, the configuration is observationally
 immutable. The type implementing `Component` is only a name for the kind and
 holds nothing. Behaviorally relevant mutation belongs in the Model rather
 than behind interior mutability in the configuration.
@@ -170,8 +171,8 @@ moved into a Component.
 A transition should depend only on its current model and input message. Giving
 it a runtime, clock, executor, or I/O capability would create an ambient path
 around explicit commands and make controlled execution less trustworthy.
-Program-issued EffectCapability and SourceCapability values are inert
-declaration tokens, not executing capabilities in this sense.
+The `Effect<D>`, `Source<S>`, and `File<P>` values in a Component's `Io` are
+inert declaration tokens, not executing capabilities in this sense.
 
 ### Why Distinguish Error Data from Failure?
 
@@ -201,82 +202,120 @@ Pure synchronous closures or function pointers may still map an EffectOutcome
 to a Component Message. They transform data and do not perform the effect
 themselves.
 
-### Why Must Boundary Work Also Carry a Program-Issued Capability?
+### Why Must Boundary Work Also Carry a Capability?
 
 
 A descriptor answers *what should happen this time*. A capability answers
-*which closed Program dependency authorizes that kind of work*. Keeping both
-lets descriptor payloads remain Model-derived while making the Program's
-complete world boundary knowable before execution.
+*which declared dependency of this Component authorizes that kind of work*.
+Keeping both lets descriptor payloads remain Model-derived while making the
+Program's complete world boundary knowable before execution.
 
-Declare the complete shape once, obtaining both the typed builder and its
-capability values ([ADR-0019](adr/0019-typed-program-requirements.md)):
+A Component names its capabilities as `type Io`
+([ADR-0029](adr/0029-capabilities-are-named-values-a-component-owns.md)). A
+struct with `#[derive(Clone, Capabilities)]` gives each one a field name:
 
 ```rust,ignore
-type World = (Effect<HttpRequest>, Source<StreamDescriptor<Input>>);
-let (mut program, (http, input)) = Program::builder::<World>();
-let worker = program.component::<Worker>(settings)
-    .with(&(http, input))
-    .finish()?;
-let program: Program<World> = program.build()?;
+#[derive(Clone, Capabilities)]
+struct MonitorIo {
+    input: Source<StdinLines>,
+    output: Effect<PrintStdout>,
+}
+
+impl Component for Monitor {
+    type Io = MonitorIo;
+    type Config = Connector<JournalMessage>;
+    // ...
+    fn update(journal: &Self::Config, io: &MonitorIo, _: &mut Model, message: Message) -> Command<Message> {
+        // samara::println!(&io.output, "Got response: {:?}", r)
+    }
+}
 ```
 
-`Worker::Requires` determines its expected capability tuple. Every callback
-receives that tuple separately from Config, and every issuance site names the
-corresponding capability. Cloning one capability shares a declared boundary
-without adding another driver obligation. The values perform no I/O.
+A small Component or a test can use a tuple, `type Io = (Effect<Tag>,)`, a
+single capability, or `()`. The derive is the same as writing
+`Capabilities::declare` by hand with one `new.field("name")` per field.
 
-Live execution names each capability value to the runtime builder and
-supplies its Driver, in any order (ADR-0027):
+`Program::builder()` declares nothing up front. Registering a Component
+creates its capabilities, and `finish()` returns an `InstalledComponent<C>`
+whose public `io` field holds them
+([ADR-0028](adr/0028-a-capability-belongs-to-one-component.md)):
 
 ```rust,ignore
-Runtime::builder(program)
-    .with(&http).supplied_by(HttpDriver::new())
-    .with(&input).supplied_by(MpscReceiver::new(receiver))
+let mut builder = Program::builder();
+let journal = builder.install::<Journal>(()).finish()?;
+let monitor = builder
+    .component::<Monitor>(journal.connector().clone())
+    .finish()?;
+let program = builder.build()?;
+```
+
+Every callback receives `&Io` separately from Config, and every issuance site
+names the capability it uses. The values perform no I/O.
+
+A capability belongs to the one Component it was created for. It cannot be
+given to a second Component, may not be kept in `Config`, and cannot be
+narrowed. A Component that uses a capability created for another Component
+faults the runtime with "belongs to another Component". Give other
+Components the `ComponentRef` or a Connector, never the capabilities.
+
+Live execution supplies each capability its Driver, in any order:
+
+```rust,ignore
+let runtime = Runtime::builder(program)
+    .supply(&journal.io.file, FileDriver::new("./data/pulse.journal"))
+    .supply(&journal.io.clock, SystemClockDriver)
+    .supply(&monitor.io.input, StdinDriver)
+    .supply(&monitor.io.output, StdoutDriver::new())
     .build()?;
 ```
 
-`with` takes one capability or a tuple of them, and
-`with(&caps)` borrows, so the host still holds the values. A
-Driver goes to the capability value it was supplied for, which is the value
-a Component was registered with, so two capabilities of the same type cannot
-be exchanged by position when they are named separately. A Driver of the
-wrong type does not compile. A capability left without a Driver fails
-`build()`; build the live runtime in a test if you want that caught in CI.
+`supply` takes one capability, or a tuple of capabilities with a matching
+tuple of Drivers, and borrows the capability. A Driver goes to exactly the
+capability it was supplied for, which is the one its Component uses. A Driver
+of the wrong type does not compile. Every capability needs its own Driver:
+two Components that read the clock are each supplied one. Whether they share
+a real resource is the host's choice, made by supplying clones of one Driver.
+A capability left without a Driver fails `build()` with an error naming its
+owner, its field, and its descriptor type, such as
+`Effect capability Recorder.file (FileAppend) has 0 live bindings; expected exactly one`.
+Build the live runtime in a test if you want that caught in CI.
+
 A real application usually assembles its Program in one function and builds
 its runtime in another, so that tests can take the same Program under
-controlled execution. Capabilities are ordinary values, so a plain struct
-carries their names across that boundary:
-
-```rust,ignore
-struct AppCapabilities {
-    journal: Capabilities<<Journal as Assembly>::Requires>,
-    console: Capabilities<<Monitor as Component>::Requires>,
-}
-
-fn program() -> Result<(Program<AppRequirements>, AppCapabilities), ProgramBuildError> { .. }
-
-fn runtime(program: Program<AppRequirements>, caps: &AppCapabilities) -> Result<Runtime, RuntimeError> {
-    Runtime::builder(program)
-        .with(&caps.journal).supplied_by((FileDriver::new(path), SystemClockDriver))
-        .with(&caps.console).supplied_by((StdinDriver, StdoutDriver::new()))
-        .build()
-}
-```
+controlled execution. The assembling function returns the handles, or their
+`io` values, alongside the Program, because the Program itself does not hand
+capabilities back.
 
 Which Driver implements a capability is a decision for the code that builds
 the runtime, not for the code that assembles the Program. The check that
-every capability received one is a `build()` error that names the descriptor
-type: guidance at startup, not a compile-time wall (ADR-0027).
+every capability received one is a `build()` error: guidance at startup, not
+a compile-time wall (ADR-0027).
 
-Controlled execution uses `control_all()`, deriving all controls from the Program
-while retaining exact resource identities. Both then call `build()`.
-Both profiles retain value-level validation.
-For a type-wide source Driver, use `DrivenSource::new(driver)`. The wrapper
-keeps source Driver selection distinct from exact receiver binding under Rust's
-trait coherence rules. Built-in source Layers execute in both profiles.
-`with(..).supplied_by(..)` is the only public live binding operation;
-`build()` validates the completed bindings.
+Controlled execution controls every capability and constructs no live Driver:
+`ControlledRuntime::builder(program).build()`, or `control_all().build()`,
+which does the same thing. Both profiles retain value-level validation.
+For a source Driver written for a terminal descriptor type, use
+`DrivenSource::new(driver)`. The wrapper keeps source Driver selection
+distinct from receiver binding under Rust's trait coherence rules. Built-in
+source Layers execute in both profiles. `supply` is the only public live
+binding operation; `build()` validates the completed bindings.
+
+`Program::manifest()` lists every capability with its owner and field name.
+Its text has one line per capability, such as
+`clock: effect samara::clock::ReadSystemTime` for an unnamed capability of a
+Component registered with `.name("clock")`, and `owner.field: ...` when `Io`
+is a named struct.
+
+To call `init`, `update`, or `subscriptions` directly in a unit test without
+a Program, make capability values with `Capabilities::detached()`:
+
+```rust,ignore
+let io = <<Monitor as Component>::Io as Capabilities>::detached();
+let command = Monitor::update(&config, &io, &mut model, message);
+```
+
+Detached capabilities cannot be supplied with Drivers, and a runtime faults
+if a Component uses one.
 
 The closed set does not mean Samara reflects over Component fields or predicts
 every message edge. Deliberately hiding a foreign capability remains a user
@@ -289,25 +328,31 @@ Declare `File<ReadAppend>` when operations must target the same file
 ([ADR-0022](adr/0022-file-resource-capabilities.md)):
 
 ```rust,ignore
-type Requires = (File<ReadAppend>, Effect<ReadSystemTime>);
+#[derive(Clone, Capabilities)]
+pub struct JournalIo {
+    pub file: File<ReadAppend>,
+    pub clock: Effect<ReadSystemTime>,
+}
 
-// In update, using the supplied file capability:
-let append = File::append_line(&file, format!("{name}: {from} -> {to}")).discard_outcome();
-let read = File::read(&file).producing(Message::ReadCompleted);
+// In update, using the Component's own file capability:
+let append = File::append_line(&io.file, format!("{name}: {from} -> {to}")).discard_outcome();
+let read = File::read(&io.file).producing(Message::ReadCompleted);
 
 // The host binds the target once:
 Runtime::builder(program)
-    .with(&file).supplied_by(FileDriver::new("./data/pulse.journal"))
-    .with(&clock).supplied_by(SystemClockDriver)
+    .supply(&journal.io.file, FileDriver::new("./data/pulse.journal"))
+    .supply(&journal.io.clock, SystemClockDriver)
     .build()?;
 ```
 
 A read completes with `Bytes`;
 an append completes with `()`, both using `FsError`. Constructing a file
-operation is inert. `ReadOnly` and `AppendOnly` restrict the available methods;
-`file.read_only()` and `file.append_only()` share narrower authority over the
-same resource. Two `File<ReadAppend>` positions can bind different targets
-without inventing names or Rust marker types for the files.
+operation is inert. `ReadOnly` and `AppendOnly` restrict the available methods.
+A file capability has one owning Component and cannot be narrowed or handed
+to another (ADR-0028). Two Components that need the same file do not each
+hold it: one owns the file and the others send it Messages. A Component with
+two files gives them two field names, and each is supplied its own
+`FileDriver`.
 
 For whole-file writes, use `File<WriteOnly>` or `File<ReadWrite>`:
 
@@ -318,8 +363,7 @@ File::replace_text(&file, serialized_state).into_command_with(Message::Saved)
 Both permit replacement and append; `ReadWrite` also permits reading.
 Replacement returns `()` or `FsError` and uses the existing atomic
 temporary-file-and-rename mechanism. `replace_bytes` accepts binary contents.
-`file.write_only()` and `file.read_append()` remove authority while retaining
-the same target. `AppendOnly` and `ReadAppend` cannot replace contents.
+`AppendOnly` and `ReadAppend` cannot replace contents.
 
 Controlled tests select pending operations with `next_file_read(&file)` or
 `next_file_append(&file)`, or select replacements with `next_file_replace(&file)`,
@@ -369,7 +413,7 @@ alias, but that alias does not introduce another Samara lifecycle concept.
 During reconciliation, Samara automatically lowers the composed descriptor to
 a runtime-owned SourcePlan containing its ordered Layers, terminal descriptor,
 Source capability identity, and Subscription mapper. One
-`SourceCapability<Framed<TcpBytes, D>>` records the `TcpBytes` terminal
+`Source<Framed<TcpBytes, D>>` capability records the `TcpBytes` terminal
 requirement. Applications bind live or controlled behavior only for `TcpBytes`
 in this example; requiring them to declare the inner descriptor or register
 `Framed` or its Layer again would duplicate intent already expressed in the
@@ -472,8 +516,8 @@ They answer three different questions:
 
 - A SourceDescriptor says what ongoing production is desired and is comparable
   for reconciliation.
-- A SourceCapability says which Program-declared ongoing boundary authorizes
-  the desire.
+- A Source capability, `Source<S>`, says which declared ongoing boundary of
+  the Component authorizes the desire.
 - A Subscription says that this Component wants that descriptor maintained
   through that capability under a stable identity and maps its events into
   Component Messages.
@@ -483,7 +527,7 @@ Putting stable identity in the Subscription allows the same descriptor type to
 serve multiple logical roles. Reserving Source for the running realization also
 keeps sockets, tasks, and buffers out of inert API values.
 
-When equal identity, SourceCapability, and SourceDescriptor retain the Source,
+When equal identity, Source capability, and SourceDescriptor retain the Source,
 reconciliation atomically installs the latest mapper returned by
 `subscriptions()`. Messages
 already created keep their meaning; later events use the latest projection.
@@ -512,9 +556,9 @@ suffix because plain `Stream` could be mistaken for that running realization.
 It names the logical stream independently of how the world realizes it;
 `MpscReceiver::new(receiver)` supplied for the capability names the
 Tokio mechanism and binds exactly that capability. The capability may be
-`SourceCapability<StreamDescriptor<T>>` or a built-in composition whose
-terminal descriptor is `StreamDescriptor<T>`; callers declare and thread only
-the application-visible composed capability.
+`Source<StreamDescriptor<T>>` or a built-in composition whose
+terminal descriptor is `StreamDescriptor<T>`; a Component declares only
+the application-visible composed capability in its `Io`.
 
 A future bridge module may add neighboring bindings without changing the
 descriptor's application-facing meaning.
@@ -524,7 +568,7 @@ descriptor's application-facing meaning.
 
 Terminal input is ongoing production, so `StdinLines` is a SourceDescriptor
 rather than an Effect or ambient read hidden inside `update`. A Component
-stores its `SourceCapability<StdinLines>`, declares `StdinLines::new()` under a
+names a `Source<StdinLines>` in its `Io`, declares `StdinLines::new()` under a
 stable Subscription identity, and maps line, failure, and EOF SourceEvents into
 its own Messages. Command parsing and the application meaning of EOF remain in
 the Component.
@@ -597,7 +641,7 @@ pretending a transport failure was a complete stream.
 
 
 A Tokio `mpsc::Receiver` is a unique, single-consumer resource. The accepted
-first-party binding associates it with one exact SourceCapability and consumes
+first-party binding associates it with one exact Source capability and consumes
 it on first activation; a competing claimant or
 later activation after end or cancellation faults explicitly. Fabricating
 another `Ended` would hide that no new receiver exists, and
@@ -867,35 +911,54 @@ that defense-in-depth fault does not add a dynamic dependency to the Program.
 ### How Does a Library Declare What It Needs?
 
 A library ships a type implementing `Assembly`. Its `install` registers one
-or more Components in the caller's `ProgramBuilder<R>`, using the capabilities
-the caller supplies, and returns its `Exports`: usually a `Connector`.
-The host owns Port naming and connection. Internal Component kinds, Models,
-Messages and identities can remain private (ADR-0019 and ADR-0026).
+or more Components in the caller's `ProgramBuilder` and returns its
+`Exports`, usually a `Connector`, together with its `Io`: the capabilities of
+the Components it registered. The host owns Port naming and connection.
+Internal Component kinds, Models, Messages and identities can remain private
+(ADR-0026, ADR-0029).
+
+```rust,ignore
+impl Assembly for Journal {
+    type Config = ();
+    type Exports = Connector<JournalMessage>;
+    type Io = JournalIo;
+
+    fn install(
+        program: &mut ProgramBuilder,
+        _: Self::Config,
+    ) -> Result<(Connector<JournalMessage>, JournalIo), ProgramBuildError> {
+        let recorder = program.component::<Recorder>(()).finish()?;
+        Ok((recorder.accepting(Message::Journal), recorder.io.clone()))
+    }
+}
+```
 
 | Scope | Declaration | Supplied by |
 | --- | --- | --- |
 | Component settings and connections | `Component::Config` | Its assembler |
-| Component world dependencies | `Component::Requires` | Its assembler's capability tuple |
-| Assembly world dependencies | `Assembly::Requires` | The enclosing Program's capability tuple |
-| Complete runtime world | `Program<R>` | `with(&caps).supplied_by(drivers)` live, `control_all()` controlled |
+| Component world dependencies | `Component::Io` | Created by `finish()` at registration |
+| Assembly world dependencies | `Assembly::Io` | Returned by `install` from its members' `io` |
+| Live Drivers | `supply(&capability, driver)` on `Runtime::builder(program)` | The host |
 
-`program.install::<A>(config).with(&caps).finish()?` returns
-`InstalledAssembly<A>` holding only the Connector and exports. The Program
-carries binding obligations into runtime setup, so no Assembly token must be
-passed separately. Driver tuples match the Program's requirement shape and
-incomplete runtime setup has no `build` method. Exact resource positions retain
-their capability identities; controlled execution constructs no live Driver.
+`program.install::<A>(config).finish()?` returns `InstalledAssembly<A>`
+holding the exports and a public `io` field. `install` receives no
+capabilities. The Program records every capability, so `build()` on the live
+setup can check that each one was supplied a Driver; controlled execution
+constructs no live Driver.
 
-Assemblies may implement `VendorsDrivers` to supply a concrete tuple through
-`A::drivers(driver_config)`. `VendorsDrivers::DriverConfig` contains live
+Assemblies may implement `VendorsDrivers` to supply their default live
+Drivers: `fn supply(setup, io, driver_config) -> RuntimeSetup` calls
+`setup.supply(..)` for each of the Assembly's capabilities. The host calls
+`A::supply(Runtime::builder(program), &installed.io, driver_config)` and
+continues the chain. `VendorsDrivers::DriverConfig` contains live
 implementation settings, such as a filesystem root; `Assembly::Config` contains
 logical settings, such as a history limit. These are separate types, and
 the Program does not retain driver config. Use `DriverConfig = ()` for vendors
-without settings. The host can use the returned tuple at a matching position
-in the Program's driver tuple. Libraries normally feature-gate this implementation;
-the Assembly and its requirement shape remain available without live drivers.
+without settings. Libraries normally feature-gate this implementation;
+the Assembly and its `Io` remain available without live drivers.
 Assemblies that only need standard Drivers can omit `VendorsDrivers`; their
-hosts supply constructors such as `FileDriver::new(path)` directly in the tuple.
+hosts supply constructors such as `FileDriver::new(path)` directly with
+`supply`.
 
 Implement `Assembly` on a public marker struct, not on a Component.
 `Component`'s associated types are part of its public interface, so a public
@@ -931,9 +994,10 @@ Assembly they do not own and is tracked in the follow-ups.
 
 The gap between `install` and supplying Drivers is deliberate. A Program is
 profile-neutral and one assembly serves both builders, so binding cannot live
-in `install` without merging the two. `Program<R>` carries the complete
-requirements across that gap; `InstalledAssembly` holds the Connector and
-exports. See [ADR-0019](adr/0019-typed-program-requirements.md).
+in `install` without merging the two. The Program records every capability
+across that gap, and `InstalledAssembly` holds the exports and the `io` the
+host supplies Drivers for. See
+[ADR-0029](adr/0029-capabilities-are-named-values-a-component-owns.md).
 
 ## Live and controlled execution
 
@@ -941,7 +1005,7 @@ exports. See [ADR-0019](adr/0019-typed-program-requirements.md).
 
 
 The Component implementation and configuration, Model, Messages, Commands,
-EffectCapabilities, SourceCapabilities, EffectDescriptors, SourceDescriptors,
+Effect and Source capabilities, EffectDescriptors, SourceDescriptors,
 Subscriptions, Protocols, Layers, and pure message-mapping logic are the same
 program in both profiles. Runtime
 decisions and terminal world-facing bindings differ. Convenience APIs must

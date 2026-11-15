@@ -1,9 +1,3 @@
-type TestProgram = Program<(
-    samara::Source<samara::StreamDescriptor<u64>>,
-    samara::Effect<ObserveStream>,
-)>;
-type TestProgram2 = Program<(samara::Source<samara::TcpBytes>, samara::Effect<ObserveTcp>)>;
-
 use std::{convert::Infallible, net::SocketAddr};
 
 use bytes::Bytes;
@@ -47,43 +41,41 @@ enum StreamMessage {
 struct StreamProbe;
 
 struct StreamProbeConfig {
-    stream: SourceCapability<StreamDescriptor<u64>>,
     descriptor: StreamDescriptor<u64>,
-    observe: EffectCapability<ObserveStream>,
+    /// How many subscriptions claim the one stream capability at once.
+    claimants: usize,
 }
+
+const STREAM_KEYS: [&str; 2] = ["stream", "stream-duplicate"];
 
 struct StreamModel {
     desired: bool,
 }
 
 impl Component for StreamProbe {
-    type Requires = ();
+    type Io = (Source<StreamDescriptor<u64>>, Effect<ObserveStream>);
     type Config = StreamProbeConfig;
     type Model = StreamModel;
     type Message = StreamMessage;
 
-    fn init(
-        _config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
-    ) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
         Init::new(StreamModel { desired: true })
     }
 
     fn update(
-        config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
+        _config: &Self::Config,
+        (_, observe): &Self::Io,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
         match message {
-            StreamMessage::Event(SourceEvent::Item(value)) => Effect::perform(
-                &config.observe,
-                ObserveStream(StreamObservation::Item(value)),
-            )
-            .producing(|_| StreamMessage::Observed),
+            StreamMessage::Event(SourceEvent::Item(value)) => {
+                Effect::perform(observe, ObserveStream(StreamObservation::Item(value)))
+                    .producing(|_| StreamMessage::Observed)
+            }
             StreamMessage::Event(SourceEvent::Ended) => {
                 model.desired = false;
-                Effect::perform(&config.observe, ObserveStream(StreamObservation::Ended))
+                Effect::perform(observe, ObserveStream(StreamObservation::Ended))
                     .producing(|_| StreamMessage::Observed)
             }
             StreamMessage::Event(SourceEvent::Failed(never)) => match never {},
@@ -97,18 +89,23 @@ impl Component for StreamProbe {
 
     fn subscriptions(
         config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
+        (stream, _): &Self::Io,
         model: &Self::Model,
     ) -> Subscriptions<Self::Message> {
         if model.desired {
-            Subscriptions::one(
-                Subscription::source_with(
-                    &config.stream,
-                    config.descriptor.clone(),
-                    StreamMessage::Event,
-                )
-                .key("stream"),
-            )
+            STREAM_KEYS
+                .into_iter()
+                .take(config.claimants)
+                .map(|key| {
+                    Subscription::source_with(
+                        stream,
+                        config.descriptor.clone(),
+                        StreamMessage::Event,
+                    )
+                    .key(key)
+                })
+                .collect::<Vec<_>>()
+                .into()
         } else {
             Subscriptions::none()
         }
@@ -117,36 +114,18 @@ impl Component for StreamProbe {
 
 fn stream_program(
     descriptor: StreamDescriptor<u64>,
-    count: usize,
-) -> (
-    TestProgram,
-    Vec<ComponentRef<StreamProbe>>,
-    SourceCapability<StreamDescriptor<u64>>,
-) {
-    let (mut program, (declared_0, declared_1)) = samara::Program::builder::<(
-        samara::Source<StreamDescriptor<u64>>,
-        samara::Effect<ObserveStream>,
-    )>();
-    let stream = declared_0;
-    let observe = declared_1;
-    let components = (0..count)
-        .map(|index| {
-            program
-                .component::<StreamProbe>(StreamProbeConfig {
-                    stream: stream.clone(),
-                    descriptor: descriptor.clone(),
-                    observe: observe.clone(),
-                })
-                .name(format!("stream-{index}"))
-                .finish()
-                .expect("component registration")
+    claimants: usize,
+) -> (Program, InstalledComponent<StreamProbe>) {
+    let mut program = Program::builder();
+    let probe = program
+        .component::<StreamProbe>(StreamProbeConfig {
+            descriptor,
+            claimants,
         })
-        .collect();
-    (
-        program.build().expect("valid stream program"),
-        components,
-        stream,
-    )
+        .name("stream-0")
+        .finish()
+        .expect("component registration");
+    (program.build().expect("valid stream program"), probe)
 }
 
 #[tokio::test]
@@ -157,16 +136,17 @@ async fn phase6_mpsc_closure_ends_once() {
     sender.send(2).await.expect("receiver retained");
     drop(sender);
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
-    let (program, _, _stream) = stream_program(descriptor, 1);
-    let caps = program.capabilities().clone();
+    let (program, probe) = stream_program(descriptor, 1);
     let runtime = Runtime::builder(program)
-        .with(&caps)
-        .supplied_by((
-            samara::MpscReceiver::new(receiver),
-            StreamObserver {
-                observations: observed,
-            },
-        ))
+        .supply(
+            &probe.io,
+            (
+                samara::MpscReceiver::new(receiver),
+                StreamObserver {
+                    observations: observed,
+                },
+            ),
+        )
         .build()
         .expect("valid live bridge");
     let task = runtime.spawn();
@@ -184,21 +164,20 @@ async fn phase6_mpsc_duplicate_or_reactivation_faults() {
     let descriptor = StreamDescriptor::named("bridge/duplicate");
     let (_sender, receiver) = tokio::sync::mpsc::channel::<u64>(1);
     let (observed, _observations) = tokio::sync::mpsc::unbounded_channel();
-    let (program, components, _stream) = stream_program(descriptor, 2);
-    let caps = program.capabilities().clone();
+    let (program, probe) = stream_program(descriptor, 2);
     let runtime = Runtime::builder(program)
-        .with(&caps)
-        .supplied_by((
-            samara::MpscReceiver::new(receiver),
-            StreamObserver {
-                observations: observed,
-            },
-        ))
+        .supply(
+            &probe.io,
+            (
+                samara::MpscReceiver::new(receiver),
+                StreamObserver {
+                    observations: observed,
+                },
+            ),
+        )
         .build()
         .expect("one exact binding is valid assembly");
-    let handle = runtime
-        .handle(&components[0])
-        .expect("registered stream Component");
+    let handle = runtime.handle(&probe).expect("registered stream Component");
     let task = runtime.spawn();
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
         loop {
@@ -220,21 +199,20 @@ async fn phase6_mpsc_duplicate_or_reactivation_faults() {
     let (sender, receiver) = tokio::sync::mpsc::channel::<u64>(1);
     drop(sender);
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
-    let (program, components, _stream) = stream_program(descriptor, 1);
-    let caps = program.capabilities().clone();
+    let (program, probe) = stream_program(descriptor, 1);
     let runtime = Runtime::builder(program)
-        .with(&caps)
-        .supplied_by((
-            samara::MpscReceiver::new(receiver),
-            StreamObserver {
-                observations: observed,
-            },
-        ))
+        .supply(
+            &probe.io,
+            (
+                samara::MpscReceiver::new(receiver),
+                StreamObserver {
+                    observations: observed,
+                },
+            ),
+        )
         .build()
         .expect("valid one-shot binding");
-    let handle = runtime
-        .handle(&components[0])
-        .expect("registered stream Component");
+    let handle = runtime.handle(&probe).expect("registered stream Component");
     let task = runtime.spawn();
     assert_eq!(observations.recv().await, Some(StreamObservation::Ended));
     handle
@@ -297,26 +275,21 @@ struct TcpProbe;
 
 struct TcpProbeConfig {
     tcp: TcpBytes,
-    source: SourceCapability<TcpBytes>,
-    observe: EffectCapability<ObserveTcp>,
 }
 
 impl Component for TcpProbe {
-    type Requires = ();
+    type Io = (Source<TcpBytes>, Effect<ObserveTcp>);
     type Config = TcpProbeConfig;
     type Model = bool;
     type Message = TcpMessage;
 
-    fn init(
-        _config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
-    ) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
         Init::new(true)
     }
 
     fn update(
-        config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
+        _config: &Self::Config,
+        (_, observe): &Self::Io,
         active: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -332,19 +305,17 @@ impl Component for TcpProbe {
             }
             TcpMessage::Observed => return Command::none(),
         };
-        Effect::perform(&config.observe, ObserveTcp(observation))
-            .producing(|_| TcpMessage::Observed)
+        Effect::perform(observe, ObserveTcp(observation)).producing(|_| TcpMessage::Observed)
     }
 
     fn subscriptions(
         config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
+        (source, _): &Self::Io,
         active: &Self::Model,
     ) -> Subscriptions<Self::Message> {
         if *active {
             Subscriptions::one(
-                Subscription::source_with(&config.source, config.tcp.clone(), TcpMessage::Event)
-                    .key("tcp"),
+                Subscription::source_with(source, config.tcp.clone(), TcpMessage::Event).key("tcp"),
             )
         } else {
             Subscriptions::none()
@@ -352,16 +323,11 @@ impl Component for TcpProbe {
     }
 }
 
-fn tcp_program(endpoint: SocketAddr) -> (TestProgram2, ComponentRef<TcpProbe>) {
-    let (mut program, (declared_0, declared_1)) =
-        samara::Program::builder::<(samara::Source<TcpBytes>, samara::Effect<ObserveTcp>)>();
-    let source = declared_0;
-    let observe = declared_1;
+fn tcp_program(endpoint: SocketAddr) -> (Program, InstalledComponent<TcpProbe>) {
+    let mut program = Program::builder();
     let probe = program
         .component::<TcpProbe>(TcpProbeConfig {
             tcp: TcpBytes::connect(endpoint),
-            source,
-            observe,
         })
         .name("tcp-probe")
         .finish()
@@ -375,17 +341,18 @@ fn tcp_runtime(
     Runtime,
     tokio::sync::mpsc::UnboundedReceiver<TcpObservation>,
 ) {
-    let (program, _probe) = tcp_program(endpoint);
+    let (program, probe) = tcp_program(endpoint);
     let (observed, observations) = tokio::sync::mpsc::unbounded_channel();
-    let caps = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with(&caps)
-        .supplied_by((
-            samara::DrivenSource::new(samara::TcpDriver),
-            TcpObserver {
-                observations: observed,
-            },
-        ))
+        .supply(
+            &probe.io,
+            (
+                samara::DrivenSource::new(samara::TcpDriver),
+                TcpObserver {
+                    observations: observed,
+                },
+            ),
+        )
         .build()
         .expect("valid TCP bindings");
     (runtime, observations)

@@ -7,7 +7,7 @@ use std::{
     sync::Arc,
 };
 
-use crate::{CapabilityToken, SourceCapability, SourceDescriptor};
+use crate::{CapabilityToken, Source, SourceDescriptor};
 
 /// An opaque component identity within one Program.
 ///
@@ -92,7 +92,7 @@ enum Slot {
 /// Constructors need no ID. Use [`crate::Subscription::key`] when maintaining
 /// multiple inputs through one capability. To select a keyed input in a test,
 /// use `SubscriptionId::key(the_same_key)`; for a default input, pass its
-/// [`SourceCapability`] directly to the controlled runtime.
+/// [`Source`] directly to the controlled runtime.
 ///
 /// Equality is Program-local and preserves key type and value. Diagnostic
 /// formatting never determines identity. Default test selectors additionally
@@ -170,8 +170,8 @@ impl From<&SubscriptionId> for SubscriptionId {
         id.clone()
     }
 }
-impl<S: SourceDescriptor> From<&SourceCapability<S>> for SubscriptionId {
-    fn from(capability: &SourceCapability<S>) -> Self {
+impl<S: SourceDescriptor> From<&Source<S>> for SubscriptionId {
+    fn from(capability: &Source<S>) -> Self {
         Self::for_capability(&capability.token)
     }
 }

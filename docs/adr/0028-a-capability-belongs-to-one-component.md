@@ -1,6 +1,9 @@
 # ADR-0028: A Capability Belongs to One Component
 
-- Status: Accepted. Partly implemented; see "Implementation status".
+- Status: Accepted and implemented. Completed by
+  [ADR-0029](0029-capabilities-are-named-values-a-component-owns.md), which
+  also names capabilities and settles the spellings left open here. The
+  "Implementation status" section records the interim first half.
 - Date: November 15, 2026
 - Deciders: Samara maintainers
 - Amends: [ADR-0008](0008-closed-program-capabilities.md) and

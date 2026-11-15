@@ -3,6 +3,9 @@
 - Status: Accepted for implementation trial.
 - Date: November 9, 2026
 - Amends: ADR-0008, ADR-0013, and ADR-0019.
+- Amended by: [ADR-0029](0029-capabilities-are-named-values-a-component-owns.md):
+  `File<P>` is one type (no separate `FileCapability`), a Component declares
+  it in its `Io`, and narrowing a file for another Component is removed.
 - Amended by: [ADR-0023](0023-boundary-work-builders-and-finishers.md) for
   the operation and finisher spellings, and
   [ADR-0025](0025-bare-effect-outcomes.md) for the outcome shape. The text

@@ -29,21 +29,18 @@ mod journal_lib {
     }
 
     impl Component for Recorder {
-        type Requires = ();
+        type Io = ();
         type Config = ();
         type Model = Vec<String>;
         type Message = RecorderMessage;
 
-        fn init(
-            _: &(),
-            _: &samara::Capabilities<Self::Requires>,
-        ) -> Init<Vec<String>, RecorderMessage> {
+        fn init(_: &(), _: &Self::Io) -> Init<Vec<String>, RecorderMessage> {
             Init::new(Vec::new())
         }
 
         fn update(
             _: &(),
-            _: &samara::Capabilities<Self::Requires>,
+            _: &Self::Io,
             entries: &mut Vec<String>,
             RecorderMessage::Journal(message): RecorderMessage,
         ) -> Command<RecorderMessage> {
@@ -67,19 +64,18 @@ mod journal_lib {
     impl Assembly for Journal {
         type Config = ();
         type Exports = Connector<JournalMessage>;
-        type Requires = ();
+        type Io = ();
 
-        fn install<R: Requirements>(
-            program: &mut ProgramBuilder<R>,
+        fn install(
+            program: &mut ProgramBuilder,
             _: (),
-            _: Capabilities<Self::Requires>,
-        ) -> Result<Connector<JournalMessage>, ProgramBuildError> {
+        ) -> Result<(Connector<JournalMessage>, ()), ProgramBuildError> {
             let recorder = program
                 .component::<Recorder>(())
                 .name("journal")
                 .finish()
                 .expect("component registration");
-            Ok(recorder.accepting(RecorderMessage::Journal))
+            Ok((recorder.accepting(RecorderMessage::Journal), ()))
         }
     }
 }
@@ -115,21 +111,18 @@ enum MonitorMessage {
 }
 
 impl Component for Monitor {
-    type Requires = ();
+    type Io = ();
     type Config = MonitorConfig;
     type Model = MonitorModel;
     type Message = MonitorMessage;
 
-    fn init(
-        _: &MonitorConfig,
-        _: &samara::Capabilities<Self::Requires>,
-    ) -> Init<MonitorModel, MonitorMessage> {
+    fn init(_: &MonitorConfig, _: &Self::Io) -> Init<MonitorModel, MonitorMessage> {
         Init::new(MonitorModel::default())
     }
 
     fn update(
         config: &MonitorConfig,
-        _: &samara::Capabilities<Self::Requires>,
+        _: &Self::Io,
         model: &mut MonitorModel,
         message: MonitorMessage,
     ) -> Command<MonitorMessage> {
@@ -179,7 +172,7 @@ fn couple(message: AuditMessage) -> JournalMessage {
 }
 
 fn assemble() -> (Program, InstalledAssembly<Journal>, ComponentRef<Monitor>) {
-    let (mut program, ()) = samara::Program::builder::<()>();
+    let mut program = Program::builder();
     let audit = program.port::<AuditMessage>(PortId::new("audit"));
     let journal = program
         .install::<Journal>(())
@@ -194,7 +187,7 @@ fn assemble() -> (Program, InstalledAssembly<Journal>, ComponentRef<Monitor>) {
     (
         program.build().expect("program assembles"),
         journal,
-        monitor,
+        monitor.into(),
     )
 }
 
@@ -224,7 +217,7 @@ fn an_application_port_reaches_a_library_connector_through_one_coupling() {
 
 #[test]
 fn connectors_are_inert_addresses_that_remember_only_what_they_accept() {
-    let (mut program, ()) = samara::Program::builder::<()>();
+    let mut program = Program::builder();
     let journal = program
         .install::<Journal>(())
         .finish()
@@ -249,13 +242,13 @@ fn connectors_are_inert_addresses_that_remember_only_what_they_accept() {
 
 #[test]
 fn a_connector_from_another_program_is_rejected_at_build() {
-    let (mut other, ()) = samara::Program::builder::<()>();
+    let mut other = Program::builder();
     let foreign = other
         .install::<Journal>(())
         .finish()
         .expect("assembly installation");
 
-    let (mut program, ()) = samara::Program::builder::<()>();
+    let mut program = Program::builder();
     let audit = program.port::<AuditMessage>(PortId::new("audit"));
     program.connect(&audit, &foreign.connector().accepting(couple));
     assert!(
@@ -306,15 +299,12 @@ mod tally_lib {
     }
 
     impl Component for Counter {
-        type Requires = ();
+        type Io = ();
         type Config = ();
         type Model = CounterModel;
         type Message = TallyMessage;
 
-        fn init(
-            _: &(),
-            _: &samara::Capabilities<Self::Requires>,
-        ) -> Init<CounterModel, TallyMessage> {
+        fn init(_: &(), _: &Self::Io) -> Init<CounterModel, TallyMessage> {
             Init::new(CounterModel {
                 total: 0,
                 parked: Vec::new(),
@@ -323,7 +313,7 @@ mod tally_lib {
 
         fn update(
             _: &(),
-            _: &samara::Capabilities<Self::Requires>,
+            _: &Self::Io,
             model: &mut CounterModel,
             TallyMessage(inner): TallyMessage,
         ) -> Command<TallyMessage> {
@@ -346,19 +336,18 @@ mod tally_lib {
     impl Assembly for Tally {
         type Config = ();
         type Exports = Connector<TallyMessage>;
-        type Requires = ();
+        type Io = ();
 
-        fn install<R: Requirements>(
-            program: &mut ProgramBuilder<R>,
+        fn install(
+            program: &mut ProgramBuilder,
             _: (),
-            _: Capabilities<Self::Requires>,
-        ) -> Result<Connector<TallyMessage>, ProgramBuildError> {
+        ) -> Result<(Connector<TallyMessage>, ()), ProgramBuildError> {
             let counter = program
                 .component::<Counter>(())
                 .name("tally")
                 .finish()
                 .expect("component registration");
-            Ok(counter.connector())
+            Ok((counter.connector(), ()))
         }
     }
 }
@@ -385,21 +374,18 @@ enum TellerMessage {
 }
 
 impl Component for Teller {
-    type Requires = ();
+    type Io = ();
     type Config = TellerConfig;
     type Model = TellerModel;
     type Message = TellerMessage;
 
-    fn init(
-        _: &TellerConfig,
-        _: &samara::Capabilities<Self::Requires>,
-    ) -> Init<TellerModel, TellerMessage> {
+    fn init(_: &TellerConfig, _: &Self::Io) -> Init<TellerModel, TellerMessage> {
         Init::new(TellerModel::default())
     }
 
     fn update(
         config: &TellerConfig,
-        _: &samara::Capabilities<Self::Requires>,
+        _: &Self::Io,
         model: &mut TellerModel,
         message: TellerMessage,
     ) -> Command<TellerMessage> {
@@ -426,7 +412,7 @@ impl Component for Teller {
 fn assemble_tally(
     patience: Option<Duration>,
 ) -> (Program, InstalledAssembly<Tally>, ComponentRef<Teller>) {
-    let (mut program, ()) = samara::Program::builder::<()>();
+    let mut program = Program::builder();
     let tally = program
         .install::<Tally>(())
         .finish()
@@ -439,7 +425,11 @@ fn assemble_tally(
         .name("teller")
         .finish()
         .expect("component registration");
-    (program.build().expect("program assembles"), tally, teller)
+    (
+        program.build().expect("program assembles"),
+        tally,
+        teller.into(),
+    )
 }
 
 #[test]
@@ -516,21 +506,18 @@ struct DirectMonitorConfig {
 }
 
 impl Component for DirectMonitor {
-    type Requires = ();
+    type Io = ();
     type Config = DirectMonitorConfig;
     type Model = MonitorModel;
     type Message = MonitorMessage;
 
-    fn init(
-        _: &DirectMonitorConfig,
-        _: &samara::Capabilities<Self::Requires>,
-    ) -> Init<MonitorModel, MonitorMessage> {
+    fn init(_: &DirectMonitorConfig, _: &Self::Io) -> Init<MonitorModel, MonitorMessage> {
         Init::new(MonitorModel::default())
     }
 
     fn update(
         config: &DirectMonitorConfig,
-        _: &samara::Capabilities<Self::Requires>,
+        _: &Self::Io,
         model: &mut MonitorModel,
         message: MonitorMessage,
     ) -> Command<MonitorMessage> {
@@ -560,7 +547,7 @@ impl Component for DirectMonitor {
 
 #[test]
 fn a_connector_is_adapted_to_the_holders_vocabulary_once_with_accepting() {
-    let (mut program, ()) = samara::Program::builder::<()>();
+    let mut program = Program::builder();
     let journal = program
         .install::<Journal>(())
         .finish()
@@ -602,15 +589,12 @@ fn a_connector_is_adapted_to_the_holders_vocabulary_once_with_accepting() {
 struct EagerTeller;
 
 impl Component for EagerTeller {
-    type Requires = ();
+    type Io = ();
     type Config = Connector<TallyMessage>;
     type Model = ();
     type Message = TellerMessage;
 
-    fn init(
-        tally: &Connector<TallyMessage>,
-        _: &samara::Capabilities<Self::Requires>,
-    ) -> Init<(), TellerMessage> {
+    fn init(tally: &Connector<TallyMessage>, _: &Self::Io) -> Init<(), TellerMessage> {
         Init::new(()).with_command(
             Command::request(tally, TallyMessage::total).producing(TellerMessage::Total),
         )
@@ -618,7 +602,7 @@ impl Component for EagerTeller {
 
     fn update(
         _: &Connector<TallyMessage>,
-        _: &samara::Capabilities<Self::Requires>,
+        _: &Self::Io,
         _: &mut (),
         _: TellerMessage,
     ) -> Command<TellerMessage> {
@@ -629,12 +613,12 @@ impl Component for EagerTeller {
 #[test]
 fn an_initial_request_to_a_foreign_connector_fails_both_profile_builds() {
     fn program() -> Program {
-        let (mut other, ()) = samara::Program::builder::<()>();
+        let mut other = Program::builder();
         let foreign = other
             .install::<Tally>(())
             .finish()
             .expect("assembly installation");
-        let (mut program, ()) = samara::Program::builder::<()>();
+        let mut program = Program::builder();
         program
             .component::<EagerTeller>(foreign.connector().clone())
             .name("eager")
@@ -664,7 +648,7 @@ fn an_initial_request_to_a_foreign_connector_fails_both_profile_builds() {
 
 #[test]
 fn a_connector_request_is_inspectable_without_a_runtime() {
-    let (mut program, ()) = samara::Program::builder::<()>();
+    let mut program = Program::builder();
     let tally = program
         .install::<Tally>(())
         .finish()
@@ -689,7 +673,7 @@ fn a_one_door_assembly_is_itself_an_address() {
     fn message_type_of<T: Addressable>(_: &T) -> &'static str {
         std::any::type_name::<T::Message>()
     }
-    let (mut program, ()) = Program::builder::<()>();
+    let mut program = Program::builder();
     let tally = program
         .install::<tally_lib::Tally>(())
         .finish()

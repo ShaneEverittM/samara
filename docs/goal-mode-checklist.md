@@ -33,7 +33,8 @@ Governing documents:
 - [ADR-0018: Assemblies Export a Connector](adr/0018-assemblies-export-a-connector.md)
 - [ADR-0026: Assemblies Export One Value](adr/0026-assemblies-export-one-value.md)
 - [ADR-0027: Drivers Are Supplied per Capability Value](adr/0027-drivers-are-supplied-per-capability.md)
-- [ADR-0028: A Capability Belongs to One Component](adr/0028-a-capability-belongs-to-one-component.md) (accepted, not yet implemented)
+- [ADR-0028: A Capability Belongs to One Component](adr/0028-a-capability-belongs-to-one-component.md)
+- [ADR-0029: Capabilities Are Named Values a Component Owns](adr/0029-capabilities-are-named-values-a-component-owns.md)
 - [ADR-0023: Boundary Work Is Named `Kind::verb` and Ends with a Finisher](adr/0023-boundary-work-builders-and-finishers.md)
 - [ADR-0024: Component Shutdown](adr/0024-component-shutdown.md)
 - [ADR-0025: Bare Effect Outcomes](adr/0025-bare-effect-outcomes.md)
@@ -157,10 +158,13 @@ own definition of what counts as a problem.
 Cost ledger. API choices made for developer experience that are known to cost
 at runtime, recorded so 0.2 and 0.3 start from a list rather than a profile:
 
-- Assembly drivers are concrete at the host's call site and boxed once per
-  binding inside `and_drivers` (one allocation at startup).
-- `Assembly::Requires` is a positional tuple; a named-field form was deferred
-  (ADR-0013).
+- Drivers are concrete at the host's call site and stored behind one `Arc`
+  per binding inside `supply` (one allocation per capability at startup).
+  Every capability has its own binding (ADR-0028), so two Components with
+  the same effect cost two.
+- A named `Io` struct uses `#[derive(Capabilities)]`, which adds the
+  `samara-derive` proc-macro crate with `syn` and `quote` as build
+  dependencies (ADR-0029). This is a build cost, not a runtime one.
 - Every effect carries a boxed outcome mapper.
 - Every Port binding carries a boxed conversion, including `connect`'s
   `From` (one allocation at assembly, one indirect call per delivered

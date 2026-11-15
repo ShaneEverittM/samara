@@ -1,5 +1,3 @@
-type TestProgram = Program<(samara::Source<samara::StdinLines>,)>;
-
 use samara::prelude::*;
 
 const STDIN_SUBSCRIPTION: &str = "stdin";
@@ -52,26 +50,19 @@ impl From<SourceEvent<String, StdinError>> for StdinMessage {
 
 struct StdinProbe;
 
-struct StdinProbeConfig {
-    stdin: SourceCapability<StdinLines>,
-}
-
 impl Component for StdinProbe {
-    type Requires = ();
-    type Config = StdinProbeConfig;
+    type Io = Source<StdinLines>;
+    type Config = ();
     type Model = StdinModel;
     type Message = StdinMessage;
 
-    fn init(
-        _config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
-    ) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
         Init::default()
     }
 
     fn update(
         _config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
+        _: &Self::Io,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -88,35 +79,58 @@ impl Component for StdinProbe {
     }
 
     fn subscriptions(
-        config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
+        _: &Self::Config,
+        stdin: &Self::Io,
         model: &Self::Model,
     ) -> Subscriptions<Self::Message> {
         if model.terminal.is_some() {
             Subscriptions::none()
         } else {
             Subscriptions::one(
-                Subscription::source(&config.stdin, StdinLines::new()).key(STDIN_SUBSCRIPTION),
+                Subscription::source(stdin, StdinLines::new()).key(STDIN_SUBSCRIPTION),
             )
         }
     }
 }
 
-fn stdin_program() -> (
-    TestProgram,
-    ComponentRef<StdinProbe>,
-    SourceCapability<StdinLines>,
-) {
-    let (mut builder, (declared_0,)) = samara::Program::builder::<(samara::Source<StdinLines>,)>();
-    let stdin = declared_0;
+fn stdin_program() -> (Program, InstalledComponent<StdinProbe>) {
+    let mut builder = Program::builder();
     let probe = builder
-        .component::<StdinProbe>(StdinProbeConfig {
-            stdin: stdin.clone(),
-        })
+        .component::<StdinProbe>(())
         .name("stdin-probe")
         .finish()
         .expect("component registration");
-    (builder.build().expect("valid stdin program"), probe, stdin)
+    (builder.build().expect("valid stdin program"), probe)
+}
+
+/// Owns the capabilities `C` and never uses them; only their declaration
+/// matters to the live binding rules below.
+struct Owns<C>(std::marker::PhantomData<fn() -> C>);
+
+impl<C: Capabilities> Component for Owns<C> {
+    type Io = C;
+    type Config = ();
+    type Model = ();
+    type Message = ();
+
+    fn init(_: &(), _: &Self::Io) -> Init<(), ()> {
+        Init::default()
+    }
+
+    fn update(_: &(), _: &Self::Io, _: &mut (), _: ()) -> Command<()> {
+        Command::none()
+    }
+}
+
+/// A Program of one Component that owns `C`, and those capabilities.
+fn program_owning<C: Capabilities>() -> (Program, C) {
+    let mut builder = Program::builder();
+    let owner = builder
+        .component::<Owns<C>>(())
+        .finish()
+        .expect("component registration");
+    let io = owner.io.clone();
+    (builder.build().expect("valid program"), io)
 }
 
 #[test]
@@ -142,7 +156,7 @@ fn stdin_descriptor_and_errors_are_typed_fixture_data() {
 
 #[test]
 fn controlled_stdin_delivers_lines_and_normal_eof() {
-    let (program, probe, _stdin) = stdin_program();
+    let (program, probe) = stdin_program();
     let mut runtime = ControlledRuntime::builder(program)
         .control_all()
         .build()
@@ -182,7 +196,7 @@ fn controlled_stdin_delivers_lines_and_normal_eof() {
 
 #[test]
 fn controlled_stdin_delivers_typed_failure_without_live_fallback() {
-    let (program, probe, _stdin) = stdin_program();
+    let (program, probe) = stdin_program();
     let mut runtime = ControlledRuntime::builder(program)
         .control_all()
         .build()
@@ -208,34 +222,34 @@ fn controlled_stdin_delivers_typed_failure_without_live_fallback() {
 #[cfg(unix)]
 #[test]
 fn live_stdin_binding_is_exact_and_required() {
-    let (program, _probe, _stdin) = stdin_program();
-    let caps = program.capabilities().clone();
+    let (program, probe) = stdin_program();
     assert!(
         Runtime::builder(program)
-            .with(&caps)
-            .supplied_by((samara::StdinDriver,))
+            .supply(&probe.io, samara::StdinDriver)
             .build()
             .is_ok()
     );
+
+    let (program, _probe) = stdin_program();
+    let error = Runtime::builder(program)
+        .build()
+        .err()
+        .expect("a stdin capability without a Driver");
+    let error = error.to_string();
+    assert!(error.contains("stdin-probe"), "{error}");
+    assert!(error.contains("0 live bindings"), "{error}");
 }
 
 #[cfg(unix)]
 #[test]
 fn live_stdin_binding_accepts_a_composed_capability() {
-    let (builder, (declared_0, declared_1)) = samara::Program::builder::<(
-        samara::Source<Framed<StdinLines, LineLength>>,
-        samara::Source<TcpBytes>,
-    )>();
-    let stdin = declared_0;
-    let tcp = declared_1;
-    let program = builder.build().expect("valid composed stdin program");
+    let (program, (stdin, tcp)) =
+        program_owning::<(Source<Framed<StdinLines, LineLength>>, Source<TcpBytes>)>();
 
     assert!(
         Runtime::builder(program)
-            .with(&stdin)
-            .supplied_by(samara::StdinDriver)
-            .with(&tcp)
-            .supplied_by(samara::DrivenSource::new(samara::TcpDriver))
+            .supply(&stdin, samara::StdinDriver)
+            .supply(&tcp, samara::DrivenSource::new(samara::TcpDriver))
             .build()
             .is_ok()
     );
@@ -244,26 +258,21 @@ fn live_stdin_binding_accepts_a_composed_capability() {
 #[cfg(unix)]
 #[test]
 fn live_stdin_rejects_duplicate_or_competing_process_bindings() {
-    let (builder, caps) =
-        samara::Program::builder::<(samara::Source<StdinLines>, samara::Source<StdinLines>)>();
-    let program = builder.build().expect("two declarations are valid");
+    // Process stdin is one resource: two bindings conflict even though each
+    // is for a different capability.
+    let (program, caps) = program_owning::<(Source<StdinLines>, Source<StdinLines>)>();
     let error = Runtime::builder(program)
-        .with(&caps)
-        .supplied_by((samara::StdinDriver, samara::StdinDriver))
+        .supply(&caps, (samara::StdinDriver, samara::StdinDriver))
         .build()
         .err()
         .expect("two stdin declarations are ambiguous even without subscriptions");
     assert!(error.to_string().contains("duplicate or ambiguous"));
 
-    let (builder, caps) = samara::Program::builder::<(
-        samara::Source<StdinLines>,
-        samara::Source<Framed<StdinLines, LineLength>>,
-    )>();
-    let program = builder.build().expect("two declarations are valid");
+    let (program, caps) =
+        program_owning::<(Source<StdinLines>, Source<Framed<StdinLines, LineLength>>)>();
     assert!(
         Runtime::builder(program)
-            .with(&caps)
-            .supplied_by((samara::StdinDriver, samara::StdinDriver))
+            .supply(&caps, (samara::StdinDriver, samara::StdinDriver))
             .build()
             .is_err()
     );
@@ -280,16 +289,12 @@ fn live_stdin_rejects_a_conflicting_type_wide_driver_in_either_order() {
     }
 
     for stdin_first in [false, true] {
-        let (program, caps) = Program::builder::<(Source<StdinLines>, Source<StdinLines>)>();
-        let builder = Runtime::builder(program.build().unwrap());
+        let (program, caps) = program_owning::<(Source<StdinLines>, Source<StdinLines>)>();
+        let builder = Runtime::builder(program);
         let builder = if stdin_first {
-            builder
-                .with(&caps)
-                .supplied_by((StdinDriver, DrivenSource::new(UnusedStdinDriver)))
+            builder.supply(&caps, (StdinDriver, DrivenSource::new(UnusedStdinDriver)))
         } else {
-            builder
-                .with(&caps)
-                .supplied_by((DrivenSource::new(UnusedStdinDriver), StdinDriver))
+            builder.supply(&caps, (DrivenSource::new(UnusedStdinDriver), StdinDriver))
         };
         assert!(builder.build().is_err());
     }

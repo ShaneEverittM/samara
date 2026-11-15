@@ -16,8 +16,6 @@
 //! and a real Tokio channel. The Component and logical assembly are unchanged;
 //! only the boundary binding differs.
 
-type AppProgram = Program<(Source<StreamDescriptor<u64>>,)>;
-
 use std::error::Error;
 
 use samara::prelude::*;
@@ -58,21 +56,19 @@ struct CounterConfig {
 }
 
 impl Component for Counter {
-    type Requires = (Source<StreamDescriptor<u64>>,);
+    // The one thing a Counter can reach in the world: its stream of increments.
+    type Io = Source<StreamDescriptor<u64>>;
     type Config = CounterConfig;
     type Model = CounterModel;
     type Message = CounterMessage;
 
-    fn init(
-        _: &CounterConfig,
-        _capabilities: &Capabilities<Self::Requires>,
-    ) -> Init<CounterModel, CounterMessage> {
+    fn init(_: &CounterConfig, _input: &Self::Io) -> Init<CounterModel, CounterMessage> {
         Init::new(CounterModel::default())
     }
 
     fn update(
         _: &CounterConfig,
-        _capabilities: &Capabilities<Self::Requires>,
+        _input: &Self::Io,
         model: &mut CounterModel,
         message: CounterMessage,
     ) -> Command<CounterMessage> {
@@ -93,7 +89,7 @@ impl Component for Counter {
 
     fn subscriptions(
         config: &CounterConfig,
-        capabilities: &Capabilities<Self::Requires>,
+        input: &Self::Io,
         model: &CounterModel,
     ) -> Subscriptions<CounterMessage> {
         if model.input_closed {
@@ -103,7 +99,7 @@ impl Component for Counter {
         }
 
         Subscriptions::one(Subscription::source_with(
-            &capabilities.0,
+            input,
             config.increments.clone(),
             |event| match event {
                 SourceEvent::Item(amount) => CounterMessage::Increment(amount),
@@ -117,26 +113,19 @@ impl Component for Counter {
 /// Declares the logical application once for every execution profile.
 ///
 /// No Tokio receiver or scripted test input enters this function. It contains
-/// only the Component, its logical source descriptor, and the Program-issued
-/// capability used to authorize and bind that source.
-fn program(
-    increments: StreamDescriptor<u64>,
-) -> (
-    AppProgram,
-    ComponentRef<Counter>,
-    SourceCapability<StreamDescriptor<u64>>,
-) {
-    let (mut program, (input,)) = Program::builder::<(Source<StreamDescriptor<u64>>,)>();
+/// only the Component and its logical source descriptor. Registration creates
+/// the Counter's capability; the returned handle carries it as `counter.io`,
+/// which is what a host binds and a controlled test scripts.
+fn program(increments: StreamDescriptor<u64>) -> (Program, InstalledComponent<Counter>) {
+    let mut program = Program::builder();
 
     let counter = program
         .component::<Counter>(CounterConfig { increments })
-        .with(&(input.clone(),))
         .finish()
         .expect("component registration");
     (
         program.build().expect("the example graph is valid"),
         counter,
-        input,
     )
 }
 
@@ -148,7 +137,7 @@ fn program(
 async fn run_live() -> Result<(), Box<dyn Error>> {
     let increments = StreamDescriptor::named(INCREMENT_INPUT);
     let (input, receiver) = tokio::sync::mpsc::channel(1);
-    let (program, _counter, _input_capability) = program(increments);
+    let (program, counter) = program(increments);
 
     // Fill the one-slot upstream channel before spawning. This is ordinary
     // Tokio pressure; Samara has not accepted the value yet.
@@ -156,10 +145,8 @@ async fn run_live() -> Result<(), Box<dyn Error>> {
 
     // Binding transfers the unique receiver into Samara's structured runtime
     // scope. The Component still contains only inert logical configuration.
-    let caps = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with(&caps)
-        .supplied_by((samara::MpscReceiver::new(receiver),))
+        .supply(&counter.io, samara::MpscReceiver::new(receiver))
         .build()?;
     let runtime = runtime.spawn();
 
@@ -193,39 +180,27 @@ mod tests {
     #[test]
     fn component_logic_is_directly_testable() {
         let increments = StreamDescriptor::named(INCREMENT_INPUT);
-        let (_program, (declared_0,)) = Program::builder::<(Source<StreamDescriptor<u64>>,)>();
-        let (config, config_capabilities) = (
-            CounterConfig {
-                increments: increments.clone(),
-            },
-            (declared_0,),
-        );
-        let mut model = Counter::init(&config, &config_capabilities).model;
+        let config = CounterConfig {
+            increments: increments.clone(),
+        };
+        // A capability that belongs to no Program is enough to call the
+        // Component's functions and inspect what they return.
+        let input = <Counter as Component>::Io::detached();
+        let mut model = Counter::init(&config, &input).model;
 
         assert_eq!(
-            Counter::subscriptions(&config, &config_capabilities, &model)
-                .find::<StreamDescriptor<u64>>(&config_capabilities.0),
+            Counter::subscriptions(&config, &input, &model).find::<StreamDescriptor<u64>>(&input),
             Some(&increments)
         );
 
-        let command = Counter::update(
-            &config,
-            &config_capabilities,
-            &mut model,
-            CounterMessage::Increment(2),
-        );
+        let command = Counter::update(&config, &input, &mut model, CounterMessage::Increment(2));
         assert_eq!(model.total, 2);
         assert!(command.is_none());
 
-        let _ = Counter::update(
-            &config,
-            &config_capabilities,
-            &mut model,
-            CounterMessage::InputClosed,
-        );
+        let _ = Counter::update(&config, &input, &mut model, CounterMessage::InputClosed);
         assert!(model.input_closed);
         assert_eq!(
-            Counter::subscriptions(&config, &config_capabilities, &model)
+            Counter::subscriptions(&config, &input, &model)
                 .iter()
                 .count(),
             0
@@ -240,12 +215,12 @@ mod tests {
     #[test]
     fn controlled_stream_updates_the_same_program() -> Result<(), RuntimeError> {
         let increments = StreamDescriptor::named(INCREMENT_INPUT);
-        let (program, counter, input_capability) = program(increments);
+        let (program, counter) = program(increments);
         let mut runtime = ControlledRuntime::builder(program).control_all().build()?;
 
-        runtime.emit_stream(&input_capability, 2)?;
-        runtime.emit_stream(&input_capability, 3)?;
-        runtime.close_stream(&input_capability)?;
+        runtime.emit_stream(&counter.io, 2)?;
+        runtime.emit_stream(&counter.io, 3)?;
+        runtime.close_stream(&counter.io)?;
         runtime.run_until_idle()?;
 
         assert_eq!(

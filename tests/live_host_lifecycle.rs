@@ -17,25 +17,22 @@ enum FaultMessage {
 struct FaultProbe;
 
 struct FaultProbeConfig {
-    effect: EffectCapability<DynamicallyReachedEffect>,
+    effect: Effect<DynamicallyReachedEffect>,
 }
 
 impl Component for FaultProbe {
-    type Requires = ();
+    type Io = ();
     type Config = FaultProbeConfig;
     type Model = ();
     type Message = FaultMessage;
 
-    fn init(
-        _config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
-    ) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
         Init::new(())
     }
 
     fn update(
         config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
+        _: &Self::Io,
         (): &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -49,8 +46,8 @@ impl Component for FaultProbe {
 
 #[tokio::test]
 async fn live_host_observes_a_later_foreign_effect_fault() {
-    let (_, (effect,)) = Program::builder::<(Effect<DynamicallyReachedEffect>,)>();
-    let (mut program, ()) = Program::builder::<()>();
+    let effect = <Effect<DynamicallyReachedEffect>>::detached();
+    let mut program = Program::builder();
     // Deliberately nonconforming Config exercises the runtime provenance defense.
     let probe = program
         .component::<FaultProbe>(FaultProbeConfig { effect })
@@ -68,21 +65,18 @@ async fn live_host_observes_a_later_foreign_effect_fault() {
 struct Idle;
 
 impl Component for Idle {
-    type Requires = ();
+    type Io = ();
     type Config = ();
     type Model = usize;
     type Message = ();
 
-    fn init(
-        _config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
-    ) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
         Init::new(0)
     }
 
     fn update(
         _config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
+        _: &Self::Io,
         count: &mut Self::Model,
         (): Self::Message,
     ) -> Command<Self::Message> {
@@ -104,7 +98,7 @@ async fn host_shutdown() -> Result<(), HostShutdownError> {
 #[tokio::test]
 async fn cancelled_run_forever_observation_preserves_owner_for_explicit_shutdown() {
     for mode in [Shutdown::Drain, Shutdown::Cancel] {
-        let (mut program, ()) = samara::Program::builder::<()>();
+        let mut program = Program::builder();
         let idle = program
             .component::<Idle>(())
             .name("host-lifecycle-idle")
@@ -141,7 +135,7 @@ async fn cancelled_run_forever_observation_preserves_owner_for_explicit_shutdown
 #[tokio::test]
 async fn shutdown_requests_close_ingress_and_preserve_completed_result() {
     for mode in [Shutdown::Drain, Shutdown::Cancel] {
-        let (mut program, ()) = samara::Program::builder::<()>();
+        let mut program = Program::builder();
         let idle = program
             .component::<Idle>(())
             .name("shutdown-requests")
@@ -175,28 +169,23 @@ async fn shutdown_requests_close_ingress_and_preserve_completed_result() {
 struct RecurringTimer;
 
 impl Component for RecurringTimer {
-    type Requires = ();
+    type Io = ();
     type Config = ();
     type Model = ();
     type Message = ();
 
-    fn init(_config: &Self::Config, _: &samara::Capabilities<Self::Requires>) -> Init<(), ()> {
+    fn init(_config: &Self::Config, _: &Self::Io) -> Init<(), ()> {
         Init::new(()).with_command(Command::after(std::time::Duration::ZERO, ()))
     }
 
-    fn update(
-        _config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
-        (): &mut (),
-        (): (),
-    ) -> Command<()> {
+    fn update(_config: &Self::Config, _: &Self::Io, (): &mut (), (): ()) -> Command<()> {
         Command::after(std::time::Duration::from_millis(1), ())
     }
 }
 
 #[tokio::test]
 async fn shutdown_grace_period_escalates_recurring_timer_and_joins() {
-    let (mut program, ()) = samara::Program::builder::<()>();
+    let mut program = Program::builder();
     program
         .component::<RecurringTimer>(())
         .name("recurring-timer")

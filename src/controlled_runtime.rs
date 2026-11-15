@@ -16,7 +16,7 @@ use crate::{
     CapabilityToken, Command, CommandKind, Component, ComponentId, ComponentRef, EffectDescriptor,
     EffectOutcome, EffectOutcomeKind, ErasedRequestMapper, ErasedSourceEvent, LogicalTime,
     MessageRoute, MessageTarget, PendingEffect, PendingWork, PortId, Program, RequestOutcome,
-    RequestOutcomeKind, RequestToken, RunReport, RuntimeError, ShutdownReport, SourceCapability,
+    RequestOutcomeKind, RequestToken, RunReport, RuntimeError, ShutdownReport, Source,
     SourceDescriptor, SourceEvent, SourcePlan, StreamDescriptor, StreamSourceDescriptor,
     Subscription, SubscriptionAction, SubscriptionId, TraceCommandKind, TraceEvent, TraceId,
     TraceRecord,
@@ -292,9 +292,9 @@ impl ControlledBindings {
                     "exact controlled Effect binding uses a capability from another Program",
                 ));
             }
-            if !program
+            if program
                 .effect_requirement(capability, *descriptor)
-                .is_some_and(|requirement| requirement.exact)
+                .is_none()
             {
                 return Err(RuntimeError::harness(
                     "exact controlled Effect binding has no matching resource operation declaration",
@@ -348,14 +348,11 @@ impl ControlledBindings {
         }
 
         for requirement in &program.effect_requirements {
-            let controlled = if requirement.exact {
-                self.exact_effects.iter().any(|(capability, descriptor)| {
+            let controlled = self.effects.contains(&requirement.descriptor_type)
+                || self.exact_effects.iter().any(|(capability, descriptor)| {
                     capability.same_as(&requirement.token)
                         && *descriptor == requirement.descriptor_type
-                })
-            } else {
-                self.effects.contains(&requirement.descriptor_type)
-            };
+                });
             if !controlled {
                 return Err(RuntimeError::harness(format!(
                     "declared Effect capability for {} has no controlled behavior",
@@ -617,6 +614,14 @@ impl ControlledCore {
                 "Source capability belongs to another Program or has inconsistent terminal metadata",
             ));
         }
+        if !self.program.source_owned_by(plan.capability(), component) {
+            return Err(self.set_fault(
+                component.clone(),
+                Some(plan.terminal_type_name()),
+                work,
+                "Source capability belongs to another Component",
+            ));
+        }
         if !self.terminal_is_controlled(&plan) {
             return Err(self.set_fault(
                 component.clone(),
@@ -770,6 +775,18 @@ impl ControlledCore {
                             Some(descriptor_type_name),
                             work,
                             "Effect capability belongs to another Program",
+                        ));
+                    }
+                    if !self.program.effect_owned_by(
+                        command.capability(),
+                        descriptor_type,
+                        component,
+                    ) {
+                        return Err(self.set_fault(
+                            component.clone(),
+                            Some(descriptor_type_name),
+                            work,
+                            "Effect capability belongs to another Component",
                         ));
                     }
                     if !self
@@ -1218,7 +1235,7 @@ impl ControlledCore {
 
     pub(crate) fn emit_stream<S>(
         &mut self,
-        stream: &SourceCapability<S>,
+        stream: &Source<S>,
         item: S::StreamItem,
     ) -> Result<(), RuntimeError>
     where
@@ -1260,7 +1277,7 @@ impl ControlledCore {
 
     pub(crate) fn close_stream<S: StreamSourceDescriptor>(
         &mut self,
-        stream: &SourceCapability<S>,
+        stream: &Source<S>,
     ) -> Result<(), RuntimeError> {
         self.ensure_not_faulted()?;
         let Some(requirement) = self.program.source_requirement(&stream.token) else {

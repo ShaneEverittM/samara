@@ -25,30 +25,21 @@ enum Message {
 }
 struct Probe;
 impl Component for Probe {
-    type Requires = Inputs;
+    type Io = Inputs;
     type Config = Model;
     type Model = Model;
     type Message = Message;
-    fn init(config: &Model, _: &Capabilities<Inputs>) -> Init<Model, Message> {
+    fn init(config: &Model, _: &Inputs) -> Init<Model, Message> {
         Init::new(config.clone())
     }
-    fn update(
-        _: &Model,
-        _: &Capabilities<Inputs>,
-        model: &mut Model,
-        message: Message,
-    ) -> Command<Message> {
+    fn update(_: &Model, _: &Inputs, model: &mut Model, message: Message) -> Command<Message> {
         match message {
             Message::Configure(next) => *model = next,
             Message::Input(value) => model.received.push(value),
         }
         Command::none()
     }
-    fn subscriptions(
-        _: &Model,
-        caps: &Capabilities<Inputs>,
-        model: &Model,
-    ) -> Subscriptions<Message> {
+    fn subscriptions(_: &Model, caps: &Inputs, model: &Model) -> Subscriptions<Message> {
         model
             .desired
             .iter()
@@ -72,18 +63,15 @@ impl Component for Probe {
     }
 }
 
-fn controlled(model: Model) -> (ControlledRuntime, ComponentRef<Probe>, Capabilities<Inputs>) {
-    let (mut builder, caps) = Program::builder::<Inputs>();
-    let probe = builder
-        .component::<Probe>(model)
-        .with(&caps)
-        .finish()
-        .unwrap();
+fn controlled(model: Model) -> (ControlledRuntime, ComponentRef<Probe>, Inputs) {
+    let mut builder = Program::builder();
+    let probe = builder.component::<Probe>(model).finish().unwrap();
+    let caps = probe.io.clone();
     let runtime = ControlledRuntime::builder(builder.build().unwrap())
         .control_all()
         .build()
         .unwrap();
-    (runtime, probe, caps)
+    (runtime, probe.into(), caps)
 }
 fn one(revision: u64) -> Model {
     Model {
@@ -105,22 +93,19 @@ fn lifecycle(runtime: &ControlledRuntime, action: SubscriptionAction) -> usize {
 
 #[test]
 fn optional_and_duplicate_names_do_not_alias_components() {
-    let (mut builder, caps) = Program::builder::<Inputs>();
+    let mut builder = Program::builder();
     let first = builder
         .component::<Probe>(one(1))
         .name("same")
-        .with(&caps)
         .finish()
         .unwrap();
     let second = builder
         .component::<Probe>(one(1))
-        .with(&caps)
         .name("same")
         .finish()
         .unwrap();
     let unnamed = builder
         .component::<Probe>(Model::default())
-        .with(&caps)
         .finish()
         .unwrap();
     assert_ne!(first.id(), second.id());
@@ -131,7 +116,7 @@ fn optional_and_duplicate_names_do_not_alias_components() {
         .build()
         .unwrap();
     runtime
-        .emit_source::<_, Feed>(&first, &caps.0, SourceEvent::Item(7))
+        .emit_source::<_, Feed>(&first, &first.io.0, SourceEvent::Item(7))
         .unwrap();
     runtime.send(&second, Message::Input(9)).unwrap();
     runtime.run_until_idle().unwrap();
@@ -143,12 +128,11 @@ fn optional_and_duplicate_names_do_not_alias_components() {
 #[test]
 fn diagnostic_names_do_not_change_semantic_trace() {
     fn run(names: [&str; 2]) -> Vec<TraceRecord> {
-        let (mut builder, caps) = Program::builder::<Inputs>();
+        let mut builder = Program::builder();
         for name in names {
             builder
                 .component::<Probe>(one(1))
                 .name(name)
-                .with(&caps)
                 .finish()
                 .unwrap();
         }
@@ -206,13 +190,12 @@ fn default_slot_retains_mapper_replaces_descriptor_and_cancels() {
 
 #[test]
 fn ambiguous_defaults_explain_how_to_supply_keys() {
-    let (mut builder, caps) = Program::builder::<Inputs>();
+    let mut builder = Program::builder();
     builder
         .component::<Probe>(Model {
             desired: vec![(1, 1), (2, 2)],
             ..Model::default()
         })
-        .with(&caps)
         .finish()
         .unwrap();
     let error = ControlledRuntime::builder(builder.build().unwrap())
@@ -267,7 +250,7 @@ fn key_identity_preserves_type_and_value_not_debug_output() {
 #[test]
 fn foreign_capability_cannot_select_a_default_slot() {
     let (mut runtime, probe, _) = controlled(one(1));
-    let (_, foreign) = Program::builder::<Inputs>();
+    let foreign = <Inputs>::detached();
     assert!(
         runtime
             .emit_source::<_, Feed>(&probe, &foreign.0, SourceEvent::Item(7))
@@ -282,7 +265,7 @@ fn foreign_capability_cannot_select_a_default_slot() {
 
 #[test]
 fn default_slots_distinguish_exact_capabilities_and_explicit_keys() {
-    let (_, caps) = Program::builder::<Inputs>();
+    let caps = <Inputs>::detached();
     let first = Subscription::<SourceEvent<u64, Infallible>>::source(&caps.0, Feed(1));
     let second = Subscription::<SourceEvent<u64, Infallible>>::source(&caps.1, Feed(1));
     let keyed = Subscription::<SourceEvent<u64, Infallible>>::source(&caps.0, Feed(1)).key(0_u64);
@@ -290,22 +273,18 @@ fn default_slots_distinguish_exact_capabilities_and_explicit_keys() {
     assert_ne!(first.id(), keyed.id());
     let inputs: Subscriptions<_> = vec![first, second, keyed].into();
     assert_eq!(inputs.find::<Feed>(&caps.1), Some(&Feed(1)));
-    let (_, foreign) = Program::builder::<Inputs>();
+    let foreign = <Inputs>::detached();
     assert!(inputs.find::<Feed>(&foreign.1).is_none());
 }
 
 #[test]
 fn dropped_registration_does_not_change_identity_or_startup_trace() {
     fn run(drop_registration: bool) -> Vec<TraceRecord> {
-        let (mut builder, caps) = Program::builder::<Inputs>();
+        let mut builder = Program::builder();
         if drop_registration {
             drop(builder.component::<Probe>(one(99)).name("discarded"));
         }
-        builder
-            .component::<Probe>(one(1))
-            .with(&caps)
-            .finish()
-            .unwrap();
+        builder.component::<Probe>(one(1)).finish().unwrap();
         let runtime = ControlledRuntime::builder(builder.build().unwrap())
             .control_all()
             .build()
@@ -320,32 +299,22 @@ impl EffectDescriptor for Report {
     type Output = ();
     type Error = Infallible;
 }
-type MirrorProgram = Program<(Source<Feed>, Effect<Report>)>;
 struct Mirror;
 impl Component for Mirror {
-    type Requires = (Source<Feed>, Effect<Report>);
+    type Io = (Source<Feed>, Effect<Report>);
     type Config = ();
     type Model = ();
     type Message = SourceEvent<u64, Infallible>;
-    fn init(_: &(), _: &Capabilities<Self::Requires>) -> Init<(), Self::Message> {
+    fn init(_: &(), _: &Self::Io) -> Init<(), Self::Message> {
         Init::new(())
     }
-    fn update(
-        _: &(),
-        caps: &Capabilities<Self::Requires>,
-        _: &mut (),
-        event: Self::Message,
-    ) -> Command<Self::Message> {
+    fn update(_: &(), caps: &Self::Io, _: &mut (), event: Self::Message) -> Command<Self::Message> {
         match event {
             SourceEvent::Item(value) => Effect::perform(&caps.1, Report(value)).discard_outcome(),
             _ => Command::none(),
         }
     }
-    fn subscriptions(
-        _: &(),
-        caps: &Capabilities<Self::Requires>,
-        _: &(),
-    ) -> Subscriptions<Self::Message> {
+    fn subscriptions(_: &(), caps: &Self::Io, _: &()) -> Subscriptions<Self::Message> {
         Subscriptions::one(Subscription::source(&caps.0, Feed(7)))
     }
 }
@@ -371,17 +340,13 @@ impl EffectDriver<Report> for ReportDriver {
 
 #[tokio::test]
 async fn default_subscription_runs_unchanged_live_and_controlled() {
-    fn program() -> (MirrorProgram, ComponentRef<Mirror>, SourceCapability<Feed>) {
-        let (mut builder, caps) = Program::builder::<(Source<Feed>, Effect<Report>)>();
-        let source = caps.0.clone();
-        let mirror = builder
-            .component::<Mirror>(())
-            .with(&caps)
-            .finish()
-            .unwrap();
-        (builder.build().unwrap(), mirror, source)
+    fn program() -> (Program, InstalledComponent<Mirror>) {
+        let mut builder = Program::builder();
+        let mirror = builder.component::<Mirror>(()).finish().unwrap();
+        (builder.build().unwrap(), mirror)
     }
-    let (definition, mirror, source) = program();
+    let (definition, mirror) = program();
+    let source = mirror.io.0.clone();
     let mut controlled = ControlledRuntime::builder(definition)
         .control_all()
         .build()
@@ -397,12 +362,13 @@ async fn default_subscription_runs_unchanged_live_and_controlled() {
         .unwrap();
     assert!(controlled.cancel().unwrap().is_clean());
 
-    let (definition, _, _) = program();
+    let (definition, mirror) = program();
     let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
-    let caps = definition.capabilities().clone();
     let runtime = Runtime::builder(definition)
-        .with(&caps)
-        .supplied_by((DrivenSource::new(FeedDriver), ReportDriver(sender)))
+        .supply(
+            &mirror.io,
+            (DrivenSource::new(FeedDriver), ReportDriver(sender)),
+        )
         .build()
         .unwrap()
         .spawn();

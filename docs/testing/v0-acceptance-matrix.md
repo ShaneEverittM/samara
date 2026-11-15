@@ -31,7 +31,7 @@ lifecycle contract. Accepted
 terminal owner observation and its composition with host shutdown futures.
 Accepted [ADR-0008](../adr/0008-closed-program-capabilities.md) supersedes the
 earlier open Effect/Source dependency qualification: both profiles now validate
-the complete Program-declared `EffectCapability<D>` and `SourceCapability<S>`
+the complete Program-declared `Effect<D>` and `Source<S>` capability
 set before execution. Accepted
 [ADR-0009](../adr/0009-first-party-stdin-lines.md) defines the first-party
 standard-input line Source, its exact Unix live binding, and structured reader
@@ -50,10 +50,13 @@ permission/result compile-fail rustdoc for V1, V3, V5, V6, V9, and V12. Journal
 uses one permission-typed file resource for append and read; tests distinguish
 two same-type resources and preserve their identity in both execution profiles.
 Write tests cover atomic whole-file replacement through `WriteOnly` and
-`ReadWrite`, narrowing away replacement authority, exact controlled selection,
+`ReadWrite`, exact controlled selection,
 typed failure/cancellation, missing replacement bindings, and live replacement
 of an existing target. Compile-fail cases reject replacement through read-only
-or append-only views and reading through a write-only view.
+or append-only views and reading through a write-only view. Under ADR-0028
+the two narrowing tests and the test that a foreign file is rejected at
+registration remain in `tests/file_capabilities.rs` marked `#[ignore]`,
+because a `File` can no longer be narrowed or handed to a registration.
 
 ADR-0021 adds `tests/identity.rs` for V4, V6, V7, V11, and V12: Component names
 are optional diagnostics, routing uses builder-issued identities, subscriptions
@@ -68,11 +71,16 @@ finisher takes its success directly. Existing live error-parity,
 shutdown, and HTTP pipeline suites retain their lifecycle assertions.
 
 ADR-0019's typed Program trial adds `tests/typed_program.rs` and compile-fail
-rustdoc contracts for V1, V3, V4, V5 and V12. Requirements issue capabilities
-at Program construction, Components receive them separately from Config, and
-runtime construction requires a complete driver tuple or `control_all()`.
-Value-level provenance and binding validation remain required. The `pulse`
-example exercises the same typed requirements flow for Journal and its host.
+rustdoc contracts for V1, V3, V4, V5 and V12. After ADR-0028 and ADR-0029 the
+suite covers capabilities created at registration: each Component's own
+capability reaches its callbacks and delayed effects, live Drivers are
+supplied per Component capability, two stream sources of one type stay
+distinct, an Assembly can be installed twice without coordinating Component
+names, and an installed Assembly's `io` holds only its members' capabilities
+while the Program's manifest lists all of them. Its two tests of a foreign
+capability rejected at registration or installation are marked `#[ignore]`,
+because nothing can be handed to a registration. The `pulse` example
+exercises the same flow for Journal and its host with named `Io` structs.
 
 The vision states its requirements as these twelve topology-neutral scenarios.
 Each row of the traceability table below cites the evidence for one of them.
@@ -137,7 +145,7 @@ Each row of the traceability table below cites the evidence for one of them.
 | --- | --- | --- | --- |
 | V1 Repeatable Component Transition | `v1_same_input_produces_equivalent_model_and_command_intent`; `v1_update_has_no_runtime_capability`; `v3_effect_command_exposes_descriptor_and_maps_one_outcome`; `v5_live_and_controlled_boundaries_map_equivalent_observations`; `Component` compile-fail doctest | Direct-transition, typed-intent, controlled mapper, and compile-contract evidence are active. Phase 6 repeats outcome mapping through live Drivers. | Phase 3, completed controlled in Phase 5 and repeated live in Phase 6 |
 | V2 Isolated State Ownership | `v2_same_component_transitions_never_overlap`; `phase6_live_ingress_serializes_component_transitions`; `v2_cross_component_interaction_reenters_as_message`; `v2_protocol_message_remains_distinct_from_provider_message`; `ComponentHandle` and `PortHandle` compile-fail doctests | Component/handle type separation, controlled delivery, and Protocol conversion are active. Phase 6 repeats serialization through admitted live Component and provider-neutral Port ingress. | Phase 3 and Phase 5; accepted live in Phase 6, including Port ingress |
-| V3 Interceptable Effect Descriptor | `v3_effect_command_exposes_typed_descriptor`; `v3_effect_command_exposes_descriptor_and_maps_one_outcome`; `v3_controlled_effect_maps_exactly_once_without_live_driver`; `controlled_discarded_outcome_is_traced_without_scheduling_a_message`; `.producing(map)` and `EffectCapability` compile-fail doctests | Typed descriptor and capability inspection, compile-fail API constraints, and controlled interpretation are active. Live Driver interpretation is implemented for Phase 6. | Phase 4, completed controlled in Phase 5 and implemented live in Phase 6, extended by ADR-0008 |
+| V3 Interceptable Effect Descriptor | `v3_effect_command_exposes_typed_descriptor`; `v3_effect_command_exposes_descriptor_and_maps_one_outcome`; `v3_controlled_effect_maps_exactly_once_without_live_driver`; `controlled_discarded_outcome_is_traced_without_scheduling_a_message`; `.producing(map)` and `Effect` compile-fail doctests | Typed descriptor and capability inspection, compile-fail API constraints, and controlled interpretation are active. Live Driver interpretation is implemented for Phase 6. | Phase 4, completed controlled in Phase 5 and implemented live in Phase 6, extended by ADR-0008 |
 | V4 Declarative Subscription Lifecycle | `v4_subscription_separates_component_identity_from_source_descriptor`; `v4_component_kernel_reconciles_the_committed_model_projection`; `v4_new_equal_changed_and_removed_descriptors_reconcile_lifecycle`; `phase6_source_cutover_suppresses_late_terminal`; `v4_equal_descriptor_retains_source_and_adopts_latest_mapper`; `v4_equal_descriptor_with_another_capability_replaces_source`; `v4_replaced_generation_discards_stale_work`; `v4_composed_source_plan_reaches_terminal_controlled_behavior`; `composed_source_capability_declares_only_its_terminal_requirement`; `v4_source_event_mapper_is_reusable_before_delivery`; `controlled_stdin_delivers_lines_and_normal_eof`; `controlled_stdin_delivers_typed_failure_without_live_fallback`; `phase6_tcp_failure_is_constructible_and_scriptable_in_controlled_execution` | Projection, capability-aware reconciliation, retained-mapper, hard-cutover, SourcePlan, and controlled lifecycle behavior are active. Start, replacement, and removal are exercised by reconciliation and live cutover tests; reusable mappers and typed failures enter through controlled Sources. ADR-0004's live terminal-arbitration and cancellation evidence is implemented. | Phase 4 and Phase 5; implemented live in Phase 6 and extended by ADR-0008 |
 | V5 Live and Controlled Program Parity | `v5_live_and_controlled_boundaries_map_equivalent_observations`; `live_and_controlled_http_pipelines_produce_equivalent_component_results`; `controlled_stream_updates_the_same_program` with `v11_minimal_component_runs_with_live_mpsc`; `controlled_reference_program_runs_end_to_end` with `live_reference_program_runs_end_to_end` in `api_pressure` and `framed_socket` | The reference examples declare one closed Program capability set and build both profiles from one `program` factory with the same Component configuration. Behavioral parity evidence is implemented under ADR-0004. | Phase 6, extended by ADR-0008 |
 | V6 Program-Wide Controlled Determinism | `v6_identical_controlled_runs_have_equal_structural_trace_and_final_state`; `v6_equal_final_state_with_different_structural_trace_is_not_equivalent`; `v3_effect_command_exposes_typed_descriptor`; `http_descriptor_preserves_method_url_headers_and_owned_body` | ADR-0003 defines structural trace equivalence and keeps typed domain-payload comparison in direct intent tests rather than requiring generic trace payload capture. | Phase 5 |
@@ -146,7 +154,7 @@ Each row of the traceability table below cites the evidence for one of them.
 | V9 Structured Work Ownership | `v9_pending_now_counts_ready_messages_and_due_timers`; `v9_pending_later_counts_effects_future_timers_sources_and_requests`; `phase5_unanswered_request_remains_pending_until_cancellation`; `v9_controlled_cancel_leaves_zero_work`; `phase6_successful_shutdown_owns_zero_work`; `phase6_drain_stops_sources_and_drains_accepted_causal_work`; `phase6_scope_cancel_drops_effect_without_invoking_mapper`; `phase6_cancel_drops_unanswered_request_without_mapping`; `v9_source_cancellation_emits_no_unpromised_event`; `phase6_source_cancellation_emits_no_unpromised_event`; `dropping_the_waiter_does_not_cancel_runtime_owned_request_work`; `run_forever_surfaces_dynamic_foreign_capability_before_live_driver`; `cancelled_run_forever_observation_preserves_owner_for_explicit_shutdown`; `dropping_idle_stdin_reader_interrupts_and_joins_its_thread` | ADR-0003 defines controlled obligations; ADR-0025 removed the cancelled effect outcome and its test. Phase 6 distinguishes whole-scope abort from application outcomes, proves that dropping a host waiter cannot abandon admitted runtime work, and exposes owner termination without making observation cancellation an ownership cutoff. ADR-0009 proves that even an idle blocking stdin boundary remains interruptible and joined. | Phase 5 controlled; implemented Phase 6 live, Port ingress, host lifecycle, ADR-0008 provenance, and ADR-0009 stdin ownership; final audit Phase 7 |
 | V10 Non-Influential Semantic Trace | `v10_reading_controlled_trace_after_drive_has_no_feedback_path`; `v10_trace_records_logical_time_and_exactly_one_immediate_parent_for_non_roots`; `v4_replaced_generation_discards_stale_work`; `v4_replaced_generation_discards_already_mapped_message` | ADR-0003 requires always-collected, read-afterward controlled records with logical time, parentless roots, and exactly one immediate parent for every non-root. The V3, V4, and V8 tests also assert effect, Source-lifecycle, and Request records. ADR-0004 explicitly defers a public live observer beyond v0. | Phase 5 controlled; public live observer deferred beyond v0 |
 | V11 Shallow Tokio Onboarding | `component_logic_is_directly_testable`; `controlled_stream_updates_the_same_program`; `v11_minimal_component_runs_with_live_mpsc`; `stdin_descriptor_and_errors_are_typed_fixture_data`; `controlled_stdin_delivers_lines_and_normal_eof`; `stdin_reader_delivers_framed_lines_then_eof_from_injected_stream` | The minimal example compiles as its own workspace package, tests its Component directly, and runs unchanged through controlled stream input and the live one-shot `mpsc` bridge. The expanded application uses the first-party `StdinLines` boundary without a host-owned reader thread or channel adapter. | Phase 5 controlled; implemented Phase 6 live and extended by ADR-0009 |
-| V12 Closed Program Capability Assembly | `RuntimeSetup` / `ControlledRuntimeSetup` compile-fail contracts (ADR-0019); `EffectCapability` and `SourceCapability` compile-fail doctests; `initially_visible_foreign_effect_capability_is_rejected_during_profile_build`; `dynamically_used_foreign_effect_capability_is_rejected_before_controlled_behavior`; `run_forever_surfaces_dynamic_foreign_capability_before_live_driver`; `exact_stream_binding_rejects_a_foreign_capability_during_build`; `two_exact_stream_capabilities_of_one_type_bind_independently`; `exact_stream_input_is_disambiguated_by_capability_not_equal_descriptor`; `composed_source_capability_declares_only_its_terminal_requirement`; `live_stdin_binding_is_exact_and_required`; `live_stdin_binding_accepts_a_composed_capability`; `live_stdin_rejects_duplicate_or_competing_process_bindings`; `live_stdin_rejects_a_conflicting_type_wide_driver_in_either_order` | ADR-0008 compile contracts and `closed_program_capabilities` scenarios cover closed issuance, complete profile validation, provenance, exact identity, and composed terminal declaration. ADR-0009 extends exact binding evidence to the unique Unix process-input resource. | ADR-0008 and ADR-0009 |
+| V12 Closed Program Capability Assembly | `RuntimeSetup` and `Capabilities` compile-fail doctests (ADR-0029); `Effect` and `Source` compile-fail doctests; `initially_visible_foreign_effect_capability_is_rejected_during_profile_build`; `dynamically_used_foreign_effect_capability_is_rejected_before_controlled_behavior`; `run_forever_surfaces_dynamic_foreign_capability_before_live_driver`; `exact_stream_binding_rejects_a_foreign_capability_during_build`; `two_exact_stream_capabilities_of_one_type_bind_independently`; `exact_stream_input_is_disambiguated_by_capability_not_equal_descriptor`; `composed_source_capability_declares_only_its_terminal_requirement`; `live_stdin_binding_is_exact_and_required`; `live_stdin_binding_accepts_a_composed_capability`; `live_stdin_rejects_duplicate_or_competing_process_bindings`; `live_stdin_rejects_a_conflicting_type_wide_driver_in_either_order` | ADR-0008 compile contracts and `closed_program_capabilities` scenarios cover closed issuance, complete profile validation, provenance, exact identity, and composed terminal declaration. ADR-0009 extends exact binding evidence to the unique Unix process-input resource. | ADR-0008 and ADR-0009 |
 
 ## Active Phase 2 Evidence
 
@@ -179,26 +187,30 @@ The following evidence must pass before the Phase 2 audit:
   profile builds, and `PortHandle::send`, `request_to`, and
   `request_to_timeout` live.
 - `tests/owned_capabilities.rs` validates capabilities created at
-  registration (ADR-0028): two Components with the same effect are each
-  supplied their own Driver, a Component left without one fails `build`,
-  `control_all()` controls created capabilities, an installed Assembly
-  carries its capabilities, and a Component requiring nothing returns its
-  plain reference. `Program::manifest()` lists every declared capability
-  with its owner; `examples/pulse` pins the journal's manifest text.
+  registration (ADR-0028, ADR-0029): two Components with the same effect are
+  each supplied their own Driver, a Component left without one fails `build`,
+  controlled execution controls created capabilities, an installed Assembly
+  carries its capabilities, and a Component with no capabilities is
+  installed like any other. `Program::manifest()` lists every declared
+  capability with its owner. A missing Driver for a named field is reported
+  as `owner.field`. Using another Component's capability faults in both
+  controlled and live execution. `examples/pulse` pins the journal's
+  manifest text.
 - `tests/capability_binding.rs` validates per-capability Driver binding
-  (ADR-0027): a Driver follows its capability value for two same-typed
-  files, a tuple is supplied whole or split, and a missing, duplicate, or
-  foreign capability fails `build` with a naming error.
-- `tests/assemblies.rs` validates `Assembly`, `Requires`, `Drivers`,
-  `VendorsDrivers`, and `InstalledAssembly` (ADR-0013, ADR-0019, ADR-0026):
-  `ProgramBuilder::install(...).with(...).finish()` returns the
+  (ADR-0027, ADR-0028): a Driver follows its capability value, not a
+  position, a tuple is supplied whole or split, and a missing capability, a
+  capability supplied twice, and a capability from another Program each
+  fail `build`.
+- `tests/assemblies.rs` validates `Assembly`, `Capabilities`, `Drivers`,
+  `VendorsDrivers`, and `InstalledAssembly` (ADR-0013, ADR-0026, ADR-0029):
+  `ProgramBuilder::install(...).finish()` returns the
   Assembly's exports: a struct carrying a Connector and a `ComponentRef`,
   two peer doors onto two Components, or `()`. The host names its own Port and connects
-  the Connector to it. `with(&caps).supplied_by(drivers)` supplies Drivers,
-  optionally using `A::drivers(driver_config)`, and `control_all()` controls its
-  requirements. `RuntimeSetup` compile-fail cases reject a mismatched Driver
-  type, a named capability left without Drivers, and direct binding; the
-  `Drivers` compile-fail case rejects direct trait binding.
+  the Connector to it. `supply(&installed.io, drivers)` supplies a matching
+  tuple of Drivers, or `VendorsDrivers::supply(setup, &installed.io, driver_config)`
+  supplies the Assembly's own, and `control_all()` controls its
+  capabilities. `RuntimeSetup` compile-fail doctests reject a mismatched
+  Driver type and direct binding.
   Vendored-driver coverage verifies that caller-supplied driver settings reach
   live execution while the Assembly's logical config and controlled setup stay
   independent of those settings.
@@ -225,11 +237,12 @@ The following evidence must pass before the Phase 2 audit:
   the filesystem effects as ordinary controlled boundaries asserted by
   relative path, a live append, read, replace, remove walk under a bound root
   with no temp files left behind, `OutsideRoot` rejection before any I/O, and
-  that a filesystem driver tuple matches the declared effects and rejects
-  duplicate type-wide bindings.
+  that an `FsDriver` binds the declared effects, two Components that each
+  own a `ReadFile` effect are each supplied a Driver, and a second Driver
+  for one capability is rejected as a duplicate.
 - Rustdoc compile-fail cases validate that an arbitrary value cannot be passed
   as an EffectDescriptor, an async closure cannot replace a synchronous message
-  mapper, raw descriptors cannot bypass Program-issued Effect/Source
+  mapper, raw descriptors cannot bypass Effect/Source
   capabilities, and discarding either `ReplyWith` or `Command` violates its
   `#[must_use]` contract when the lint is denied.
 - Discarded-outcome conformance tests prove controlled outcomes remain traced
@@ -300,7 +313,7 @@ The approved Phase 5 tranche additionally requires:
 - `phase5_program_build_requires_exactly_one_binding_per_port`
 - `phase5_program_build_rejects_provider_from_another_builder`
 - `phase5_program_build_allows_port_cycles`
-- `RuntimeSetup` / `ControlledRuntimeSetup` compile-fail contracts (ADR-0019)
+- `RuntimeSetup` and `Capabilities` compile-fail doctests (ADR-0029): a Driver of the wrong type, direct binding, and making a capability outside registration
 - `phase5_successful_request_reply_is_correlated_at_most_once`
 - `phase5_unanswered_request_remains_pending_until_cancellation`
 
@@ -333,7 +346,7 @@ ADR-0003 resolves the former Phase 5 blockers:
 The `closed_program_capabilities` suite and capability-aware reconciliation
 tests require:
 
-- `RuntimeSetup` / `ControlledRuntimeSetup` compile-fail contracts (ADR-0019)
+- `RuntimeSetup` and `Capabilities` compile-fail doctests (ADR-0029): a Driver of the wrong type, direct binding, and making a capability outside registration
 - `declared_source_runs_in_controlled_execution`
 - `declared_effect_runs_in_controlled_execution`
 - `declared_effect_runs_in_live_execution`
@@ -381,7 +394,7 @@ Admission and shutdown:
 Driver lifecycle and faults:
 
 - `phase6_knowable_live_binding_errors_fail_build`
-- `RuntimeSetup` / `ControlledRuntimeSetup` compile-fail contracts (ADR-0019)
+- `RuntimeSetup` and `Capabilities` compile-fail doctests (ADR-0029): a Driver of the wrong type, direct binding, and making a capability outside registration
 - `phase6_effect_success_and_failure_map_exactly_once`
 - `phase6_scope_cancel_drops_effect_without_invoking_mapper`
 - `phase6_source_first_terminal_wins`
@@ -479,8 +492,8 @@ lease release before reactivation, a normal multi-thread cutover without a
 fabricated terminal event, and preservation of an already-completed stop
 failure across Cancel. This live evidence and the first-party binding are
 Unix-only; no first-party live behavior is claimed for other targets. The
-application example separately demonstrates that Component logic stores
-`SourceCapability<StdinLines>` and needs no manual stdin thread or mpsc bridge.
+application example separately demonstrates that Component logic uses a
+`Source<StdinLines>` capability and needs no manual stdin thread or mpsc bridge.
 
 ## Active ADR-0007 Live Host-Lifecycle Scenarios
 
@@ -609,8 +622,9 @@ Model ownership, Driver policy, or independent-event ordering guarantees.
   ADR-0004's simple first cut.
 - Exact public first-party module/type naming and general live Layer/profile
   binding abstractions where no accepted API already freezes them.
-- Named capability bundles, public capability identity inspection, and any
-  blessed dynamic or ambient escape hatch. The current Program capability set
+- Public capability identity inspection beyond `Program::manifest()`, and any
+  blessed dynamic or ambient escape hatch. Named capability structs are
+  implemented under ADR-0029. The current Program capability set
   is closed.
 
 No implementation goal may choose a deferred policy merely to make a test

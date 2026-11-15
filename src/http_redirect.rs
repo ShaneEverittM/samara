@@ -1,8 +1,8 @@
 //! Pure, finite redirect Layer. The terminal HTTP Driver remains single-hop.
 
 use crate::{
-    Command, CommandKind, EffectCapability, EffectContinuation, EffectOutcome, HttpError,
-    HttpErrorKind, HttpRequest, HttpResponse, Perform,
+    Command, CommandKind, Effect, EffectContinuation, EffectOutcome, HttpError, HttpErrorKind,
+    HttpRequest, HttpResponse, Perform,
 };
 
 // Reuse reqwest's public URL value for pure parsing/resolution only. No client
@@ -12,7 +12,7 @@ use reqwest::Url;
 type Finish<Message> = Box<dyn FnOnce(EffectOutcome<HttpResponse, HttpError>) -> Message + Send>;
 
 pub(crate) fn command<Message: Send + 'static>(
-    capability: EffectCapability<HttpRequest>,
+    capability: Effect<HttpRequest>,
     request: HttpRequest,
     remaining: usize,
     finish: Finish<Message>,

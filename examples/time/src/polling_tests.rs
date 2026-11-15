@@ -32,13 +32,8 @@ fn failed_http_outcomes() -> Vec<EffectOutcome<HttpResponse, HttpError>> {
     ]
 }
 
-fn http_fixture() -> (
-    HttpTimeServerConfig,
-    Capabilities<<HttpTimeServer as Component>::Requires>,
-) {
-    let (_builder, (declared_0, declared_1)) =
-        Program::builder::<(Effect<HttpRequest>, Effect<PrintStderr>)>();
-    (HttpTimeServerConfig {}, (declared_0, declared_1))
+fn http_fixture() -> (HttpTimeServerConfig, HttpTimeServerIo) {
+    (HttpTimeServerConfig {}, HttpTimeServerIo::detached())
 }
 
 struct TimeReader;
@@ -51,21 +46,18 @@ enum ReadMessage {
 }
 
 impl Component for TimeReader {
-    type Requires = ();
+    type Io = ();
     type Config = TimeReaderConfig;
     type Model = Vec<Option<DateTime<Utc>>>;
     type Message = ReadMessage;
 
-    fn init(
-        _config: &Self::Config,
-        _: &Capabilities<Self::Requires>,
-    ) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
         Init::default()
     }
 
     fn update(
         config: &Self::Config,
-        _: &Capabilities<Self::Requires>,
+        _: &Self::Io,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -86,12 +78,10 @@ fn controlled_http_fixture() -> (
     ComponentRef<HttpTimeServer>,
     ComponentRef<TimeReader>,
 ) {
-    let (mut builder, (http, stderr)) =
-        Program::builder::<(Effect<HttpRequest>, Effect<PrintStderr>)>();
+    let mut builder = Program::builder();
     let port = builder.port(PortId::new(TIME_SERVER_PORT));
     let server = builder
         .component::<HttpTimeServer>(HttpTimeServerConfig {})
-        .with(&(http, stderr))
         .finish()
         .expect("component registration");
     builder.connect(&port, &server.connector());
@@ -103,7 +93,7 @@ fn controlled_http_fixture() -> (
         .control_all()
         .build()
         .unwrap();
-    (runtime, server, reader)
+    (runtime, server.into(), reader.into())
 }
 
 #[test]
@@ -121,7 +111,7 @@ fn http_idle_ignores_unsolicited_poll_completion() {
                 .on_response()
                 .require_success()
                 .json::<TimeResponse>()
-                .into_command(&server_capabilities.0)
+                .into_command(&server_capabilities.http)
                 .map_effect_outcome::<HttpRequest>(outcome)
                 .ok()
                 .unwrap();

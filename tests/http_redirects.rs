@@ -1,5 +1,4 @@
 //! ADR-0012: redirects are pure policy over individually visible HTTP effects.
-type TestProgram = Program<(Effect<HttpRequest>, Effect<Observed>)>;
 
 use std::{convert::Infallible, time::Duration};
 
@@ -19,49 +18,38 @@ impl EffectDescriptor for Observed {
 struct Probe;
 
 struct ProbeConfig {
-    http: EffectCapability<HttpRequest>,
-    observed: EffectCapability<Observed>,
     request: HttpRequest,
     limit: usize,
 }
 impl Component for Probe {
-    type Requires = ();
+    type Io = (Effect<HttpRequest>, Effect<Observed>);
     type Config = ProbeConfig;
     type Model = Vec<Outcome>;
     type Message = Outcome;
-    fn init(
-        config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
-    ) -> Init<Self::Model, Self::Message> {
+    fn init(config: &Self::Config, (http, _): &Self::Io) -> Init<Self::Model, Self::Message> {
         Init::default().with_command(
             config
                 .request
                 .clone()
                 .on_response()
                 .follow_redirects(config.limit)
-                .into_command_with(&config.http, |outcome| outcome),
+                .into_command_with(http, |outcome| outcome),
         )
     }
     fn update(
-        config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
+        _: &Self::Config,
+        (_, observed): &Self::Io,
         model: &mut Self::Model,
         outcome: Outcome,
     ) -> Command<Outcome> {
         model.push(outcome.clone());
-        Effect::perform(&config.observed, Observed(outcome)).discard_outcome()
+        Effect::perform(observed, Observed(outcome)).discard_outcome()
     }
 }
-fn program(request: HttpRequest, limit: usize) -> (TestProgram, ComponentRef<Probe>) {
-    let (mut builder, (http, observed)) =
-        Program::builder::<(Effect<HttpRequest>, Effect<Observed>)>();
+fn program(request: HttpRequest, limit: usize) -> (Program, InstalledComponent<Probe>) {
+    let mut builder = Program::builder();
     let probe = builder
-        .component::<Probe>(ProbeConfig {
-            http,
-            observed,
-            request,
-            limit,
-        })
+        .component::<Probe>(ProbeConfig { request, limit })
         .name("probe")
         .finish()
         .expect("component registration");
@@ -74,7 +62,7 @@ fn controlled(request: HttpRequest, limit: usize) -> (ControlledRuntime, Compone
         .build()
         .unwrap();
     runtime.run_until_idle().unwrap();
-    (runtime, probe)
+    (runtime, probe.into())
 }
 fn response(status: u16, location: Option<&str>) -> HttpResponse {
     let mut headers = HeaderMap::new();
@@ -313,10 +301,9 @@ async fn live_drain_follows_relative_redirect_through_the_same_driver() {
                 socket.write_all(reply.as_bytes()).await.unwrap();
             }
         });
-        let (program, _) = program(HttpRequest::get(url), 3);
+        let (program, probe) = program(HttpRequest::get(url), 3);
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let caps = program.capabilities().clone();
-        let task = Runtime::builder(program).with(&caps).supplied_by((samara::HttpDriver::new(), ObserveDriver(tx),)).build().unwrap().spawn();
+        let task = Runtime::builder(program).supply(&probe.io, (samara::HttpDriver::new(), ObserveDriver(tx),)).build().unwrap().spawn();
         assert!(task.shutdown(Shutdown::Drain).await.unwrap().is_clean());
         assert!(matches!(rx.recv().await.unwrap(), EffectOutcome::Succeeded(r) if r.status() == StatusCode::OK));
         assert!(rx.try_recv().is_err());
@@ -352,16 +339,12 @@ fn controlled_traces_repeat_and_next_hop_is_caused_by_previous_outcome() {
 
 struct JsonProbe;
 
-struct JsonProbeConfig(EffectCapability<HttpRequest>);
 impl Component for JsonProbe {
-    type Requires = ();
-    type Config = JsonProbeConfig;
+    type Io = Effect<HttpRequest>;
+    type Config = ();
     type Model = Option<EffectOutcome<serde_json::Value, HttpResponseError>>;
     type Message = EffectOutcome<serde_json::Value, HttpResponseError>;
-    fn init(
-        config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
-    ) -> Init<Self::Model, Self::Message> {
+    fn init(_: &Self::Config, http: &Self::Io) -> Init<Self::Model, Self::Message> {
         Init::default().with_command(
             HttpRequest::get("https://example.test/")
                 .on_response()
@@ -369,12 +352,12 @@ impl Component for JsonProbe {
                 .follow_redirects(1)
                 .require_success()
                 .json::<serde_json::Value>()
-                .into_command_with(&config.0, |outcome| outcome),
+                .into_command_with(http, |outcome| outcome),
         )
     }
     fn update(
         _config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
+        _: &Self::Io,
         model: &mut Self::Model,
         outcome: Self::Message,
     ) -> Command<Self::Message> {
@@ -386,9 +369,9 @@ impl Component for JsonProbe {
 #[test]
 fn status_and_json_transforms_run_only_after_following_and_keep_typed_errors() {
     for status in [200, 404, 301] {
-        let (mut builder, (http,)) = Program::builder::<(Effect<HttpRequest>,)>();
+        let mut builder = Program::builder();
         let probe = builder
-            .component::<JsonProbe>(JsonProbeConfig(http))
+            .component::<JsonProbe>(())
             .name("json")
             .finish()
             .expect("component registration");
@@ -445,10 +428,9 @@ async fn live_cancel_aborts_active_redirect_hop_without_application_completion()
             }
             unreachable!()
         });
-        let (program, _) = program(HttpRequest::get(url), 3);
+        let (program, probe) = program(HttpRequest::get(url), 3);
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let caps = program.capabilities().clone();
-        let task = Runtime::builder(program).with(&caps).supplied_by((samara::HttpDriver::new(), ObserveDriver(tx),)).build().unwrap().spawn();
+        let task = Runtime::builder(program).supply(&probe.io, (samara::HttpDriver::new(), ObserveDriver(tx),)).build().unwrap().spawn();
         let mut socket = server.await.unwrap();
         assert!(task.shutdown(Shutdown::Cancel).await.unwrap().is_clean());
         assert!(rx.try_recv().is_err());

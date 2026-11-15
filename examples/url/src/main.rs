@@ -2,17 +2,13 @@ use samara::{Runtime, Shutdown};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let program = urlchecker::program()?;
+    let (program, io) = urlchecker::program()?;
 
-    let caps = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with(&caps)
-        .supplied_by((
-            samara::HttpDriver::new(),
-            samara::StdoutDriver::new(),
-            samara::StderrDriver::new(),
-            samara::StdinDriver,
-        ))
+        .supply(&io.stdin, samara::StdinDriver)
+        .supply(&io.stdout, samara::StdoutDriver::new())
+        .supply(&io.stderr, samara::StderrDriver::new())
+        .supply(&io.http, samara::HttpDriver::new())
         .build()?;
 
     let mut task = runtime.spawn();

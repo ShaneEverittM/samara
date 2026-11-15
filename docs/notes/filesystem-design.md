@@ -5,7 +5,8 @@ November 8, 2026 behind the `fs` feature
 ([ADR-0013](../adr/0013-component-kinds-assemblies-and-first-party-effects.md)):
 `AppendToFile`, `ReplaceFile`, `ReadFile`, `RemoveFile`, one `FsError`,
 and `FsDriver::new(root)` supplied through `with_drivers` (ADR-0019; since replaced by
-`with(..).supplied_by(..)`, ADR-0027).
+`with(..).supplied_by(..)`, ADR-0027, and then by `supply(&capability, driver)`,
+ADR-0029).
 The implementation took positions
 on some open questions below without closing them: replace does fsync the
 file but not the directory; removing a missing file is `NotFound`, not
@@ -21,6 +22,20 @@ the declared sink/store as `File<P>`, with `ReadOnly`, `AppendOnly`, `ReadAppend
 append; append alone cannot replace contents. One host-supplied `FileDriver` binds its path;
 controlled tests select operations by resource identity. It reuses the
 filesystem mechanisms above without open handles or an ordering guarantee.
+
+November 15 update:
+[ADR-0028](../adr/0028-a-capability-belongs-to-one-component.md) and
+[ADR-0029](../adr/0029-capabilities-are-named-values-a-component-owns.md)
+make every `File<P>` owned. Registration creates it for one Component, it
+cannot be handed to another, and the narrowing methods (`read_only()` and the
+rest) are removed. A Component names its file as a field of its `Io`, such as
+`file: File<ReadAppend>`, and the host supplies
+`.supply(&journal.io.file, FileDriver::new(path))`. Two Components that need
+one file do not each hold it: one owns it and the others send it Messages.
+The Program cannot express a Shared handle. A host can still point two
+`FileDriver`s at one path, and nothing is promised about that. This settles
+the Owned-versus-Shared question below for declared files, in favour of
+Owned as a property of the capability.
 
 ## Governing principle
 

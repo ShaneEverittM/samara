@@ -2,9 +2,8 @@
 #[cfg(test)]
 mod tests;
 use crate::{
-    AppendToFile, BoxFuture, CapabilityToken, ControlledRuntime, EffectCapability,
-    EffectDescriptor, EffectDriver, FsDriver, FsError, PendingEffect, ReadFile, ReplaceFile,
-    RuntimeError,
+    AppendToFile, BoxFuture, CapabilityToken, ControlledRuntime, Effect, EffectDescriptor,
+    EffectDriver, FsDriver, FsError, PendingEffect, ReadFile, ReplaceFile, RuntimeError,
 };
 use bytes::Bytes;
 use std::{
@@ -72,110 +71,100 @@ impl CanAppend for ReadWrite {}
 impl CanWrite for WriteOnly {}
 impl CanWrite for ReadWrite {}
 
-/// Declares one file resource with permissions `P` in a Program's requirements.
+/// Authority to issue permitted operations against one logical file.
 ///
-/// The host supplies one [`FileDriver`] for this position. Two positions of the
-/// same type can bind different files. Construction and binding perform no I/O.
+/// Declare one as a field of a Component's [`Component::Io`](crate::Component::Io).
+/// Each operation chooses data, never another target path. The host binds the
+/// path once by supplying a [`FileDriver`] for this capability.
 ///
 /// ```
 /// use samara::prelude::*;
-/// let (builder, (file,)) = Program::builder::<(File<ReadAppend>,)>();
-/// let append: Command<()> = File::append_line(&file, "hello").discard_outcome();
-/// assert_eq!(append.effect_intent::<FileAppend>().unwrap().as_bytes(), b"hello\n");
-/// let runtime = Runtime::builder(builder.build()?)
-///     .with(&file).supplied_by(FileDriver::new("data/journal.log")).build()?;
+/// struct Scribe;
+/// impl Component for Scribe {
+///     type Config = (); type Io = File<ReadAppend>;
+///     type Model = (); type Message = ();
+///     fn init(_: &(), file: &Self::Io) -> Init<(), ()> {
+///         Init::new(()).with_command(File::append_line(file, "hello").discard_outcome())
+///     }
+///     fn update(_: &(), _: &Self::Io, _: &mut (), _: ()) -> Command<()> { Command::none() }
+/// }
+/// let mut program = Program::builder();
+/// let scribe = program.component::<Scribe>(()).finish()?;
+/// let runtime = Runtime::builder(program.build()?)
+///     .supply(&scribe.io, FileDriver::new("data/journal.log"))
+///     .build()?;
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 ///
-/// A file uses one binding, not independently supplied read and append Drivers:
+/// A file takes one Driver, not separate read and append Drivers:
 ///
 /// ```compile_fail
 /// use samara::prelude::*;
-/// let (builder, file) = Program::builder::<File<ReadAppend>>();
-/// Runtime::builder(builder.build().unwrap())
-///     .with(&file).supplied_by((FileDriver::new("a"), FileDriver::new("b")));
+/// fn two(setup: samara::RuntimeSetup, file: &File<ReadAppend>) {
+///     setup.supply(file, (FileDriver::new("a"), FileDriver::new("b")));
+/// }
 /// ```
-pub struct File<P: FilePermissions>(PhantomData<fn() -> P>);
-
-/// Inert authority to issue permitted operations against one logical file.
 ///
-/// Issued by [`crate::Program::builder`]. Clones and narrowed views retain the
-/// same resource identity. Each operation chooses data, never another target
-/// path. The host binds the path once through [`FileDriver`].
+/// The permission type decides which operations exist:
 ///
 /// ```compile_fail
 /// use samara::prelude::*;
-/// let (_, file) = Program::builder::<File<ReadOnly>>();
-/// File::append_line(&file, "not permitted");
+/// fn not_permitted(file: &File<ReadOnly>) { File::append_line(file, "no"); }
 /// ```
 ///
 /// ```compile_fail
 /// use samara::prelude::*;
-/// let (_, file) = Program::builder::<File<AppendOnly>>();
-/// File::read(&file);
+/// fn not_permitted(file: &File<AppendOnly>) { File::read(file); }
 /// ```
 ///
 /// Append authority does not permit replacement, even when reading is allowed:
 ///
 /// ```compile_fail
 /// use samara::prelude::*;
-/// let (_, file) = Program::builder::<File<AppendOnly>>();
-/// File::replace_text(&file, "not permitted");
+/// fn not_permitted(file: &File<AppendOnly>) { File::replace_text(file, "no"); }
 /// ```
 ///
 /// ```compile_fail
 /// use samara::prelude::*;
-/// let (_, file) = Program::builder::<File<ReadAppend>>();
-/// File::replace_text(&file, "not permitted");
+/// fn not_permitted(file: &File<ReadAppend>) { File::replace_text(file, "no"); }
 /// ```
 ///
 /// ```compile_fail
 /// use samara::prelude::*;
-/// let (_, file) = Program::builder::<File<ReadOnly>>();
-/// File::replace_bytes(&file, vec![1, 2, 3]);
+/// fn not_permitted(file: &File<ReadOnly>) { File::replace_bytes(file, vec![1, 2, 3]); }
 /// ```
 ///
 /// Write authority alone does not permit reading:
 ///
 /// ```compile_fail
 /// use samara::prelude::*;
-/// let (_, file) = Program::builder::<File<WriteOnly>>();
-/// File::read(&file);
-/// ```
-///
-/// Narrowing removes replacement authority:
-///
-/// ```compile_fail
-/// use samara::prelude::*;
-/// let (_, file) = Program::builder::<File<ReadWrite>>();
-/// File::replace_text(&file.read_append(), "not permitted");
+/// fn not_permitted(file: &File<WriteOnly>) { File::read(file); }
 /// ```
 ///
 /// Permissions cannot be widened:
 ///
 /// ```compile_fail
 /// use samara::prelude::*;
-/// let (_, file) = Program::builder::<File<ReadOnly>>();
-/// let _: FileCapability<ReadAppend> = file;
+/// fn widen(file: File<ReadOnly>) -> File<ReadAppend> { file }
 /// ```
-pub struct FileCapability<P: FilePermissions> {
+pub struct File<P: FilePermissions> {
     pub(crate) token: CapabilityToken,
     marker: PhantomData<fn() -> P>,
 }
-impl<P: FilePermissions> Clone for FileCapability<P> {
+impl<P: FilePermissions> Clone for File<P> {
     fn clone(&self) -> Self {
         Self::new(self.token.clone())
     }
 }
-impl<P: FilePermissions> fmt::Debug for FileCapability<P> {
+impl<P: FilePermissions> fmt::Debug for File<P> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("FileCapability")
+        f.debug_struct("File")
             .field("permissions", &std::any::type_name::<P>())
             .field("resource", &self.token.id)
             .finish()
     }
 }
-impl<P: FilePermissions> FileCapability<P> {
+impl<P: FilePermissions> File<P> {
     pub(crate) fn new(token: CapabilityToken) -> Self {
         Self {
             token,
@@ -183,70 +172,52 @@ impl<P: FilePermissions> FileCapability<P> {
         }
     }
     fn operation<D: EffectDescriptor>(&self, descriptor: D) -> FileEffect<D> {
-        FileEffect {
-            capability: EffectCapability {
+        FileEffect::new(
+            Effect {
                 token: self.token.clone(),
                 marker: PhantomData,
             },
             descriptor,
-        }
+        )
     }
 }
-impl<P: CanRead> FileCapability<P> {
-    /// Describes reading this file, returning Bytes or FsError when executed.
-    fn read(&self) -> FileEffect<FileRead> {
-        self.operation(FileRead { _private: () })
-    }
-    /// Shares read-only authority over this same resource.
-    pub fn read_only(&self) -> FileCapability<ReadOnly> {
-        FileCapability::new(self.token.clone())
+impl<P: CanRead> File<P> {
+    /// Describes reading the file, returning Bytes or FsError when executed.
+    pub fn read(file: &Self) -> FileEffect<FileRead> {
+        file.operation(FileRead { _private: () })
     }
 }
-impl<P: CanAppend> FileCapability<P> {
-    /// Describes appending bytes to this file, creating it and its parents if needed.
-    fn append_bytes(&self, bytes: impl Into<Bytes>) -> FileEffect<FileAppend> {
-        self.operation(FileAppend {
+impl<P: CanAppend> File<P> {
+    /// Describes appending bytes, creating the file and its parents if needed.
+    pub fn append_bytes(file: &Self, bytes: impl Into<Bytes>) -> FileEffect<FileAppend> {
+        file.operation(FileAppend {
             bytes: bytes.into(),
         })
     }
     /// Describes appending UTF-8 text without adding a newline.
-    fn append_text(&self, text: impl Into<String>) -> FileEffect<FileAppend> {
-        self.append_bytes(text.into())
+    pub fn append_text(file: &Self, text: impl Into<String>) -> FileEffect<FileAppend> {
+        Self::append_bytes(file, text.into())
     }
     /// Describes appending text followed by one newline.
-    fn append_line(&self, text: impl Into<String>) -> FileEffect<FileAppend> {
+    pub fn append_line(file: &Self, text: impl Into<String>) -> FileEffect<FileAppend> {
         let mut text = text.into();
         text.push('\n');
-        self.append_text(text)
-    }
-    /// Shares append-only authority over this same resource.
-    pub fn append_only(&self) -> FileCapability<AppendOnly> {
-        FileCapability::new(self.token.clone())
+        Self::append_text(file, text)
     }
 }
-impl<P: CanRead + CanAppend> FileCapability<P> {
-    /// Shares read and append authority without granting replacement.
-    pub fn read_append(&self) -> FileCapability<ReadAppend> {
-        FileCapability::new(self.token.clone())
-    }
-}
-impl<P: CanWrite> FileCapability<P> {
-    /// Describes atomically replacing this file's whole contents.
+impl<P: CanWrite> File<P> {
+    /// Describes atomically replacing the file's whole contents.
     ///
     /// Uses [`ReplaceFile`]'s temporary-sibling write, file sync, and rename.
     /// Missing parents are created; the directory entry itself is not synced.
-    fn replace_bytes(&self, bytes: impl Into<Bytes>) -> FileEffect<FileReplace> {
-        self.operation(FileReplace {
+    pub fn replace_bytes(file: &Self, bytes: impl Into<Bytes>) -> FileEffect<FileReplace> {
+        file.operation(FileReplace {
             bytes: bytes.into(),
         })
     }
     /// Describes replacing the contents with exactly this text.
-    fn replace_text(&self, text: impl Into<String>) -> FileEffect<FileReplace> {
-        self.replace_bytes(text.into())
-    }
-    /// Shares write and append authority without granting read access.
-    pub fn write_only(&self) -> FileCapability<WriteOnly> {
-        FileCapability::new(self.token.clone())
+    pub fn replace_text(file: &Self, text: impl Into<String>) -> FileEffect<FileReplace> {
+        Self::replace_bytes(file, text.into())
     }
 }
 
@@ -356,83 +327,34 @@ impl EffectDriver<FileReplace> for FileDriver {
 impl ControlledRuntime {
     /// Takes the next read requested through this exact file capability.
     ///
-    /// Clones and narrowed views select the same resource. A foreign selector
+    /// Clones select the same resource. A foreign selector
     /// fails without taking any pending operation. Completion remains typed:
     ///
     /// ```compile_fail
     /// use samara::prelude::*;
-    /// let (builder, file) = Program::builder::<File<ReadOnly>>();
-    /// let mut runtime = ControlledRuntime::builder(builder.build().unwrap()).control_all().build().unwrap();
+    /// let file = <File<ReadOnly>>::detached();
+    /// let mut runtime = ControlledRuntime::builder(Program::builder().build().unwrap()).build().unwrap();
     /// let read = runtime.next_file_read(&file).unwrap();
     /// runtime.complete(read, EffectOutcome::Succeeded(()));
     /// ```
     pub fn next_file_read<P: CanRead>(
         &mut self,
-        file: &FileCapability<P>,
+        file: &File<P>,
     ) -> Result<PendingEffect<FileRead>, RuntimeError> {
         self.core.next_effect_for(Some(&file.token))
     }
     /// Takes the next append requested through this exact file capability.
     pub fn next_file_append<P: CanAppend>(
         &mut self,
-        file: &FileCapability<P>,
+        file: &File<P>,
     ) -> Result<PendingEffect<FileAppend>, RuntimeError> {
         self.core.next_effect_for(Some(&file.token))
     }
     /// Takes the next whole-file replacement requested through this exact capability.
     pub fn next_file_replace<P: CanWrite>(
         &mut self,
-        file: &FileCapability<P>,
+        file: &File<P>,
     ) -> Result<PendingEffect<FileReplace>, RuntimeError> {
         self.core.next_effect_for(Some(&file.token))
-    }
-}
-
-impl<P: CanRead> File<P> {
-    /// Describes reading the file, returning Bytes or FsError when executed.
-    pub fn read(file: &FileCapability<P>) -> FileEffect<FileRead> {
-        FileCapability::read(file)
-    }
-}
-impl<P: CanAppend> File<P> {
-    /// Describes appending bytes, creating the file and its parents if needed.
-    pub fn append_bytes(
-        file: &FileCapability<P>,
-        bytes: impl Into<Bytes>,
-    ) -> FileEffect<FileAppend> {
-        FileCapability::append_bytes(file, bytes)
-    }
-    /// Describes appending UTF-8 text without adding a newline.
-    pub fn append_text(
-        file: &FileCapability<P>,
-        text: impl Into<String>,
-    ) -> FileEffect<FileAppend> {
-        FileCapability::append_text(file, text)
-    }
-    /// Describes appending text followed by one newline.
-    pub fn append_line(
-        file: &FileCapability<P>,
-        text: impl Into<String>,
-    ) -> FileEffect<FileAppend> {
-        FileCapability::append_line(file, text)
-    }
-}
-impl<P: CanWrite> File<P> {
-    /// Describes atomically replacing the file's whole contents.
-    ///
-    /// Uses [`ReplaceFile`]'s temporary-sibling write, file sync, and rename.
-    /// Missing parents are created; the directory entry itself is not synced.
-    pub fn replace_bytes(
-        file: &FileCapability<P>,
-        bytes: impl Into<Bytes>,
-    ) -> FileEffect<FileReplace> {
-        FileCapability::replace_bytes(file, bytes)
-    }
-    /// Describes replacing the contents with exactly this text.
-    pub fn replace_text(
-        file: &FileCapability<P>,
-        text: impl Into<String>,
-    ) -> FileEffect<FileReplace> {
-        FileCapability::replace_text(file, text)
     }
 }

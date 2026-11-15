@@ -1,9 +1,40 @@
 # Exploratory Design: Assemblies
 
-The construction and binding API below is historical. [ADR-0019](../adr/0019-typed-program-requirements.md)
-now moves requirements onto `Program<R>`: Assemblies receive capabilities, and
-`InstalledAssembly` retains only the address and exports. Runtime setup takes
-the Program's complete driver tuple or derives controls with `control_all()`.
+The construction and binding API below is historical, including its
+vocabulary section. The current shape is set by
+[ADR-0028](../adr/0028-a-capability-belongs-to-one-component.md) and
+[ADR-0029](../adr/0029-capabilities-are-named-values-a-component-owns.md),
+November 15, 2026:
+
+```rust,ignore
+impl Assembly for Journal {
+    type Config = ();
+    type Exports = Connector<JournalMessage>;
+    type Io = JournalIo;
+
+    fn install(
+        program: &mut ProgramBuilder,
+        _: Self::Config,
+    ) -> Result<(Connector<JournalMessage>, JournalIo), ProgramBuildError> {
+        let recorder = program.component::<Recorder>(()).finish()?;
+        Ok((recorder.accepting(Message::Journal), recorder.io.clone()))
+    }
+}
+```
+
+`install` receives no capabilities. Each Component it registers is given its
+own, and the Assembly returns them as `Io` beside its exports.
+`InstalledAssembly` has a public `io` field and `exports()`. The host
+supplies one Driver per capability with
+`Runtime::builder(program).supply(&journal.io.file, driver)`, and
+`VendorsDrivers::supply(setup, io, driver_config)` lets an Assembly supply
+its own defaults. Controlled execution controls every capability.
+
+Before that, [ADR-0019](../adr/0019-typed-program-requirements.md) had moved
+requirements onto `Program<R>`: Assemblies received capabilities,
+`InstalledAssembly` retained only the address and exports, and runtime setup
+took the Program's complete driver tuple or derived controls with
+`control_all()`.
 
 Status: implemented November 7, 2026 as `Subprogram` with a profile-generic
 drivers struct; redesigned and renamed November 8, 2026 as `Assembly` with a
@@ -146,7 +177,11 @@ pulse journal (`examples/pulse/src/journal.rs`) is the worked example: one
   retained; that is what `Exports` now carries in `tests/assemblies.rs`,
   with the leak it implies noted below. Whether an isolated Component
   runtime makes that unnecessary is still open.
-- **Named positions.** Partly addressed by ADR-0027: Drivers are
+- **Named positions.** Resolved November 15, 2026 by ADR-0029: `Requires`
+  is replaced by `Io`, which can be a struct with named fields, and Drivers
+  are supplied field by field. Completeness is checked by `build()`, not
+  the compiler; a generated drivers struct that would restore the
+  compile-time check was deferred. Earlier status: partly addressed by ADR-0027: Drivers are
   supplied per capability value in any order, which removes the same-type
   swap and the single large tuple. The capability destructure is still
   positional, and a macro-generated named struct remains the way to keep a

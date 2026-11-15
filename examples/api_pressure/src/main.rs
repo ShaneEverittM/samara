@@ -16,8 +16,6 @@
 
 #![allow(dead_code)]
 
-type AppProgram = Program<(Source<StreamDescriptor<u64>>, Effect<PersistCount>)>;
-
 use std::time::Duration;
 
 use samara::prelude::*;
@@ -85,15 +83,12 @@ struct QuotaConfig {
 }
 
 impl Component for Quota {
-    type Requires = ();
+    type Io = ();
     type Config = QuotaConfig;
     type Model = QuotaModel;
     type Message = QuotaMessage;
 
-    fn init(
-        config: &Self::Config,
-        _: &Capabilities<Self::Requires>,
-    ) -> Init<Self::Model, Self::Message> {
+    fn init(config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
         Init::new(QuotaModel {
             remaining: config.initial,
         })
@@ -101,7 +96,7 @@ impl Component for Quota {
 
     fn update(
         _config: &Self::Config,
-        _: &Capabilities<Self::Requires>,
+        _: &Self::Io,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -186,31 +181,37 @@ struct PersistError {
     message: String,
 }
 
-/// Immutable logical wiring for one Counter Component instance.
+/// The Counter kind. The type is only a name; see `CounterConfig`,
+/// `CounterIo`, and `CounterModel` for what one Counter is made of.
 struct Counter;
 
+/// Immutable logical wiring for one Counter Component instance.
 struct CounterConfig {
-    /// Declared authority for the ongoing increment source.
-
     /// Descriptor for the ongoing external increment source.
     increments: StreamDescriptor<u64>,
-
-    /// Declared authority for finite persistence effects.
 
     /// Named dependency on any provider of the quota message enum.
     quota: Port<QuotaProtocolMessage>,
 }
 
+/// Everything one Counter can reach in the world. Registration creates these
+/// for the Counter alone; the host supplies a live Driver for each.
+#[derive(Clone, Capabilities)]
+struct CounterIo {
+    /// Authority for the ongoing increment source.
+    increments: Source<StreamDescriptor<u64>>,
+
+    /// Authority for finite persistence effects.
+    persistence: Effect<PersistCount>,
+}
+
 impl Component for Counter {
-    type Requires = (Source<StreamDescriptor<u64>>, Effect<PersistCount>);
+    type Io = CounterIo;
     type Config = CounterConfig;
     type Model = CounterModel;
     type Message = CounterMessage;
 
-    fn init(
-        _config: &Self::Config,
-        _capabilities: &Capabilities<Self::Requires>,
-    ) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config, _io: &Self::Io) -> Init<Self::Model, Self::Message> {
         // `after` declares timer intent against the runtime's clock. It does
         // not sleep, acquire a Tokio handle, or perform work during init.
         Init::new(CounterModel::default())
@@ -219,7 +220,7 @@ impl Component for Counter {
 
     fn update(
         config: &Self::Config,
-        capabilities: &Capabilities<Self::Requires>,
+        io: &Self::Io,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -241,7 +242,7 @@ impl Component for Counter {
                 let command = match &outcome {
                     RequestOutcome::Replied(Reservation::Granted { amount }) => {
                         model.count += amount;
-                        Effect::perform(&capabilities.1, PersistCount { value: model.count })
+                        Effect::perform(&io.persistence, PersistCount { value: model.count })
                             .producing(CounterMessage::Persisted)
                     }
                     RequestOutcome::Replied(Reservation::Denied { .. })
@@ -271,14 +272,14 @@ impl Component for Counter {
 
     fn subscriptions(
         config: &Self::Config,
-        capabilities: &Capabilities<Self::Requires>,
+        io: &Self::Io,
         _model: &Self::Model,
     ) -> Subscriptions<Self::Message> {
         // Subscriptions describe ongoing demand. The stable ID lets the runtime
         // reconcile this desired source across transitions without exposing a
         // task, receiver, or cancellation handle to the Component.
         Subscriptions::one(Subscription::source_with(
-            &capabilities.0,
+            &io.increments,
             config.increments.clone(),
             |event| match event {
                 SourceEvent::Item(by) => CounterMessage::Increment(by),
@@ -319,20 +320,18 @@ impl EffectDriver<PersistCount> for LivePersistence {
 /// Component-to-Component dependencies use Ports above; these references are
 /// for deliberate direct interaction and state observation at the runtime edge.
 struct AppRefs {
-    /// Address used to send to and inspect the Counter.
-    counter: ComponentRef<Counter>,
+    /// Address used to send to and inspect the Counter. Its `io` holds the
+    /// Counter's capabilities, which live execution supplies Drivers for and
+    /// controlled execution scripts.
+    counter: InstalledComponent<Counter>,
 
     /// Address used to inspect Quota's independently owned state.
-    quota: ComponentRef<Quota>,
-
-    /// Exact source capability used by live and controlled stream adapters.
-    increments: SourceCapability<StreamDescriptor<u64>>,
+    quota: InstalledComponent<Quota>,
 }
 
 /// Declares the logical application graph shared by every execution profile.
-fn program(increments: StreamDescriptor<u64>) -> (AppProgram, AppRefs) {
-    let (mut program, (increment_source, persistence)) =
-        Program::builder::<(Source<StreamDescriptor<u64>>, Effect<PersistCount>)>();
+fn program(increments: StreamDescriptor<u64>) -> (Program, AppRefs) {
+    let mut program = Program::builder();
 
     // A named Port is immutable dependency wiring. Naming allows another Quota
     // Port to coexist without a global “one provider per type” rule.
@@ -351,17 +350,12 @@ fn program(increments: StreamDescriptor<u64>) -> (AppProgram, AppRefs) {
             increments: increments.clone(),
             quota: quota_port,
         })
-        .with(&(increment_source.clone(), persistence))
         .finish()
         .expect("component registration");
 
     (
         program.build().expect("the example graph is valid"),
-        AppRefs {
-            counter,
-            quota,
-            increments: increment_source,
-        },
+        AppRefs { counter, quota },
     )
 }
 
@@ -378,10 +372,12 @@ async fn live_shape() -> Result<(), RuntimeError> {
     // Runtime assembly owns the operational channel receiver and effect
     // executor. The logical capabilities and descriptors inside Components
     // stay inert.
-    let caps = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with(&caps)
-        .supplied_by((samara::MpscReceiver::new(receiver), LivePersistence))
+        .supply(
+            &refs.counter.io.increments,
+            samara::MpscReceiver::new(receiver),
+        )
+        .supply(&refs.counter.io.persistence, LivePersistence)
         .build()?;
 
     let counter = runtime.handle(&refs.counter)?;
@@ -411,7 +407,7 @@ fn controlled_shape() -> Result<(), RuntimeError> {
 
     // This single controlled input drives the full causal chain:
     // Increment -> quota request -> Quota transition -> reply -> Counter transition.
-    runtime.emit_stream(&refs.increments, 3)?;
+    runtime.emit_stream(&refs.counter.io.increments, 3)?;
     runtime.run_until_idle()?;
 
     // The world-facing persistence intent is now pending, rather than having
@@ -476,27 +472,21 @@ mod tests {
     #[test]
     fn transition_and_subscription_shape_are_directly_testable() {
         let increments = StreamDescriptor::named(INCREMENT_INPUT);
-        let (mut program, (increment_source, persistence)) =
-            Program::builder::<(Source<StreamDescriptor<u64>>, Effect<PersistCount>)>();
+        let mut program = Program::builder();
 
         let quota = program.port(PortId::new(QUOTA));
-        let (component, component_capabilities) = (
-            CounterConfig {
-                increments: increments.clone(),
-                quota,
-            },
-            (increment_source, persistence),
-        );
-        let mut model = Counter::init(&component, &component_capabilities).model;
+        let component = CounterConfig {
+            increments: increments.clone(),
+            quota,
+        };
+        // Capabilities that belong to no Program are enough to call the
+        // Component's functions and inspect what they return.
+        let io = CounterIo::detached();
+        let mut model = Counter::init(&component, &io).model;
 
         // Dispatching a request declares intent only. The later reply is the sole
         // message that can authorize this change.
-        let command = Counter::update(
-            &component,
-            &component_capabilities,
-            &mut model,
-            CounterMessage::Increment(3),
-        );
+        let command = Counter::update(&component, &io, &mut model, CounterMessage::Increment(3));
         assert_eq!(model.count, 0);
         let request = command
             .into_request::<QuotaProtocolMessage>()
@@ -509,7 +499,7 @@ mod tests {
         // Running the request's own continuation on a chosen reply exercises
         // the resulting transition independently of transport correlation.
         let granted = request.reply(RequestOutcome::Replied(Reservation::Granted { amount: 3 }));
-        let command = Counter::update(&component, &component_capabilities, &mut model, granted);
+        let command = Counter::update(&component, &io, &mut model, granted);
         assert_eq!(model.count, 3);
         let effect = command
             .into_effect::<PersistCount>()
@@ -519,15 +509,15 @@ mod tests {
         // Phase 4 can exercise the exact stored one-shot mapper without
         // pretending a Driver or controlled terminal behavior ran.
         let persisted = effect.map_outcome(EffectOutcome::Succeeded(()));
-        let command = Counter::update(&component, &component_capabilities, &mut model, persisted);
+        let command = Counter::update(&component, &io, &mut model, persisted);
         assert!(command.is_none());
         assert_eq!(model.last_save, Some(EffectOutcome::Succeeded(())));
 
         // Subscription configuration is declared and testable without running
         // the receiver or depending on a particular task/mailbox topology.
-        let subscriptions = Counter::subscriptions(&component, &component_capabilities, &model);
+        let subscriptions = Counter::subscriptions(&component, &io, &model);
         assert_eq!(
-            subscriptions.find::<StreamDescriptor<u64>>(&component_capabilities.0),
+            subscriptions.find::<StreamDescriptor<u64>>(&io.increments),
             Some(&increments)
         );
     }

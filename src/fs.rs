@@ -301,8 +301,8 @@ impl Error for FsError {}
 /// Every path in a descriptor is joined to the root. Absolute paths and paths
 /// containing `..` fail with [`FsErrorKind::OutsideRoot`] before any I/O. The
 /// root itself is not created until the first write needs it. Supply one clone
-/// for each declared filesystem-effect capability through
-/// [`RuntimeSetup::with`](crate::RuntimeSetup::with).
+/// for each filesystem-effect capability through
+/// [`RuntimeSetup::supply`](crate::RuntimeSetup::supply).
 #[derive(Clone, Debug)]
 pub struct FsDriver {
     root: Arc<Path>,

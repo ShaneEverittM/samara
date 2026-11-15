@@ -38,18 +38,18 @@ enum Message {
 struct Reader;
 
 impl Component for Reader {
-    type Requires = (Effect<ReadText>, Effect<CountBytes>);
+    type Io = (Effect<ReadText>, Effect<CountBytes>);
     type Config = ();
     type Model = Vec<Observation>;
     type Message = Message;
 
-    fn init(_: &(), _: &Capabilities<Self::Requires>) -> Init<Self::Model, Message> {
+    fn init(_: &(), _: &Self::Io) -> Init<Self::Model, Message> {
         Init::default()
     }
 
     fn update(
         _: &(),
-        (read, count): &Capabilities<Self::Requires>,
+        (read, count): &Self::Io,
         model: &mut Self::Model,
         message: Message,
     ) -> Command<Message> {
@@ -96,11 +96,10 @@ fn shared_failure_message_preserves_domain_mapping_and_trace_reasons() {
     ];
 
     for (text_outcome, count_outcome, expected, expected_trace) in cases {
-        let (mut builder, capabilities) = Program::builder::<<Reader as Component>::Requires>();
+        let mut builder = Program::builder();
         let reader = builder
             .component::<Reader>(())
             .name("reader")
-            .with(&capabilities)
             .finish()
             .unwrap();
         let mut runtime = ControlledRuntime::builder(builder.build().unwrap())
@@ -141,18 +140,18 @@ enum StampMessage {
 }
 
 impl Component for Stamper {
-    type Requires = Effect<ReadSystemTime>;
+    type Io = Effect<ReadSystemTime>;
     type Config = ();
     type Model = Option<SystemTime>;
     type Message = StampMessage;
 
-    fn init(_: &(), _: &Capabilities<Self::Requires>) -> Init<Self::Model, StampMessage> {
+    fn init(_: &(), _: &Self::Io) -> Init<Self::Model, StampMessage> {
         Init::default()
     }
 
     fn update(
         _: &(),
-        clock: &Capabilities<Self::Requires>,
+        clock: &Self::Io,
         model: &mut Self::Model,
         message: StampMessage,
     ) -> Command<StampMessage> {
@@ -169,11 +168,10 @@ impl Component for Stamper {
 
 #[test]
 fn an_infallible_effect_takes_its_success_directly() {
-    let (mut builder, clock) = Program::builder::<<Stamper as Component>::Requires>();
+    let mut builder = Program::builder();
     let stamper = builder
         .component::<Stamper>(())
         .name("stamper")
-        .with(&clock)
         .finish()
         .unwrap();
     let mut runtime = ControlledRuntime::builder(builder.build().unwrap())

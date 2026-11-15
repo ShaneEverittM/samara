@@ -1,5 +1,3 @@
-type TestProgram = Program<(samara::Effect<GateEffect>,)>;
-
 use std::convert::Infallible;
 use std::future::pending;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -10,8 +8,7 @@ use samara::prelude::*;
 
 #[test]
 fn print_macros_preserve_familiar_formatting_and_select_the_stream() {
-    let (_program, (declared_0, declared_1)) =
-        samara::Program::builder::<(samara::Effect<PrintStdout>, samara::Effect<PrintStderr>)>();
+    let (declared_0, declared_1) = <(samara::Effect<PrintStdout>, samara::Effect<PrintStderr>) as samara::Capabilities>::detached();
     let stdout = declared_0;
     let stderr = declared_1;
     let subject = String::from("Samara");
@@ -49,40 +46,32 @@ enum PrintMessage {
 
 struct PrintProbe;
 
-struct PrintProbeConfig {
-    stdout: EffectCapability<PrintStdout>,
-}
-
 impl Component for PrintProbe {
-    type Requires = ();
-    type Config = PrintProbeConfig;
+    type Io = Effect<PrintStdout>;
+    type Config = ();
     type Model = PrintModel;
     type Message = PrintMessage;
 
-    fn init(
-        _config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
-    ) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
         Init::new(PrintModel::default())
     }
 
     fn update(
-        config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
+        _config: &Self::Config,
+        stdout: &Self::Io,
         model: &mut Self::Model,
         PrintMessage::Start: Self::Message,
     ) -> Command<Self::Message> {
         model.transitions += 1;
-        samara::println!(&config.stdout, "transition {}", model.transitions)
+        samara::println!(stdout, "transition {}", model.transitions)
     }
 }
 
 #[test]
 fn controlled_discarded_outcome_is_traced_without_scheduling_a_message() {
-    let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<PrintStdout>,)>();
-    let stdout = declared_0;
+    let mut program = Program::builder();
     let probe = program
-        .component::<PrintProbe>(PrintProbeConfig { stdout })
+        .component::<PrintProbe>(())
         .name("discarded-print")
         .finish()
         .expect("component registration");
@@ -142,31 +131,24 @@ enum GateMessage {
 
 struct GateProbe;
 
-struct GateProbeConfig {
-    effect: EffectCapability<GateEffect>,
-}
-
 impl Component for GateProbe {
-    type Requires = ();
-    type Config = GateProbeConfig;
+    type Io = Effect<GateEffect>;
+    type Config = ();
     type Model = ();
     type Message = GateMessage;
 
-    fn init(
-        _config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
-    ) -> Init<Self::Model, Self::Message> {
+    fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
         Init::new(())
     }
 
     fn update(
-        config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
+        _config: &Self::Config,
+        effect: &Self::Io,
         _model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
         match message {
-            GateMessage::Start => Effect::perform(&config.effect, GateEffect).discard_outcome(),
+            GateMessage::Start => Effect::perform(effect, GateEffect).discard_outcome(),
             GateMessage::Noop => Command::none(),
         }
     }
@@ -206,11 +188,10 @@ impl EffectDriver<GateEffect> for GatedDriver {
     }
 }
 
-fn gated_program() -> (TestProgram, ComponentRef<GateProbe>) {
-    let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<GateEffect>,)>();
-    let effect = declared_0;
+fn gated_program() -> (Program, InstalledComponent<GateProbe>) {
+    let mut program = Program::builder();
     let probe = program
-        .component::<GateProbe>(GateProbeConfig { effect })
+        .component::<GateProbe>(())
         .name("discarded-gate")
         .finish()
         .expect("component registration");
@@ -223,14 +204,15 @@ async fn live_drain_waits_for_a_discarded_outcome_effect() {
     let (entered, entered_rx) = tokio::sync::oneshot::channel();
     let (release, release_rx) = tokio::sync::oneshot::channel();
     let dropped = Arc::new(AtomicBool::new(false));
-    let caps = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with(&caps)
-        .supplied_by((GatedDriver {
-            entered: Mutex::new(Some(entered)),
-            release: Mutex::new(Some(release_rx)),
-            dropped: dropped.clone(),
-        },))
+        .supply(
+            &probe.io,
+            GatedDriver {
+                entered: Mutex::new(Some(entered)),
+                release: Mutex::new(Some(release_rx)),
+                dropped: dropped.clone(),
+            },
+        )
         .build()
         .unwrap();
     let handle = runtime.handle(&probe).unwrap();
@@ -269,14 +251,15 @@ async fn live_cancel_aborts_a_discarded_outcome_effect() {
     let (program, probe) = gated_program();
     let (entered, entered_rx) = tokio::sync::oneshot::channel();
     let dropped = Arc::new(AtomicBool::new(false));
-    let caps = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with(&caps)
-        .supplied_by((GatedDriver {
-            entered: Mutex::new(Some(entered)),
-            release: Mutex::new(None),
-            dropped: dropped.clone(),
-        },))
+        .supply(
+            &probe.io,
+            GatedDriver {
+                entered: Mutex::new(Some(entered)),
+                release: Mutex::new(None),
+                dropped: dropped.clone(),
+            },
+        )
         .build()
         .unwrap();
     let handle = runtime.handle(&probe).unwrap();

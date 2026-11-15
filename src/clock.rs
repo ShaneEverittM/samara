@@ -14,13 +14,12 @@ use crate::{BoxFuture, EffectDescriptor, EffectDriver};
 ///
 /// Always succeeds with a [`SystemTime`]: its error type has no values, so a
 /// finisher can take the success directly. Supply [`SystemClockDriver`]
-/// for its capability through [`RuntimeSetup::with`](crate::RuntimeSetup::with).
+/// for its capability through [`RuntimeSetup::supply`](crate::RuntimeSetup::supply).
 ///
 /// ```
 /// use samara::prelude::*;
 /// use std::time::SystemTime;
-/// let (mut program, (declared_0,)) = samara::Program::builder::<(samara::Effect<ReadSystemTime>,)>();
-/// let clock = declared_0;
+/// let clock = <Effect<ReadSystemTime>>::detached();
 /// let command: Command<SystemTime> =
 ///     Effect::perform(&clock, ReadSystemTime).producing(|EffectOutcome::Succeeded(now)| now);
 /// assert!(command.effect_intent::<ReadSystemTime>().is_some());

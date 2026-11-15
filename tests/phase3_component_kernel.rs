@@ -99,15 +99,12 @@ impl KernelComponentConfig {
 }
 
 impl Component for KernelComponent {
-    type Requires = ();
+    type Io = ();
     type Config = KernelComponentConfig;
     type Model = OwnedModel;
     type Message = KernelMessage;
 
-    fn init(
-        config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
-    ) -> Init<Self::Model, Self::Message> {
+    fn init(config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
         config.init_calls.fetch_add(1, Ordering::SeqCst);
         Init::new(OwnedModel {
             state: KernelModel::default(),
@@ -117,7 +114,7 @@ impl Component for KernelComponent {
 
     fn update(
         config: &Self::Config,
-        _: &samara::Capabilities<Self::Requires>,
+        _: &Self::Io,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -171,7 +168,7 @@ fn v2_protocol_message_remains_distinct_from_provider_message() {
 
 #[test]
 fn component_identity_follows_registration_independently_of_names() {
-    let (mut left_program, ()) = samara::Program::builder::<()>();
+    let mut left_program = Program::builder();
     let (left_first, _, _, _) = KernelComponentConfig::fixture();
     let (left_second, _, _, _) = KernelComponentConfig::fixture();
     let alpha_left = left_program
@@ -185,7 +182,7 @@ fn component_identity_follows_registration_independently_of_names() {
         .finish()
         .expect("component registration");
 
-    let (mut right_program, ()) = samara::Program::builder::<()>();
+    let mut right_program = Program::builder();
     let (right_first, _, _, _) = KernelComponentConfig::fixture();
     let (right_second, _, _, _) = KernelComponentConfig::fixture();
     let beta_right = right_program
@@ -208,7 +205,7 @@ fn component_identity_follows_registration_independently_of_names() {
 fn registration_transfers_configuration_and_model_ownership_to_program() {
     let (component, init_calls, configuration_drops, model_drops) =
         KernelComponentConfig::fixture();
-    let (mut builder, ()) = samara::Program::builder::<()>();
+    let mut builder = Program::builder();
 
     let component_ref = builder
         .component::<KernelComponent>(component)

@@ -34,18 +34,18 @@ struct GaugeModel {
 }
 
 impl Component for Gauge {
-    type Requires = Effect<Probe>;
+    type Io = Effect<Probe>;
     type Config = ();
     type Model = GaugeModel;
     type Message = GaugeMessage;
 
-    fn init(_: &(), _: &Capabilities<Self::Requires>) -> Init<GaugeModel, GaugeMessage> {
+    fn init(_: &(), _: &Self::Io) -> Init<GaugeModel, GaugeMessage> {
         Init::default()
     }
 
     fn update(
         _: &(),
-        probe: &Capabilities<Self::Requires>,
+        probe: &Self::Io,
         model: &mut GaugeModel,
         message: GaugeMessage,
     ) -> Command<GaugeMessage> {
@@ -84,7 +84,7 @@ enum RelayMessage {
 }
 
 impl Component for Relay {
-    type Requires = ();
+    type Io = ();
     type Config = Connector<GaugeMessage>;
     type Model = ();
     type Message = RelayMessage;
@@ -135,7 +135,7 @@ impl From<RequestOutcome<u64>> for ClientMessage {
 }
 
 impl Component for Client {
-    type Requires = ();
+    type Io = ();
     type Config = ClientConfig;
     type Model = Vec<RequestOutcome<u64>>;
     type Message = ClientMessage;
@@ -166,22 +166,16 @@ impl Component for Client {
     }
 }
 
-type Needs = <Gauge as Component>::Requires;
-
 struct Fixture {
-    program: Program<Needs>,
+    program: Program,
     client: ComponentRef<Client>,
-    gauge: ComponentRef<Gauge>,
+    gauge: InstalledComponent<Gauge>,
     relay_port: Port<RelayMessage>,
 }
 
 fn fixture() -> Fixture {
-    let (mut builder, capabilities) = Program::builder::<Needs>();
-    let gauge = builder
-        .component::<Gauge>(())
-        .with(&capabilities)
-        .finish()
-        .unwrap();
+    let mut builder = Program::builder();
+    let gauge = builder.component::<Gauge>(()).finish().unwrap();
     let relay = builder
         .component::<Relay>(gauge.connector())
         .finish()
@@ -197,7 +191,7 @@ fn fixture() -> Fixture {
         .unwrap();
     Fixture {
         program: builder.build().unwrap(),
-        client,
+        client: client.into(),
         gauge,
         relay_port,
     }
@@ -300,13 +294,10 @@ fn a_request_builder_carries_its_timeout_and_from_conversion() {
 fn inspectors_see_builder_commands_and_skip_finishing_requests() {
     let Fixture { program, .. } = fixture();
     drop(program);
-    let (mut builder, probe) = Program::builder::<Needs>();
-    let gauge = builder
-        .component::<Gauge>(())
-        .with(&probe)
-        .finish()
-        .unwrap()
-        .connector();
+    let mut builder = Program::builder();
+    let gauge = builder.component::<Gauge>(()).finish().unwrap();
+    let probe = gauge.io.clone();
+    let gauge = gauge.connector();
 
     let sent: Command<ClientMessage> = Command::send(&gauge, GaugeMessage::Note("hello".into()));
     assert!(matches!(
@@ -348,13 +339,12 @@ impl EffectDriver<Probe> for FixedProbe {
 async fn finish_with_runs_the_same_way_live() -> Result<(), RuntimeError> {
     let Fixture {
         program,
+        gauge,
         relay_port,
         ..
     } = fixture();
-    let caps = program.capabilities().clone();
     let runtime = Runtime::builder(program)
-        .with(&caps)
-        .supplied_by(FixedProbe(9))
+        .supply(&gauge.io, FixedProbe(9))
         .build()?;
     let relay = runtime.port_handle(&relay_port)?;
     let task = runtime.spawn();

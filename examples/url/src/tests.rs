@@ -1,16 +1,13 @@
 use super::*;
 use anyhow::Result;
 
-type Fixture = (
-    ControlledRuntime,
-    ComponentRef<Checker>,
-    SourceCapability<StdinLines>,
-);
+type Fixture = (ControlledRuntime, ComponentRef<Checker>, Source<StdinLines>);
 fn fixture() -> Result<Fixture> {
-    let (program, checker, stdin) = assemble()?;
+    let (program, checker) = assemble()?;
+    let stdin = checker.io.stdin.clone();
     let runtime = ControlledRuntime::builder(program).control_all().build()?;
 
-    Ok((runtime, checker, stdin))
+    Ok((runtime, checker.into(), stdin))
 }
 
 fn url(url: &str) -> Result<Message> {
@@ -21,7 +18,7 @@ fn url(url: &str) -> Result<Message> {
 fn input(
     runtime: &mut ControlledRuntime,
     checker: &ComponentRef<Checker>,
-    stdin: &SourceCapability<StdinLines>,
+    stdin: &Source<StdinLines>,
     line: &str,
 ) -> Result<()> {
     runtime.emit_source::<_, StdinLines>(checker, stdin, SourceEvent::Item(line.into()))?;
