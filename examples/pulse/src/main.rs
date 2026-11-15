@@ -98,7 +98,7 @@ async fn main() -> anyhow::Result<()> {
     let journal = builder
         .install::<Journal>(())
         // ...failing to compile if you don't give it its declared capabilities.
-        .with_capabilities(&journal_caps)
+        .with(&journal_caps)
         .finish()?;
 
     // Install our application component...
@@ -107,7 +107,7 @@ async fn main() -> anyhow::Result<()> {
             journal: journal.connector().clone(),
         })
         // ...that also requires its capabilities.
-        .with_capabilities(&monitor_caps)
+        .with(&monitor_caps)
         .finish()?;
 
     // Assemble the program, this checks things that _can't_ be checked at compile time.

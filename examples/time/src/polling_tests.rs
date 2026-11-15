@@ -91,7 +91,7 @@ fn controlled_http_fixture() -> (
     let port = builder.port(PortId::new(TIME_SERVER_PORT));
     let server = builder
         .component::<HttpTimeServer>(HttpTimeServerConfig {})
-        .with_capabilities(&(http, stderr))
+        .with(&(http, stderr))
         .finish()
         .expect("component registration");
     builder.connect(&port, &server.connector());

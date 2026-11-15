@@ -179,7 +179,7 @@ fn fixture() -> Fixture {
     let (mut builder, capabilities) = Program::builder::<Needs>();
     let gauge = builder
         .component::<Gauge>(())
-        .with_capabilities(&capabilities)
+        .with(&capabilities)
         .finish()
         .unwrap();
     let relay = builder
@@ -303,7 +303,7 @@ fn inspectors_see_builder_commands_and_skip_finishing_requests() {
     let (mut builder, probe) = Program::builder::<Needs>();
     let gauge = builder
         .component::<Gauge>(())
-        .with_capabilities(&probe)
+        .with(&probe)
         .finish()
         .unwrap()
         .connector();

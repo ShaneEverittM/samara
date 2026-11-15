@@ -184,7 +184,7 @@ The following evidence must pass before the Phase 2 audit:
   foreign capability fails `build` with a naming error.
 - `tests/assemblies.rs` validates `Assembly`, `Requires`, `Drivers`,
   `VendorsDrivers`, and `InstalledAssembly` (ADR-0013, ADR-0019, ADR-0026):
-  `ProgramBuilder::install(...).with_capabilities(...).finish()` returns the
+  `ProgramBuilder::install(...).with(...).finish()` returns the
   Assembly's exports: a struct carrying a Connector and a `ComponentRef`,
   two peer doors onto two Components, or `()`. The host names its own Port and connects
   the Connector to it. `with(&caps).supplied_by(drivers)` supplies Drivers,

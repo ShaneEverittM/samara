@@ -100,7 +100,7 @@ fn shared_failure_message_preserves_domain_mapping_and_trace_reasons() {
         let reader = builder
             .component::<Reader>(())
             .name("reader")
-            .with_capabilities(&capabilities)
+            .with(&capabilities)
             .finish()
             .unwrap();
         let mut runtime = ControlledRuntime::builder(builder.build().unwrap())
@@ -173,7 +173,7 @@ fn an_infallible_effect_takes_its_success_directly() {
     let stamper = builder
         .component::<Stamper>(())
         .name("stamper")
-        .with_capabilities(&clock)
+        .with(&clock)
         .finish()
         .unwrap();
     let mut runtime = ControlledRuntime::builder(builder.build().unwrap())

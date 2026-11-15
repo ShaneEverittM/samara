@@ -2019,7 +2019,7 @@ impl<Message> From<Vec<Subscription<Message>>> for Subscriptions<Message> {
 /// fn program() -> Result<(Program<(Source<StreamDescriptor<u64>>,)>, ComponentRef<Sum>, SourceCapability<StreamDescriptor<u64>>), ProgramBuildError> {
 ///     let (mut builder, (declared_0,)) = samara::Program::builder::<(samara::Source<StreamDescriptor<u64>>,)>();
 ///     let input = declared_0;
-///     let sum = builder.component::<Sum>(()).with_capabilities(&(input.clone(),)).finish().expect("component registration");
+///     let sum = builder.component::<Sum>(()).with(&(input.clone(),)).finish().expect("component registration");
 ///     Ok((builder.build()?, sum, input))
 /// }
 /// let (program_under_test, sum, input) = program()?;
@@ -2150,7 +2150,7 @@ impl<T: Send + 'static> StreamSourceDescriptor for StreamDescriptor<T> {
 /// fn program() -> Result<(Program<(Source<StdinLines>,)>, ComponentRef<Reader>, SourceCapability<StdinLines>), ProgramBuildError> {
 ///     let (mut builder, (declared_0,)) = samara::Program::builder::<(samara::Source<StdinLines>,)>();
 ///     let input = declared_0;
-///     let reader = builder.component::<Reader>(()).with_capabilities(&(input.clone(),)).finish().expect("component registration");
+///     let reader = builder.component::<Reader>(()).with(&(input.clone(),)).finish().expect("component registration");
 ///     Ok((builder.build()?, reader, input))
 /// }
 ///
@@ -4709,7 +4709,7 @@ impl<R: Requirements> ProgramBuilder<R> {
 
     /// Starts registering a Component of kind `C` with its settings and connections.
     ///
-    /// Supply `C::Requires` through `with_capabilities`, then call `finish()` to
+    /// Supply `C::Requires` through `with`, then call `finish()` to
     /// validate provenance, invoke [`Component::init`], and obtain its address.
     /// Components with `Requires = ()` can call `finish()` directly. Optional
     /// `.name(...)` sets a diagnostic label; duplicate names are allowed. Startup
@@ -5772,7 +5772,7 @@ pub struct ControlledRuntimeBuilder {
 /// }
 /// let (mut builder, (declared_0,)) = samara::Program::builder::<(samara::Effect<HttpRequest>,)>();
 /// let http = declared_0;
-/// let check = builder.component::<Check>(()).with_capabilities(&(http,)).finish().expect("component registration");
+/// let check = builder.component::<Check>(()).with(&(http,)).finish().expect("component registration");
 /// let mut runtime = ControlledRuntime::builder(builder.build()?).control_all().build()?;
 /// runtime.run_until_idle()?;
 /// let request = runtime.next_effect::<HttpRequest>()?;

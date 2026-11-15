@@ -602,7 +602,7 @@ fn program() -> (AppProgram, AppRefs) {
         .component::<Telemetry>(TelemetryConfig {
             health: health_port.clone(),
         })
-        .with_capabilities(&(storage, socket.clone()))
+        .with(&(storage, socket.clone()))
         .finish()
         .expect("component registration");
 

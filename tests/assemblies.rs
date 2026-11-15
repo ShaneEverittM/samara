@@ -114,7 +114,7 @@ impl Assembly for Recorder {
         let recorder = program
             .component::<Recorder>(())
             .name("recorder")
-            .with_capabilities(&(stamp, pulses))
+            .with(&(stamp, pulses))
             .finish()?;
         Ok(RecorderExports {
             ledger: recorder.accepting(RecorderMessage::Ledger),
@@ -167,7 +167,7 @@ fn assemble() -> (
     let (mut program, caps) = Program::builder::<RecorderNeeds>();
     let recorder = program
         .install::<Recorder>(())
-        .with_capabilities(&caps)
+        .with(&caps)
         .finish()
         .expect("assembly installation");
     let ledger = program.port::<LedgerMessage>(PortId::new("ledger"));

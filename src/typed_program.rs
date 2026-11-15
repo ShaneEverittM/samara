@@ -508,9 +508,9 @@ pub struct SuppliedCapabilities<T>(T);
 ///     fn update(_: &(), _: &Capabilities<Self::Requires>, _: &mut (), _: ()) -> Command<()> { Command::none() }
 /// }
 /// let (mut program, http) = Program::builder::<(Effect<HttpRequest>,)>();
-/// program.component::<Clock>(()).with_capabilities(&http);
+/// program.component::<Clock>(()).with(&http);
 /// ```
-#[must_use = "finish component registration with with_capabilities(...).finish()"]
+#[must_use = "finish component registration with .with(&capabilities).finish()"]
 pub struct ComponentRegistration<'a, R: Requirements, C: Component, State = MissingCapabilities> {
     program: &'a mut ProgramBuilder<R>,
     name: Option<Arc<str>>,
@@ -530,7 +530,7 @@ impl<'a, R: Requirements, C: Component> ComponentRegistration<'a, R, C> {
     ///
     /// Borrowed, so the same values can later be named to
     /// [`RuntimeSetup::with`] when Drivers are supplied.
-    pub fn with_capabilities(
+    pub fn with(
         self,
         caps: &Capabilities<C::Requires>,
     ) -> ComponentRegistration<'a, R, C, SuppliedCapabilities<Capabilities<C::Requires>>> {
@@ -553,7 +553,7 @@ impl<R: Requirements, C: Component, State> ComponentRegistration<'_, R, C, State
 impl<R: Requirements, C: Component<Requires = ()>> ComponentRegistration<'_, R, C> {
     /// Registers a Component with no world capabilities.
     pub fn finish(self) -> Result<ComponentRef<C>, ProgramBuildError> {
-        self.with_capabilities(&()).finish()
+        self.with(&()).finish()
     }
 }
 impl<R: Requirements, C: Component>
@@ -647,7 +647,7 @@ impl<A: Assembly> fmt::Debug for InstalledAssembly<A> {
     }
 }
 /// A staged Assembly installation.
-#[must_use = "finish Assembly installation with with_capabilities(...).finish()"]
+#[must_use = "finish Assembly installation with .with(&capabilities).finish()"]
 pub struct AssemblyRegistration<'a, R: Requirements, A: Assembly, State = MissingCapabilities> {
     program: &'a mut ProgramBuilder<R>,
     config: A::Config,
@@ -665,7 +665,7 @@ impl<R: Requirements> ProgramBuilder<R> {
 }
 impl<'a, R: Requirements, A: Assembly> AssemblyRegistration<'a, R, A> {
     /// Supplies the capabilities required by the Assembly, borrowed.
-    pub fn with_capabilities(
+    pub fn with(
         self,
         caps: &Capabilities<A::Requires>,
     ) -> AssemblyRegistration<'a, R, A, SuppliedCapabilities<Capabilities<A::Requires>>> {
@@ -679,7 +679,7 @@ impl<'a, R: Requirements, A: Assembly> AssemblyRegistration<'a, R, A> {
 impl<R: Requirements, A: Assembly<Requires = ()>> AssemblyRegistration<'_, R, A> {
     /// Installs an Assembly requiring no world capabilities.
     pub fn finish(self) -> Result<InstalledAssembly<A>, ProgramBuildError> {
-        self.with_capabilities(&()).finish()
+        self.with(&()).finish()
     }
 }
 impl<R: Requirements, A: Assembly>

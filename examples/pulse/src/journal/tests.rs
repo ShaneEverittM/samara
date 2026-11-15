@@ -70,7 +70,7 @@ fn program() -> (
     let file = capabilities.0.clone();
     let journal = builder
         .install::<Journal>(())
-        .with_capabilities(&capabilities)
+        .with(&capabilities)
         .finish()
         .unwrap();
     let port = builder.port::<JournalMessage>(PortId::new("journal"));
@@ -122,7 +122,7 @@ fn append_outcomes_are_discarded_without_automatic_retry() {
     let file = capabilities.0.clone();
     let recorder = builder
         .component::<Recorder>(())
-        .with_capabilities(&capabilities)
+        .with(&capabilities)
         .finish()
         .unwrap();
     let mut runtime = ControlledRuntime::builder(builder.build().unwrap())

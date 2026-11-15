@@ -216,7 +216,7 @@ capability values ([ADR-0019](adr/0019-typed-program-requirements.md)):
 type World = (Effect<HttpRequest>, Source<StreamDescriptor<Input>>);
 let (mut program, (http, input)) = Program::builder::<World>();
 let worker = program.component::<Worker>(settings)
-    .with_capabilities(&(http, input))
+    .with(&(http, input))
     .finish()?;
 let program: Program<World> = program.build()?;
 ```
@@ -237,7 +237,7 @@ Runtime::builder(program)
 ```
 
 `with` takes one capability or a tuple of them, and
-`with_capabilities(&caps)` borrows, so the host still holds the values. A
+`with(&caps)` borrows, so the host still holds the values. A
 Driver goes to the capability value it was supplied for, which is the value
 a Component was registered with, so two capabilities of the same type cannot
 be exchanged by position when they are named separately. A Driver of the
@@ -879,7 +879,7 @@ Messages and identities can remain private (ADR-0019 and ADR-0026).
 | Assembly world dependencies | `Assembly::Requires` | The enclosing Program's capability tuple |
 | Complete runtime world | `Program<R>` | `with(&caps).supplied_by(drivers)` live, `control_all()` controlled |
 
-`program.install::<A>(config).with_capabilities(&caps).finish()?` returns
+`program.install::<A>(config).with(&caps).finish()?` returns
 `InstalledAssembly<A>` holding only the Connector and exports. The Program
 carries binding obligations into runtime setup, so no Assembly token must be
 passed separately. Driver tuples match the Program's requirement shape and

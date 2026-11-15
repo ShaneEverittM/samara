@@ -52,7 +52,7 @@ The accepted Phase 2 audit constrains Phase 3 to this slice:
   and name-based controlled ordering with successful registration order.
 - The type implementing `Component` names a kind and is never stored. Its
   immutable logical configuration is `Component::Config`, supplied at
-  registration as `component::<Kind>(config).with_capabilities(&caps).finish()?`; behaviorally relevant
+  registration as `component::<Kind>(config).with(&caps).finish()?`; behaviorally relevant
   mutable state belongs in `Component::Model`
   ([ADR-0013](adr/0013-component-kinds-assemblies-and-first-party-effects.md)).
 - `Component::Message` is the only transition input.
@@ -636,7 +636,7 @@ as amended by [ADR-0018](adr/0018-assemblies-export-a-connector.md),
   `install<R>(&mut ProgramBuilder<R>, Config, Capabilities<Self::Requires>)`
   returns `Result<Exports, ProgramBuildError>`.
   It installs Components using supplied capabilities, and declares no Ports or drivers.
-- `program.install::<A>(config).with_capabilities(&caps).finish()?` returns
+- `program.install::<A>(config).with(&caps).finish()?` returns
   `InstalledAssembly<A>` exposing `exports()`. When `Exports` is a
   `Connector<M>` it also exposes `connector()` and implements `Addressable`. It carries no separate runtime installation obligation.
 - The enclosing `Program<R>` carries all binding obligations. Live setup
@@ -650,7 +650,8 @@ as amended by [ADR-0018](adr/0018-assemblies-export-a-connector.md),
   `Program::capabilities()` returns the whole capability tuple. Controlled setup uses
   `ControlledRuntime::builder(program).control_all().build()?`, which has no
   `build` before `control_all` except for the empty shape.
-- `with_capabilities` on Component and Assembly registration takes
+- `with(&capabilities)` on Component and Assembly registration (formerly
+  `with_capabilities`) takes
   `&Capabilities<_>`, so the host keeps the values to supply later. `VendorsDrivers::drivers(driver_config)` can supply a
   matching tuple. Its `DriverConfig` associated type is separate from the
   Assembly's logical `Config`; controlled execution requires no driver config.

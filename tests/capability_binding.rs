@@ -56,12 +56,12 @@ async fn a_driver_follows_its_capability_value_not_a_position() {
     let (mut builder, (config_file, journal_file)) = Program::builder::<TwoFiles>();
     builder
         .component::<Scribe>("journal")
-        .with_capabilities(&(journal_file.clone(),))
+        .with(&(journal_file.clone(),))
         .finish()
         .unwrap();
     builder
         .component::<Scribe>("config")
-        .with_capabilities(&(config_file.clone(),))
+        .with(&(config_file.clone(),))
         .finish()
         .unwrap();
 
@@ -101,7 +101,7 @@ fn a_tuple_is_supplied_whole_or_split_after_registration_borrowed_it() {
     let (mut builder, caps) = Program::builder::<FileAndClock>();
     builder
         .component::<Scribe>("split")
-        .with_capabilities(&(caps.0.clone(),))
+        .with(&(caps.0.clone(),))
         .finish()
         .unwrap();
     let (file, clock) = &caps;

@@ -4,10 +4,12 @@
 - Date: November 10, 2026
 - Deciders: Samara maintainers
 - Amends: [ADR-0019](0019-typed-program-requirements.md) (live binding and
-  its compile-time completeness; `with_capabilities` takes a borrow)
+  its compile-time completeness; registration's `with_capabilities(caps)`
+  becomes `with(&capabilities)`)
 - Scope: `RuntimeSetup::with`, `RuntimeSupply::supplied_by`, and
-  `RuntimeSetup::build`; removal of `with_drivers`; the receiver type of
-  `with_capabilities`; `Program::capabilities`
+  `RuntimeSetup::build`; removal of `with_drivers`; registration's
+  `with_capabilities` renamed `with` and taking a borrow;
+  `Program::capabilities`
 
 ## Context
 
@@ -48,8 +50,8 @@ removed.
 
 ```rust,ignore
 let (mut builder, (journal_caps, monitor_caps)) = Program::builder::<AppRequirements>();
-let journal = builder.install::<Journal>(()).with_capabilities(&journal_caps).finish()?;
-builder.component::<Monitor>(config).with_capabilities(&monitor_caps).finish()?;
+let journal = builder.install::<Journal>(()).with(&journal_caps).finish()?;
+builder.component::<Monitor>(config).with(&monitor_caps).finish()?;
 
 Runtime::builder(builder.build()?)
     .with(&journal_caps).supplied_by((FileDriver::new(path), SystemClockDriver))
@@ -60,15 +62,18 @@ Runtime::builder(builder.build()?)
 - `with(&capabilities)` returns a stage whose only method is
   `supplied_by(drivers)`, which returns the builder. This is the staged
   shape registration already uses (`component::<C>(config)
-  .with_capabilities(&caps).finish()`). A named capability left without
+  .with(&caps).finish()`). A named capability left without
   Drivers does not compile, and the stage is `must_use`.
 - `Capability` is a sealed trait implemented for every shape
   `Program::builder` hands out: `EffectCapability<D>`,
   `SourceCapability<S>`, `FileCapability<P>`, `()`, and tuples of those. It
   is only a bound; `supplied_by` requires `Drivers` for exactly the named
   shape, so a Driver of the wrong type is still a compile error.
-- `with_capabilities` on Component and Assembly registration takes
-  `&Capabilities<_>`. The host keeps the values, so it can name a tuple
+- Registration's `with_capabilities(caps)` is renamed `with(&capabilities)`
+  on both Component and Assembly registration and takes
+  `&Capabilities<_>`. Registration and the runtime builder then take the
+  same value through the same word, and a call no longer says
+  "capabilities" twice (`.with_capabilities(&journal_capabilities)`). The host keeps the values, so it can name a tuple
   whole or destructure it and name each part separately.
 - `RuntimeSetup::build` exists for every requirement shape. It fails when a
   declared capability has no Driver, has more than one, or when a named
@@ -148,5 +153,5 @@ Drivers.
 ## Rollback
 
 Revert the implementing commits: `with_drivers` and the public
-`RuntimeBuilder` return. Reverting the borrow on `with_capabilities` is a
+`RuntimeBuilder` return. Reverting the rename and borrow on registration is a
 separate mechanical change.
