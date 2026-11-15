@@ -185,10 +185,16 @@ a journal Component; exploratory proposals, not accepted API decisions.
   typed decode failure beside `FsError` would make the correct handling the
   easy one. Found November 2026 reviewing the merged journal.
 
-- [ ] **Implement ADR-0028 (a capability belongs to one Component).**
+- [ ] **Finish ADR-0028 (a capability belongs to one Component).**
   Decided November 15, 2026: registration creates capabilities, nothing is
   shared, the installed handle carries them for the host, and plain effects
-  are bound per capability. The items under ADR-0027 below about type-wide
+  are bound per capability. The host-facing half landed beside the old API
+  (`ProgramBuilder::new()`, bare `finish()`, `InstalledComponent`,
+  `capabilities()` on both handles, per-capability effect Drivers). The
+  cut-over is listed under "Implementation status" in the ADR: remove the
+  up-front path and `with(&capabilities)`, change `Assembly::install`,
+  per-capability type-wide sources, the ownership fault, and migrate every
+  usage. The items under ADR-0027 below about type-wide
   binding and the unnamed missing-Driver error are resolved by it.
 
 - [ ] **After ADR-0027 (Drivers supplied per capability value).**

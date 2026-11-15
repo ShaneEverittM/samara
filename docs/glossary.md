@@ -47,6 +47,13 @@ exists and the installed Assembly is itself `Addressable`), a struct naming
 several doors or a `ComponentRef`, or `()` for an Assembly nobody sends to
 (ADR-0026).
 
+**InstalledComponent** — What registering a Component with a bare `finish()`
+returns when it requires anything: the `ComponentRef` together with the
+capabilities created for that Component. The host reads `capabilities()` to
+supply Drivers; other Components are given the reference or a Connector,
+never the capabilities (ADR-0028). `InstalledAssembly` carries
+`capabilities()` the same way.
+
 **Requires** — A type-level shape of `Effect<D>`, `Source<S>`, `()`, or nested
 tuples. A `Program<R>` declares its full world boundary; Components and
 Assemblies use `Requires` to describe the capability values they receive.

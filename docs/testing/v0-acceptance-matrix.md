@@ -178,6 +178,12 @@ The following evidence must pass before the Phase 2 audit:
   its two refusal cases, an initial send to a foreign Port failing both
   profile builds, and `PortHandle::send`, `request_to`, and
   `request_to_timeout` live.
+- `tests/owned_capabilities.rs` validates capabilities created at
+  registration (ADR-0028): two Components with the same effect are each
+  supplied their own Driver, a Component left without one fails `build`,
+  `control_all()` controls created capabilities, an installed Assembly
+  carries its capabilities, and a Component requiring nothing returns its
+  plain reference.
 - `tests/capability_binding.rs` validates per-capability Driver binding
   (ADR-0027): a Driver follows its capability value for two same-typed
   files, a tuple is supplied whole or split, and a missing, duplicate, or

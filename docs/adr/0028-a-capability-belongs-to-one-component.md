@@ -1,6 +1,6 @@
 # ADR-0028: A Capability Belongs to One Component
 
-- Status: Accepted. Not yet implemented.
+- Status: Accepted. Partly implemented; see "Implementation status".
 - Date: November 15, 2026
 - Deciders: Samara maintainers
 - Amends: [ADR-0008](0008-closed-program-capabilities.md) and
@@ -123,6 +123,34 @@ the file, addressed by both.
   narrow capabilities change.
 - No change to transition purity, per-Component serialization, causal
   ordering, or controlled determinism.
+
+## Implementation status
+
+Landed first, beside the existing API, so the host-facing shape can be
+lived with before every usage moves:
+
+- `ProgramBuilder::new()` starts a Program that declares nothing up front.
+- A bare `finish()` on Component or Assembly registration creates that
+  registration's capabilities. A Component returns `InstalledComponent<C>`
+  with `capabilities()` and `reference()`; it derefs to its `ComponentRef`
+  and is `Addressable`. A Component that requires nothing still returns its
+  plain `ComponentRef`. `InstalledAssembly` gains `capabilities()`.
+- An `Effect<D>` capability created this way is bound to its own Driver, so
+  two Components with the same effect are each supplied one.
+- `control_all()` derives its controls from the Program's recorded
+  requirements, so it covers capabilities created at registration.
+
+Not yet done, and required before this ADR is fully in force:
+
+- `Program::builder::<R>()`, `Program<R>`, `with(&capabilities)` on
+  registration, `Program::capabilities()`, and the `File` narrowing methods
+  still exist, so sharing is still possible through the old path.
+- `Assembly::install` still receives its capabilities from the builder and
+  hands them on with `with(&capabilities)` (item 4).
+- Type-wide `Source<S>` Drivers are still bound per descriptor type, so two
+  Components with the same type-wide source cannot each be supplied one.
+- Using a capability you do not own is not yet a fault (item 6).
+- The missing-Driver error does not yet name the owning Component.
 
 ## Open at implementation
 

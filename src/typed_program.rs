@@ -43,18 +43,16 @@ pub trait Requirements: private::Requirement + 'static {
     /// Immutable, clonable capability values passed to Components and Assemblies.
     type Capabilities: Clone + Send + 'static;
     #[doc(hidden)]
-    fn declare(builder: &mut ProgramBuilder, key: private::Key) -> Self::Capabilities;
+    fn declare<B: Requirements>(
+        builder: &mut ProgramBuilder<B>,
+        owned: bool,
+        key: private::Key,
+    ) -> Self::Capabilities;
     #[doc(hidden)]
     fn validate(
         capabilities: &Self::Capabilities,
         program: &Arc<()>,
     ) -> Result<(), ProgramBuildError>;
-    #[doc(hidden)]
-    fn control(
-        capabilities: &Self::Capabilities,
-        runtime: ControlledRuntimeBuilder,
-        key: private::Key,
-    ) -> ControlledRuntimeBuilder;
 }
 
 /// A declared finite effect boundary.
@@ -63,14 +61,22 @@ pub struct Effect<D: EffectDescriptor>(PhantomData<fn() -> D>);
 pub struct Source<S: SourceDescriptor>(PhantomData<fn() -> S>);
 
 pub(crate) fn declare<R: Requirements>(builder: &mut ProgramBuilder) -> Capabilities<R> {
-    R::declare(builder, private::Key)
+    R::declare(builder, false, private::Key)
+}
+/// Creates the capabilities one registration owns (ADR-0028).
+fn mint<R: Requirements, B: Requirements>(builder: &mut ProgramBuilder<B>) -> Capabilities<R> {
+    R::declare(builder, true, private::Key)
 }
 
 impl<D: EffectDescriptor> private::Requirement for Effect<D> {}
 impl<D: EffectDescriptor> Requirements for Effect<D> {
     type Capabilities = EffectCapability<D>;
-    fn declare(builder: &mut ProgramBuilder, _: private::Key) -> Self::Capabilities {
-        builder.effect::<D>()
+    fn declare<B: Requirements>(
+        builder: &mut ProgramBuilder<B>,
+        owned: bool,
+        _: private::Key,
+    ) -> Self::Capabilities {
+        builder.effect::<D>(owned)
     }
     fn validate(cap: &Self::Capabilities, program: &Arc<()>) -> Result<(), ProgramBuildError> {
         if cap.token.belongs_to(program) {
@@ -81,13 +87,6 @@ impl<D: EffectDescriptor> Requirements for Effect<D> {
             })
         }
     }
-    fn control(
-        _: &Self::Capabilities,
-        runtime: ControlledRuntimeBuilder,
-        _: private::Key,
-    ) -> ControlledRuntimeBuilder {
-        runtime.control_effect::<D>()
-    }
 }
 
 #[cfg(feature = "fs")]
@@ -95,7 +94,11 @@ impl<P: FilePermissions> private::Requirement for File<P> {}
 #[cfg(feature = "fs")]
 impl<P: FilePermissions> Requirements for File<P> {
     type Capabilities = FileCapability<P>;
-    fn declare(builder: &mut ProgramBuilder, _: private::Key) -> Self::Capabilities {
+    fn declare<B: Requirements>(
+        builder: &mut ProgramBuilder<B>,
+        _: bool,
+        _: private::Key,
+    ) -> Self::Capabilities {
         let token = builder.next_capability();
         if P::READ {
             builder.exact_effect::<FileRead>(&token);
@@ -117,36 +120,15 @@ impl<P: FilePermissions> Requirements for File<P> {
             })
         }
     }
-    fn control(
-        cap: &Self::Capabilities,
-        mut runtime: ControlledRuntimeBuilder,
-        _: private::Key,
-    ) -> ControlledRuntimeBuilder {
-        if P::READ {
-            runtime
-                .bindings
-                .exact_effects
-                .push((cap.token.clone(), TypeId::of::<FileRead>()));
-        }
-        if P::APPEND {
-            runtime
-                .bindings
-                .exact_effects
-                .push((cap.token.clone(), TypeId::of::<FileAppend>()));
-        }
-        if P::WRITE {
-            runtime
-                .bindings
-                .exact_effects
-                .push((cap.token.clone(), TypeId::of::<FileReplace>()));
-        }
-        runtime
-    }
 }
 impl<S: SourceDescriptor> private::Requirement for Source<S> {}
 impl<S: SourceDescriptor> Requirements for Source<S> {
     type Capabilities = SourceCapability<S>;
-    fn declare(builder: &mut ProgramBuilder, _: private::Key) -> Self::Capabilities {
+    fn declare<B: Requirements>(
+        builder: &mut ProgramBuilder<B>,
+        _: bool,
+        _: private::Key,
+    ) -> Self::Capabilities {
         builder.source::<S>()
     }
     fn validate(cap: &Self::Capabilities, program: &Arc<()>) -> Result<(), ProgramBuildError> {
@@ -158,37 +140,13 @@ impl<S: SourceDescriptor> Requirements for Source<S> {
             })
         }
     }
-    fn control(
-        cap: &Self::Capabilities,
-        mut runtime: ControlledRuntimeBuilder,
-        _: private::Key,
-    ) -> ControlledRuntimeBuilder {
-        if S::__samara_terminal_stream_item_type_id(source_plan_private::LOWER_TOKEN).is_some() {
-            runtime.bindings.exact_sources.push(cap.token.clone());
-        } else {
-            runtime
-                .bindings
-                .sources
-                .insert(S::__samara_terminal_type_id(
-                    source_plan_private::LOWER_TOKEN,
-                ));
-        }
-        runtime
-    }
 }
 impl private::Requirement for () {}
 impl Requirements for () {
     type Capabilities = ();
-    fn declare(_: &mut ProgramBuilder, _: private::Key) {}
+    fn declare<B: Requirements>(_: &mut ProgramBuilder<B>, _: bool, _: private::Key) {}
     fn validate(_: &(), _: &Arc<()>) -> Result<(), ProgramBuildError> {
         Ok(())
-    }
-    fn control(
-        _: &(),
-        runtime: ControlledRuntimeBuilder,
-        _: private::Key,
-    ) -> ControlledRuntimeBuilder {
-        runtime
     }
 }
 
@@ -214,8 +172,12 @@ pub trait Drivers<R: Requirements>: private::Driver<R> {}
 impl<R: Requirements, T: private::Driver<R>> Drivers<R> for T {}
 
 impl<D: EffectDescriptor, T: EffectDriver<D>> private::Driver<Effect<D>> for T {
-    fn bind(self, _: &EffectCapability<D>, bindings: &mut live_runtime::LiveBindings) {
-        bindings.bind_effect::<D, T>(self);
+    fn bind(self, cap: &EffectCapability<D>, bindings: &mut live_runtime::LiveBindings) {
+        if cap.token.owned {
+            bindings.bind_exact_effect::<D, T>(&cap.token, self);
+        } else {
+            bindings.bind_effect::<D, T>(self);
+        }
     }
 }
 #[cfg(feature = "fs")]
@@ -283,14 +245,11 @@ macro_rules! tuples {
         impl<$($r: Requirements),+> private::Requirement for ($($r,)+) {}
         impl<$($r: Requirements),+> Requirements for ($($r,)+) {
             type Capabilities = ($(Capabilities<$r>,)+);
-            fn declare(builder: &mut ProgramBuilder, _: private::Key) -> Self::Capabilities {
-                ($($r::declare(builder, private::Key),)+)
+            fn declare<B: Requirements>(builder: &mut ProgramBuilder<B>, owned: bool, _: private::Key) -> Self::Capabilities {
+                ($($r::declare(builder, owned, private::Key),)+)
             }
             fn validate(caps: &Self::Capabilities, program: &Arc<()>) -> Result<(), ProgramBuildError> {
                 $($r::validate(&caps.$i, program)?;)+ Ok(())
-            }
-            fn control(caps: &Self::Capabilities, runtime: ControlledRuntimeBuilder, _: private::Key) -> ControlledRuntimeBuilder {
-                $(let runtime = $r::control(&caps.$i, runtime, private::Key);)+ runtime
             }
         }
         impl<$($r: Capability),+> private::CapabilityValue for ($($r,)+) {}
@@ -463,13 +422,13 @@ impl<R: Requirements, C: Capability> RuntimeSupply<'_, R, C> {
 /// ```
 #[must_use = "select controlled execution with control_all"]
 pub struct ControlledRuntimeSetup<R: Requirements> {
-    pub(crate) capabilities: Capabilities<R>,
     pub(crate) builder: ControlledRuntimeBuilder,
+    pub(crate) requirements: PhantomData<fn() -> R>,
 }
 impl<R: Requirements> ControlledRuntimeSetup<R> {
     /// Controls every declared effect and source, preserving exact resource identities.
     pub fn control_all(self) -> ControlledRuntimeBuilder {
-        R::control(&self.capabilities, self.builder, private::Key)
+        self.builder.control_declared()
     }
 }
 impl ControlledRuntimeSetup<()> {
@@ -483,9 +442,12 @@ impl ControlledRuntimeSetup<()> {
 pub struct MissingCapabilities;
 /// Registration has received its declared capability tuple.
 pub struct SuppliedCapabilities<T>(T);
-/// A Component registration, finalized only after its dependencies are supplied.
+/// A Component registration.
 ///
-/// ```compile_fail
+/// A bare `finish()` gives the Component its own capabilities and returns a
+/// handle the host reads them from when it supplies Drivers (ADR-0028):
+///
+/// ```
 /// use samara::prelude::*;
 /// struct Clock;
 /// impl Component for Clock {
@@ -494,9 +456,16 @@ pub struct SuppliedCapabilities<T>(T);
 ///     fn init(_: &(), _: &Capabilities<Self::Requires>) -> Init<(), ()> { Init::default() }
 ///     fn update(_: &(), _: &Capabilities<Self::Requires>, _: &mut (), _: ()) -> Command<()> { Command::none() }
 /// }
-/// let (mut program, _) = Program::builder::<(Effect<ReadSystemTime>,)>();
-/// program.component::<Clock>(()).finish();
+/// let mut program = ProgramBuilder::new();
+/// let clock = program.component::<Clock>(()).finish()?;
+/// let runtime = Runtime::builder(program.build()?)
+///     .with(clock.capabilities())
+///     .supplied_by((SystemClockDriver,))
+///     .build()?;
+/// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
+///
+/// Capabilities of the wrong shape are rejected:
 ///
 /// ```compile_fail
 /// use samara::prelude::*;
@@ -510,7 +479,7 @@ pub struct SuppliedCapabilities<T>(T);
 /// let (mut program, http) = Program::builder::<(Effect<HttpRequest>,)>();
 /// program.component::<Clock>(()).with(&http);
 /// ```
-#[must_use = "finish component registration with .with(&capabilities).finish()"]
+#[must_use = "finish component registration with .finish()"]
 pub struct ComponentRegistration<'a, R: Requirements, C: Component, State = MissingCapabilities> {
     program: &'a mut ProgramBuilder<R>,
     name: Option<Arc<str>>,
@@ -550,10 +519,114 @@ impl<R: Requirements, C: Component, State> ComponentRegistration<'_, R, C, State
         self
     }
 }
-impl<R: Requirements, C: Component<Requires = ()>> ComponentRegistration<'_, R, C> {
-    /// Registers a Component with no world capabilities.
-    pub fn finish(self) -> Result<ComponentRef<C>, ProgramBuildError> {
-        self.with(&()).finish()
+impl<R: Requirements, C: Component> ComponentRegistration<'_, R, C>
+where
+    C::Requires: Owned<C>,
+{
+    /// Gives the Component its own capabilities and registers it.
+    ///
+    /// Returns an [`InstalledComponent`], whose `capabilities()` the host
+    /// names when it supplies Drivers. A Component that requires nothing
+    /// returns its plain [`ComponentRef`].
+    pub fn finish(self) -> Result<<C::Requires as Owned<C>>::Installed, ProgramBuildError> {
+        let capabilities = mint::<C::Requires, R>(self.program);
+        let reference = self
+            .program
+            .register::<C>(self.name, self.config, capabilities.clone())?;
+        Ok(<C::Requires as Owned<C>>::installed(
+            reference,
+            capabilities,
+            private::Key,
+        ))
+    }
+}
+
+/// Decides what registering a Component returns: its plain [`ComponentRef`]
+/// when it requires nothing, an [`InstalledComponent`] otherwise. Sealed.
+pub trait Owned<C: Component<Requires = Self>>: Requirements {
+    /// The handle a bare `finish()` returns.
+    type Installed;
+    #[doc(hidden)]
+    fn installed(
+        reference: ComponentRef<C>,
+        capabilities: Capabilities<Self>,
+        key: private::Key,
+    ) -> Self::Installed;
+}
+impl<C: Component<Requires = ()>> Owned<C> for () {
+    type Installed = ComponentRef<C>;
+    fn installed(reference: ComponentRef<C>, _: (), _: private::Key) -> ComponentRef<C> {
+        reference
+    }
+}
+macro_rules! owned {
+    ($(#[$meta:meta])* [$($generics:tt)*] $requirement:ty) => {
+        $(#[$meta])*
+        impl<C: Component<Requires = $requirement>, $($generics)*> Owned<C> for $requirement {
+            type Installed = InstalledComponent<C>;
+            fn installed(
+                reference: ComponentRef<C>,
+                capabilities: Capabilities<Self>,
+                _: private::Key,
+            ) -> InstalledComponent<C> {
+                InstalledComponent {
+                    reference,
+                    capabilities,
+                }
+            }
+        }
+    };
+}
+owned!([D: EffectDescriptor] Effect<D>);
+owned!([S: SourceDescriptor] Source<S>);
+owned!(#[cfg(feature = "fs")] [P: FilePermissions] File<P>);
+owned!([R1: Requirements] (R1,));
+owned!([R1: Requirements, R2: Requirements] (R1, R2));
+owned!([R1: Requirements, R2: Requirements, R3: Requirements] (R1, R2, R3));
+owned!([R1: Requirements, R2: Requirements, R3: Requirements, R4: Requirements] (R1, R2, R3, R4));
+owned!([R1: Requirements, R2: Requirements, R3: Requirements, R4: Requirements, R5: Requirements] (R1, R2, R3, R4, R5));
+owned!([R1: Requirements, R2: Requirements, R3: Requirements, R4: Requirements, R5: Requirements, R6: Requirements] (R1, R2, R3, R4, R5, R6));
+owned!([R1: Requirements, R2: Requirements, R3: Requirements, R4: Requirements, R5: Requirements, R6: Requirements, R7: Requirements] (R1, R2, R3, R4, R5, R6, R7));
+owned!([R1: Requirements, R2: Requirements, R3: Requirements, R4: Requirements, R5: Requirements, R6: Requirements, R7: Requirements, R8: Requirements] (R1, R2, R3, R4, R5, R6, R7, R8));
+
+/// A registered Component together with the capabilities created for it.
+///
+/// The host reads [`Self::capabilities`] to supply Drivers. Everything a
+/// [`ComponentRef`] offers is available through this handle, and it is an
+/// address in its own right. Hand other Components the `ComponentRef` or a
+/// Connector, never the capabilities.
+pub struct InstalledComponent<C: Component> {
+    reference: ComponentRef<C>,
+    capabilities: Capabilities<C::Requires>,
+}
+impl<C: Component> InstalledComponent<C> {
+    /// The capabilities created for this Component, for
+    /// [`RuntimeSetup::with`].
+    pub fn capabilities(&self) -> &Capabilities<C::Requires> {
+        &self.capabilities
+    }
+    /// The Component's address.
+    pub fn reference(&self) -> &ComponentRef<C> {
+        &self.reference
+    }
+}
+impl<C: Component> std::ops::Deref for InstalledComponent<C> {
+    type Target = ComponentRef<C>;
+    fn deref(&self) -> &ComponentRef<C> {
+        &self.reference
+    }
+}
+impl<C: Component> Addressable for InstalledComponent<C> {
+    type Message = C::Message;
+    fn to_address(&self) -> Address<C::Message> {
+        self.reference.to_address()
+    }
+}
+impl<C: Component> fmt::Debug for InstalledComponent<C> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("InstalledComponent")
+            .field("component", &std::any::type_name::<C>())
+            .finish_non_exhaustive()
     }
 }
 impl<R: Requirements, C: Component>
@@ -585,11 +658,17 @@ pub trait Assembly {
 /// An installed Assembly's exports. Runtime obligations remain in the Program.
 pub struct InstalledAssembly<A: Assembly> {
     exports: A::Exports,
+    capabilities: Capabilities<A::Requires>,
 }
 impl<A: Assembly> InstalledAssembly<A> {
     /// What the Assembly exported.
     pub fn exports(&self) -> &A::Exports {
         &self.exports
+    }
+    /// The capabilities this installation was given, for
+    /// [`RuntimeSetup::with`].
+    pub fn capabilities(&self) -> &Capabilities<A::Requires> {
+        &self.capabilities
     }
 }
 impl<A, M> InstalledAssembly<A>
@@ -647,7 +726,7 @@ impl<A: Assembly> fmt::Debug for InstalledAssembly<A> {
     }
 }
 /// A staged Assembly installation.
-#[must_use = "finish Assembly installation with .with(&capabilities).finish()"]
+#[must_use = "finish Assembly installation with .finish()"]
 pub struct AssemblyRegistration<'a, R: Requirements, A: Assembly, State = MissingCapabilities> {
     program: &'a mut ProgramBuilder<R>,
     config: A::Config,
@@ -676,10 +755,12 @@ impl<'a, R: Requirements, A: Assembly> AssemblyRegistration<'a, R, A> {
         }
     }
 }
-impl<R: Requirements, A: Assembly<Requires = ()>> AssemblyRegistration<'_, R, A> {
-    /// Installs an Assembly requiring no world capabilities.
+impl<R: Requirements, A: Assembly> AssemblyRegistration<'_, R, A> {
+    /// Gives the Assembly its own capabilities and installs it. The host
+    /// reads them back from [`InstalledAssembly::capabilities`] (ADR-0028).
     pub fn finish(self) -> Result<InstalledAssembly<A>, ProgramBuildError> {
-        self.with(&()).finish()
+        let capabilities = mint::<A::Requires, R>(self.program);
+        self.with(&capabilities).finish()
     }
 }
 impl<R: Requirements, A: Assembly>
@@ -688,8 +769,12 @@ impl<R: Requirements, A: Assembly>
     /// Validates provenance and installs the Assembly. Discard the ProgramBuilder on failure.
     pub fn finish(self) -> Result<InstalledAssembly<A>, ProgramBuildError> {
         A::Requires::validate(&self.state.0, &self.program.program)?;
+        let capabilities = self.state.0.clone();
         let exports = A::install(self.program, self.config, self.state.0)?;
-        Ok(InstalledAssembly { exports })
+        Ok(InstalledAssembly {
+            exports,
+            capabilities,
+        })
     }
 }
 /// Optional default live implementations for a library Assembly.

@@ -1010,7 +1010,6 @@ impl LiveBindings {
         }));
     }
 
-    #[cfg(feature = "fs")]
     pub(crate) fn bind_exact_effect<D: EffectDescriptor, Driver: EffectDriver<D>>(
         &mut self,
         capability: &CapabilityToken,

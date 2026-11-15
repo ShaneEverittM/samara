@@ -138,11 +138,11 @@ pub mod prelude {
         Effect, EffectBuilder, EffectCapability, EffectDescriptor, EffectDriver, EffectInvocation,
         EffectOutcome, EffectOutcomeKind, Framed, FramedError, FramedLayer, HttpDriver, HttpError,
         HttpErrorKind, HttpJsonError, HttpRequest, HttpResponse, HttpResponseError,
-        HttpStatusError, Init, InstalledAssembly, LogicalTime, MpscReceiver, NoMessage,
-        PendingEffect, PendingWork, Port, PortHandle, PortId, PrintStderr, PrintStdout, Program,
-        ProgramBuildError, ProgramBuilder, ReadSystemTime, ReplyWith, RequestBuilder, RequestError,
-        RequestIntent, RequestOutcome, RequestOutcomeKind, Requirements, RunReport, Runtime,
-        RuntimeError, RuntimeTask, Shutdown, ShutdownReport, Source, SourceCapability,
+        HttpStatusError, Init, InstalledAssembly, InstalledComponent, LogicalTime, MpscReceiver,
+        NoMessage, PendingEffect, PendingWork, Port, PortHandle, PortId, PrintStderr, PrintStdout,
+        Program, ProgramBuildError, ProgramBuilder, ReadSystemTime, ReplyWith, RequestBuilder,
+        RequestError, RequestIntent, RequestOutcome, RequestOutcomeKind, Requirements, RunReport,
+        Runtime, RuntimeError, RuntimeTask, Shutdown, ShutdownReport, Source, SourceCapability,
         SourceDescriptor, SourceDriver, SourceEvent, SourceEventKind, SourceSink, StatusCode,
         StderrDriver, StdinError, StdinErrorKind, StdinLines, StdoutDriver, StreamDescriptor,
         Subscription, SubscriptionAction, SubscriptionId, Subscriptions, SystemClockDriver,
@@ -428,6 +428,9 @@ pub trait StreamSourceDescriptor: SourceDescriptor + stream_source_private::Seal
 pub(crate) struct CapabilityToken {
     id: u64,
     program: Arc<()>,
+    /// Created at registration for one Component (ADR-0028), so its Driver
+    /// is bound to this capability and not to the descriptor type.
+    owned: bool,
 }
 
 impl CapabilityToken {
@@ -4202,6 +4205,23 @@ impl Program {
     }
 }
 
+impl ProgramBuilder {
+    /// Starts a Program that declares nothing up front.
+    ///
+    /// Each Component and Assembly registered with a bare `finish()` is given
+    /// its own capabilities, read back from the handle `finish()` returns
+    /// (ADR-0028).
+    pub fn new() -> Self {
+        Program::builder::<()>().0
+    }
+}
+
+impl Default for ProgramBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<R: Requirements> Program<R> {
     /// The capability values this Program declared, in requirement order.
     ///
@@ -4637,6 +4657,7 @@ impl<R: Requirements> ProgramBuilder<R> {
         let token = CapabilityToken {
             id: self.next_capability,
             program: self.program.clone(),
+            owned: false,
         };
         self.next_capability += 1;
         token
@@ -4654,16 +4675,17 @@ impl<R: Requirements> ProgramBuilder<R> {
     /// let runtime = Runtime::builder(program.build()?).with(&http).supplied_by(samara::HttpDriver::new()).build()?;
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub(crate) fn effect<D>(&mut self) -> EffectCapability<D>
+    pub(crate) fn effect<D>(&mut self, owned: bool) -> EffectCapability<D>
     where
         D: EffectDescriptor,
     {
-        let token = self.next_capability();
+        let mut token = self.next_capability();
+        token.owned = owned;
         self.effect_requirements.push(EffectRequirement {
             token: token.clone(),
             descriptor_type: TypeId::of::<D>(),
             descriptor_type_name: std::any::type_name::<D>(),
-            exact: false,
+            exact: owned,
         });
         EffectCapability {
             token,
@@ -5793,13 +5815,12 @@ pub struct ControlledRuntime {
 impl ControlledRuntime {
     /// Starts configuring a test runtime for this Program. See [`ControlledRuntime`].
     pub fn builder<R: Requirements>(program: Program<R>) -> ControlledRuntimeSetup<R> {
-        let capabilities = program.requirements.clone();
         ControlledRuntimeSetup {
-            capabilities,
             builder: ControlledRuntimeBuilder {
                 program: program.erase(),
                 bindings: controlled_runtime::ControlledBindings::new(),
             },
+            requirements: PhantomData,
         }
     }
 
@@ -6033,6 +6054,28 @@ impl ControlledRuntimeBuilder {
         stream: &SourceCapability<S>,
     ) -> Self {
         self.bindings.exact_sources.push(stream.token.clone());
+        self
+    }
+
+    /// Controls every effect and source the Program declared, whether up
+    /// front or at registration, keeping exact resource identities.
+    pub(crate) fn control_declared(mut self) -> Self {
+        for requirement in &self.program.effect_requirements {
+            if requirement.exact {
+                self.bindings
+                    .exact_effects
+                    .push((requirement.token.clone(), requirement.descriptor_type));
+            } else {
+                self.bindings.effects.insert(requirement.descriptor_type);
+            }
+        }
+        for requirement in &self.program.source_requirements {
+            if requirement.terminal_stream_item_type.is_some() {
+                self.bindings.exact_sources.push(requirement.token.clone());
+            } else {
+                self.bindings.sources.insert(requirement.terminal_type);
+            }
+        }
         self
     }
 
