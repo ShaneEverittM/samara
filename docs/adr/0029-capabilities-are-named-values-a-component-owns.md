@@ -94,7 +94,7 @@ removed with sharing.
 
 ```rust,ignore
 let mut builder = Program::builder();
-let journal = builder.install::<Journal>(());
+let journal = builder.assembly::<Journal>(());
 let monitor = builder.component::<Monitor>(journal.connector());
 
 Runtime::builder(builder.build()?)

@@ -242,7 +242,7 @@ whose public `io` field holds them
 
 ```rust,ignore
 let mut builder = Program::builder();
-let journal = builder.install::<Journal>(());
+let journal = builder.assembly::<Journal>(());
 let monitor = builder
     .component::<Monitor>(journal.connector());
 let program = builder.build()?;
@@ -939,7 +939,7 @@ impl Assembly for Journal {
 | Assembly world dependencies | `Assembly::Io` | Returned by `install` from its members' `io` |
 | Live Drivers | `supply(&capability, driver)` on `Runtime::builder(program)` | The host |
 
-`program.install::<A>(config)` returns `InstalledAssembly<A>`
+`program.assembly::<A>(config)` returns `InstalledAssembly<A>`
 holding the exports and a public `io` field. `install` receives no
 capabilities. The Program records every capability, so `build()` on the live
 setup can check that each one was supplied a Driver; controlled execution

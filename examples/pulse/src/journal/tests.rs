@@ -85,7 +85,7 @@ fn program() -> (
     JournalIo,
 ) {
     let mut builder = Program::builder();
-    let journal = builder.install::<Journal>(());
+    let journal = builder.assembly::<Journal>(());
     let port = builder.port::<JournalMessage>(PortId::new("journal"));
     builder.connect(&port, &journal.connector());
     let client = builder.component::<JournalClient>(journal.connector());

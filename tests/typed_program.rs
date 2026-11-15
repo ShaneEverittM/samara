@@ -181,8 +181,8 @@ impl Assembly for Library {
 fn repeated_assembly_installations_need_no_component_name_coordination() {
     let mut program = Program::builder();
     let count = Arc::new(AtomicUsize::new(0));
-    let first = program.install::<Library>(count.clone());
-    let second = program.install::<Library>(count.clone());
+    let first = program.assembly::<Library>(count.clone());
+    let second = program.assembly::<Library>(count.clone());
     assert_eq!(first.exports().id().name(), second.exports().id().name());
     assert_ne!(first.exports().id(), second.exports().id());
     assert_eq!(count.load(Ordering::SeqCst), 2);
@@ -195,7 +195,7 @@ fn assembly_carries_a_subset_of_the_programs_capabilities() {
     // Another Component's capability, outside the Assembly.
     program.component::<Holds<Source<StreamDescriptor<u64>>>>(());
     let count = Arc::new(AtomicUsize::new(0));
-    let installed = program.install::<Library>(count.clone());
+    let installed = program.assembly::<Library>(count.clone());
     assert_eq!(count.load(Ordering::SeqCst), 1);
     let _: &(Effect<Read>,) = &installed.io;
     let reader = installed.exports().clone();

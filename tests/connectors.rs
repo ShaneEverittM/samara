@@ -170,7 +170,7 @@ fn couple(message: AuditMessage) -> JournalMessage {
 fn assemble() -> (Program, InstalledAssembly<Journal>, ComponentRef<Monitor>) {
     let mut program = Program::builder();
     let audit = program.port::<AuditMessage>(PortId::new("audit"));
-    let journal = program.install::<Journal>(());
+    let journal = program.assembly::<Journal>(());
     program.connect(&audit, &journal.connector().accepting(couple));
     let monitor = program
         .component_builder::<Monitor>()
@@ -210,7 +210,7 @@ fn an_application_port_reaches_a_library_connector_through_one_coupling() {
 #[test]
 fn connectors_are_inert_addresses_that_remember_only_what_they_accept() {
     let mut program = Program::builder();
-    let journal = program.install::<Journal>(());
+    let journal = program.assembly::<Journal>(());
     let connector: Connector<JournalMessage> = journal.connector();
     assert_eq!(connector.id().name(), "journal");
     let shown = format!("{connector:?}");
@@ -231,7 +231,7 @@ fn connectors_are_inert_addresses_that_remember_only_what_they_accept() {
 #[test]
 fn a_connector_from_another_program_is_rejected_at_build() {
     let mut other = Program::builder();
-    let foreign = other.install::<Journal>(());
+    let foreign = other.assembly::<Journal>(());
 
     let mut program = Program::builder();
     let audit = program.port::<AuditMessage>(PortId::new("audit"));
@@ -394,7 +394,7 @@ fn assemble_tally(
     patience: Option<Duration>,
 ) -> (Program, InstalledAssembly<Tally>, ComponentRef<Teller>) {
     let mut program = Program::builder();
-    let tally = program.install::<Tally>(());
+    let tally = program.assembly::<Tally>(());
     let teller = program
         .component_builder::<Teller>()
         .name("teller")
@@ -525,7 +525,7 @@ impl Component for DirectMonitor {
 #[test]
 fn a_connector_is_adapted_to_the_holders_vocabulary_once_with_accepting() {
     let mut program = Program::builder();
-    let journal = program.install::<Journal>(());
+    let journal = program.assembly::<Journal>(());
     // Elm 0.16's `Signal.forwardTo`: the library's connector, speaking our language.
     let audit: Connector<AuditMessage> = journal.connector().accepting(couple);
     let shown = format!("{audit:?}");
@@ -587,7 +587,7 @@ impl Component for EagerTeller {
 fn an_initial_request_to_a_foreign_connector_fails_both_profile_builds() {
     fn program() -> Program {
         let mut other = Program::builder();
-        let foreign = other.install::<Tally>(());
+        let foreign = other.assembly::<Tally>(());
         let mut program = Program::builder();
         program
             .component_builder::<EagerTeller>()
@@ -618,7 +618,7 @@ fn an_initial_request_to_a_foreign_connector_fails_both_profile_builds() {
 #[test]
 fn a_connector_request_is_inspectable_without_a_runtime() {
     let mut program = Program::builder();
-    let tally = program.install::<Tally>(());
+    let tally = program.assembly::<Tally>(());
     let command: Command<TellerMessage> =
         Command::request(&tally.connector(), TallyMessage::total).producing(TellerMessage::Total);
     // The message is built with an inert reply token; the continuation runs on
@@ -640,7 +640,7 @@ fn a_one_door_assembly_is_itself_an_address() {
         std::any::type_name::<T::Message>()
     }
     let mut program = Program::builder();
-    let tally = program.install::<tally_lib::Tally>(());
+    let tally = program.assembly::<tally_lib::Tally>(());
     assert_eq!(message_type_of(&tally), message_type_of(&tally.connector()));
     assert_eq!(tally.connector().id(), tally.exports().id());
 }

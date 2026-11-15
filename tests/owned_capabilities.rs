@@ -155,8 +155,8 @@ impl Assembly for Tagging {
 #[tokio::test]
 async fn an_installed_assembly_carries_its_capabilities_for_the_host() {
     let mut builder = Program::builder();
-    let left = builder.install::<Tagging>("left");
-    let right = builder.install::<Tagging>("right");
+    let left = builder.assembly::<Tagging>("left");
+    let right = builder.assembly::<Tagging>("right");
 
     let seen = Seen::default();
     let runtime = Runtime::builder(builder.build().unwrap())
@@ -229,7 +229,7 @@ fn a_program_lists_every_capability_it_declared_and_who_owns_it() {
         .name("first")
         .register("first");
     builder.component::<Quiet>(());
-    builder.install::<Tagging>("left");
+    builder.assembly::<Tagging>("left");
     let manifest = builder.build().unwrap().manifest();
 
     let owners: Vec<_> = manifest

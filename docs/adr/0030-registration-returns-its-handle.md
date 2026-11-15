@@ -10,7 +10,7 @@
   [ADR-0029](0029-capabilities-are-named-values-a-component-owns.md) (the
   registration and `install` signatures)
 - Scope: `ProgramBuilder::component`, `ProgramBuilder::component_builder`,
-  `ProgramBuilder::install`, `Assembly::install`,
+  `ProgramBuilder::assembly` (formerly `install`), `Assembly::install`,
   `InstalledAssembly::connector`
 
 ## Context
@@ -38,7 +38,7 @@ a reference.
 ## Decision
 
 ```rust,ignore
-let journal = builder.install::<Journal>(());
+let journal = builder.assembly::<Journal>(());
 let monitor = builder.component::<Monitor>(journal.connector());
 
 // When the host wants to say more about an instance:
@@ -50,7 +50,12 @@ let probe = builder.component_builder::<Probe>().name("probe").register(config);
   options. Today the only option is the diagnostic `.name(..)`; it ends with
   `.register(config)`. This is the split `tokio::spawn` and
   `tokio::task::Builder` make: one operation at two levels of detail.
-- `install::<A>(config)` installs and returns `InstalledAssembly<A>`.
+- `assembly::<A>(config)` installs and returns `InstalledAssembly<A>`. The
+  builder method is renamed from `install` so that the methods that create
+  something and return its handle are all nouns (`port`, `component`,
+  `assembly`) and the methods that act on what exists are verbs (`connect`,
+  `build`). `Assembly::install`, the function an author implements, keeps
+  its verb.
 - `Assembly::install` returns `(Exports, Io)`, not a `Result`.
 - `InstalledAssembly::connector()` returns an owned `Connector`, as
   `ComponentRef::connector()` does.
@@ -73,6 +78,10 @@ let probe = builder.component_builder::<Probe>().name("probe").register(config);
   Only helps when the Connector is the whole config, hides a conversion, and
   turns a wrong argument into a trait-bound error.
 - **A builder for Assemblies.** It would have no options yet.
+- **A verb pair, `register::<C>` and `install::<A>`.** Matches the prose
+  ("register a Component", "install an Assembly") but `register::<Monitor>`
+  does not say what kind of thing it registers, and it renames the far more
+  common call.
 
 ## Consequences
 

@@ -703,7 +703,7 @@ as amended by [ADR-0018](adr/0018-assemblies-export-a-connector.md),
       }
   }
   ```
-- `program.install::<A>(config)` returns `InstalledAssembly<A>`
+- `program.assembly::<A>(config)` returns `InstalledAssembly<A>`
   with a public `io` field and `exports()`. When `Exports` is a
   `Connector<M>` it also exposes `connector()` and implements `Addressable`.
   It carries no separate runtime installation obligation.

@@ -522,7 +522,7 @@ impl<A: Assembly> fmt::Debug for InstalledAssembly<A> {
 }
 impl ProgramBuilder {
     /// Installs an Assembly with its settings and connections.
-    pub fn install<A: Assembly>(&mut self, config: A::Config) -> InstalledAssembly<A> {
+    pub fn assembly<A: Assembly>(&mut self, config: A::Config) -> InstalledAssembly<A> {
         let (exports, io) = A::install(self, config);
         InstalledAssembly { io, exports }
     }

@@ -167,7 +167,7 @@ impl VendorsDrivers for Recorder {
 /// The host names its own Port and connects the Assembly's Connector to it.
 fn assemble() -> (Program, InstalledAssembly<Recorder>, Port<LedgerMessage>) {
     let mut program = Program::builder();
-    let recorder = program.install::<Recorder>(());
+    let recorder = program.assembly::<Recorder>(());
     let ledger = program.port::<LedgerMessage>(PortId::new("ledger"));
     program.connect(&ledger, &recorder.exports().ledger);
     (
@@ -366,7 +366,7 @@ impl Component for Probe {
 #[test]
 fn an_assembly_with_two_doors_exports_both_as_peers() {
     let mut program = Program::builder();
-    let telemetry = program.install::<Telemetry>(());
+    let telemetry = program.assembly::<Telemetry>(());
     let doors = telemetry.exports();
     program.component::<Probe>(ProbeConfig {
         samples: doors.samples.clone(),
@@ -399,7 +399,7 @@ impl Assembly for Background {
 #[test]
 fn an_assembly_nobody_sends_to_exports_nothing() {
     let mut program = Program::builder();
-    let background = program.install::<Background>(());
+    let background = program.assembly::<Background>(());
     let () = background.exports();
     program.build().expect("program assembles");
 }

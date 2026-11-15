@@ -203,7 +203,7 @@ The following evidence must pass before the Phase 2 audit:
   fail `build`.
 - `tests/assemblies.rs` validates `Assembly`, `Capabilities`, `Drivers`,
   `VendorsDrivers`, and `InstalledAssembly` (ADR-0013, ADR-0026, ADR-0029):
-  `ProgramBuilder::install(...)` returns the
+  `ProgramBuilder::assembly(...)` returns the
   Assembly's exports: a struct carrying a Connector and a `ComponentRef`,
   two peer doors onto two Components, or `()`. The host names its own Port and connects
   the Connector to it. `supply(&installed.io, drivers)` supplies a matching
