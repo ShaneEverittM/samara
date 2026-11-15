@@ -185,6 +185,22 @@ a journal Component; exploratory proposals, not accepted API decisions.
   typed decode failure beside `FsError` would make the correct handling the
   easy one. Found November 2026 reviewing the merged journal.
 
+- [ ] **Capability identity within one Component (decide before naming
+  capabilities).** ADR-0028 gives each Component its own capabilities, so
+  two Components can no longer be confused with each other. Inside one
+  Component, two capabilities of the same type are still told apart only by
+  tuple position: `(File<ReadAppend>, File<ReadAppend>)` accepts its two
+  `FileDriver`s in either order, and a destructure can name them backwards.
+  Three carriers for identity are on the table: position (today), a type
+  (an optional tag parameter such as `File<ReadAppend, JournalFile>`, which
+  makes a swapped driver tuple a compile error and keeps tuples and
+  whole-Component driver supply), or a name (a capabilities struct with
+  named fields, hand-written or through `#[derive(Capabilities)]`, supplied
+  field by field or through a generated drivers struct). Raised November
+  15, 2026. The choice decides whether named capability structs and a
+  derive crate are needed at all, so it comes before both. It also bears on
+  the ADR-0028 cut-over, which replaces `Requires`.
+
 - [ ] **Finish ADR-0028 (a capability belongs to one Component).**
   Decided November 15, 2026: registration creates capabilities, nothing is
   shared, the installed handle carries them for the host, and plain effects
