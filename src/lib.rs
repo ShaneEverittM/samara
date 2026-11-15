@@ -5447,6 +5447,39 @@ impl Runtime {
             completion: None,
         }
     }
+
+    /// Runs the program until `signal` completes, then drains it.
+    ///
+    /// Starts the program, waits for `signal` (its output is ignored), then
+    /// performs [`Shutdown::Drain`] and returns the report. If the program
+    /// faults first, returns that error without waiting for the signal.
+    ///
+    /// ```no_run
+    /// # use samara::prelude::*;
+    /// # async fn host(runtime: Runtime) -> Result<(), Box<dyn std::error::Error>> {
+    /// runtime.run_until(tokio::signal::ctrl_c()).await?;
+    /// # Ok(()) }
+    /// ```
+    ///
+    /// Drain has no deadline: it waits for in-flight effects and for timers
+    /// that keep re-arming. A host that needs a grace period, or senders
+    /// obtained after start, uses [`Self::spawn`] and the [`RuntimeTask`] it
+    /// returns instead. Obtain [`Self::handle`] and [`Self::port_handle`]
+    /// senders before calling this.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called outside a Tokio runtime.
+    pub async fn run_until<Signal: Future>(
+        self,
+        signal: Signal,
+    ) -> Result<ShutdownReport, RuntimeError> {
+        let mut task = self.spawn();
+        tokio::select! {
+            result = task.run_forever() => result,
+            _ = signal => task.shutdown(Shutdown::Drain).await,
+        }
+    }
 }
 
 impl RuntimeBuilder {

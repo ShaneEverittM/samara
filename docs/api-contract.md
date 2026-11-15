@@ -321,6 +321,11 @@ covers both execution profiles.
 [ADR-0007](adr/0007-live-host-lifecycle.md) adds one terminal observation
 method to the existing structured owner:
 
+- `Runtime::run_until(signal)` spawns, then returns when either the runtime
+  terminates on its own (a fault is returned without waiting for the signal)
+  or `signal` completes, in which case it performs `Shutdown::Drain` and
+  returns that result. It is a composition of the operations below and adds
+  no deadline.
 - `RuntimeTask::run_forever(&mut self)` waits for owner termination and returns
   its `ShutdownReport` or preserved `RuntimeError` after structured cleanup.
 - It initiates no shutdown, closes no ingress, and chooses neither Drain nor
@@ -676,8 +681,8 @@ as amended by [ADR-0018](adr/0018-assemblies-export-a-connector.md),
 [ADR-0029](adr/0029-capabilities-are-named-values-a-component-owns.md):
 
 - `Assembly` has `Config`, `Exports`, and `Io`.
-  `install(&mut ProgramBuilder, Config)` returns
-  `Result<(Exports, Io), ProgramBuildError>`. It registers Components, each of
+  `install(&mut ProgramBuilder, Config)` returns `(Exports, Io)`
+  ([ADR-0030](adr/0030-registration-returns-its-handle.md)). It registers Components, each of
   which is given its own capabilities, and returns the capabilities the host
   must supply Drivers for. It receives no capabilities and declares no Ports
   or Drivers. `Io` has no trait bound: it is one member's `Io`, a struct of
@@ -715,9 +720,10 @@ as amended by [ADR-0018](adr/0018-assemblies-export-a-connector.md),
 
   Calls may come in any order. `supply` takes one capability or a tuple of
   them with a matching tuple of Drivers. A Driver of the wrong type does not
-  compile. A capability with no Driver or with two fails `build()` with an
-  error naming its owner, its field, and its descriptor type; a Driver
-  supplied for a capability from another Program also fails `build()`.
+  compile. A capability with no Driver fails `build()` with an error naming
+  its owner, its field, and its descriptor type. A capability supplied two
+  Drivers, or a Driver supplied for a capability from another Program, fails
+  `build()` with an error naming the descriptor type.
   Controlled setup uses `ControlledRuntime::builder(program).build()?`;
   `control_all().build()` does the same thing.
 - `VendorsDrivers::supply(setup, io, driver_config) -> RuntimeSetup` supplies

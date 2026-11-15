@@ -76,26 +76,6 @@ fn exact_bindings_reject_duplicates_foreign_tokens_and_undeclared_operations() {
 }
 
 #[test]
-#[ignore = "ADR-0028: live type-wide bindings are gone and file operations are no longer a separate exact-only class of requirement"]
-fn type_wide_bindings_cannot_supply_or_override_a_file_resource() {
-    let (program, file) = program_owning::<File<ReadOnly>>();
-    for exact_position in [None, Some(0), Some(1)] {
-        let mut live = LiveBindings::new();
-        let mut controlled = ControlledBindings::new();
-        if exact_position == Some(0) {
-            bind::<FileRead>(&mut live, &mut controlled, &file.token);
-        }
-        live.bind_effect::<FileRead, _>(&file.token, FileDriver::new("wrong.log"));
-        controlled.effects.insert(TypeId::of::<FileRead>());
-        if exact_position == Some(1) {
-            bind::<FileRead>(&mut live, &mut controlled, &file.token);
-        }
-        assert!(live.validate(&program).is_err(), "{exact_position:?}");
-        assert!(controlled.validate(&program).is_err(), "{exact_position:?}");
-    }
-}
-
-#[test]
 fn distinct_permission_sets_bind_only_their_declared_operations() {
     let (program, (read, append)) = program_owning::<(File<ReadOnly>, File<AppendOnly>)>();
     let mut live = LiveBindings::new();

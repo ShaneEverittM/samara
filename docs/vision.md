@@ -99,7 +99,7 @@ The Rust type and `impl Component` form the Component implementation. A particul
 immutable value of that type is its Component configuration and may contain logical
 wiring such as Ports and declarative descriptor configuration. Capabilities are not part
 of it: a Component names them as its `Io`, and the runtime passes that value alongside
-the configuration. Receiving `&self` signals observational
+the configuration. Receiving both by shared reference signals observational
 immutability; because Rust permits interior mutability, conformance still requires that
 behaviorally relevant mutable state belong in the Model.
 

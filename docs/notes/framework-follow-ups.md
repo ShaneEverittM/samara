@@ -265,7 +265,8 @@ a journal Component; exploratory proposals, not accepted API decisions.
 
 - [ ] **Follow-ups named by ADR-0029.** Left out of the cut-over or
   recorded in its Consequences:
-  - `run_until(signal)` in place of spawn, await, and drain.
+  - `run_until(signal)` in place of spawn, await, and drain: done; see the
+    extension note on ADR-0007.
   - Registering a Component by value when its `Config` is itself.
   - Registration that does not return a `Result`: done, ADR-0030, which
     also removes `finish()` and adds `component_builder` for names.

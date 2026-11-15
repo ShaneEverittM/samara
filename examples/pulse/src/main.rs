@@ -1,6 +1,6 @@
 use samara::{
     Capabilities, Command, Component, Connector, Effect, FileDriver, Init, PrintStdout, Program,
-    RequestOutcome, Runtime, Shutdown, Source, SourceEvent, StdinDriver, StdinLines, StdoutDriver,
+    RequestOutcome, Runtime, Source, SourceEvent, StdinDriver, StdinLines, StdoutDriver,
     Subscription, Subscriptions, SystemClockDriver,
 };
 
@@ -102,10 +102,8 @@ async fn main() -> anyhow::Result<()> {
         .supply(&monitor.io.output, StdoutDriver::new())
         .build()?;
 
-    // Run it!
-    let task = runtime.spawn();
-    tokio::signal::ctrl_c().await?;
-    task.shutdown(Shutdown::Drain).await?;
+    // Run it until Ctrl-C, then let every Component finish.
+    runtime.run_until(tokio::signal::ctrl_c()).await?;
 
     Ok(())
 }

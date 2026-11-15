@@ -210,3 +210,67 @@ async fn shutdown_grace_period_escalates_recurring_timer_and_joins() {
     assert_eq!(report.pending_now, 0);
     assert_eq!(report.pending_later, 0);
 }
+
+/// Counts how many Components were told to stop.
+struct Stopping;
+impl Component for Stopping {
+    type Io = ();
+    type Config = std::sync::Arc<std::sync::atomic::AtomicUsize>;
+    type Model = ();
+    type Message = ();
+
+    fn init(_: &Self::Config, _: &()) -> Init<(), ()> {
+        Init::new(())
+    }
+
+    fn update(_: &Self::Config, _: &(), (): &mut (), (): ()) -> Command<()> {
+        Command::none()
+    }
+
+    fn shutdown(stopped: &Self::Config, _: &(), (): ()) -> Command<NoMessage> {
+        stopped.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Command::none()
+    }
+}
+
+#[tokio::test]
+async fn run_until_drains_when_the_signal_completes() {
+    let stopped = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut program = Program::builder();
+    program.component::<Stopping>(stopped.clone());
+    let runtime = Runtime::builder(program.build().unwrap()).build().unwrap();
+
+    let (signal, wait) = tokio::sync::oneshot::channel::<()>();
+    let run = tokio::spawn(runtime.run_until(wait));
+    tokio::task::yield_now().await;
+    assert!(!run.is_finished(), "a healthy program runs until signalled");
+    assert_eq!(stopped.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+    signal.send(()).unwrap();
+    let report = run.await.unwrap().expect("a clean drain");
+    assert!(report.is_clean());
+    assert_eq!(
+        stopped.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "Drain calls Component::shutdown"
+    );
+}
+
+#[tokio::test]
+async fn run_until_returns_a_fault_without_waiting_for_the_signal() {
+    let mut program = Program::builder();
+    let probe = program.component::<FaultProbe>(FaultProbeConfig {
+        effect: <Effect<DynamicallyReachedEffect>>::detached(),
+    });
+    let runtime = Runtime::builder(program.build().unwrap()).build().unwrap();
+    let handle = runtime.handle(&probe).unwrap();
+
+    let run = tokio::spawn(runtime.run_until(std::future::pending::<()>()));
+    handle.send(FaultMessage::Trigger).await.unwrap();
+    let error = tokio::time::timeout(std::time::Duration::from_secs(2), run)
+        .await
+        .expect("a fault ends run_until even though the signal never fires")
+        .unwrap()
+        .unwrap_err();
+    assert!(error.to_string().contains("another Program"));
+}

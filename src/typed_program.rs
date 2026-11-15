@@ -316,9 +316,10 @@ impl RuntimeSetup {
     /// Validates that every capability has exactly one Driver and builds the
     /// runtime.
     ///
-    /// A missing, duplicate, or foreign binding returns an error naming the
-    /// owning Component and the descriptor type, as do foreign capabilities
-    /// in startup commands and subscriptions. Call [`Runtime::spawn`] to
+    /// A missing binding returns an error naming the owning Component, the
+    /// field, and the descriptor type. A duplicate or foreign binding, and a
+    /// foreign capability in a startup command or subscription, return an
+    /// error naming the descriptor type. Call [`Runtime::spawn`] to
     /// begin work.
     pub fn build(self) -> Result<Runtime, RuntimeError> {
         self.builder.build()

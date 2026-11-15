@@ -94,21 +94,6 @@ fn each_components_own_capability_reaches_callbacks_and_delayed_effects() {
     assert!(runtime.cancel().unwrap().is_clean());
 }
 
-#[test]
-#[ignore = "ADR-0028: registration creates capabilities, so none can be handed to it and ProgramBuildError::ForeignCapability is unreachable"]
-fn foreign_registration_fails_before_init_and_leaves_no_component() {
-    // Was: `.with(&foreign).finish()` is an error and init never ran.
-    let mut program = Program::builder();
-    let count = Arc::new(AtomicUsize::new(0));
-    assert_eq!(count.load(Ordering::SeqCst), 0);
-    program
-        .component_builder::<Reader>()
-        .name("reader")
-        .register(count.clone());
-    assert_eq!(count.load(Ordering::SeqCst), 1);
-    program.build().unwrap();
-}
-
 #[tokio::test]
 async fn live_drivers_are_supplied_per_component_capability() {
     fn readers() -> (
@@ -230,16 +215,4 @@ fn assembly_carries_a_subset_of_the_programs_capabilities() {
     runtime.run_until_idle().unwrap();
     assert_eq!(runtime.state(&reader).unwrap(), &[42]);
     runtime.cancel().unwrap();
-}
-
-#[test]
-#[ignore = "ADR-0028: an Assembly's members create their own capabilities, so none can be handed to an installation"]
-fn foreign_assembly_capabilities_fail_before_installation() {
-    // Was: `.install::<Library>(..).with(&foreign).finish()` is an error and
-    // no member's init ran.
-    let mut program = Program::builder();
-    let count = Arc::new(AtomicUsize::new(0));
-    assert_eq!(count.load(Ordering::SeqCst), 0);
-    program.install::<Library>(count);
-    program.build().unwrap();
 }

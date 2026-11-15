@@ -180,8 +180,10 @@ is one member's `Io`, a struct of several, or `()`. `VendorsDrivers` becomes
   it is passed.
 - Tests whose subject was sharing, narrowing, up-front declaration, or
   rejection of a foreign capability at registration no longer have a
-  subject. Each was re-pointed at the new rule or marked ignored with the
-  reason; none was silently deleted.
+  subject. Most were re-pointed at the new rule. Six had no equivalent and
+  were removed: three about handing a foreign capability to a registration
+  or installation, two about narrowing a `File`, and one about live
+  type-wide bindings being unable to serve a file.
 - Controlled execution still controls type-wide sources per descriptor
   type, so a controlled test cannot yet address one of two same-typed
   type-wide sources separately. Effects, files, and stream sources are
@@ -195,7 +197,8 @@ is one member's `Io`, a struct of several, or `()`. `VendorsDrivers` becomes
 ## Not included
 
 Three pieces of the imagined host shape are independent of this decision
-and are left for follow-ups: `run_until(signal)` in place of spawn, await,
+and were left for follow-ups (the first and third have since landed; see
+ADR-0007's extension note and ADR-0030): `run_until(signal)` in place of spawn, await,
 and drain; registering a Component by value when its `Config` is itself;
 and registration that does not return a `Result`.
 

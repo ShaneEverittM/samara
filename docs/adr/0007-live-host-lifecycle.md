@@ -5,6 +5,13 @@
 - Decision owners: Samara maintainers
 - Extends: [ADR 0004](0004-initial-live-runtime-semantics.md)
 
+> Extension note (November 15, 2026): `Runtime::run_until(signal)` composes
+> the pieces decided here for the common host: it spawns, waits for either
+> the signal or the runtime's own completion, and on the signal performs
+> `shutdown(Shutdown::Drain)`. A runtime fault is returned without waiting
+> for the signal. It adds no semantics; a host that needs a grace period or
+> escalation still uses `spawn` and the `RuntimeTask` API below.
+
 ## Context
 
 [ADR-0010](0010-shutdown-escalation.md) extends this API with non-consuming

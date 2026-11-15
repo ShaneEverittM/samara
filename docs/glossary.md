@@ -312,9 +312,10 @@ application result.
 `Runtime::builder(program).supply(&capability, driver)`. Every capability
 needs exactly one, including plain effects and sources whose Driver handles
 a whole descriptor type; two Components that read the clock are each
-supplied a Driver. The live `build()` rejects a missing or duplicate binding
-with an error naming the owning Component, the field, and the descriptor
-type (ADR-0027, ADR-0029).
+supplied a Driver. The live `build()` rejects a missing binding with an
+error naming the owning Component, the field, and the descriptor type, and
+a duplicate binding with an error naming the descriptor type (ADR-0027,
+ADR-0029).
 
 **Type-wide source** — A source whose Driver, wrapped in `DrivenSource`, is
 written for a terminal descriptor type, not for one concrete resource. Live

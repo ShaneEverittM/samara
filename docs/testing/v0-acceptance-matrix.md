@@ -55,8 +55,8 @@ typed failure/cancellation, missing replacement bindings, and live replacement
 of an existing target. Compile-fail cases reject replacement through read-only
 or append-only views and reading through a write-only view. Under ADR-0028
 the two narrowing tests and the test that a foreign file is rejected at
-registration remain in `tests/file_capabilities.rs` marked `#[ignore]`,
-because a `File` can no longer be narrowed or handed to a registration.
+registration were removed, because a `File` can no longer be narrowed or
+handed to a registration.
 
 ADR-0021 adds `tests/identity.rs` for V4, V6, V7, V11, and V12: Component names
 are optional diagnostics, routing uses builder-issued identities, subscriptions
@@ -78,8 +78,8 @@ supplied per Component capability, two stream sources of one type stay
 distinct, an Assembly can be installed twice without coordinating Component
 names, and an installed Assembly's `io` holds only its members' capabilities
 while the Program's manifest lists all of them. Its two tests of a foreign
-capability rejected at registration or installation are marked `#[ignore]`,
-because nothing can be handed to a registration. The `pulse` example
+capability rejected at registration or installation were removed, because
+nothing can be handed to a registration. The `pulse` example
 exercises the same flow for Journal and its host with named `Io` structs.
 
 The vision states its requirements as these twelve topology-neutral scenarios.

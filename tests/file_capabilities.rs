@@ -123,35 +123,6 @@ fn write_authority_constructs_typed_replacements() {
     );
 }
 
-#[test]
-#[ignore = "ADR-0028: a File cannot be narrowed and handed to other Components; each Component owns its own File"]
-fn write_authority_narrows_to_existing_permissions() {
-    // Was the second half of
-    // `write_authority_constructs_typed_replacements_and_narrows_to_existing_permissions`:
-    // one `File<ReadWrite>` supplied a Writer through `read_append()` and a
-    // Reader through `read_only()`, and both operations were selected by the
-    // one original file. Here each Component has its own file.
-    let mut builder = Program::builder();
-    let writer = builder.component::<Writer>("append");
-    let reader = builder.component::<Reader>(());
-    let mut runtime = ControlledRuntime::builder(builder.build().unwrap())
-        .control_all()
-        .build()
-        .unwrap();
-    runtime.send(&writer, Message::Start).unwrap();
-    runtime.run_until_idle().unwrap();
-    assert!(runtime.next_file_read(&reader.io).is_ok());
-    assert_eq!(
-        runtime
-            .next_file_append(&writer.io.0)
-            .unwrap()
-            .intent
-            .as_str(),
-        Some("append\n")
-    );
-    assert!(runtime.cancel().unwrap().is_clean());
-}
-
 struct Replacer;
 impl Component for Replacer {
     type Io = File<WriteOnly>;
@@ -314,61 +285,6 @@ fn foreign_file_selector_does_not_consume_another_files_operation() {
     runtime.run_until_idle().unwrap();
     assert!(runtime.state(&components[0]).unwrap().is_empty());
     assert!(runtime.next_file_read(&files[0]).is_err());
-    assert!(runtime.cancel().unwrap().is_clean());
-}
-
-#[test]
-#[ignore = "ADR-0028: registration creates a Component's File, so a foreign one cannot be handed to it"]
-fn foreign_file_is_rejected_during_component_registration() {
-    // Was: `.with(&(foreign, report)).finish()` is an error.
-    let mut builder = Program::builder();
-    let _ = builder.component::<Writer>("foreign");
-}
-
-struct Reader;
-impl Component for Reader {
-    type Io = File<ReadOnly>;
-    type Config = ();
-    type Model = Bytes;
-    type Message = EffectOutcome<Bytes, FsError>;
-    fn init(_: &(), file: &Self::Io) -> Init<Bytes, Self::Message> {
-        Init::new(Bytes::new()).with_command(File::read(file).into_command())
-    }
-    fn update(
-        _: &(),
-        _: &Self::Io,
-        model: &mut Bytes,
-        message: Self::Message,
-    ) -> Command<Self::Message> {
-        if let EffectOutcome::Succeeded(bytes) = message {
-            *model = bytes;
-        }
-        Command::none()
-    }
-}
-
-#[test]
-#[ignore = "ADR-0028: a File cannot be narrowed to supply another Component; the Reader owns its own File<ReadOnly>"]
-fn narrowed_capability_supplies_a_read_only_component_without_another_binding() {
-    // Was: a `File<ReadAppend>` narrowed with `read_only()` supplied the
-    // Reader, and its read was selected by the original file.
-    let mut builder = Program::builder();
-    let reader = builder.component::<Reader>(());
-    let file = reader.io.clone();
-    let mut runtime = ControlledRuntime::builder(builder.build().unwrap())
-        .control_all()
-        .build()
-        .unwrap();
-    runtime.run_until_idle().unwrap();
-    let pending = runtime.next_file_read(&file).unwrap();
-    runtime
-        .complete(
-            pending,
-            EffectOutcome::Succeeded(Bytes::from_static(b"shared")),
-        )
-        .unwrap();
-    runtime.run_until_idle().unwrap();
-    assert_eq!(runtime.state(&reader).unwrap().as_ref(), b"shared");
     assert!(runtime.cancel().unwrap().is_clean());
 }
 
