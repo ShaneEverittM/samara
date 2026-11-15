@@ -54,6 +54,13 @@ supply Drivers; other Components are given the reference or a Connector,
 never the capabilities (ADR-0028). `InstalledAssembly` carries
 `capabilities()` the same way.
 
+**Capability manifest** — `Program::manifest()`: every capability a Program
+declared, in declaration order, each with its kind (effect or source), its
+descriptor type, and the Component or Assembly it was created for. A Program
+can reach the world only through declared capabilities, so the list is
+complete. Print it at startup or pin its text in a test so new world access
+shows up in review.
+
 **Requires** — A type-level shape of `Effect<D>`, `Source<S>`, `()`, or nested
 tuples. A `Program<R>` declares its full world boundary; Components and
 Assemblies use `Requires` to describe the capability values they receive.

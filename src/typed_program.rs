@@ -529,10 +529,12 @@ where
     /// names when it supplies Drivers. A Component that requires nothing
     /// returns its plain [`ComponentRef`].
     pub fn finish(self) -> Result<<C::Requires as Owned<C>>::Installed, ProgramBuildError> {
+        let mark = self.program.requirement_mark();
         let capabilities = mint::<C::Requires, R>(self.program);
         let reference = self
             .program
             .register::<C>(self.name, self.config, capabilities.clone())?;
+        self.program.claim(mark, reference.id().name());
         Ok(<C::Requires as Owned<C>>::installed(
             reference,
             capabilities,
@@ -759,7 +761,9 @@ impl<R: Requirements, A: Assembly> AssemblyRegistration<'_, R, A> {
     /// Gives the Assembly its own capabilities and installs it. The host
     /// reads them back from [`InstalledAssembly::capabilities`] (ADR-0028).
     pub fn finish(self) -> Result<InstalledAssembly<A>, ProgramBuildError> {
+        let mark = self.program.requirement_mark();
         let capabilities = mint::<A::Requires, R>(self.program);
+        self.program.claim(mark, std::any::type_name::<A>());
         self.with(&capabilities).finish()
     }
 }

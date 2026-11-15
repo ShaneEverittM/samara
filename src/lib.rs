@@ -132,22 +132,22 @@ pub mod prelude {
     #[cfg(unix)]
     pub use crate::StdinDriver;
     pub use crate::{
-        Addressable, Assembly, BoxFuture, Capabilities, Capability, Command, Component,
-        ComponentHandle, ComponentId, ComponentRef, Connector, ControlledRuntime,
-        ControlledRuntimeBuilder, Decoder, Deliverable, DrivenSource, DriverStopped, Drivers,
-        Effect, EffectBuilder, EffectCapability, EffectDescriptor, EffectDriver, EffectInvocation,
-        EffectOutcome, EffectOutcomeKind, Framed, FramedError, FramedLayer, HttpDriver, HttpError,
-        HttpErrorKind, HttpJsonError, HttpRequest, HttpResponse, HttpResponseError,
-        HttpStatusError, Init, InstalledAssembly, InstalledComponent, LogicalTime, MpscReceiver,
-        NoMessage, PendingEffect, PendingWork, Port, PortHandle, PortId, PrintStderr, PrintStdout,
-        Program, ProgramBuildError, ProgramBuilder, ReadSystemTime, ReplyWith, RequestBuilder,
-        RequestError, RequestIntent, RequestOutcome, RequestOutcomeKind, Requirements, RunReport,
-        Runtime, RuntimeError, RuntimeTask, Shutdown, ShutdownReport, Source, SourceCapability,
-        SourceDescriptor, SourceDriver, SourceEvent, SourceEventKind, SourceSink, StatusCode,
-        StderrDriver, StdinError, StdinErrorKind, StdinLines, StdoutDriver, StreamDescriptor,
-        Subscription, SubscriptionAction, SubscriptionId, Subscriptions, SystemClockDriver,
-        TcpBytes, TcpDriver, TcpError, TcpErrorKind, TraceCommandKind, TraceEvent, TraceId,
-        TraceRecord, VendorsDrivers,
+        Addressable, Assembly, BoxFuture, Capabilities, Capability, CapabilityKind,
+        CapabilityManifest, Command, Component, ComponentHandle, ComponentId, ComponentRef,
+        Connector, ControlledRuntime, ControlledRuntimeBuilder, DeclaredCapability, Decoder,
+        Deliverable, DrivenSource, DriverStopped, Drivers, Effect, EffectBuilder, EffectCapability,
+        EffectDescriptor, EffectDriver, EffectInvocation, EffectOutcome, EffectOutcomeKind, Framed,
+        FramedError, FramedLayer, HttpDriver, HttpError, HttpErrorKind, HttpJsonError, HttpRequest,
+        HttpResponse, HttpResponseError, HttpStatusError, Init, InstalledAssembly,
+        InstalledComponent, LogicalTime, MpscReceiver, NoMessage, PendingEffect, PendingWork, Port,
+        PortHandle, PortId, PrintStderr, PrintStdout, Program, ProgramBuildError, ProgramBuilder,
+        ReadSystemTime, ReplyWith, RequestBuilder, RequestError, RequestIntent, RequestOutcome,
+        RequestOutcomeKind, Requirements, RunReport, Runtime, RuntimeError, RuntimeTask, Shutdown,
+        ShutdownReport, Source, SourceCapability, SourceDescriptor, SourceDriver, SourceEvent,
+        SourceEventKind, SourceSink, StatusCode, StderrDriver, StdinError, StdinErrorKind,
+        StdinLines, StdoutDriver, StreamDescriptor, Subscription, SubscriptionAction,
+        SubscriptionId, Subscriptions, SystemClockDriver, TcpBytes, TcpDriver, TcpError,
+        TcpErrorKind, TraceCommandKind, TraceEvent, TraceId, TraceRecord, VendorsDrivers,
     };
     #[cfg(feature = "fs")]
     pub use crate::{
@@ -4222,7 +4222,96 @@ impl Default for ProgramBuilder {
     }
 }
 
+/// Whether a declared capability performs finite work or produces events.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CapabilityKind {
+    /// One finite interaction per request.
+    Effect,
+    /// Ongoing event production.
+    Source,
+}
+
+/// One way a Program can reach the world.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeclaredCapability {
+    /// The Component or Assembly it was created for, when it was created at
+    /// registration. `None` for a capability declared up front.
+    pub owner: Option<String>,
+    /// Effect or Source.
+    pub kind: CapabilityKind,
+    /// The descriptor type's name. A file appears once per permitted
+    /// operation, and a layered source by its outer descriptor.
+    pub descriptor: &'static str,
+}
+
+/// Everything a Program can do to or hear from the world, in declaration
+/// order. Obtain one from [`Program::manifest`].
+///
+/// A Program can only reach the world through capabilities it declared, so
+/// this list is complete. Print it at startup, or compare its text against a
+/// checked-in copy in a test so that new world access shows up in review.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CapabilityManifest(Vec<DeclaredCapability>);
+
+impl CapabilityManifest {
+    /// The declared capabilities, in declaration order.
+    pub fn entries(&self) -> &[DeclaredCapability] {
+        &self.0
+    }
+}
+
+impl fmt::Display for CapabilityManifest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for entry in &self.0 {
+            let kind = match entry.kind {
+                CapabilityKind::Effect => "effect",
+                CapabilityKind::Source => "source",
+            };
+            let owner = entry.owner.as_deref().unwrap_or("(declared up front)");
+            writeln!(f, "{owner}: {kind} {}", entry.descriptor)?;
+        }
+        Ok(())
+    }
+}
+
 impl<R: Requirements> Program<R> {
+    /// Lists every capability this Program declared: its complete access to
+    /// the world.
+    ///
+    /// ```
+    /// use samara::prelude::*;
+    /// let (program, _) = Program::builder::<(Effect<ReadSystemTime>,)>();
+    /// let manifest = program.build()?.manifest();
+    /// assert_eq!(manifest.entries().len(), 1);
+    /// assert!(manifest.to_string().contains("effect samara::clock::ReadSystemTime"));
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn manifest(&self) -> CapabilityManifest {
+        let effects = self.effect_requirements.iter().map(|requirement| {
+            (
+                &requirement.token,
+                DeclaredCapability {
+                    owner: requirement.owner.as_deref().map(String::from),
+                    kind: CapabilityKind::Effect,
+                    descriptor: requirement.descriptor_type_name,
+                },
+            )
+        });
+        let sources = self.source_requirements.iter().map(|requirement| {
+            (
+                &requirement.token,
+                DeclaredCapability {
+                    owner: requirement.owner.as_deref().map(String::from),
+                    kind: CapabilityKind::Source,
+                    descriptor: requirement.descriptor_type_name,
+                },
+            )
+        });
+        let mut entries: Vec<_> = effects.chain(sources).collect();
+        entries.sort_by_key(|(token, _)| token.id);
+        CapabilityManifest(entries.into_iter().map(|(_, entry)| entry).collect())
+    }
+
     /// The capability values this Program declared, in requirement order.
     ///
     /// The same values `Program::builder` returned. Useful when the code that
@@ -4244,6 +4333,7 @@ impl<R: Requirements> Program<R> {
 }
 
 pub(crate) struct EffectRequirement {
+    owner: Option<Arc<str>>,
     token: CapabilityToken,
     descriptor_type: TypeId,
     descriptor_type_name: &'static str,
@@ -4251,6 +4341,7 @@ pub(crate) struct EffectRequirement {
 }
 
 pub(crate) struct SourceRequirement {
+    owner: Option<Arc<str>>,
     token: CapabilityToken,
     descriptor_type: TypeId,
     descriptor_type_name: &'static str,
@@ -4653,6 +4744,26 @@ pub struct ProgramBuilder<R: Requirements = ()> {
 }
 
 impl<R: Requirements> ProgramBuilder<R> {
+    /// Where the requirement lists end now, so what a registration adds can
+    /// be attributed to it afterwards.
+    pub(crate) fn requirement_mark(&self) -> (usize, usize) {
+        (
+            self.effect_requirements.len(),
+            self.source_requirements.len(),
+        )
+    }
+
+    /// Records who the requirements added since `mark` were created for.
+    pub(crate) fn claim(&mut self, (effects, sources): (usize, usize), owner: &str) {
+        let owner: Arc<str> = owner.into();
+        for requirement in &mut self.effect_requirements[effects..] {
+            requirement.owner = Some(owner.clone());
+        }
+        for requirement in &mut self.source_requirements[sources..] {
+            requirement.owner = Some(owner.clone());
+        }
+    }
+
     fn next_capability(&mut self) -> CapabilityToken {
         let token = CapabilityToken {
             id: self.next_capability,
@@ -4682,6 +4793,7 @@ impl<R: Requirements> ProgramBuilder<R> {
         let mut token = self.next_capability();
         token.owned = owned;
         self.effect_requirements.push(EffectRequirement {
+            owner: None,
             token: token.clone(),
             descriptor_type: TypeId::of::<D>(),
             descriptor_type_name: std::any::type_name::<D>(),
@@ -4697,6 +4809,7 @@ impl<R: Requirements> ProgramBuilder<R> {
     #[cfg(feature = "fs")]
     fn exact_effect<D: EffectDescriptor>(&mut self, token: &CapabilityToken) {
         self.effect_requirements.push(EffectRequirement {
+            owner: None,
             token: token.clone(),
             descriptor_type: TypeId::of::<D>(),
             descriptor_type_name: std::any::type_name::<D>(),
@@ -4714,6 +4827,7 @@ impl<R: Requirements> ProgramBuilder<R> {
     {
         let token = self.next_capability();
         self.source_requirements.push(SourceRequirement {
+            owner: None,
             token: token.clone(),
             descriptor_type: TypeId::of::<S>(),
             descriptor_type_name: std::any::type_name::<S>(),

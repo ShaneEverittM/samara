@@ -185,6 +185,16 @@ a journal Component; exploratory proposals, not accepted API decisions.
   typed decode failure beside `FsError` would make the correct handling the
   easy one. Found November 2026 reviewing the merged journal.
 
+- [ ] **Capability manifest, next steps.** `Program::manifest()` landed
+  November 15, 2026 as the first piece of capability-based review: it lists
+  kind, descriptor type, and owner. It reports a file as one row per
+  permitted operation and cannot say which of two same-typed capabilities
+  is which; both improve once capabilities have names (next item). An
+  Assembly's capabilities are attributed to the Assembly, not to the member
+  that uses them, until `install` changes under ADR-0028. Descriptor names
+  come from `type_name`, which is stable in practice but not guaranteed.
+  Nothing is enforced by the manifest; sandboxing is a separate question.
+
 - [ ] **Capability identity within one Component (decide before naming
   capabilities).** ADR-0028 gives each Component its own capabilities, so
   two Components can no longer be confused with each other. Inside one

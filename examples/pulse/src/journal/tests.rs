@@ -403,3 +403,16 @@ async fn recent_reads_existing_entries_through_the_standard_driver() {
     ));
     assert!(task.shutdown(Shutdown::Drain).await.unwrap().is_clean());
 }
+
+/// The journal's whole access to the world, pinned so a new capability shows
+/// up as a failing test and a reviewed diff.
+#[test]
+fn the_journal_reaches_one_file_and_the_clock() {
+    let (program, ..) = program();
+    assert_eq!(
+        program.manifest().to_string(),
+        "pulse::journal::Journal: effect samara::file::FileRead\n\
+         pulse::journal::Journal: effect samara::file::FileAppend\n\
+         pulse::journal::Journal: effect samara::clock::ReadSystemTime\n"
+    );
+}

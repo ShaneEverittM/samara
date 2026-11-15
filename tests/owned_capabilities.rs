@@ -210,3 +210,41 @@ fn a_component_that_requires_nothing_returns_its_plain_reference() {
     let _: &ComponentRef<Asker> = asker.reference();
     assert_ne!(quiet.id(), asker.id());
 }
+
+#[test]
+fn a_program_lists_every_capability_it_declared_and_who_owns_it() {
+    let mut builder = ProgramBuilder::new();
+    builder.component::<Asker>("first").finish().unwrap();
+    builder.component::<Quiet>(()).finish().unwrap();
+    builder.install::<Tagging>("left").finish().unwrap();
+    let manifest = builder.build().unwrap().manifest();
+
+    let owners: Vec<_> = manifest
+        .entries()
+        .iter()
+        .map(|entry| (entry.owner.as_deref().unwrap(), entry.kind))
+        .collect();
+    assert_eq!(
+        owners,
+        [
+            ("owned_capabilities::Asker", CapabilityKind::Effect),
+            ("owned_capabilities::Tagging", CapabilityKind::Effect),
+        ]
+    );
+    assert_eq!(
+        manifest.to_string(),
+        "owned_capabilities::Asker: effect owned_capabilities::Tag\n\
+         owned_capabilities::Tagging: effect owned_capabilities::Tag\n"
+    );
+}
+
+#[test]
+fn a_capability_declared_up_front_has_no_owner_in_the_manifest() {
+    let (builder, _) = Program::builder::<(Effect<Tag>, Source<StdinLines>)>();
+    let manifest = builder.build().unwrap().manifest();
+    assert_eq!(
+        manifest.to_string(),
+        "(declared up front): effect owned_capabilities::Tag\n\
+         (declared up front): source samara::StdinLines\n"
+    );
+}
