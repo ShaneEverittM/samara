@@ -215,6 +215,44 @@ a journal Component; exploratory proposals, not accepted API decisions.
   - `Vec` and `Option` connections print one row per element under the
     same field name, with no index.
 
+- [ ] **Ports and Assemblies have drifted from Component registration.**
+  Noted November 16, 2026, after ADR-0031 to ADR-0033. Each needs its own
+  ADR.
+  - **Port identity.** `add_port::<M>(PortId::new("audit"))` is the last
+    place a user string is identity: bindings resolve by message type plus
+    `PortId`, and a duplicate name and type fails `build`. ADR-0021 removed
+    that for Components. Proposed: `add_port::<M>()` with builder-issued
+    identity and `configure_port::<M>().name("audit").add()` for a
+    diagnostic name. Declare-then-`connect` stays; it is what lets two
+    Components that send to each other be registered. Check `PortHandle`
+    and the traces that print `PortId` first.
+  - **Assembly shape.** `Assembly::Config` still mixes settings and
+    connections, and there is no `configure_assembly`, so an Assembly has
+    no name and no builder form. Proposed: `type Connections`,
+    `type Configuration`, `install(program, to, config)`,
+    `add_assembly::<A>(connections)`, and
+    `configure_assembly::<A>().name(..).config(..).add(connections)`, so
+    host code does not change when a Component grows into an Assembly. The
+    name scopes members' diagnostic names (`journal/Recorder`), which also
+    fixes two installations of one Assembly printing identical manifest
+    rows. Open: what a nested or unnamed Assembly prints, and whether
+    `Assembly::Connections` needs the `Connections` bound (members already
+    declare what they are handed).
+  - **`install` fetches `io` only to return it.** Irreducible in general:
+    the host needs a typed, named value, and collecting a scope's
+    capabilities automatically yields only an untyped list. With several
+    members the return is where the Assembly chooses the names the host
+    sees. With one member it is passthrough; a helper such as
+    `add_component::<Recorder>(()).exporting(Message::Journal)` returning
+    `(Connector<M>, C::Io)` would remove it. Decide with the Assembly
+    redesign, since a scoped builder for `install` may change the natural
+    return.
+  - **One connection, bare or named.** Decided in discussion, not an ADR:
+    a bare `Connector` as the whole `Connections` is fine (`cx.to` is
+    named by the message sent through it, and the manifest row carries
+    owner, message, and target). A derived struct is for several. No
+    `From`/`impl Into` on `add`.
+
 - [ ] **Default Drivers, next steps.** `supply_default(&capability)` landed
   November 15, 2026 for the first-party descriptors with an obvious Driver.
   Still open: the set is sealed, so a library's own descriptor cannot offer
