@@ -1,6 +1,9 @@
 # ADR-0031: Connections, Configuration, and Context
 
-- Status: Accepted.
+- Status: Accepted. [ADR-0032](0032-builder-verbs-and-the-io-trait.md) renamed the
+  registration methods used below (`add_component`, `configure_component`
+  ending in `.add(..)`) and closed the first open question: `init` keeps
+  taking the configuration by reference and there is no setup step.
 - Date: November 15, 2026
 - Deciders: Samara maintainers
 - Amends: [ADR-0013](0013-component-kinds-assemblies-and-first-party-effects.md)

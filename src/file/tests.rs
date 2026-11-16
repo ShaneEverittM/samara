@@ -7,7 +7,7 @@ use std::marker::PhantomData;
 /// Owns `C` and never uses it: registration is the only way to create a
 /// capability inside a Program.
 struct Holder<C>(PhantomData<C>);
-impl<C: crate::Capabilities> crate::Component for Holder<C> {
+impl<C: crate::Io> crate::Component for Holder<C> {
     type Connections = ();
     type Configuration = ();
     type Io = C;
@@ -22,9 +22,9 @@ impl<C: crate::Capabilities> crate::Component for Holder<C> {
 }
 
 /// A Program whose one Component owns `C`, and that `C`.
-fn program_owning<C: crate::Capabilities>() -> (Program, C) {
+fn program_owning<C: crate::Io>() -> (Program, C) {
     let mut builder = Program::builder();
-    let holder = builder.component::<Holder<C>>(());
+    let holder = builder.add_component::<Holder<C>>(());
     (builder.build().unwrap(), holder.io.clone())
 }
 
@@ -60,7 +60,7 @@ fn all_declared_operations_need_exact_bindings() {
 #[test]
 fn exact_bindings_reject_duplicates_foreign_tokens_and_undeclared_operations() {
     let (program, file) = program_owning::<File<ReadOnly>>();
-    let foreign = <File<ReadOnly> as crate::Capabilities>::detached();
+    let foreign = <File<ReadOnly> as crate::Io>::detached();
     for invalid in ["duplicate", "foreign", "undeclared"] {
         let mut live = LiveBindings::new();
         let mut controlled = ControlledBindings::new();

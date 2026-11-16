@@ -54,7 +54,7 @@ impl HttpTimeModel {
 struct HttpTimeServer;
 
 /// What the time server can reach in the world.
-#[derive(Clone, Capabilities)]
+#[derive(Clone, Io)]
 struct HttpTimeServerIo {
     http: Effect<HttpRequest>,
     stderr: Effect<PrintStderr>,
@@ -186,7 +186,7 @@ struct CliConnections {
 }
 
 /// What the CLI can reach in the world.
-#[derive(Clone, Capabilities)]
+#[derive(Clone, Io)]
 struct CliIo {
     stdin: Source<StdinLines>,
     stdout: Effect<PrintStdout>,
@@ -303,20 +303,20 @@ async fn main() -> Result<()> {
     let mut builder = Program::builder();
 
     // A Port names the provider-neutral time service consumed by the CLI.
-    let time_port = builder.port::<TimeServerMessage>(PortId::new(TIME_SERVER_PORT));
+    let time_port = builder.add_port::<TimeServerMessage>(PortId::new(TIME_SERVER_PORT));
 
     // The concrete provider happens to obtain time over HTTP. Registering a
     // Component creates its own capabilities: inert values that are the only
     // way it can issue Effects, returned on the handle as `io` so the host can
     // say below what each one is made of.
-    let http_time_server = builder.component::<HttpTimeServer>(());
+    let http_time_server = builder.add_component::<HttpTimeServer>(());
 
     // Program assembly chooses which concrete Component provides that service.
     builder.connect(&time_port, &http_time_server.connector());
 
     // Raw terminal lines cross the runtime boundary as an ongoing Source. The
     // CLI owns parsing, presentation, and its dependency on the time service.
-    let cli = builder.component::<Cli>(CliConnections {
+    let cli = builder.add_component::<Cli>(CliConnections {
         time_server: time_port,
     });
 
@@ -375,7 +375,7 @@ mod tests {
         let mut builder = Program::builder();
         Context::detached(
             CliConnections {
-                time_server: builder.port(PortId::new(TIME_SERVER_PORT)),
+                time_server: builder.add_port(PortId::new(TIME_SERVER_PORT)),
             },
             (),
         )

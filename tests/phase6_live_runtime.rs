@@ -109,10 +109,10 @@ fn counter_program(
 ) -> (Program, InstalledComponent<Counter>) {
     let mut program = Program::builder();
     let counter = program
-        .component_builder::<Counter>()
+        .configure_component::<Counter>()
         .name("counter")
         .configuration(CounterConfig { input_descriptor })
-        .register(());
+        .add(());
     (program.build().expect("valid program"), counter)
 }
 
@@ -238,12 +238,12 @@ async fn phase6_scope_cancel_drops_effect_without_invoking_mapper() {
     let dropped = Arc::new(AtomicBool::new(false));
     let (entered, entered_rx) = tokio::sync::oneshot::channel();
     let probe = program
-        .component_builder::<CancelProbe>()
+        .configure_component::<CancelProbe>()
         .name("cancel-probe")
         .configuration(CancelProbeConfig {
             mapper_calls: mapper_calls.clone(),
         })
-        .register(());
+        .add(());
     let program = program.build().expect("valid program");
     let runtime = Runtime::builder(program)
         .supply(
@@ -275,12 +275,12 @@ async fn phase6_cancelled_shutdown_future_detaches_no_runtime_work() {
     let dropped = Arc::new(AtomicBool::new(false));
     let (entered, entered_rx) = tokio::sync::oneshot::channel();
     let probe = program
-        .component_builder::<CancelProbe>()
+        .configure_component::<CancelProbe>()
         .name("shutdown-future-cancel")
         .configuration(CancelProbeConfig {
             mapper_calls: mapper_calls.clone(),
         })
-        .register(());
+        .add(());
     let program = program.build().expect("valid program");
     let runtime = Runtime::builder(program)
         .supply(
@@ -342,12 +342,12 @@ async fn shutdown_escalation_joins_pending_effect_without_mapping() {
     let dropped = Arc::new(AtomicBool::new(false));
     let (entered, entered_rx) = tokio::sync::oneshot::channel();
     let probe = program
-        .component_builder::<CancelProbe>()
+        .configure_component::<CancelProbe>()
         .name("escalation-effect")
         .configuration(CancelProbeConfig {
             mapper_calls: mapper_calls.clone(),
         })
-        .register(());
+        .add(());
     let program = program.build().expect("valid program");
     let runtime = Runtime::builder(program)
         .supply(
@@ -426,12 +426,12 @@ async fn phase6_cancel_stops_driving_without_mapping_scope_abort() {
     let driver_calls = Arc::new(AtomicUsize::new(0));
     let mut program = Program::builder();
     let probe = program
-        .component_builder::<InitialCancelProbe>()
+        .configure_component::<InitialCancelProbe>()
         .name("immediate-cancel")
         .configuration(InitialCancelProbeConfig {
             mapper_calls: mapper_calls.clone(),
         })
-        .register(());
+        .add(());
     let program = program.build().expect("valid program");
     let runtime = Runtime::builder(program)
         .supply(
@@ -462,12 +462,12 @@ async fn shutdown_escalation_before_owner_poll_cannot_restart_work() {
     let driver_calls = Arc::new(AtomicUsize::new(0));
     let mut program = Program::builder();
     let probe = program
-        .component_builder::<InitialCancelProbe>()
+        .configure_component::<InitialCancelProbe>()
         .name("early-escalation")
         .configuration(InitialCancelProbeConfig {
             mapper_calls: mapper_calls.clone(),
         })
-        .register(());
+        .add(());
     let program = program.build().expect("valid program");
     let mut task = Runtime::builder(program)
         .supply(
@@ -530,9 +530,9 @@ impl Component for PanicProbe {
 async fn phase6_driver_panic_faults_and_cleans_scope() {
     let mut program = Program::builder();
     let probe = program
-        .component_builder::<PanicProbe>()
+        .configure_component::<PanicProbe>()
         .name("panic-probe")
-        .register(());
+        .add(());
     let program = program.build().expect("valid program");
     let runtime = Runtime::builder(program)
         .supply(&probe.io, (PanickingDriver,))
@@ -554,9 +554,9 @@ async fn phase6_driver_panic_faults_and_cleans_scope() {
 async fn shutdown_requests_preserve_completed_fault() {
     let mut program = Program::builder();
     let probe = program
-        .component_builder::<PanicProbe>()
+        .configure_component::<PanicProbe>()
         .name("preserved-fault")
-        .register(());
+        .add(());
     let program = program.build().expect("valid program");
     let runtime = Runtime::builder(program)
         .supply(&probe.io, (PanickingDriver,))
@@ -749,10 +749,10 @@ struct SourceFixture {
 fn source_fixture(causal_timer: bool) -> SourceFixture {
     let mut program = Program::builder();
     let component = program
-        .component_builder::<SourceProbe>()
+        .configure_component::<SourceProbe>()
         .name("source-probe")
         .configuration(SourceProbeConfig { causal_timer })
-        .register(());
+        .add(());
     let (observation_tx, observations) = tokio::sync::mpsc::unbounded_channel();
     let (sink_tx, sinks) = tokio::sync::mpsc::unbounded_channel();
     let starts = Arc::new(AtomicUsize::new(0));
@@ -856,12 +856,12 @@ impl SourceDriver<ScriptedSource> for SilentSourceDriver {
 async fn phase6_silent_source_return_ends_once() {
     let mut program = Program::builder();
     let probe = program
-        .component_builder::<SourceProbe>()
+        .configure_component::<SourceProbe>()
         .name("silent-source")
         .configuration(SourceProbeConfig {
             causal_timer: false,
         })
-        .register(());
+        .add(());
     let starts = Arc::new(AtomicUsize::new(0));
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
     let program = program.build().expect("valid program");
@@ -924,12 +924,12 @@ async fn phase6_source_driver_panics_fault_and_clean_the_scope() {
     for mode in [SourcePanicMode::Start, SourcePanicMode::Future] {
         let mut program = Program::builder();
         let probe = program
-            .component_builder::<SourceProbe>()
+            .configure_component::<SourceProbe>()
             .name(format!("source-panic-{mode:?}"))
             .configuration(SourceProbeConfig {
                 causal_timer: false,
             })
-            .register(());
+            .add(());
         let (entered, entered_rx) = tokio::sync::oneshot::channel();
         let (observed, _observations) = tokio::sync::mpsc::unbounded_channel();
         let program = program.build().expect("valid program");
@@ -1098,9 +1098,9 @@ impl Component for AdmissionProbe {
 async fn admitted_burst(count: usize) -> Vec<u64> {
     let mut program = Program::builder();
     let probe = program
-        .component_builder::<AdmissionProbe>()
+        .configure_component::<AdmissionProbe>()
         .name("admission-probe")
-        .register(());
+        .add(());
     let values = Arc::new(Mutex::new(Vec::new()));
     let program = program.build().expect("valid program");
     let runtime = Runtime::builder(program)
@@ -1153,9 +1153,9 @@ async fn phase6_accepted_internal_delivery_has_no_silent_drop() {
 async fn phase6_shutdown_closes_external_ingress() -> Result<(), RuntimeError> {
     let mut program = Program::builder();
     let probe = program
-        .component_builder::<AdmissionProbe>()
+        .configure_component::<AdmissionProbe>()
         .name("closed-ingress")
-        .register(());
+        .add(());
     let values = Arc::new(Mutex::new(Vec::new()));
     let program = program.build().expect("valid program");
     let runtime = Runtime::builder(program)
@@ -1213,9 +1213,9 @@ impl EffectDriver<InitialEffect> for NoopInitialDriver {
 async fn phase6_knowable_live_binding_errors_fail_build() {
     let mut program = Program::builder();
     let probe = program
-        .component_builder::<InitialEffectComponent>()
+        .configure_component::<InitialEffectComponent>()
         .name("duplicate-effect")
-        .register(());
+        .add(());
     let program = program.build().expect("valid program");
     assert!(
         Runtime::builder(program)
@@ -1227,12 +1227,12 @@ async fn phase6_knowable_live_binding_errors_fail_build() {
 
     let mut program = Program::builder();
     let probe = program
-        .component_builder::<SourceProbe>()
+        .configure_component::<SourceProbe>()
         .name("duplicate-source")
         .configuration(SourceProbeConfig {
             causal_timer: false,
         })
-        .register(());
+        .add(());
     let (sinks, _sink_rx) = tokio::sync::mpsc::unbounded_channel();
     let starts = Arc::new(AtomicUsize::new(0));
     let dropped = Arc::new(AtomicUsize::new(0));
@@ -1378,12 +1378,12 @@ async fn phase6_effect_success_and_failure_map_exactly_once() -> Result<(), Runt
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
     let mut program = Program::builder();
     let probe = program
-        .component_builder::<QueryProbe>()
+        .configure_component::<QueryProbe>()
         .name("query")
         .configuration(QueryProbeConfig {
             mapper_calls: mapper_calls.clone(),
         })
-        .register(());
+        .add(());
     let program = program.build().expect("valid program");
     let runtime = Runtime::builder(program)
         .supply(
@@ -1510,9 +1510,9 @@ async fn phase6_drain_realizes_no_new_sources() {
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
     let mut program = Program::builder();
     let probe = program
-        .component_builder::<DrainGateProbe>()
+        .configure_component::<DrainGateProbe>()
         .name("drain-gate")
-        .register(());
+        .add(());
     let program = program.build().expect("valid program");
     let runtime = Runtime::builder(program)
         .supply(
@@ -1565,9 +1565,9 @@ async fn phase6_successful_shutdown_owns_zero_work() -> Result<(), RuntimeError>
     for mode in [Shutdown::Drain, Shutdown::Cancel] {
         let mut program = Program::builder();
         let probe = program
-            .component_builder::<AdmissionProbe>()
+            .configure_component::<AdmissionProbe>()
             .name(format!("empty-{mode:?}"))
-            .register(());
+            .add(());
         let program = program.build().expect("valid program");
         let runtime = Runtime::builder(program)
             .supply(
@@ -1735,18 +1735,18 @@ fn echo_program(
     InstalledComponent<EchoRequester>,
 ) {
     let mut program = Program::builder();
-    let echo = program.port::<EchoMessage>(PortId::new("echo"));
+    let echo = program.add_port::<EchoMessage>(PortId::new("echo"));
     let provider = program
-        .component_builder::<EchoProvider>()
+        .configure_component::<EchoProvider>()
         .name("echo-provider")
         .configuration(EchoProviderConfig { reply })
-        .register(());
+        .add(());
     program.connect(&echo, &provider.accepting(EchoProviderMessage::Echo));
     let requester = program
-        .component_builder::<EchoRequester>()
+        .configure_component::<EchoRequester>()
         .name("echo-requester")
         .configuration(continuation_calls)
-        .register(echo);
+        .add(echo);
     (
         program.build().expect("valid Echo program"),
         provider,
@@ -1945,9 +1945,9 @@ async fn forced_independent_order(first: char, second: char) -> Vec<char> {
     let (order, mut observed) = tokio::sync::mpsc::unbounded_channel();
     let mut program = Program::builder();
     let probe = program
-        .component_builder::<IndependentProbe>()
+        .configure_component::<IndependentProbe>()
         .name("independent")
-        .register(());
+        .add(());
     let program = program.build().expect("valid program");
     let runtime = Runtime::builder(program)
         .supply(
@@ -2020,10 +2020,10 @@ async fn v8_conformance_compares_partial_order_not_scheduler_sequence() {
 fn query_program(mapper_calls: Arc<AtomicUsize>) -> (Program, InstalledComponent<QueryProbe>) {
     let mut program = Program::builder();
     let probe = program
-        .component_builder::<QueryProbe>()
+        .configure_component::<QueryProbe>()
         .name("query-parity")
         .configuration(QueryProbeConfig { mapper_calls })
-        .register(());
+        .add(());
     (program.build().expect("valid query program"), probe)
 }
 

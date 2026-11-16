@@ -82,17 +82,14 @@ impl Wiring for Named {
 }
 
 fn ledger(program: &mut ProgramBuilder, name: &str) -> InstalledComponent<Ledger> {
-    program
-        .component_builder::<Ledger>()
-        .name(name)
-        .register(())
+    program.configure_component::<Ledger>().name(name).add(())
 }
 
 fn clerk<W: Wiring>(program: &mut ProgramBuilder, name: &str, wiring: W) -> ComponentRef<Clerk<W>> {
     program
-        .component_builder::<Clerk<W>>()
+        .configure_component::<Clerk<W>>()
         .name(name)
-        .register(wiring)
+        .add(wiring)
         .into()
 }
 
@@ -101,7 +98,7 @@ fn manifest_lists_each_kind_of_connection_with_its_target() {
     let mut program = Program::builder();
     let main = ledger(&mut program, "main");
     let spare = ledger(&mut program, "spare");
-    let audit = program.port::<LedgerMessage>(PortId::new("audit"));
+    let audit = program.add_port::<LedgerMessage>(PortId::new("audit"));
     program.connect(&audit, &spare.connector());
 
     clerk(&mut program, "by-connector", main.connector());
@@ -198,11 +195,11 @@ fn a_connection_from_another_builder_fails_the_build() {
 fn configuration_defaults_and_the_builder_overrides_it() {
     let mut program = Program::builder();
     let main = ledger(&mut program, "main");
-    let defaulted = program.component::<Clerk<Connector<LedgerMessage>>>(main.connector());
+    let defaulted = program.add_component::<Clerk<Connector<LedgerMessage>>>(main.connector());
     let configured = program
-        .component_builder::<Clerk<Connector<LedgerMessage>>>()
+        .configure_component::<Clerk<Connector<LedgerMessage>>>()
         .configuration(7)
-        .register(main.connector());
+        .add(main.connector());
     let mut runtime = ControlledRuntime::builder(program.build().unwrap())
         .build()
         .unwrap();

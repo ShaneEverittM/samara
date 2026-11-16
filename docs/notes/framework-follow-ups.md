@@ -190,21 +190,27 @@ a journal Component; exploratory proposals, not accepted API decisions.
 
 - [ ] **Context, connections, and configuration: what ADR-0031 left
   open.** The split landed November 15, 2026. Still to decide:
-  - Whether `init` should receive the configuration by value, once, so a
-    Component can compute or prepare from it rather than re-deriving on
-    every call; and whether a setup step should run between `init` and the
-    first `update`.
-  - Whether a send to an address the sender did not declare should fault,
-    which would make the manifest's connection list complete in the way
-    capability ownership makes the capability list complete. Today an
-    address kept in `Configuration` or received in a Message is unlisted
-    and unchecked at build.
+  - Decided by ADR-0032: `init` keeps the configuration by reference and
+    there is no setup step. If "immutable but derived from configuration"
+    becomes a pattern, the likely shape is a further `Context` field that
+    `init` produces.
+  - **Punted, wanted:** a send to an address the sender did not declare
+    should fault, which would make the manifest's connection list complete
+    in the way capability ownership makes the capability list complete.
+    Today an address kept in `Configuration` or received in a Message is
+    unlisted and unchecked at build. It is impactful because subscriber
+    patterns need dynamic topology, so it needs a declared opening: a
+    connection type such as `Dynamic<M>` (or a `DynamicConnector`) meaning
+    "may send `M` to addresses learned at runtime", listed in the manifest
+    as `owner.field: connection M -> (dynamic)`. Every send is then either
+    to a declared target or under a declared allowance. Needs its own ADR
+    and a motivating example.
   - Whether `Assembly::Config` should be split the same way. It is a
     function argument today and the Assembly decides what becomes a
     member's connections and what its configuration.
-  - The registration spelling. `component::<C>(connections)` defaults the
+  - The registration spelling. `add_component::<C>(connections)` defaults the
     configuration; a Component with real settings is registered through
-    `component_builder::<C>().configuration(..).register(connections)`,
+    `configure_component::<C>().configuration(..).add(connections)`,
     which is long. Most tests take that path.
   - `Vec` and `Option` connections print one row per element under the
     same field name, with no index.
@@ -224,7 +230,7 @@ a journal Component; exploratory proposals, not accepted API decisions.
   capabilities).** Decided November 15, 2026 by
   [ADR-0029](../adr/0029-capabilities-are-named-values-a-component-owns.md):
   the carrier is a name. A Component's `Io` can be a struct with named
-  fields, hand-written or through `#[derive(Capabilities)]`, and the host
+  fields, hand-written or through `#[derive(Io)]`, and the host
   supplies Drivers field by field. A generated drivers struct was deferred
   (see the ADR-0029 follow-ups below). Original statement: ADR-0028 gives each Component its own capabilities, so
   two Components can no longer be confused with each other. Inside one
@@ -235,7 +241,7 @@ a journal Component; exploratory proposals, not accepted API decisions.
   (an optional tag parameter such as `File<ReadAppend, JournalFile>`, which
   makes a swapped driver tuple a compile error and keeps tuples and
   whole-Component driver supply), or a name (a capabilities struct with
-  named fields, hand-written or through `#[derive(Capabilities)]`, supplied
+  named fields, hand-written or through `#[derive(Io)]`, supplied
   field by field or through a generated drivers struct). Raised November
   15, 2026. The choice decides whether named capability structs and a
   derive crate are needed at all, so it comes before both. It also bears on

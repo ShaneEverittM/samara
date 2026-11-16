@@ -15,7 +15,7 @@ use samara::prelude::*;
 /// obliges its host to supply or control.
 struct Holds<C>(std::marker::PhantomData<fn() -> C>);
 
-impl<C: Capabilities> Component for Holds<C> {
+impl<C: Io> Component for Holds<C> {
     type Io = C;
     type Connections = ();
     type Configuration = ();
@@ -32,12 +32,12 @@ impl<C: Capabilities> Component for Holds<C> {
 }
 
 /// Capabilities created for a Component of some other Program.
-fn from_another_program<C: Capabilities>() -> C {
+fn from_another_program<C: Io>() -> C {
     let mut foreign = Program::builder();
     foreign
-        .component_builder::<Holds<C>>()
+        .configure_component::<Holds<C>>()
         .name("foreign")
-        .register(())
+        .add(())
         .io
         .clone()
 }
@@ -98,10 +98,10 @@ impl Component for EffectComponent {
 fn effect_program() -> (Program, InstalledComponent<EffectComponent>) {
     let mut program = Program::builder();
     let component = program
-        .component_builder::<EffectComponent>()
+        .configure_component::<EffectComponent>()
         .name("effect")
         .configuration(EffectComponentConfig::default())
-        .register(());
+        .add(());
     (program.build().expect("valid closed Program"), component)
 }
 
@@ -175,13 +175,13 @@ impl Component for SourceComponent {
 fn source_program() -> (Program, InstalledComponent<SourceComponent>) {
     let mut program = Program::builder();
     let component = program
-        .component_builder::<SourceComponent>()
+        .configure_component::<SourceComponent>()
         .name("source")
         .configuration(SourceComponentConfig {
             smuggled: None,
             initially_enabled: false,
         })
-        .register(());
+        .add(());
     (program.build().expect("valid closed Program"), component)
 }
 
@@ -212,13 +212,13 @@ fn foreign_source_program(
 ) -> (Program, InstalledComponent<SourceComponent>) {
     let mut owner = Program::builder();
     let component = owner
-        .component_builder::<SourceComponent>()
+        .configure_component::<SourceComponent>()
         .name("foreign-source")
         .configuration(SourceComponentConfig {
             smuggled: Some(from_another_program()),
             initially_enabled,
         })
-        .register(());
+        .add(());
     (owner.build().expect("valid owner Program"), component)
 }
 
@@ -383,12 +383,12 @@ impl Component for InitialEffectComponent {
 fn initial_foreign_effect_program() -> (Program, InstalledComponent<InitialEffectComponent>) {
     let mut owner = Program::builder();
     let component = owner
-        .component_builder::<InitialEffectComponent>()
+        .configure_component::<InitialEffectComponent>()
         .name("initial-foreign-effect")
         .configuration(InitialEffectComponentConfig {
             effect: from_another_program(),
         })
-        .register(());
+        .add(());
     (
         owner.build().expect("the hidden field is ordinary Rust"),
         component,
@@ -471,18 +471,18 @@ impl Component for InitialForeignSend {
 fn initial_foreign_send_program() -> Program {
     let mut foreign = Program::builder();
     let target = foreign
-        .component_builder::<UnitComponent>()
+        .configure_component::<UnitComponent>()
         .name("foreign-target")
-        .register(());
+        .add(());
 
     let mut owner = Program::builder();
     owner
-        .component_builder::<InitialForeignSend>()
+        .configure_component::<InitialForeignSend>()
         .name("initial-foreign-send")
         .configuration(InitialForeignSendConfig {
             target: target.into(),
         })
-        .register(());
+        .add(());
     owner.build().expect("valid owner Program")
 }
 
@@ -554,20 +554,20 @@ impl Component for InitialForeignRequest {
 
 fn initial_foreign_port_program(request: bool) -> Program {
     let mut foreign = Program::builder();
-    let port = foreign.port::<ForeignMessage>(PortId::new("foreign"));
+    let port = foreign.add_port::<ForeignMessage>(PortId::new("foreign"));
     let mut owner = Program::builder();
     if request {
         owner
-            .component_builder::<InitialForeignRequest>()
+            .configure_component::<InitialForeignRequest>()
             .name("initial-foreign-request")
             .configuration(InitialForeignRequestConfig { port })
-            .register(());
+            .add(());
     } else {
         owner
-            .component_builder::<InitialForeignPortSend>()
+            .configure_component::<InitialForeignPortSend>()
             .name("initial-foreign-port-send")
             .configuration(InitialForeignPortSendConfig { port })
-            .register(());
+            .add(());
     }
     owner.build().expect("valid owner Program")
 }
@@ -604,12 +604,12 @@ fn initially_visible_foreign_component_and_port_capabilities_fail_profile_build(
 fn dynamically_used_foreign_effect_capability_is_rejected_before_controlled_behavior() {
     let mut owner = Program::builder();
     let component = owner
-        .component_builder::<EffectComponent>()
+        .configure_component::<EffectComponent>()
         .name("foreign-effect")
         .configuration(EffectComponentConfig {
             smuggled: Some(from_another_program()),
         })
-        .register(());
+        .add(());
     let program = owner.build().expect("the hidden field is ordinary Rust");
     let mut runtime = ControlledRuntime::builder(program)
         .control_all()
@@ -630,12 +630,12 @@ fn dynamically_used_foreign_effect_capability_is_rejected_before_controlled_beha
 async fn run_forever_surfaces_dynamic_foreign_capability_before_live_driver() {
     let mut owner = Program::builder();
     let component = owner
-        .component_builder::<EffectComponent>()
+        .configure_component::<EffectComponent>()
         .name("foreign-live-effect")
         .configuration(EffectComponentConfig {
             smuggled: Some(from_another_program()),
         })
-        .register(());
+        .add(());
     let calls = Arc::new(AtomicUsize::new(0));
     let program = owner.build().expect("valid owner Program");
     let runtime = Runtime::builder(program)
@@ -666,7 +666,7 @@ async fn run_forever_surfaces_dynamic_foreign_capability_before_live_driver() {
 fn controlled_exact_stream_binding_rejects_a_foreign_capability_during_build() {
     let foreign_stream: Source<StreamDescriptor<u64>> = from_another_program();
     let mut owner = Program::builder();
-    owner.component::<Holds<Source<StreamDescriptor<u64>>>>(());
+    owner.add_component::<Holds<Source<StreamDescriptor<u64>>>>(());
     let program = owner.build().expect("valid owner Program");
     let error = ControlledRuntime::builder(program)
         .control_all()
@@ -681,7 +681,7 @@ fn controlled_exact_stream_binding_rejects_a_foreign_capability_during_build() {
 fn two_exact_stream_capabilities_of_one_type_bind_independently() -> Result<(), RuntimeError> {
     type TwoStreams = (Source<StreamDescriptor<u64>>, Source<StreamDescriptor<u64>>);
     let mut program = Program::builder();
-    let holder = program.component::<Holds<TwoStreams>>(());
+    let holder = program.add_component::<Holds<TwoStreams>>(());
     let program = program.build().expect("valid closed Program");
     let (_first_sender, first_receiver) = tokio::sync::mpsc::channel(1);
     let (_second_sender, second_receiver) = tokio::sync::mpsc::channel(1);
@@ -697,7 +697,7 @@ fn two_exact_stream_capabilities_of_one_type_bind_independently() -> Result<(), 
         .build()?;
 
     let mut program = Program::builder();
-    program.component::<Holds<TwoStreams>>(());
+    program.add_component::<Holds<TwoStreams>>(());
     let program = program.build().expect("valid closed Program");
     ControlledRuntime::builder(program).control_all().build()?;
     Ok(())
@@ -707,7 +707,7 @@ fn two_exact_stream_capabilities_of_one_type_bind_independently() -> Result<(), 
 fn controlled_exact_stream_rejects_duplicate_and_type_wide_ambiguity() {
     fn one_stream() -> (Program, Source<StreamDescriptor<u64>>) {
         let mut program = Program::builder();
-        let holder = program.component::<Holds<Source<StreamDescriptor<u64>>>>(());
+        let holder = program.add_component::<Holds<Source<StreamDescriptor<u64>>>>(());
         (
             program.build().expect("valid closed Program"),
             holder.io.clone(),
@@ -841,13 +841,13 @@ fn exact_stream_input_is_disambiguated_by_capability_not_equal_descriptor()
 -> Result<(), RuntimeError> {
     let mut program = Program::builder();
     let component = program
-        .component_builder::<DualStreamComponent>()
+        .configure_component::<DualStreamComponent>()
         .name("dual-stream")
         .configuration(DualStreamComponentConfig {
             descriptor: StreamDescriptor::named("same-descriptor"),
             observe: false,
         })
-        .register(());
+        .add(());
     let (first, second, _) = component.io.clone();
     let mut runtime = ControlledRuntime::builder(program.build().expect("valid Program"))
         .control_all()
@@ -865,13 +865,13 @@ async fn live_exact_streams_with_equal_descriptors_route_by_capability() -> Resu
 {
     let mut program = Program::builder();
     let component = program
-        .component_builder::<DualStreamComponent>()
+        .configure_component::<DualStreamComponent>()
         .name("live-dual-stream")
         .configuration(DualStreamComponentConfig {
             descriptor: StreamDescriptor::named("same-descriptor"),
             observe: true,
         })
-        .register(());
+        .add(());
     let (first_sender, first_receiver) = tokio::sync::mpsc::channel(1);
     let (second_sender, second_receiver) = tokio::sync::mpsc::channel(1);
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
@@ -1036,14 +1036,14 @@ fn framed_stream_program(
 ) {
     let mut program = Program::builder();
     let component = program
-        .component_builder::<FramedStreamComponent>()
+        .configure_component::<FramedStreamComponent>()
         .name(if observe {
             "live-framed-stream"
         } else {
             "framed-stream"
         })
         .configuration(FramedStreamComponentConfig { observe })
-        .register(());
+        .add(());
     let source = component.io.0.clone();
     (
         program.build().expect("valid composed stream Program"),
@@ -1115,7 +1115,7 @@ type ComposedSource = Source<Framed<LateSource, IdentityDecoder>>;
 
 fn composed_source_program() -> (Program, ComposedSource) {
     let mut program = Program::builder();
-    let holder = program.component::<Holds<ComposedSource>>(());
+    let holder = program.add_component::<Holds<ComposedSource>>(());
     (
         program.build().expect("valid composed Source declaration"),
         holder.io.clone(),

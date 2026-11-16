@@ -410,7 +410,7 @@ struct TelemetryConnections {
 
 /// Everything one Telemetry Component can reach in the world. Registration
 /// creates these for it alone; the host supplies a live Driver for each.
-#[derive(Clone, Capabilities)]
+#[derive(Clone, Io)]
 struct TelemetryIo {
     /// Authority to store decoded frames.
     storage: Effect<StoreFrame>,
@@ -583,14 +583,14 @@ fn program() -> (Program, AppRefs) {
 
     // A named Port permits multiple independently bound instances of the same
     // message enum; the message's Rust type alone is not a global service key.
-    let health_port = program.port(PortId::new(HEALTH));
-    let health = program.component::<Health>(());
+    let health_port = program.add_port(PortId::new(HEALTH));
+    let health = program.add_component::<Health>(());
 
     // Assembly selects the provider; `HealthMessage` declares the canonical
     // Port-message conversion through its `From` implementation.
     program.connect(&health_port, &health.connector());
 
-    let telemetry = program.component::<Telemetry>(TelemetryConnections {
+    let telemetry = program.add_component::<Telemetry>(TelemetryConnections {
         health: health_port.clone(),
     });
 
@@ -731,7 +731,7 @@ mod tests {
     /// functions directly. The capabilities belong to no Program, which is
     /// enough to inspect the Commands and Subscriptions they produce.
     fn telemetry_fixture() -> Context<Telemetry> {
-        let health = Program::builder().port(PortId::new(HEALTH));
+        let health = Program::builder().add_port(PortId::new(HEALTH));
         Context::detached(TelemetryConnections { health }, ())
     }
 
@@ -836,9 +836,9 @@ mod tests {
     #[test]
     fn named_ports_bind_independently_even_for_the_same_message_enum() {
         let mut builder = Program::builder();
-        let primary = builder.port::<HealthProtocolMessage>(PortId::new("health/primary"));
-        let fallback = builder.port::<HealthProtocolMessage>(PortId::new("health/fallback"));
-        let provider = builder.component::<Health>(());
+        let primary = builder.add_port::<HealthProtocolMessage>(PortId::new("health/primary"));
+        let fallback = builder.add_port::<HealthProtocolMessage>(PortId::new("health/fallback"));
+        let provider = builder.add_component::<Health>(());
 
         builder.connect(&primary, &provider.connector());
         builder.connect(&fallback, &provider.connector());

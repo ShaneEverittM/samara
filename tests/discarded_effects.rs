@@ -8,7 +8,8 @@ use samara::prelude::*;
 
 #[test]
 fn print_macros_preserve_familiar_formatting_and_select_the_stream() {
-    let (declared_0, declared_1) = <(samara::Effect<PrintStdout>, samara::Effect<PrintStderr>) as samara::Capabilities>::detached();
+    let (declared_0, declared_1) =
+        <(samara::Effect<PrintStdout>, samara::Effect<PrintStderr>) as samara::Io>::detached();
     let stdout = declared_0;
     let stderr = declared_1;
     let subject = String::from("Samara");
@@ -71,9 +72,9 @@ impl Component for PrintProbe {
 fn controlled_discarded_outcome_is_traced_without_scheduling_a_message() {
     let mut program = Program::builder();
     let probe = program
-        .component_builder::<PrintProbe>()
+        .configure_component::<PrintProbe>()
         .name("discarded-print")
-        .register(());
+        .add(());
     let mut runtime = ControlledRuntime::builder(program.build().unwrap())
         .control_all()
         .build()
@@ -190,9 +191,9 @@ impl EffectDriver<GateEffect> for GatedDriver {
 fn gated_program() -> (Program, InstalledComponent<GateProbe>) {
     let mut program = Program::builder();
     let probe = program
-        .component_builder::<GateProbe>()
+        .configure_component::<GateProbe>()
         .name("discarded-gate")
-        .register(());
+        .add(());
     (program.build().unwrap(), probe)
 }
 

@@ -167,16 +167,16 @@ struct Fixture {
 
 fn fixture() -> Fixture {
     let mut builder = Program::builder();
-    let port = builder.port::<ProbeProtocolMessage>(PortId::new("probe"));
+    let port = builder.add_port::<ProbeProtocolMessage>(PortId::new("probe"));
     let provider = builder
-        .component_builder::<Provider>()
+        .configure_component::<Provider>()
         .name("provider")
-        .register(());
+        .add(());
     builder.connect(&port, &provider.connector());
     let requester = builder
-        .component_builder::<Requester>()
+        .configure_component::<Requester>()
         .name("requester")
-        .register(RequesterConnections { port: port.clone() });
+        .add(RequesterConnections { port: port.clone() });
     Fixture {
         program: builder.build().unwrap(),
         observe: requester.io.clone(),

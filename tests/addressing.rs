@@ -111,17 +111,17 @@ impl Component for Clerk {
 
 fn assemble(patience: Option<Duration>) -> (Program, Port<LedgerMessage>, ComponentRef<Clerk>) {
     let mut program = Program::builder();
-    let ledger = program.port::<LedgerMessage>(PortId::new("ledger"));
+    let ledger = program.add_port::<LedgerMessage>(PortId::new("ledger"));
     let provider = program
-        .component_builder::<Ledger>()
+        .configure_component::<Ledger>()
         .name("ledger")
-        .register(());
+        .add(());
     program.connect(&ledger, &provider.accepting(LedgerProviderMessage::Ledger));
     let clerk = program
-        .component_builder::<Clerk>()
+        .configure_component::<Clerk>()
         .name("clerk")
         .configuration(patience)
-        .register(ledger.clone());
+        .add(ledger.clone());
     (
         program.build().expect("program assembles"),
         ledger,
@@ -195,7 +195,7 @@ fn a_port_request_to_times_out_under_the_usual_deadline_rules() {
 #[test]
 fn into_request_to_inspects_a_request_without_a_runtime() {
     let mut program = Program::builder();
-    let ledger = program.port::<LedgerMessage>(PortId::new("ledger"));
+    let ledger = program.add_port::<LedgerMessage>(PortId::new("ledger"));
 
     let intent = Command::request(&ledger, LedgerMessage::Total)
         .producing(ClerkMessage::Total)
@@ -236,13 +236,13 @@ fn an_initial_send_to_a_foreign_port_fails_both_profile_builds() {
     }
     fn program() -> Program {
         let mut other = Program::builder();
-        let foreign = other.port::<LedgerMessage>(PortId::new("ledger"));
+        let foreign = other.add_port::<LedgerMessage>(PortId::new("ledger"));
         let mut program = Program::builder();
         program
-            .component_builder::<Eager>()
+            .configure_component::<Eager>()
             .name("eager")
             .configuration(foreign)
-            .register(());
+            .add(());
         program.build().expect("the hidden Port is ordinary Rust")
     }
     let live = Runtime::builder(program())

@@ -54,9 +54,9 @@ The accepted Phase 2 audit constrains Phase 3 to this slice:
   and name-based controlled ordering with successful registration order.
 - The type implementing `Component` names a kind and is never stored. Its
   immutable inputs are `Component::Connections` (the other Components it can
-  send to, supplied at registration as `component::<Kind>(connections)`),
+  send to, supplied at registration as `add_component::<Kind>(connections)`),
   `Component::Configuration` (plain settings, defaulted or set with
-  `component_builder::<Kind>().configuration(..)`), and `Component::Io`.
+  `configure_component::<Kind>().configuration(..)`), and `Component::Io`.
   Behaviorally relevant mutable state belongs in `Component::Model`
   ([ADR-0013](adr/0013-component-kinds-assemblies-and-first-party-effects.md),
   [ADR-0031](adr/0031-connections-configuration-and-context.md)).
@@ -73,8 +73,8 @@ The accepted Phase 2 audit constrains Phase 3 to this slice:
   interpreted.
 - `Component::Message` is the only transition input.
 - `Component::Io` names the capabilities the Component owns. It implements
-  `Capabilities`: `()`, `Effect<D>`, `Source<S>`, `File<P>`, a tuple of
-  those, or a struct with `#[derive(Clone, Capabilities)]`
+  the `Io` trait: `()`, `Effect<D>`, `Source<S>`, `File<P>`, a tuple of
+  those, or a struct with `#[derive(Clone, Io)]`
   ([ADR-0029](adr/0029-capabilities-are-named-values-a-component-owns.md)).
   Registration creates the value and passes it to every callback as
   `cx.io`. Capabilities are not kept in `Configuration`.
@@ -543,14 +543,14 @@ around values issued by one `ProgramBuilder`, as amended by
 - `Program::builder()` returns a `ProgramBuilder` and declares nothing up
   front. `Program`, `ProgramBuilder`, `RuntimeSetup`, and
   `ControlledRuntimeSetup` have no type parameter.
-- `component::<C>(connections)` creates the capabilities named by
-  `C::Io` through `Capabilities::declare`. A capability can be made only
+- `add_component::<C>(connections)` creates the capabilities named by
+  `C::Io` through `Io::declare`. A capability can be made only
   through `Declaring`, which only the library constructs. The Program is
   closed when `ProgramBuilder::build()` returns.
 - A capability belongs to the Component it was created for. Nothing accepts
   an existing capability at registration, so one cannot be shared, and the
   `File` narrowing methods are removed.
-- `Capabilities::detached()` returns capability values that belong to no
+- `Io::detached()` returns capability values that belong to no
   Program, for calling `init`, `update`, or `subscriptions` directly in a
   unit test. They cannot be supplied with Drivers, and a runtime faults if a
   Component uses one.
@@ -633,7 +633,7 @@ faults with "belongs to another Component".
 exposed and renames the consumer-owned one:
 
 - `Port<P>` (formerly `Port<P>`) is a consumer-owned, named, inert dependency
-  on a message type, created with `ProgramBuilder::port` and filled at assembly
+  on a message type, created with `ProgramBuilder::add_port` and filled at assembly
   with `connect`. `PortId`, `PortHandle`, and
   `Runtime::port_handle` follow the rename; their semantics are those of
   ADR-0006.
@@ -717,12 +717,12 @@ as amended by [ADR-0018](adr/0018-assemblies-export-a-connector.md),
           program: &mut ProgramBuilder,
           _: Self::Config,
       ) -> (Connector<JournalMessage>, JournalIo) {
-          let recorder = program.component::<Recorder>(());
+          let recorder = program.add_component::<Recorder>(());
           (recorder.accepting(Message::Journal), recorder.io.clone())
       }
   }
   ```
-- `program.assembly::<A>(config)` returns `InstalledAssembly<A>`
+- `program.add_assembly::<A>(config)` returns `InstalledAssembly<A>`
   with a public `io` field and `exports()`. When `Exports` is a
   `Connector<M>` it also exposes `connector()` and implements `Addressable`.
   It carries no separate runtime installation obligation.

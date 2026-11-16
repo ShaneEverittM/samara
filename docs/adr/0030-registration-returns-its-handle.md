@@ -4,6 +4,9 @@
   [ADR-0031](0031-connections-configuration-and-context.md) changed what
   registration is given: `component::<C>(connections)`, with the
   configuration defaulted or set by `.configuration(..)` on the builder.
+  [ADR-0032](0032-builder-verbs-and-the-io-trait.md) withdrew the noun rule:
+  the methods are `add_component`, `configure_component` ending in
+  `.add(..)`, `add_assembly`, and `add_port`.
 - Date: November 15, 2026
 - Deciders: Samara maintainers
 - Amends: [ADR-0021](0021-implicit-identities-and-diagnostic-names.md)

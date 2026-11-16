@@ -234,11 +234,11 @@ fn program() -> (TestProgram, Port<HostMessage>) {
 /// test can tell whether a rejected ingress reached the binding at all.
 fn counted_binding_program() -> (TestProgram, Port<HostMessage>, Arc<AtomicUsize>) {
     let mut builder = Program::builder();
-    let port = builder.port::<HostMessage>(PortId::new("host"));
+    let port = builder.add_port::<HostMessage>(PortId::new("host"));
     let provider = builder
-        .component_builder::<Provider>()
+        .configure_component::<Provider>()
         .name("provider")
-        .register(());
+        .add(());
     let conversions = Arc::new(AtomicUsize::new(0));
     let counter = conversions.clone();
     builder.connect(
@@ -259,11 +259,11 @@ fn counted_binding_program() -> (TestProgram, Port<HostMessage>, Arc<AtomicUsize
 /// earlier sends land before the poisoned one faults the runtime.
 fn selectively_panicking_binding_program() -> (TestProgram, Port<HostMessage>) {
     let mut builder = Program::builder();
-    let port = builder.port::<HostMessage>(PortId::new("host"));
+    let port = builder.add_port::<HostMessage>(PortId::new("host"));
     let provider = builder
-        .component_builder::<Provider>()
+        .configure_component::<Provider>()
         .name("provider")
-        .register(());
+        .add(());
     builder.connect(
         &port,
         &provider.accepting(|message| match message {
@@ -280,11 +280,11 @@ fn selectively_panicking_binding_program() -> (TestProgram, Port<HostMessage>) {
 
 fn panicking_binding_program() -> (Program, Port<BindingMessage>) {
     let mut builder = Program::builder();
-    let port = builder.port::<BindingMessage>(PortId::new("panicking-binding"));
+    let port = builder.add_port::<BindingMessage>(PortId::new("panicking-binding"));
     let provider = builder
-        .component_builder::<PanickingBindingProvider>()
+        .configure_component::<PanickingBindingProvider>()
         .name("panicking-binding-provider")
-        .register(());
+        .add(());
     builder.connect(
         &port,
         &provider.accepting(|message| {
@@ -346,7 +346,7 @@ fn live_port_handle_rejects_a_port_from_another_program() {
     let runtime = runtime_with_default_effects(program);
 
     let mut foreign_builder = Program::builder();
-    let foreign_port = foreign_builder.port::<HostMessage>(PortId::new("host"));
+    let foreign_port = foreign_builder.add_port::<HostMessage>(PortId::new("host"));
 
     let error = runtime
         .port_handle(&foreign_port)
@@ -384,11 +384,11 @@ async fn live_port_handle_sends_and_returns_typed_request_replies() -> Result<()
 #[tokio::test]
 async fn cloned_port_handles_deliver_each_send_exactly_once() -> Result<(), RuntimeError> {
     let mut builder = Program::builder();
-    let port = builder.port::<HostMessage>(PortId::new("cloned-host"));
+    let port = builder.add_port::<HostMessage>(PortId::new("cloned-host"));
     let provider = builder
-        .component_builder::<Provider>()
+        .configure_component::<Provider>()
         .name("cloned-provider")
-        .register(());
+        .add(());
     builder.connect(&port, &provider.accepting(ProviderMessage::Host));
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
     let (request_observed, _request_observations) = tokio::sync::mpsc::unbounded_channel();
@@ -591,11 +591,11 @@ async fn dropping_the_runtime_owner_wakes_an_external_request_waiter() -> Result
 #[tokio::test]
 async fn component_and_port_ingress_share_one_shutdown_cutoff() -> Result<(), RuntimeError> {
     let mut builder = Program::builder();
-    let port = builder.port::<HostMessage>(PortId::new("race-host"));
+    let port = builder.add_port::<HostMessage>(PortId::new("race-host"));
     let provider = builder
-        .component_builder::<Provider>()
+        .configure_component::<Provider>()
         .name("race-provider")
-        .register(());
+        .add(());
     builder.connect(&port, &provider.accepting(ProviderMessage::Host));
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
     let (request_observed, _request_observations) = tokio::sync::mpsc::unbounded_channel();

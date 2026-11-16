@@ -62,20 +62,23 @@ reference or a Connector, never the capabilities (ADR-0028, ADR-0029).
 **Io / `Component::Io`** — The associated type naming the capabilities a
 Component owns: its whole access to the world. It is `()`, one `Effect<D>`,
 `Source<S>`, or `File<P>`, a tuple of those, or a struct with named fields
-and `#[derive(Clone, Capabilities)]`. Registration creates one fresh value
+and `#[derive(Clone, Io)]`. Registration creates one fresh value
 for the Component, passes it as `cx.io` to every `init`, `update`,
 `subscriptions`, and `shutdown` call, and exposes the same value as
 `InstalledComponent::io` (ADR-0029). `Assembly::Io` is the corresponding
 type for an Assembly and has no trait bound. *Requires* is the historical
 name.
 
-**Capabilities (trait)** — The trait a `Component::Io` type implements. Its
+**Io (trait)** — The trait a `Component::Io` type implements, sharing its
+name with the associated type as `Connections` does (ADR-0032).
+*Capabilities* is the historical name; "capability" remains the word for
+one value. Its
 one required function, `declare(&mut Declaring)`, creates one fresh
 capability per field; `Declaring::field("name")` records the field name.
 The library implements it for `Effect<D>`, `Source<S>`, `File<P>`, `()`, and
-tuples up to eight; `#[derive(Capabilities)]` implements it for a struct
+tuples up to eight; `#[derive(Io)]` implements it for a struct
 with named fields. A capability can be made only through `Declaring`, which
-only the library constructs. `Capabilities::detached()` returns capability
+only the library constructs. `Io::detached()` returns capability
 values that belong to no Program, for calling `init`, `update`, or
 `subscriptions` directly in a unit test; they cannot be supplied with
 Drivers, and a runtime faults if a Component uses one (ADR-0029).
@@ -130,7 +133,7 @@ Subscriptions. The name is the canonical replacement for the historical term
 **Component kind** — The Rust type that implements `Component`. It is only a
 name: no value of it is ever stored, and `init`, `update`, and
 `subscriptions` are associated functions on it (ADR-0013). `ComponentRef<C>`
-and `component::<C>(..)` name the kind.
+and `add_component::<C>(..)` name the kind.
 
 **Context** — `Context<C>`: everything a Component is given and cannot
 change, passed by shared reference to every `init`, `update`,
@@ -148,8 +151,8 @@ Manifest (ADR-0031).
 
 **Component configuration / `Component::Configuration`** — A Component's
 immutable settings: plain data such as an interval or a SourceDescriptor,
-which Samara does not look inside. `component::<C>(connections)` uses its
-`Default` value; `component_builder::<C>().configuration(..)` sets another.
+which Samara does not look inside. `add_component::<C>(connections)` uses its
+`Default` value; `configure_component::<C>().configuration(..)` sets another.
 Capabilities are not kept in it, and connections belong in `Connections`.
 It is observationally read-only during execution. `Config` is the historical
 name for configuration and connections together.
@@ -705,12 +708,14 @@ to hold.
 | `Requirements` (sealed trait), `Capabilities<R>` (alias) | The `Capabilities` trait | Removed November 15, 2026 (ADR-0029). `Capabilities` is one function, `declare`, that a person can write by hand or derive; `Capabilities<Self::Requires>` in a signature is now `Self::Io`. |
 | `Program::builder::<R>()` returning `(builder, capabilities)`, `Program<R>`, `ProgramBuilder<R>` | `Program::builder()`; capabilities created by `finish()` | Removed November 15, 2026 (ADR-0028, ADR-0029). Nothing is declared up front and no type carries a requirement parameter; the Program is closed when `build()` returns. |
 | `component::<C>(config).with(&capabilities)`, `install::<A>(config).with(&capabilities)` | `component::<C>(config).finish()`, `install::<A>(config).finish()` | Removed November 15, 2026 (ADR-0028). Nothing accepts an existing capability at registration, so one cannot be given to a second Component. |
-| `component::<C>(config).finish()?`, `.name(..)` on registration, `install::<A>(config).finish()?`, `Assembly::install` returning a `Result`, `InstalledAssembly::connector()` returning a reference | `component::<C>(config)`, `component_builder::<C>().name(..).register(config)`, `install::<A>(config)`, `install` returning `(Exports, Io)`, an owned `Connector` | Changed November 15, 2026 (ADR-0030). Registration can no longer fail and has no staged step, so it returns its handle; a second entry point carries per-instance options. |
+| `add_component::<C>(config).finish()?`, `.name(..)` on registration, `install::<A>(config).finish()?`, `Assembly::install` returning a `Result`, `InstalledAssembly::connector()` returning a reference | `add_component::<C>(config)`, `configure_component::<C>().name(..).add(config)`, `install::<A>(config)`, `install` returning `(Exports, Io)`, an owned `Connector` | Changed November 15, 2026 (ADR-0030). Registration can no longer fail and has no staged step, so it returns its handle; a second entry point carries per-instance options. |
 | `ProgramBuilder::install::<A>(config)` | `ProgramBuilder::assembly::<A>(config)` | Renamed November 15, 2026 (ADR-0030). Builder methods that create something and return its handle are nouns (`port`, `component`, `assembly`); `Assembly::install`, which an author implements, keeps its verb. |
 | `with(&capability).supplied_by(driver)` | `supply(&capability, driver)` | Replaced November 15, 2026 (ADR-0029). With named fields the pair reads on one line: `.supply(&journal.io.file, FileDriver::new(path))`. |
 | `Program::capabilities()` | `InstalledComponent::io`, `InstalledAssembly::io` | Removed November 15, 2026 (ADR-0028). Test fixtures return their handles or the `io` values they need. |
 | `Component::Config`, `update(&Config, &Io, &mut Model, Message)`, `component::<C>(config)` | `Component::Connections` and `Component::Configuration`, `update(&Context<Self>, &mut Model, Message)`, `component::<C>(connections)` with `component_builder::<C>().configuration(..)` | Split November 15, 2026 (ADR-0031). Connections are walked by Samara, listed in the manifest, and checked at build; configuration is opaque and defaults. `Assembly::Config` is unchanged. |
 | `CapabilityManifest`, `CapabilityManifest::entries()` | `Manifest`, `Manifest::capabilities()` and `Manifest::connections()` | Renamed November 15, 2026 (ADR-0031). The manifest also lists declared connections. |
+| `Capabilities` (trait and derive), `Capabilities::detached()` | `Io` (trait and derive), `Io::detached()` | Renamed November 15, 2026 (ADR-0032), so the trait matches `Component::Io` as `Connections` matches `Component::Connections`. |
+| `ProgramBuilder::component`, `component_builder` ending in `.register(..)`, `assembly`, `port` | `add_component`, `configure_component` ending in `.add(..)`, `add_assembly`, `add_port` | Renamed November 15, 2026 (ADR-0032). Builder methods are verbs; the noun rule of ADR-0030 is withdrawn. |
 | `File` narrowing: `read_only()`, `append_only()`, `read_append()`, `write_only()` | None | Removed November 15, 2026 (ADR-0028, ADR-0029). Narrowing existed to hand a file to another Component; a file now has one owner and other Components send it Messages. |
 | `InstalledAssembly::capabilities()`, `InstalledComponent::capabilities()` | The public `io` field | Renamed November 15, 2026 (ADR-0029). The accessor was the interim ADR-0028 spelling. |
 | `VendorsDrivers::drivers(driver_config)` returning a driver tuple | `VendorsDrivers::supply(setup, io, driver_config)` | Replaced November 15, 2026 (ADR-0029). The Assembly supplies its own named capabilities, so no tuple order is exposed. |

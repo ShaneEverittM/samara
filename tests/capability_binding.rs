@@ -51,13 +51,13 @@ async fn a_driver_follows_its_capability_value_not_a_position() {
     // positional binding this is the silent swap of two same-typed files.
     let mut builder = Program::builder();
     let journal = builder
-        .component_builder::<Scribe>()
+        .configure_component::<Scribe>()
         .configuration("journal")
-        .register(());
+        .add(());
     let config = builder
-        .component_builder::<Scribe>()
+        .configure_component::<Scribe>()
         .configuration("config")
-        .register(());
+        .add(());
 
     let runtime = Runtime::builder(builder.build().unwrap())
         .supply(&config.io.0, FileDriver::new(root.0.join("config.log")))
@@ -101,9 +101,9 @@ impl Component for Keeper {
 fn keeper_program() -> (Program, InstalledComponent<Keeper>) {
     let mut builder = Program::builder();
     let keeper = builder
-        .component_builder::<Keeper>()
+        .configure_component::<Keeper>()
         .name("keeper")
-        .register(());
+        .add(());
     (builder.build().unwrap(), keeper)
 }
 

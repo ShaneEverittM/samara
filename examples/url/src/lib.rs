@@ -105,7 +105,7 @@ struct Checker;
 
 /// Everything the URL checker can reach in the world. [`program`] returns
 /// these so the host can supply a live Driver for each.
-#[derive(Clone, Capabilities)]
+#[derive(Clone, Io)]
 pub struct UrlIo {
     pub stdin: Source<StdinLines>,
     pub stdout: Effect<PrintStdout>,
@@ -295,7 +295,7 @@ pub fn program() -> Result<(Program, UrlIo), ProgramBuildError> {
 fn assemble() -> Result<(Program, InstalledComponent<Checker>), ProgramBuildError> {
     let mut builder = Program::builder();
 
-    let checker = builder.component::<Checker>(());
+    let checker = builder.add_component::<Checker>(());
 
     Ok((builder.build()?, checker))
 }

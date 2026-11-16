@@ -19,7 +19,7 @@ mod private {
 ///
 /// The library implements it for [`Effect`], [`Source`], `File` (with the
 /// `fs` feature), `()`, and tuples of those. A struct with named fields
-/// implements it with `#[derive(Capabilities)]`, or by hand:
+/// implements it with `#[derive(Io)]`, or by hand:
 ///
 /// ```
 /// use samara::prelude::*;
@@ -29,7 +29,7 @@ mod private {
 ///     pub clock: Effect<ReadSystemTime>,
 ///     pub input: Source<StdinLines>,
 /// }
-/// impl Capabilities for ReaderIo {
+/// impl Io for ReaderIo {
 ///     fn declare(new: &mut Declaring<'_>) -> Self {
 ///         Self {
 ///             clock: new.field("clock"),
@@ -45,7 +45,7 @@ mod private {
 /// use samara::prelude::*;
 /// let clock: Effect<ReadSystemTime> = Effect::new();
 /// ```
-pub trait Capabilities: Clone + Send + 'static {
+pub trait Io: Clone + Send + 'static {
     /// Creates one fresh capability per field.
     fn declare(new: &mut Declaring<'_>) -> Self;
 
@@ -68,7 +68,7 @@ pub trait Capabilities: Clone + Send + 'static {
 }
 
 /// Creates capabilities for the Component being registered. Passed to
-/// [`Capabilities::declare`].
+/// [`Io::declare`].
 pub struct Declaring<'a> {
     builder: &'a mut ProgramBuilder,
     path: Vec<&'static str>,
@@ -77,7 +77,7 @@ pub struct Declaring<'a> {
 impl Declaring<'_> {
     /// Creates the capabilities for one named field. The name appears in
     /// [`Program::manifest`] and in the error for a missing Driver.
-    pub fn field<C: Capabilities>(&mut self, name: &'static str) -> C {
+    pub fn field<C: Io>(&mut self, name: &'static str) -> C {
         self.path.push(name);
         let capabilities = C::declare(self);
         self.path.pop();
@@ -90,27 +90,27 @@ impl Declaring<'_> {
 }
 
 /// Creates the capabilities one registration owns.
-fn declare<C: Capabilities>(builder: &mut ProgramBuilder) -> C {
+fn declare<C: Io>(builder: &mut ProgramBuilder) -> C {
     C::declare(&mut Declaring {
         builder,
         path: Vec::new(),
     })
 }
 
-impl<D: EffectDescriptor> Capabilities for Effect<D> {
+impl<D: EffectDescriptor> Io for Effect<D> {
     fn declare(new: &mut Declaring<'_>) -> Self {
         let name = new.name();
         new.builder.effect::<D>(name)
     }
 }
-impl<S: SourceDescriptor> Capabilities for Source<S> {
+impl<S: SourceDescriptor> Io for Source<S> {
     fn declare(new: &mut Declaring<'_>) -> Self {
         let name = new.name();
         new.builder.source::<S>(name)
     }
 }
 #[cfg(feature = "fs")]
-impl<P: FilePermissions> Capabilities for File<P> {
+impl<P: FilePermissions> Io for File<P> {
     fn declare(new: &mut Declaring<'_>) -> Self {
         let name = new.name();
         let token = new.builder.next_capability();
@@ -126,7 +126,7 @@ impl<P: FilePermissions> Capabilities for File<P> {
         File::new(token)
     }
 }
-impl Capabilities for () {
+impl Io for () {
     fn declare(_: &mut Declaring<'_>) {}
 }
 
@@ -184,7 +184,7 @@ impl private::Driver<()> for () {
 }
 macro_rules! tuples {
     ($(($($c:ident $d:ident $i:tt),+))+) => {$(
-        impl<$($c: Capabilities),+> Capabilities for ($($c,)+) {
+        impl<$($c: Io),+> Io for ($($c,)+) {
             fn declare(new: &mut Declaring<'_>) -> Self {
                 ($($c::declare(new),)+)
             }
@@ -254,7 +254,7 @@ impl<S: SourceDescriptor<Terminal = StdinLines>> private::Driver<Source<S>> for 
 ///     fn update(_: &Context<Self>, _: &mut (), _: ()) -> Command<()> { Command::none() }
 /// }
 /// let mut program = Program::builder();
-/// let clock = program.component::<Clock>(());
+/// let clock = program.add_component::<Clock>(());
 /// let runtime = Runtime::builder(program.build()?)
 ///     .supply(&clock.io, SystemClockDriver)
 ///     .build()?;
@@ -283,7 +283,7 @@ impl<S: SourceDescriptor<Terminal = StdinLines>> private::Driver<Source<S>> for 
 /// #     fn update(_: &Context<Self>, _: &mut (), _: ()) -> Command<()> { Command::none() }
 /// # }
 /// let mut program = Program::builder();
-/// program.component_builder::<Clock>().name("clock").register(());
+/// program.configure_component::<Clock>().name("clock").add(());
 /// let error = Runtime::builder(program.build()?).build().err().unwrap();
 /// assert!(error.to_string().contains("ReadSystemTime"));
 /// assert!(error.to_string().contains("clock"));
@@ -508,7 +508,7 @@ pub struct GivenConfiguration<T>(T);
 mod configuration_private {
     #[diagnostic::on_unimplemented(
         message = "`{T}` has no default value to register this Component with",
-        note = "set one with `.component_builder::<C>().configuration(..).register(..)`, or implement `Default` for `{T}`"
+        note = "set one with `.configure_component::<C>().configuration(..).add(..)`, or implement `Default` for `{T}`"
     )]
     pub trait Slot<T> {
         fn take(self) -> T;
@@ -527,7 +527,7 @@ impl<T> Slot<T> for GivenConfiguration<T> {
 }
 
 /// Registers a Component with options. Made by
-/// [`ProgramBuilder::component_builder`]; use [`ProgramBuilder::component`]
+/// [`ProgramBuilder::configure_component`]; use [`ProgramBuilder::add_component`]
 /// when there is nothing to set.
 ///
 /// ```
@@ -542,10 +542,10 @@ impl<T> Slot<T> for GivenConfiguration<T> {
 /// }
 /// let mut program = Program::builder();
 /// let clock = program
-///     .component_builder::<Clock>()
+///     .configure_component::<Clock>()
 ///     .name("wall clock")
 ///     .configuration(60)
-///     .register(());
+///     .add(());
 /// assert_eq!(clock.id().name(), "wall clock");
 /// let runtime = Runtime::builder(program.build()?)
 ///     .supply(&clock.io.0, SystemClockDriver)
@@ -567,9 +567,9 @@ impl<T> Slot<T> for GivenConfiguration<T> {
 ///     fn update(_: &Context<Self>, _: &mut (), _: ()) -> Command<()> { Command::none() }
 /// }
 /// let mut program = Program::builder();
-/// program.component::<Limiter>(());
+/// program.add_component::<Limiter>(());
 /// ```
-#[must_use = "register the Component with .register(connections)"]
+#[must_use = "register the Component with .add(connections)"]
 pub struct ComponentBuilder<'a, C: Component, Configuration = DefaultConfiguration> {
     program: &'a mut ProgramBuilder,
     name: Option<Arc<str>>,
@@ -610,8 +610,9 @@ impl<C: Component, Configuration> ComponentBuilder<'_, C, Configuration> {
 
     /// Creates the Component's capabilities, initializes it, and registers it
     /// with these connections.
-    #[allow(private_bounds)]
-    pub fn register(self, connections: C::Connections) -> InstalledComponent<C>
+    // The name is the builder's verb (ADR-0032), not arithmetic.
+    #[allow(private_bounds, clippy::should_implement_trait)]
+    pub fn add(self, connections: C::Connections) -> InstalledComponent<C>
     where
         Configuration: Slot<C::Configuration>,
     {
@@ -753,7 +754,7 @@ impl<A: Assembly> fmt::Debug for InstalledAssembly<A> {
 }
 impl ProgramBuilder {
     /// Installs an Assembly with its settings and connections.
-    pub fn assembly<A: Assembly>(&mut self, config: A::Config) -> InstalledAssembly<A> {
+    pub fn add_assembly<A: Assembly>(&mut self, config: A::Config) -> InstalledAssembly<A> {
         let (exports, io) = A::install(self, config);
         InstalledAssembly { io, exports }
     }

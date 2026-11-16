@@ -172,29 +172,29 @@ fn component_identity_follows_registration_independently_of_names() {
     let (left_first, _, _, _) = KernelComponentConfig::fixture();
     let (left_second, _, _, _) = KernelComponentConfig::fixture();
     let alpha_left = left_program
-        .component_builder::<KernelComponent>()
+        .configure_component::<KernelComponent>()
         .name("alpha")
         .configuration(left_first)
-        .register(());
+        .add(());
     let beta_left = left_program
-        .component_builder::<KernelComponent>()
+        .configure_component::<KernelComponent>()
         .name("beta")
         .configuration(left_second)
-        .register(());
+        .add(());
 
     let mut right_program = Program::builder();
     let (right_first, _, _, _) = KernelComponentConfig::fixture();
     let (right_second, _, _, _) = KernelComponentConfig::fixture();
     let beta_right = right_program
-        .component_builder::<KernelComponent>()
+        .configure_component::<KernelComponent>()
         .name("beta")
         .configuration(right_first)
-        .register(());
+        .add(());
     let alpha_right = right_program
-        .component_builder::<KernelComponent>()
+        .configure_component::<KernelComponent>()
         .name("alpha")
         .configuration(right_second)
-        .register(());
+        .add(());
 
     assert_eq!(alpha_left.id(), beta_right.id());
     assert_eq!(beta_left.id(), alpha_right.id());
@@ -208,10 +208,10 @@ fn registration_transfers_configuration_and_model_ownership_to_program() {
     let mut builder = Program::builder();
 
     let component_ref = builder
-        .component_builder::<KernelComponent>()
+        .configure_component::<KernelComponent>()
         .name("owned")
         .configuration(component)
-        .register(());
+        .add(());
 
     assert_eq!(component_ref.id().name(), "owned");
     assert_eq!(configuration_drops.load(Ordering::SeqCst), 0);

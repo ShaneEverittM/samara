@@ -219,7 +219,7 @@ mod tests {
 
     #[test]
     fn v3_batched_effect_occurrences_keep_distinct_one_shot_mappers() {
-        let write = <crate::Effect<Write> as crate::Capabilities>::detached();
+        let write = <crate::Effect<Write> as crate::Io>::detached();
         let command = Command::batch([
             crate::Effect::perform(&write, Write(7))
                 .producing(|EffectOutcome::Succeeded(output)| Written { request: 1, output }),
@@ -257,7 +257,7 @@ mod tests {
 
     #[test]
     fn v4_component_kernel_reconciles_the_committed_model_projection() {
-        let source = <crate::Source<StreamDescriptor<u64>> as crate::Capabilities>::detached();
+        let source = <crate::Source<StreamDescriptor<u64>> as crate::Io>::detached();
         let mut kernel = ComponentKernel::<DesiredComponent>::new(
             ComponentId::new(0, "desired"),
             crate::Context::detached((), DesiredComponentConfig { source }),
@@ -298,7 +298,7 @@ mod tests {
 
     #[test]
     fn v4_new_equal_changed_and_removed_descriptors_reconcile_lifecycle() {
-        let source = <crate::Source<StreamDescriptor<u64>> as crate::Capabilities>::detached();
+        let source = <crate::Source<StreamDescriptor<u64>> as crate::Io>::detached();
         let mut reconciler = SubscriptionReconciler::new(ComponentId::new(0, "alpha"));
 
         assert!(matches!(
@@ -333,7 +333,7 @@ mod tests {
 
     #[test]
     fn v4_subscription_identity_is_local_to_one_component() {
-        let source = <crate::Source<StreamDescriptor<u64>> as crate::Capabilities>::detached();
+        let source = <crate::Source<StreamDescriptor<u64>> as crate::Io>::detached();
         let mut alpha = SubscriptionReconciler::new(ComponentId::new(0, "alpha"));
         let mut beta = SubscriptionReconciler::new(ComponentId::new(1, "beta"));
 
@@ -357,7 +357,7 @@ mod tests {
 
     #[test]
     fn duplicate_desired_identity_is_rejected_before_bookkeeping_changes() {
-        let source = <crate::Source<StreamDescriptor<u64>> as crate::Capabilities>::detached();
+        let source = <crate::Source<StreamDescriptor<u64>> as crate::Io>::detached();
         let mut reconciler = SubscriptionReconciler::new(ComponentId::new(0, "alpha"));
         let duplicate = vec![
             Subscription::source_with(&source, StreamDescriptor::<u64>::named("one"), Message::Old)
@@ -383,7 +383,7 @@ mod tests {
 
     #[test]
     fn ambiguous_default_slots_do_not_change_existing_bookkeeping() {
-        let source = <crate::Source<StreamDescriptor<u64>> as crate::Capabilities>::detached();
+        let source = <crate::Source<StreamDescriptor<u64>> as crate::Io>::detached();
         let mut reconciler = SubscriptionReconciler::new(ComponentId::new(0, "probe"));
         let input =
             || Subscription::source_with(&source, StreamDescriptor::named("one"), Message::Old);
@@ -400,7 +400,7 @@ mod tests {
 
     #[test]
     fn v4_retention_preserves_new_mapper_as_unselected_candidate_data() {
-        let source = <crate::Source<StreamDescriptor<u64>> as crate::Capabilities>::detached();
+        let source = <crate::Source<StreamDescriptor<u64>> as crate::Io>::detached();
         let mut reconciler = SubscriptionReconciler::new(ComponentId::new(0, "alpha"));
         let _ = reconciler
             .reconcile(desired(&source, "one"))
@@ -432,7 +432,7 @@ mod tests {
         let (first, second) = <(
             crate::Source<StreamDescriptor<u64>>,
             crate::Source<StreamDescriptor<u64>>,
-        ) as crate::Capabilities>::detached();
+        ) as crate::Io>::detached();
         let mut reconciler = SubscriptionReconciler::new(ComponentId::new(0, "alpha"));
 
         let _ = reconciler

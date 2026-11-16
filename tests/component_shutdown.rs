@@ -167,11 +167,11 @@ struct Fixture {
 /// asker, vault, elder.
 fn fixture() -> Fixture {
     let mut builder = Program::builder();
-    let vault_port = builder.port::<VaultMessage>(PortId::new("vault"));
-    let elder = builder.component::<Elder>(vault_port.clone());
-    let vault = builder.component::<Vault>(());
+    let vault_port = builder.add_port::<VaultMessage>(PortId::new("vault"));
+    let elder = builder.add_component::<Elder>(vault_port.clone());
+    let vault = builder.add_component::<Vault>(());
     builder.connect(&vault_port, &vault.connector());
-    let asker = builder.component::<Asker>(vault.connector());
+    let asker = builder.add_component::<Asker>(vault.connector());
     Fixture {
         program: builder.build().unwrap(),
         elder: elder.into(),

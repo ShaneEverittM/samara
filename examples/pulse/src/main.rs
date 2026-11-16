@@ -1,6 +1,6 @@
 use samara::{
-    Capabilities, Command, Component, Connector, Context, Effect, FileDriver, Init, PrintStdout,
-    Program, RequestOutcome, Runtime, Source, SourceEvent, StdinDriver, StdinLines, StdoutDriver,
+    Command, Component, Connector, Context, Effect, FileDriver, Init, Io, PrintStdout, Program,
+    RequestOutcome, Runtime, Source, SourceEvent, StdinDriver, StdinLines, StdoutDriver,
     Subscription, Subscriptions, SystemClockDriver,
 };
 
@@ -12,7 +12,7 @@ use pulse::journal::{Journal, JournalMessage};
 struct Monitor;
 
 // What it can reach in the world, by name.
-#[derive(Clone, Capabilities)]
+#[derive(Clone, Io)]
 struct MonitorIo {
     input: Source<StdinLines>,
     output: Effect<PrintStdout>,
@@ -84,9 +84,9 @@ async fn main() -> anyhow::Result<()> {
     // A program is dormant, it declares how things are internally connected.
     let mut builder = Program::builder();
 
-    let journal = builder.assembly::<Journal>(());
+    let journal = builder.add_assembly::<Journal>(());
 
-    let monitor = builder.component::<Monitor>(journal.connector());
+    let monitor = builder.add_component::<Monitor>(journal.connector());
 
     // Assemble the program, this checks things that _can't_ be checked at compile time.
     let program = builder.build()?;

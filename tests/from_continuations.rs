@@ -39,7 +39,7 @@ impl From<EffectOutcome<u64, Infallible>> for EffectMessage {
 
 #[test]
 fn effect_default_uses_from_and_effect_with_preserves_context() {
-    let (declared_0,) = <(samara::Effect<ProbeEffect>,) as samara::Capabilities>::detached();
+    let (declared_0,) = <(samara::Effect<ProbeEffect>,) as samara::Io>::detached();
     let probe = declared_0;
     let default: Command<EffectMessage> = Effect::perform(&probe, ProbeEffect).into_command();
     assert_eq!(
@@ -92,8 +92,7 @@ impl From<SourceEvent<u64, Infallible>> for SourceMessage {
 
 #[test]
 fn source_default_is_reusable_and_source_with_preserves_context() {
-    let (declared_0,) =
-        <(samara::Source<StreamDescriptor<u64>>,) as samara::Capabilities>::detached();
+    let (declared_0,) = <(samara::Source<StreamDescriptor<u64>>,) as samara::Io>::detached();
     let source = declared_0;
     let descriptor = StreamDescriptor::<u64>::named("from/default");
     let default: Subscription<SourceMessage> =
@@ -156,7 +155,7 @@ fn http_response(body: &'static [u8]) -> HttpResponse {
 
 #[test]
 fn http_pipeline_default_uses_from_and_into_command_with_is_explicit() {
-    let (declared_0,) = <(samara::Effect<HttpRequest>,) as samara::Capabilities>::detached();
+    let (declared_0,) = <(samara::Effect<HttpRequest>,) as samara::Io>::detached();
     let http = declared_0;
     let default: Command<HttpMessage> = HttpRequest::get("https://example.test/default")
         .on_response()
@@ -297,16 +296,16 @@ impl Component for Requester {
 #[test]
 fn request_to_with_message_from_uses_from_and_a_closure_preserves_context() {
     let mut builder = Program::builder();
-    let echo = builder.port::<EchoProtocolMessage>(PortId::new("echo"));
+    let echo = builder.add_port::<EchoProtocolMessage>(PortId::new("echo"));
     let provider = builder
-        .component_builder::<EchoProvider>()
+        .configure_component::<EchoProvider>()
         .name("provider")
-        .register(());
+        .add(());
     builder.connect(&echo, &provider.connector());
     let requester = builder
-        .component_builder::<Requester>()
+        .configure_component::<Requester>()
         .name("requester")
-        .register(RequesterConnections { echo: echo.clone() });
+        .add(RequesterConnections { echo: echo.clone() });
     let mut runtime = ControlledRuntime::builder(builder.build().unwrap())
         .control_all()
         .build()

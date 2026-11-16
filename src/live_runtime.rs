@@ -3128,9 +3128,9 @@ mod tests {
                 Command::none()
             }
         }
-        let foreign = <crate::Source<StreamDescriptor<u64>> as crate::Capabilities>::detached();
+        let foreign = <crate::Source<StreamDescriptor<u64>> as crate::Io>::detached();
         let mut owner = Program::builder();
-        let own = owner.component::<Listener>(());
+        let own = owner.add_component::<Listener>(());
         let mut runtime = crate::Runtime::builder(owner.build().unwrap())
             .supply(&own.io, crate::MpscReceiver::new(mpsc::channel(1).1));
         // Exercise the registry's defense directly.
@@ -3374,9 +3374,9 @@ mod tests {
     fn generation_core() -> GenerationFixture {
         let mut builder = crate::Program::builder();
         let component = builder
-            .component_builder::<GenerationComponent>()
+            .configure_component::<GenerationComponent>()
             .name("generation")
-            .register(());
+            .add(());
         let program = builder.build().expect("valid generation Program");
         let id = component.id().clone();
         let sinks = Arc::new(Mutex::new(Vec::new()));
@@ -3445,9 +3445,9 @@ mod tests {
     async fn phase6_cancel_cutoff_starts_no_work_from_a_committed_transition() {
         let mut builder = crate::Program::builder();
         let component = builder
-            .component_builder::<CutoffComponent>()
+            .configure_component::<CutoffComponent>()
             .name("cancel-cutoff")
-            .register(());
+            .add(());
         let program = builder.build().expect("valid cutoff Program");
         let id = component.id().clone();
         let (sender, receiver) = mpsc::unbounded_channel();
@@ -3577,14 +3577,14 @@ mod tests {
         let finish_calls = Arc::new(AtomicUsize::new(0));
         let mut builder = crate::Program::builder();
         let component = builder
-            .component_builder::<FramedDrainComponent>()
+            .configure_component::<FramedDrainComponent>()
             .name("framed-drain")
             .configuration(FramedDrainComponentConfig {
                 decoder: DrainFailDecoder {
                     finish_calls: finish_calls.clone(),
                 },
             })
-            .register(());
+            .add(());
         let program = builder.build().expect("valid framed Drain Program");
         let sinks = Arc::new(Mutex::new(Vec::new()));
         let mut bindings = LiveBindings::new();
@@ -3639,9 +3639,9 @@ mod tests {
     async fn phase6_drain_preserves_a_source_panic_completed_before_cutoff() {
         let mut builder = crate::Program::builder();
         let component = builder
-            .component_builder::<GenerationComponent>()
+            .configure_component::<GenerationComponent>()
             .name("drain-panic")
-            .register(());
+            .add(());
         let program = builder.build().expect("valid Source panic Program");
         let (entered, entered_rx) = tokio::sync::oneshot::channel();
         let mut bindings = LiveBindings::new();
@@ -3685,9 +3685,9 @@ mod tests {
         for observe_drain in [false, true] {
             let mut builder = crate::Program::builder();
             let component = builder
-                .component_builder::<GenerationComponent>()
+                .configure_component::<GenerationComponent>()
                 .name("escalation-panic")
-                .register(());
+                .add(());
             let (entered, entered_rx) = tokio::sync::oneshot::channel();
             let mut bindings = LiveBindings::new();
             bindings.bind_source::<GenerationSource, _>(

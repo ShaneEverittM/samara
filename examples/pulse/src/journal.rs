@@ -3,7 +3,7 @@ use samara::prelude::*;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Everything the journal can reach: its file and the clock.
-#[derive(Clone, Capabilities)]
+#[derive(Clone, Io)]
 pub struct JournalIo {
     pub file: File<ReadAppend>,
     pub clock: Effect<ReadSystemTime>,
@@ -127,7 +127,7 @@ impl Assembly for Journal {
         program: &mut ProgramBuilder,
         _: Self::Config,
     ) -> (Connector<JournalMessage>, JournalIo) {
-        let recorder = program.component::<Recorder>(());
+        let recorder = program.add_component::<Recorder>(());
         (recorder.accepting(Message::Journal), recorder.io.clone())
     }
 }

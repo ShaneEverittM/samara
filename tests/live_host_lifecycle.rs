@@ -51,10 +51,10 @@ async fn live_host_observes_a_later_foreign_effect_fault() {
     let mut program = Program::builder();
     // Deliberately nonconforming Config exercises the runtime provenance defense.
     let probe = program
-        .component_builder::<FaultProbe>()
+        .configure_component::<FaultProbe>()
         .name("fault")
         .configuration(FaultProbeConfig { effect })
-        .register(());
+        .add(());
     let runtime = Runtime::builder(program.build().unwrap()).build().unwrap();
     let handle = runtime.handle(&probe).unwrap();
     let mut task = runtime.spawn();
@@ -101,9 +101,9 @@ async fn cancelled_run_forever_observation_preserves_owner_for_explicit_shutdown
     for mode in [Shutdown::Drain, Shutdown::Cancel] {
         let mut program = Program::builder();
         let idle = program
-            .component_builder::<Idle>()
+            .configure_component::<Idle>()
             .name("host-lifecycle-idle")
-            .register(());
+            .add(());
         let runtime = Runtime::builder(program.build().expect("valid program"))
             .build()
             .expect("valid live runtime");
@@ -137,9 +137,9 @@ async fn shutdown_requests_close_ingress_and_preserve_completed_result() {
     for mode in [Shutdown::Drain, Shutdown::Cancel] {
         let mut program = Program::builder();
         let idle = program
-            .component_builder::<Idle>()
+            .configure_component::<Idle>()
             .name("shutdown-requests")
-            .register(());
+            .add(());
         let runtime = Runtime::builder(program.build().expect("valid program"))
             .build()
             .expect("valid live runtime");
@@ -187,9 +187,9 @@ impl Component for RecurringTimer {
 async fn shutdown_grace_period_escalates_recurring_timer_and_joins() {
     let mut program = Program::builder();
     program
-        .component_builder::<RecurringTimer>()
+        .configure_component::<RecurringTimer>()
         .name("recurring-timer")
-        .register(());
+        .add(());
     let mut task = Runtime::builder(program.build().expect("valid program"))
         .build()
         .expect("valid runtime")
@@ -243,9 +243,9 @@ async fn run_until_drains_when_the_signal_completes() {
     let stopped = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let mut program = Program::builder();
     program
-        .component_builder::<Stopping>()
+        .configure_component::<Stopping>()
         .configuration(stopped.clone())
-        .register(());
+        .add(());
     let runtime = Runtime::builder(program.build().unwrap()).build().unwrap();
 
     let (signal, wait) = tokio::sync::oneshot::channel::<()>();
@@ -268,11 +268,11 @@ async fn run_until_drains_when_the_signal_completes() {
 async fn run_until_returns_a_fault_without_waiting_for_the_signal() {
     let mut program = Program::builder();
     let probe = program
-        .component_builder::<FaultProbe>()
+        .configure_component::<FaultProbe>()
         .configuration(FaultProbeConfig {
             effect: <Effect<DynamicallyReachedEffect>>::detached(),
         })
-        .register(());
+        .add(());
     let runtime = Runtime::builder(program.build().unwrap()).build().unwrap();
     let handle = runtime.handle(&probe).unwrap();
 

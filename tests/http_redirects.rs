@@ -47,10 +47,10 @@ impl Component for Probe {
 fn program(request: HttpRequest, limit: usize) -> (Program, InstalledComponent<Probe>) {
     let mut builder = Program::builder();
     let probe = builder
-        .component_builder::<Probe>()
+        .configure_component::<Probe>()
         .name("probe")
         .configuration(ProbeConfig { request, limit })
-        .register(());
+        .add(());
     (builder.build().unwrap(), probe)
 }
 fn controlled(request: HttpRequest, limit: usize) -> (ControlledRuntime, ComponentRef<Probe>) {
@@ -369,9 +369,9 @@ fn status_and_json_transforms_run_only_after_following_and_keep_typed_errors() {
     for status in [200, 404, 301] {
         let mut builder = Program::builder();
         let probe = builder
-            .component_builder::<JsonProbe>()
+            .configure_component::<JsonProbe>()
             .name("json")
-            .register(());
+            .add(());
         let mut runtime = ControlledRuntime::builder(builder.build().unwrap())
             .control_all()
             .build()

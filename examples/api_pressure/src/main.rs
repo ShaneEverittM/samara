@@ -202,7 +202,7 @@ struct CounterConfig {
 
 /// Everything one Counter can reach in the world. Registration creates these
 /// for the Counter alone; the host supplies a live Driver for each.
-#[derive(Clone, Capabilities)]
+#[derive(Clone, Io)]
 struct CounterIo {
     /// Authority for the ongoing increment source.
     increments: Source<StreamDescriptor<u64>>,
@@ -337,22 +337,22 @@ fn program(increments: StreamDescriptor<u64>) -> (Program, AppRefs) {
 
     // A named Port is immutable dependency wiring. Naming allows another Quota
     // Port to coexist without a global “one provider per type” rule.
-    let quota_port = program.port(PortId::new(QUOTA));
+    let quota_port = program.add_port(PortId::new(QUOTA));
     let quota = program
-        .component_builder::<Quota>()
+        .configure_component::<Quota>()
         .configuration(QuotaConfig { initial: 100 })
-        .register(());
+        .add(());
 
     // Assembly chooses the concrete provider. `QuotaMessage` declares its
     // canonical Port-message conversion through `From`; Counter never needs to
     // know that private Message vocabulary.
     program.connect(&quota_port, &quota.connector());
     let counter = program
-        .component_builder::<Counter>()
+        .configure_component::<Counter>()
         .configuration(CounterConfig {
             increments: increments.clone(),
         })
-        .register(CounterConnections { quota: quota_port });
+        .add(CounterConnections { quota: quota_port });
 
     (
         program.build().expect("the example graph is valid"),
@@ -475,7 +475,7 @@ mod tests {
         let increments = StreamDescriptor::named(INCREMENT_INPUT);
         let mut program = Program::builder();
 
-        let quota = program.port(PortId::new(QUOTA));
+        let quota = program.add_port(PortId::new(QUOTA));
         // A Context whose capabilities belong to no Program is enough to call
         // the Component's functions and inspect what they return.
         let cx = Context::<Counter>::detached(

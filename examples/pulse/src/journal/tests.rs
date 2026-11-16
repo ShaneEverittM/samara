@@ -85,10 +85,10 @@ fn program() -> (
     JournalIo,
 ) {
     let mut builder = Program::builder();
-    let journal = builder.assembly::<Journal>(());
-    let port = builder.port::<JournalMessage>(PortId::new("journal"));
+    let journal = builder.add_assembly::<Journal>(());
+    let port = builder.add_port::<JournalMessage>(PortId::new("journal"));
     builder.connect(&port, &journal.connector());
-    let client = builder.component::<JournalClient>(journal.connector());
+    let client = builder.add_component::<JournalClient>(journal.connector());
     let io = journal.io.clone();
     (builder.build().unwrap(), client.into(), port, io)
 }
@@ -132,7 +132,7 @@ fn assembly_appends_through_its_supplied_file_capability() {
 #[test]
 fn append_outcomes_are_discarded_without_automatic_retry() {
     let mut builder = Program::builder();
-    let recorder = builder.component::<Recorder>(());
+    let recorder = builder.add_component::<Recorder>(());
     let file = recorder.io.file.clone();
     let mut runtime = ControlledRuntime::builder(builder.build().unwrap())
         .control_all()

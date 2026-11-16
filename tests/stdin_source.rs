@@ -92,9 +92,9 @@ impl Component for StdinProbe {
 fn stdin_program() -> (Program, InstalledComponent<StdinProbe>) {
     let mut builder = Program::builder();
     let probe = builder
-        .component_builder::<StdinProbe>()
+        .configure_component::<StdinProbe>()
         .name("stdin-probe")
-        .register(());
+        .add(());
     (builder.build().expect("valid stdin program"), probe)
 }
 
@@ -102,7 +102,7 @@ fn stdin_program() -> (Program, InstalledComponent<StdinProbe>) {
 /// matters to the live binding rules below.
 struct Owns<C>(std::marker::PhantomData<fn() -> C>);
 
-impl<C: Capabilities> Component for Owns<C> {
+impl<C: Io> Component for Owns<C> {
     type Io = C;
     type Connections = ();
     type Configuration = ();
@@ -119,9 +119,9 @@ impl<C: Capabilities> Component for Owns<C> {
 }
 
 /// A Program of one Component that owns `C`, and those capabilities.
-fn program_owning<C: Capabilities>() -> (Program, C) {
+fn program_owning<C: Io>() -> (Program, C) {
     let mut builder = Program::builder();
-    let owner = builder.component::<Owns<C>>(());
+    let owner = builder.add_component::<Owns<C>>(());
     let io = owner.io.clone();
     (builder.build().expect("valid program"), io)
 }

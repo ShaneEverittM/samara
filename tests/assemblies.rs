@@ -1,4 +1,4 @@
-//! Acceptance evidence for `Assembly`, `Capabilities`, and `Drivers`: an
+//! Acceptance evidence for `Assembly`, `Io`, and `Drivers`: an
 //! Assembly returns its members' capabilities as its `Io`; the live builder
 //! is supplied a matching tuple of Drivers for them and the controlled
 //! builder takes nothing.
@@ -107,9 +107,9 @@ impl Assembly for Recorder {
 
     fn install(program: &mut ProgramBuilder, _: ()) -> (RecorderExports, RecorderNeeds) {
         let recorder = program
-            .component_builder::<Recorder>()
+            .configure_component::<Recorder>()
             .name("recorder")
-            .register(());
+            .add(());
         let io = recorder.io.clone();
         (
             RecorderExports {
@@ -165,8 +165,8 @@ impl VendorsDrivers for Recorder {
 /// The host names its own Port and connects the Assembly's Connector to it.
 fn assemble() -> (Program, InstalledAssembly<Recorder>, Port<LedgerMessage>) {
     let mut program = Program::builder();
-    let recorder = program.assembly::<Recorder>(());
-    let ledger = program.port::<LedgerMessage>(PortId::new("ledger"));
+    let recorder = program.add_assembly::<Recorder>(());
+    let ledger = program.add_port::<LedgerMessage>(PortId::new("ledger"));
     program.connect(&ledger, &recorder.exports().ledger);
     (
         program.build().expect("program assembles"),
@@ -324,8 +324,8 @@ impl Assembly for Telemetry {
     type Io = ();
 
     fn install(program: &mut ProgramBuilder, _: ()) -> (TelemetryDoors, ()) {
-        let ingest = program.component::<Ingest>(());
-        let reader = program.component::<Reader>(());
+        let ingest = program.add_component::<Ingest>(());
+        let reader = program.add_component::<Reader>(());
         (
             TelemetryDoors {
                 samples: ingest.connector(),
@@ -367,9 +367,9 @@ impl Component for Probe {
 #[test]
 fn an_assembly_with_two_doors_exports_both_as_peers() {
     let mut program = Program::builder();
-    let telemetry = program.assembly::<Telemetry>(());
+    let telemetry = program.add_assembly::<Telemetry>(());
     let doors = telemetry.exports();
-    program.component::<Probe>(ProbeConnections {
+    program.add_component::<Probe>(ProbeConnections {
         samples: doors.samples.clone(),
         queries: doors.queries.clone(),
     });
@@ -392,7 +392,7 @@ impl Assembly for Background {
     type Io = ();
 
     fn install(program: &mut ProgramBuilder, _: ()) -> ((), ()) {
-        program.component::<Ingest>(());
+        program.add_component::<Ingest>(());
         ((), ())
     }
 }
@@ -400,7 +400,7 @@ impl Assembly for Background {
 #[test]
 fn an_assembly_nobody_sends_to_exports_nothing() {
     let mut program = Program::builder();
-    let background = program.assembly::<Background>(());
+    let background = program.add_assembly::<Background>(());
     let () = background.exports();
     program.build().expect("program assembles");
 }

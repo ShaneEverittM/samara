@@ -219,10 +219,10 @@ Program's complete world boundary knowable before execution.
 
 A Component names its capabilities as `type Io`
 ([ADR-0029](adr/0029-capabilities-are-named-values-a-component-owns.md)). A
-struct with `#[derive(Clone, Capabilities)]` gives each one a field name:
+struct with `#[derive(Clone, Io)]` gives each one a field name:
 
 ```rust,ignore
-#[derive(Clone, Capabilities)]
+#[derive(Clone, Io)]
 struct MonitorIo {
     input: Source<StdinLines>,
     output: Effect<PrintStdout>,
@@ -241,7 +241,7 @@ impl Component for Monitor {
 
 A small Component or a test can use a tuple, `type Io = (Effect<Tag>,)`, a
 single capability, or `()`. The derive is the same as writing
-`Capabilities::declare` by hand with one `new.field("name")` per field.
+`Io::declare` by hand with one `new.field("name")` per field.
 
 `Program::builder()` declares nothing up front. Registering a Component
 creates its capabilities, and registration returns an `InstalledComponent<C>`
@@ -250,9 +250,9 @@ whose public `io` field holds them
 
 ```rust,ignore
 let mut builder = Program::builder();
-let journal = builder.assembly::<Journal>(());
+let journal = builder.add_assembly::<Journal>(());
 let monitor = builder
-    .component::<Monitor>(journal.connector());
+    .add_component::<Monitor>(journal.connector());
 let program = builder.build()?;
 ```
 
@@ -317,7 +317,7 @@ is a named struct.
 
 To call `init`, `update`, or `subscriptions` directly in a unit test without
 a Program, make a context with `Context::detached(connections,
-configuration)`, whose capabilities come from `Capabilities::detached()`:
+configuration)`, whose capabilities come from `Io::detached()`:
 
 ```rust,ignore
 let cx = Context::<Monitor>::detached(journal, ());
@@ -338,7 +338,7 @@ Declare `File<ReadAppend>` when operations must target the same file
 ([ADR-0022](adr/0022-file-resource-capabilities.md)):
 
 ```rust,ignore
-#[derive(Clone, Capabilities)]
+#[derive(Clone, Io)]
 pub struct JournalIo {
     pub file: File<ReadAppend>,
     pub clock: Effect<ReadSystemTime>,
@@ -937,7 +937,7 @@ impl Assembly for Journal {
         program: &mut ProgramBuilder,
         _: Self::Config,
     ) -> (Connector<JournalMessage>, JournalIo) {
-        let recorder = program.component::<Recorder>(());
+        let recorder = program.add_component::<Recorder>(());
         (recorder.accepting(Message::Journal), recorder.io.clone())
     }
 }
@@ -951,7 +951,7 @@ impl Assembly for Journal {
 | Assembly world dependencies | `Assembly::Io` | Returned by `install` from its members' `io` |
 | Live Drivers | `supply(&capability, driver)` on `Runtime::builder(program)` | The host |
 
-`program.assembly::<A>(config)` returns `InstalledAssembly<A>`
+`program.add_assembly::<A>(config)` returns `InstalledAssembly<A>`
 holding the exports and a public `io` field. `install` receives no
 capabilities. The Program records every capability, so `build()` on the live
 setup can check that each one was supplied a Driver; controlled execution
@@ -1126,7 +1126,7 @@ the first implementation.
 
 Component registration needs only the Component's connections. The builder
 issues an opaque identity and returns the handle. An optional name is set through
-`component_builder::<C>().name("Primary worker").register(connections)` (ADR-0030); it
+`configure_component::<C>().name("Primary worker").add(connections)` (ADR-0030); it
 improves diagnostics; duplicate names are allowed, and names do not affect
 routing or controlled execution order. Repeated Assembly installations need no
 coordination of private Component names.

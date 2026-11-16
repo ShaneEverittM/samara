@@ -79,10 +79,10 @@ fn controlled_http_fixture() -> (
     ComponentRef<TimeReader>,
 ) {
     let mut builder = Program::builder();
-    let port = builder.port(PortId::new(TIME_SERVER_PORT));
-    let server = builder.component::<HttpTimeServer>(());
+    let port = builder.add_port(PortId::new(TIME_SERVER_PORT));
+    let server = builder.add_component::<HttpTimeServer>(());
     builder.connect(&port, &server.connector());
-    let reader = builder.component::<TimeReader>(port);
+    let reader = builder.add_component::<TimeReader>(port);
     let runtime = ControlledRuntime::builder(builder.build().unwrap())
         .control_all()
         .build()

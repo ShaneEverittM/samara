@@ -7,6 +7,8 @@
   `Config` into `Connections` and `Configuration`, replaced the `config`
   and `io` parameters with one `Context`, and added connections to the
   manifest; the snippets below predate it.
+  [ADR-0032](0032-builder-verbs-and-the-io-trait.md) renamed the `Capabilities`
+  trait and derive to `Io`.
 - Date: November 15, 2026
 - Deciders: Samara maintainers
 - Completes: [ADR-0028](0028-a-capability-belongs-to-one-component.md)

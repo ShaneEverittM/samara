@@ -31,7 +31,7 @@ enum EffectMessage {
 
 #[test]
 fn v3_effect_command_exposes_descriptor_and_maps_one_outcome() {
-    let (declared_0,) = <(samara::Effect<PersistValue>,) as samara::Capabilities>::detached();
+    let (declared_0,) = <(samara::Effect<PersistValue>,) as samara::Io>::detached();
     let persist = declared_0;
     let command = Effect::perform(&persist, PersistValue { value: 41 }).producing(|outcome| {
         EffectMessage::Persisted {
@@ -58,7 +58,7 @@ fn v3_effect_command_exposes_descriptor_and_maps_one_outcome() {
 
 #[test]
 fn v3_all_effect_outcomes_remain_typed_message_input() {
-    let (declared_0,) = <(samara::Effect<PersistValue>,) as samara::Capabilities>::detached();
+    let (declared_0,) = <(samara::Effect<PersistValue>,) as samara::Io>::detached();
     let persist = declared_0;
     let failed = Effect::perform(&persist, PersistValue { value: 5 })
         .producing(|outcome| EffectMessage::Persisted {
@@ -79,7 +79,7 @@ fn v3_all_effect_outcomes_remain_typed_message_input() {
 
 #[test]
 fn v3_equal_effect_descriptors_remain_distinct_command_occurrences() {
-    let (declared_0,) = <(samara::Effect<PersistValue>,) as samara::Capabilities>::detached();
+    let (declared_0,) = <(samara::Effect<PersistValue>,) as samara::Io>::detached();
     let persist = declared_0;
     let command: Command<EffectMessage> = Command::batch([
         Effect::perform(&persist, PersistValue { value: 7 }).producing(|outcome| {
@@ -135,8 +135,7 @@ enum StreamMessage {
 
 #[test]
 fn v4_source_event_mapper_is_reusable_before_delivery() {
-    let (declared_0,) =
-        <(samara::Source<StreamDescriptor<u64>>,) as samara::Capabilities>::detached();
+    let (declared_0,) = <(samara::Source<StreamDescriptor<u64>>,) as samara::Io>::detached();
     let input = declared_0;
     let subscription = Subscription::source_with(
         &input,
@@ -321,7 +320,7 @@ fn framed_layers_compose_without_profile_binding() {
 
 #[test]
 fn v4_framed_source_events_map_into_component_messages() {
-    let (declared_0,) = <(samara::Source<FramedChunks>,) as samara::Capabilities>::detached();
+    let (declared_0,) = <(samara::Source<FramedChunks>,) as samara::Io>::detached();
     let socket = declared_0;
     let descriptor = FramedChunks::new(
         RawChunks {

@@ -127,10 +127,10 @@ impl EffectDriver<ObserveHttp> for HttpObserver {
 fn http_program(requests: Vec<HttpRequest>) -> (Program, InstalledComponent<HttpSequence>) {
     let mut builder = Program::builder();
     let probe = builder
-        .component_builder::<HttpSequence>()
+        .configure_component::<HttpSequence>()
         .name("http-sequence")
         .configuration(requests)
-        .register(());
+        .add(());
     (builder.build().expect("valid HTTP program"), probe)
 }
 

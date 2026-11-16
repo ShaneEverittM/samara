@@ -16,7 +16,7 @@ impl Assembly for Journal {
         program: &mut ProgramBuilder,
         _: Self::Config,
     ) -> (Connector<JournalMessage>, JournalIo) {
-        let recorder = program.component::<Recorder>(());
+        let recorder = program.add_component::<Recorder>(());
         (recorder.accepting(Message::Journal), recorder.io.clone())
     }
 }
