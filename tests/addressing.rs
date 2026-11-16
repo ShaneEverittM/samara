@@ -91,12 +91,12 @@ impl Component for Clerk {
     ) -> Command<ClerkMessage> {
         match message {
             ClerkMessage::Start => Command::batch([
-                Command::send(&cx.connections, LedgerMessage::Add(2)),
-                Command::send(&cx.connections, LedgerMessage::Add(3)),
-                match cx.configuration {
-                    None => Command::request(&cx.connections, LedgerMessage::Total)
+                Command::send(&cx.to, LedgerMessage::Add(2)),
+                Command::send(&cx.to, LedgerMessage::Add(3)),
+                match cx.config {
+                    None => Command::request(&cx.to, LedgerMessage::Total)
                         .producing(ClerkMessage::Total),
-                    Some(patience) => Command::request(&cx.connections, LedgerMessage::Park)
+                    Some(patience) => Command::request(&cx.to, LedgerMessage::Park)
                         .timeout(patience)
                         .producing(ClerkMessage::Total),
                 },
@@ -228,7 +228,7 @@ fn an_initial_send_to_a_foreign_port_fails_both_profile_builds() {
         type Model = ();
         type Message = ClerkMessage;
         fn init(cx: &Context<Self>) -> Init<(), ClerkMessage> {
-            Init::new(()).with_command(Command::send(&cx.configuration, LedgerMessage::Add(1)))
+            Init::new(()).with_command(Command::send(&cx.config, LedgerMessage::Add(1)))
         }
         fn update(_: &Context<Self>, _: &mut (), _: ClerkMessage) -> Command<ClerkMessage> {
             Command::none()

@@ -61,8 +61,9 @@ The accepted Phase 2 audit constrains Phase 3 to this slice:
   ([ADR-0013](adr/0013-component-kinds-assemblies-and-first-party-effects.md),
   [ADR-0031](adr/0031-connections-configuration-and-context.md)).
 - Every Component function receives the three immutable inputs as one
-  `&Context<Self>` with public fields `io`, `connections`, and
-  `configuration`. `Context::detached(connections, configuration)` makes one
+  `&Context<Self>` with public fields `io`, `to` (the connections), and
+  `config` (the configuration)
+  ([ADR-0033](adr/0033-context-fields-are-io-to-and-config.md)). `Context::detached(connections, configuration)` makes one
   with detached capabilities for a unit test.
 - `Component::Connections` implements `Connections`: `()`, `Connector<M>`,
   `Port<M>`, `ComponentRef<C>`, an `Option`, `Vec`, or tuple of those, or a

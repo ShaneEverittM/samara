@@ -106,10 +106,10 @@ impl Component for KernelComponent {
     type Message = KernelMessage;
 
     fn init(cx: &Context<Self>) -> Init<Self::Model, Self::Message> {
-        cx.configuration.init_calls.fetch_add(1, Ordering::SeqCst);
+        cx.config.init_calls.fetch_add(1, Ordering::SeqCst);
         Init::new(OwnedModel {
             state: KernelModel::default(),
-            drops: cx.configuration.model_drops.clone(),
+            drops: cx.config.model_drops.clone(),
         })
     }
 
@@ -119,7 +119,7 @@ impl Component for KernelComponent {
         message: Self::Message,
     ) -> Command<Self::Message> {
         match message {
-            KernelMessage::Add(amount) => model.state.total += amount * cx.configuration.scale,
+            KernelMessage::Add(amount) => model.state.total += amount * cx.config.scale,
         }
         Command::none()
     }

@@ -91,7 +91,7 @@ impl Component for Quota {
 
     fn init(cx: &Context<Self>) -> Init<Self::Model, Self::Message> {
         Init::new(QuotaModel {
-            remaining: cx.configuration.initial,
+            remaining: cx.config.initial,
         })
     }
 
@@ -236,7 +236,7 @@ impl Component for Counter {
                 // granted. `CounterMessage::Reserved` is the explicit continuation:
                 // the runtime maps this request's eventual terminal outcome back
                 // into the requester's ordinary message stream.
-                Command::request(&cx.connections.quota, move |reply_with| {
+                Command::request(&cx.to.quota, move |reply_with| {
                     QuotaProtocolMessage::Reserve { amount, reply_with }
                 })
                 .producing(CounterMessage::Reserved)
@@ -282,7 +282,7 @@ impl Component for Counter {
         // task, receiver, or cancellation handle to the Component.
         Subscriptions::one(Subscription::source_with(
             &cx.io.increments,
-            cx.configuration.increments.clone(),
+            cx.config.increments.clone(),
             |event| match event {
                 SourceEvent::Item(by) => CounterMessage::Increment(by),
                 SourceEvent::Ended => CounterMessage::InputClosed,

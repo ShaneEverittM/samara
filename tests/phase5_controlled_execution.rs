@@ -221,7 +221,7 @@ impl Component for EffectComponent {
         match message {
             EffectMessage::Start => {
                 model.starts += 1;
-                let mapper_calls = cx.configuration.mapper_calls.clone();
+                let mapper_calls = cx.config.mapper_calls.clone();
                 Effect::perform(&cx.io, ProbeEffect(41)).producing(move |outcome| {
                     mapper_calls.fetch_add(1, Ordering::SeqCst);
                     EffectMessage::Finished(outcome)
@@ -1060,7 +1060,7 @@ impl Component for Forwarder {
         _model: &mut Self::Model,
         _message: Self::Message,
     ) -> Command<Self::Message> {
-        Command::send(&cx.connections.target, TimerMessage::Mark("direct-send"))
+        Command::send(&cx.to.target, TimerMessage::Mark("direct-send"))
     }
 }
 
@@ -1230,7 +1230,7 @@ impl Component for OwnershipComponent {
         match message {
             OwnershipMessage::Kick => Command::batch([
                 Effect::perform(effect, ProbeEffect(1)).producing(OwnershipMessage::Effect),
-                Command::request(&cx.connections.port, |reply_with| {
+                Command::request(&cx.to.port, |reply_with| {
                     EchoProtocolMessage::Echo(1, reply_with)
                 })
                 .producing(OwnershipMessage::Request),
@@ -1346,7 +1346,7 @@ impl Component for CancellationProbe {
     }
 
     fn subscriptions(cx: &Context<Self>, _model: &Self::Model) -> Subscriptions<Self::Message> {
-        let mapper_calls = cx.configuration.mapper_calls.clone();
+        let mapper_calls = cx.config.mapper_calls.clone();
         Subscriptions::one(
             Subscription::source_with(
                 &cx.io,
@@ -1447,7 +1447,7 @@ impl Component for EchoProvider {
         message: Self::Message,
     ) -> Command<Self::Message> {
         let EchoProviderMessage::Protocol(EchoProtocolMessage::Echo(value, reply_with)) = message;
-        if cx.configuration.reply {
+        if cx.config.reply {
             Command::reply(reply_with, value)
         } else {
             let _unanswered = reply_with;
@@ -1488,8 +1488,8 @@ impl Component for EchoRequester {
         message: Self::Message,
     ) -> Command<Self::Message> {
         match message {
-            EchoRequesterMessage::Start => Command::batch((0..cx.configuration).map(|slot| {
-                Command::request(&cx.connections, |reply_with| {
+            EchoRequesterMessage::Start => Command::batch((0..cx.config).map(|slot| {
+                Command::request(&cx.to, |reply_with| {
                     EchoProtocolMessage::Echo(7, reply_with)
                 })
                 .producing(move |outcome| EchoRequesterMessage::Replied { slot, outcome })

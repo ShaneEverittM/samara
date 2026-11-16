@@ -206,7 +206,7 @@ mod tests {
             match model {
                 Some(binding) => Subscriptions::one(
                     Subscription::source_with(
-                        &cx.configuration.source,
+                        &cx.config.source,
                         StreamDescriptor::<u64>::named(*binding),
                         DesiredMessage::Input,
                     )

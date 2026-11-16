@@ -49,7 +49,7 @@ impl<W: Wiring> Component for Clerk<W> {
     }
 
     fn update(cx: &Context<Self>, _: &mut (), _: ()) -> Command<()> {
-        cx.connections.add(cx.configuration)
+        cx.to.add(cx.config)
     }
 }
 

@@ -123,7 +123,7 @@ impl Component for Elder {
         heard: &mut Self::Model,
         message: AskerMessage,
     ) -> Command<AskerMessage> {
-        ask(&cx.connections, heard, message)
+        ask(&cx.to, heard, message)
     }
 }
 
@@ -147,11 +147,11 @@ impl Component for Asker {
         heard: &mut Self::Model,
         message: AskerMessage,
     ) -> Command<AskerMessage> {
-        ask(&cx.connections, heard, message)
+        ask(&cx.to, heard, message)
     }
 
     fn shutdown(cx: &Context<Self>, _: Self::Model) -> Command<NoMessage> {
-        Command::send(&cx.connections, VaultMessage::Note("asker out"))
+        Command::send(&cx.to, VaultMessage::Note("asker out"))
     }
 }
 

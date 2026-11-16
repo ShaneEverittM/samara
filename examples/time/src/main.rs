@@ -216,11 +216,10 @@ impl Component for Cli {
             CliMessage::Command(CliCommand::Print(text)) => {
                 samara::println!(&cx.io.stdout, "{text}")
             }
-            CliMessage::Command(CliCommand::GetTime) => Command::request(
-                &cx.connections.time_server,
-                TimeServerMessage::GetCurrentTime,
-            )
-            .producing(CliMessage::TimeReceived),
+            CliMessage::Command(CliCommand::GetTime) => {
+                Command::request(&cx.to.time_server, TimeServerMessage::GetCurrentTime)
+                    .producing(CliMessage::TimeReceived)
+            }
             CliMessage::InvalidCommand(command) => samara::eprintln!(
                 &cx.io.stderr,
                 "Unknown command `{command}`; use `print <text>` or `time`"

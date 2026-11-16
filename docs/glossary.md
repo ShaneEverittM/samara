@@ -137,8 +137,8 @@ and `add_component::<C>(..)` name the kind.
 
 **Context** — `Context<C>`: everything a Component is given and cannot
 change, passed by shared reference to every `init`, `update`,
-`subscriptions`, and `shutdown` call. It has three public fields: `io`,
-`connections`, and `configuration` (ADR-0031). `Context::detached` makes one
+`subscriptions`, and `shutdown` call. It has three public fields: `io`, `to`
+(the connections), and `config` (the configuration) (ADR-0031, ADR-0033). `Context::detached` makes one
 for a unit test.
 
 **Connections / `Component::Connections`** — The other Components a
@@ -716,6 +716,7 @@ to hold.
 | `CapabilityManifest`, `CapabilityManifest::entries()` | `Manifest`, `Manifest::capabilities()` and `Manifest::connections()` | Renamed November 15, 2026 (ADR-0031). The manifest also lists declared connections. |
 | `Capabilities` (trait and derive), `Capabilities::detached()` | `Io` (trait and derive), `Io::detached()` | Renamed November 15, 2026 (ADR-0032), so the trait matches `Component::Io` as `Connections` matches `Component::Connections`. |
 | `ProgramBuilder::component`, `component_builder` ending in `.register(..)`, `assembly`, `port` | `add_component`, `configure_component` ending in `.add(..)`, `add_assembly`, `add_port` | Renamed November 15, 2026 (ADR-0032). Builder methods are verbs; the noun rule of ADR-0030 is withdrawn. |
+| `cx.connections`, `cx.configuration` | `cx.to`, `cx.config` | Renamed November 15, 2026 (ADR-0033). The fields are written on every line that uses them; the associated types keep the long names. |
 | `File` narrowing: `read_only()`, `append_only()`, `read_append()`, `write_only()` | None | Removed November 15, 2026 (ADR-0028, ADR-0029). Narrowing existed to hand a file to another Component; a file now has one owner and other Components send it Messages. |
 | `InstalledAssembly::capabilities()`, `InstalledComponent::capabilities()` | The public `io` field | Renamed November 15, 2026 (ADR-0029). The accessor was the interim ADR-0028 spelling. |
 | `VendorsDrivers::drivers(driver_config)` returning a driver tuple | `VendorsDrivers::supply(setup, io, driver_config)` | Replaced November 15, 2026 (ADR-0029). The Assembly supplies its own named capabilities, so no tuple order is exposed. |

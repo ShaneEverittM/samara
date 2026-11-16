@@ -30,11 +30,11 @@ impl Component for Probe {
     fn init(cx: &Context<Self>) -> Init<Self::Model, Self::Message> {
         let (http, _) = &cx.io;
         Init::default().with_command(
-            cx.configuration
+            cx.config
                 .request
                 .clone()
                 .on_response()
-                .follow_redirects(cx.configuration.limit)
+                .follow_redirects(cx.config.limit)
                 .into_command_with(http, |outcome| outcome),
         )
     }

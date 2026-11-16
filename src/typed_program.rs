@@ -620,8 +620,8 @@ impl<C: Component, Configuration> ComponentBuilder<'_, C, Configuration> {
         let io = declare::<C::Io>(self.program);
         let context = Context {
             io: io.clone(),
-            connections,
-            configuration: self.configuration.take(),
+            to: connections,
+            config: self.configuration.take(),
         };
         let reference = self.program.register::<C>(self.name, context);
         self.program.claim(mark, reference.id());

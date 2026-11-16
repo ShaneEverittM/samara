@@ -82,11 +82,10 @@ impl Component for EffectComponent {
     ) -> Command<Self::Message> {
         let (own,) = &cx.io;
         match message {
-            EffectMessage::Trigger => Effect::perform(
-                cx.configuration.smuggled.as_ref().unwrap_or(own),
-                LateEffect(41),
-            )
-            .producing(|EffectOutcome::Succeeded(value)| EffectMessage::Finished(value)),
+            EffectMessage::Trigger => {
+                Effect::perform(cx.config.smuggled.as_ref().unwrap_or(own), LateEffect(41))
+                    .producing(|EffectOutcome::Succeeded(value)| EffectMessage::Finished(value))
+            }
             EffectMessage::Finished(value) => {
                 *model = Some(value);
                 Command::none()
@@ -140,7 +139,7 @@ impl Component for SourceComponent {
     type Message = SourceMessage;
 
     fn init(cx: &Context<Self>) -> Init<Self::Model, Self::Message> {
-        Init::new(cx.configuration.initially_enabled)
+        Init::new(cx.config.initially_enabled)
     }
 
     fn update(
@@ -160,7 +159,7 @@ impl Component for SourceComponent {
         if *enabled {
             Subscriptions::one(
                 Subscription::source_with(
-                    cx.configuration.smuggled.as_ref().unwrap_or(own),
+                    cx.config.smuggled.as_ref().unwrap_or(own),
                     LateSource,
                     SourceMessage::Event,
                 )
@@ -364,9 +363,8 @@ impl Component for InitialEffectComponent {
     type Message = ();
 
     fn init(cx: &Context<Self>) -> Init<Self::Model, Self::Message> {
-        Init::new(()).with_command(
-            Effect::perform(&cx.configuration.effect, LateEffect(1)).discard_outcome(),
-        )
+        Init::new(())
+            .with_command(Effect::perform(&cx.config.effect, LateEffect(1)).discard_outcome())
     }
 
     fn update(
@@ -456,7 +454,7 @@ impl Component for InitialForeignSend {
     type Message = ();
 
     fn init(cx: &Context<Self>) -> Init<Self::Model, Self::Message> {
-        Init::new(()).with_command(Command::send(&cx.configuration.target, ()))
+        Init::new(()).with_command(Command::send(&cx.config.target, ()))
     }
 
     fn update(
@@ -509,10 +507,7 @@ impl Component for InitialForeignPortSend {
     type Message = ();
 
     fn init(cx: &Context<Self>) -> Init<Self::Model, Self::Message> {
-        Init::new(()).with_command(Command::send(
-            &cx.configuration.port,
-            ForeignMessage::Signal,
-        ))
+        Init::new(()).with_command(Command::send(&cx.config.port, ForeignMessage::Signal))
     }
 
     fn update(
@@ -538,9 +533,8 @@ impl Component for InitialForeignRequest {
     type Message = ();
 
     fn init(cx: &Context<Self>) -> Init<Self::Model, Self::Message> {
-        Init::new(()).with_command(
-            Command::request(&cx.configuration.port, ForeignMessage::Read).producing(|_| ()),
-        )
+        Init::new(())
+            .with_command(Command::request(&cx.config.port, ForeignMessage::Read).producing(|_| ()))
     }
 
     fn update(
@@ -794,7 +788,7 @@ impl Component for DualStreamComponent {
     ) -> Command<Self::Message> {
         let (_, _, observe) = &cx.io;
         let record = |lane, value| {
-            if cx.configuration.observe {
+            if cx.config.observe {
                 Effect::perform(observe, RecordDualStream { lane, value }).discard_outcome()
             } else {
                 Command::none()
@@ -821,13 +815,13 @@ impl Component for DualStreamComponent {
         vec![
             Subscription::source_with(
                 first,
-                cx.configuration.descriptor.clone(),
+                cx.config.descriptor.clone(),
                 DualStreamMessage::First,
             )
             .key("first"),
             Subscription::source_with(
                 second,
-                cx.configuration.descriptor.clone(),
+                cx.config.descriptor.clone(),
                 DualStreamMessage::Second,
             )
             .key("second"),
@@ -995,7 +989,7 @@ impl Component for FramedStreamComponent {
         match event {
             SourceEvent::Item(value) => {
                 model.push(value);
-                if cx.configuration.observe {
+                if cx.config.observe {
                     Effect::perform(
                         observe,
                         RecordDualStream {

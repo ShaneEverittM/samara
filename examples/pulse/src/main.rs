@@ -52,7 +52,7 @@ impl Component for Monitor {
     ) -> Command<Self::Message> {
         match message {
             Message::Input(s) => {
-                Command::request(&cx.connections, move |reply| JournalMessage::Recent {
+                Command::request(&cx.to, move |reply| JournalMessage::Recent {
                     count: if s == "5" { 5 } else { 10 },
                     reply,
                 })

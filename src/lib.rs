@@ -693,8 +693,10 @@ where
 /// connections to other Components, and its configuration.
 ///
 /// Samara builds one at registration and passes it to every [`Component`]
-/// function. The fields are public: read `cx.io`, `cx.connections`, and
-/// `cx.configuration` directly.
+/// function. The fields are public and short, because they are written on
+/// every line that uses them: `cx.io` is the world, `cx.to` is the other
+/// Components this one sends to, and `cx.config` is its settings
+/// (ADR-0033).
 ///
 /// ```
 /// use samara::prelude::*;
@@ -707,7 +709,7 @@ where
 ///     type Message = u64;
 ///     fn init(_: &Context<Self>) -> Init<u64, u64> { Init::new(0) }
 ///     fn update(cx: &Context<Self>, total: &mut u64, amount: u64) -> Command<u64> {
-///         *total = (*total + amount).min(cx.configuration);
+///         *total = (*total + amount).min(cx.config);
 ///         Command::none()
 ///     }
 /// }
@@ -719,10 +721,11 @@ where
 pub struct Context<C: Component + ?Sized> {
     /// The capabilities created for this Component: its access to the world.
     pub io: C::Io,
-    /// The other Components this one can send to.
-    pub connections: C::Connections,
-    /// This Component's settings.
-    pub configuration: C::Configuration,
+    /// The other Components this one can send to: its
+    /// [`Component::Connections`].
+    pub to: C::Connections,
+    /// This Component's settings: its [`Component::Configuration`].
+    pub config: C::Configuration,
 }
 
 impl<C: Component + ?Sized> Context<C> {
@@ -732,8 +735,8 @@ impl<C: Component + ?Sized> Context<C> {
     pub fn detached(connections: C::Connections, configuration: C::Configuration) -> Self {
         Self {
             io: C::Io::detached(),
-            connections,
-            configuration,
+            to: connections,
+            config: configuration,
         }
     }
 }
@@ -5036,7 +5039,7 @@ impl ProgramBuilder {
             marker: PhantomData,
         };
         let mut listed = Vec::new();
-        context.connections.list(&mut Listing::new(&mut listed));
+        context.to.list(&mut Listing::new(&mut listed));
         self.connections.extend(
             listed
                 .into_iter()
@@ -5112,7 +5115,7 @@ impl ProgramBuilder {
     ///     type Model = Option<u64>;
     ///     type Message = RequestOutcome<u64>;
     ///     fn init(cx: &Context<Self>) -> Init<Self::Model, Self::Message> {
-    ///         Init::default().with_command(Command::request(&cx.connections, CountMessage::Read).producing(|outcome| outcome))
+    ///         Init::default().with_command(Command::request(&cx.to, CountMessage::Read).producing(|outcome| outcome))
     ///     }
     ///     fn update(_: &Context<Self>, value: &mut Option<u64>, reply: Self::Message) -> Command<Self::Message> {
     ///         if let RequestOutcome::Replied(count) = reply { *value = Some(count); }

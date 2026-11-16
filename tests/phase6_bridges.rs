@@ -93,11 +93,11 @@ impl Component for StreamProbe {
         if model.desired {
             STREAM_KEYS
                 .into_iter()
-                .take(cx.configuration.claimants)
+                .take(cx.config.claimants)
                 .map(|key| {
                     Subscription::source_with(
                         stream,
-                        cx.configuration.descriptor.clone(),
+                        cx.config.descriptor.clone(),
                         StreamMessage::Event,
                     )
                     .key(key)
@@ -311,7 +311,7 @@ impl Component for TcpProbe {
         let (source, _) = &cx.io;
         if *active {
             Subscriptions::one(
-                Subscription::source_with(source, cx.configuration.tcp.clone(), TcpMessage::Event)
+                Subscription::source_with(source, cx.config.tcp.clone(), TcpMessage::Event)
                     .key("tcp"),
             )
         } else {

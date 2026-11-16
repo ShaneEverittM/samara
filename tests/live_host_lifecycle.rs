@@ -38,8 +38,7 @@ impl Component for FaultProbe {
     ) -> Command<Self::Message> {
         match message {
             FaultMessage::Trigger => {
-                Effect::perform(&cx.configuration.effect, DynamicallyReachedEffect)
-                    .discard_outcome()
+                Effect::perform(&cx.config.effect, DynamicallyReachedEffect).discard_outcome()
             }
         }
     }
@@ -232,8 +231,7 @@ impl Component for Stopping {
     }
 
     fn shutdown(cx: &Context<Self>, (): ()) -> Command<NoMessage> {
-        cx.configuration
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        cx.config.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Command::none()
     }
 }

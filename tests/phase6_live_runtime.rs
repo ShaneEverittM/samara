@@ -95,7 +95,7 @@ impl Component for Counter {
             Subscriptions::one(
                 Subscription::source_with(
                     &cx.io.0,
-                    cx.configuration.input_descriptor.clone(),
+                    cx.config.input_descriptor.clone(),
                     CounterMessage::Input,
                 )
                 .key("input"),
@@ -220,7 +220,7 @@ impl Component for CancelProbe {
     ) -> Command<Self::Message> {
         match message {
             CancelMessage::Start => {
-                let mapper_calls = cx.configuration.mapper_calls.clone();
+                let mapper_calls = cx.config.mapper_calls.clone();
                 Effect::perform(&cx.io.0, Hang).producing(move |_| {
                     mapper_calls.fetch_add(1, Ordering::SeqCst);
                     CancelMessage::UnexpectedOutcome
@@ -398,7 +398,7 @@ impl Component for InitialCancelProbe {
     type Message = ();
 
     fn init(cx: &Context<Self>) -> Init<Self::Model, Self::Message> {
-        let mapper_calls = cx.configuration.mapper_calls.clone();
+        let mapper_calls = cx.config.mapper_calls.clone();
         Init::new(()).with_command(Effect::perform(&cx.io.0, Hang).producing(move |_| {
             mapper_calls.fetch_add(1, Ordering::SeqCst);
         }))
@@ -682,7 +682,7 @@ impl Component for SourceProbe {
         message: Self::Message,
     ) -> Command<Self::Message> {
         match message {
-            SourceMessage::Event(SourceEvent::Item(value)) if cx.configuration.causal_timer => {
+            SourceMessage::Event(SourceEvent::Item(value)) if cx.config.causal_timer => {
                 Command::after(
                     std::time::Duration::from_millis(1),
                     SourceMessage::Timer(value),
@@ -1345,8 +1345,8 @@ impl Component for QueryProbe {
     ) -> Command<Self::Message> {
         match message {
             QueryMessage::Start => {
-                let success_calls = cx.configuration.mapper_calls.clone();
-                let failure_calls = cx.configuration.mapper_calls.clone();
+                let success_calls = cx.config.mapper_calls.clone();
+                let failure_calls = cx.config.mapper_calls.clone();
                 Command::batch([
                     Effect::perform(&cx.io.0, Query { fail: false }).producing(move |outcome| {
                         success_calls.fetch_add(1, Ordering::SeqCst);
@@ -1645,7 +1645,7 @@ impl Component for EchoProvider {
     ) -> Command<Self::Message> {
         match message {
             EchoProviderMessage::Echo(EchoMessage::Echo(value, reply_with)) => {
-                if cx.configuration.reply {
+                if cx.config.reply {
                     Command::reply(reply_with, value)
                 } else {
                     Effect::perform(&cx.io.0, ProviderSeen).producing(|_| EchoProviderMessage::Seen)
@@ -1705,14 +1705,13 @@ impl Component for EchoRequester {
     ) -> Command<Self::Message> {
         match message {
             EchoRequesterMessage::Start => {
-                let continuation_calls = cx.configuration.clone();
-                Command::request(&cx.connections, |reply_with| {
-                    EchoMessage::Echo(42, reply_with)
-                })
-                .producing(move |outcome| {
-                    continuation_calls.fetch_add(1, Ordering::SeqCst);
-                    EchoRequesterMessage::Outcome(outcome)
-                })
+                let continuation_calls = cx.config.clone();
+                Command::request(&cx.to, |reply_with| EchoMessage::Echo(42, reply_with)).producing(
+                    move |outcome| {
+                        continuation_calls.fetch_add(1, Ordering::SeqCst);
+                        EchoRequesterMessage::Outcome(outcome)
+                    },
+                )
             }
             EchoRequesterMessage::Outcome(RequestOutcome::Replied(value)) => {
                 Effect::perform(&cx.io.0, ObserveReply(value))

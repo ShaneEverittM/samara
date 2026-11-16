@@ -268,15 +268,13 @@ impl Component for Requester {
         match message {
             // The short form: `Message::from` is the continuation, so the
             // `From<RequestOutcome<u64>>` impl above still decides the variant.
-            RequesterMessage::StartDefault => {
-                Command::request(&cx.connections.echo, |reply_with| {
-                    EchoProtocolMessage::Echo(11, reply_with)
-                })
-                .producing(RequesterMessage::from)
-            }
+            RequesterMessage::StartDefault => Command::request(&cx.to.echo, |reply_with| {
+                EchoProtocolMessage::Echo(11, reply_with)
+            })
+            .producing(RequesterMessage::from),
             RequesterMessage::StartExplicit => {
                 let context = "second request";
-                Command::request(&cx.connections.echo, |reply_with| {
+                Command::request(&cx.to.echo, |reply_with| {
                     EchoProtocolMessage::Echo(12, reply_with)
                 })
                 .producing(move |outcome| RequesterMessage::Explicit { context, outcome })

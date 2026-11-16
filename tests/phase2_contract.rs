@@ -107,12 +107,8 @@ impl Component for ContractComponent {
         }
 
         Subscriptions::one(
-            Subscription::source_with(
-                source,
-                cx.configuration.input.clone(),
-                ContractMessage::Input,
-            )
-            .key(INPUT_SUBSCRIPTION),
+            Subscription::source_with(source, cx.config.input.clone(), ContractMessage::Input)
+                .key(INPUT_SUBSCRIPTION),
         )
     }
 }

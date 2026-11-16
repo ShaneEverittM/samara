@@ -71,7 +71,7 @@ impl Component for OutputProbe {
             OutputMessage::Finished(outcome) => {
                 let EffectOutcome::Succeeded(()) = outcome;
                 model.succeeded += 1;
-                if cx.configuration.observe {
+                if cx.config.observe {
                     Effect::perform(observe, ObserveOutput(true))
                         .producing(|_| OutputMessage::Observed)
                 } else {

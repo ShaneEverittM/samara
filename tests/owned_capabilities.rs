@@ -40,8 +40,7 @@ impl Component for Asker {
     fn init(cx: &Context<Self>) -> Init<Self::Model, Self::Message> {
         let (tag,) = &cx.io;
         Init::new(None).with_command(
-            Effect::perform(tag, Tag(cx.configuration))
-                .producing(|EffectOutcome::Succeeded(by)| by),
+            Effect::perform(tag, Tag(cx.config)).producing(|EffectOutcome::Succeeded(by)| by),
         )
     }
 
@@ -409,7 +408,7 @@ impl Component for Borrower {
     }
 
     fn update(cx: &Context<Self>, (): &mut (), (): ()) -> Command<()> {
-        let (theirs,) = &cx.configuration;
+        let (theirs,) = &cx.config;
         Effect::perform(theirs, Tag("borrower")).discard_outcome()
     }
 }

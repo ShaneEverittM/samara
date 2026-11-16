@@ -4,6 +4,8 @@
   registration methods used below (`add_component`, `configure_component`
   ending in `.add(..)`) and closed the first open question: `init` keeps
   taking the configuration by reference and there is no setup step.
+  [ADR-0033](0033-context-fields-are-io-to-and-config.md) renamed the
+  `Context` fields `connections` and `configuration` to `to` and `config`.
 - Date: November 15, 2026
 - Deciders: Samara maintainers
 - Amends: [ADR-0013](0013-component-kinds-assemblies-and-first-party-effects.md)

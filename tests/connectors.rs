@@ -126,7 +126,7 @@ impl Component for Monitor {
         match message {
             MonitorMessage::Start => Command::batch([
                 Command::send(
-                    &cx.connections.audit,
+                    &cx.to.audit,
                     AuditMessage::Changed {
                         what: "api".into(),
                         from: "up".into(),
@@ -134,17 +134,15 @@ impl Component for Monitor {
                     },
                 ),
                 Command::send(
-                    &cx.connections.audit,
+                    &cx.to.audit,
                     AuditMessage::Changed {
                         what: "api".into(),
                         from: "down".into(),
                         to: "up".into(),
                     },
                 ),
-                Command::request(&cx.connections.audit, |reply_with| {
-                    AuditMessage::Tail(1, reply_with)
-                })
-                .producing(MonitorMessage::Tail),
+                Command::request(&cx.to.audit, |reply_with| AuditMessage::Tail(1, reply_with))
+                    .producing(MonitorMessage::Tail),
             ]),
             MonitorMessage::Tail(RequestOutcome::Replied(tail)) => {
                 model.tail = Some(tail);
@@ -368,12 +366,12 @@ impl Component for Teller {
     ) -> Command<TellerMessage> {
         match message {
             TellerMessage::Start => Command::batch([
-                Command::send(&cx.connections, TallyMessage::add(2)),
-                Command::send(&cx.connections, TallyMessage::add(3)),
-                match cx.configuration {
-                    None => Command::request(&cx.connections, TallyMessage::total)
+                Command::send(&cx.to, TallyMessage::add(2)),
+                Command::send(&cx.to, TallyMessage::add(3)),
+                match cx.config {
+                    None => Command::request(&cx.to, TallyMessage::total)
                         .producing(TellerMessage::Total),
-                    Some(patience) => Command::request(&cx.connections, TallyMessage::park)
+                    Some(patience) => Command::request(&cx.to, TallyMessage::park)
                         .timeout(patience)
                         .producing(TellerMessage::Total),
                 },
@@ -496,17 +494,15 @@ impl Component for DirectMonitor {
         match message {
             MonitorMessage::Start => Command::batch([
                 Command::send(
-                    &cx.connections.audit,
+                    &cx.to.audit,
                     AuditMessage::Changed {
                         what: "db".into(),
                         from: "cold".into(),
                         to: "warm".into(),
                     },
                 ),
-                Command::request(&cx.connections.audit, |reply_with| {
-                    AuditMessage::Tail(1, reply_with)
-                })
-                .producing(MonitorMessage::Tail),
+                Command::request(&cx.to.audit, |reply_with| AuditMessage::Tail(1, reply_with))
+                    .producing(MonitorMessage::Tail),
             ]),
             MonitorMessage::Tail(RequestOutcome::Replied(tail)) => {
                 model.tail = Some(tail);
@@ -567,8 +563,7 @@ impl Component for EagerTeller {
 
     fn init(cx: &Context<Self>) -> Init<(), TellerMessage> {
         Init::new(()).with_command(
-            Command::request(&cx.configuration, TallyMessage::total)
-                .producing(TellerMessage::Total),
+            Command::request(&cx.config, TallyMessage::total).producing(TellerMessage::Total),
         )
     }
 

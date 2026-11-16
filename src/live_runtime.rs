@@ -3324,7 +3324,7 @@ mod tests {
             Subscriptions::one(
                 Subscription::source_with(
                     &cx.io,
-                    Framed::new(GenerationSource(1), cx.configuration.decoder.clone()),
+                    Framed::new(GenerationSource(1), cx.config.decoder.clone()),
                     std::convert::identity,
                 )
                 .key("framed-drain"),

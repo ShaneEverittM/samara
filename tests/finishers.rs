@@ -99,8 +99,8 @@ impl Component for Relay {
         _: &mut (),
         RelayMessage::ReadPlusOne(reply): RelayMessage,
     ) -> Command<RelayMessage> {
-        let audit = cx.connections.clone();
-        Command::request(&cx.connections, GaugeMessage::Read).finish_with(move |outcome| {
+        let audit = cx.to.clone();
+        Command::request(&cx.to, GaugeMessage::Read).finish_with(move |outcome| {
             let reading = match outcome {
                 RequestOutcome::Replied(reading) => reading + 1,
                 _ => 0,
@@ -152,12 +152,10 @@ impl Component for Client {
         message: ClientMessage,
     ) -> Command<ClientMessage> {
         match message {
-            ClientMessage::Start => {
-                Command::request(&cx.connections.relay, RelayMessage::ReadPlusOne)
-                    .producing(ClientMessage::Got)
-            }
+            ClientMessage::Start => Command::request(&cx.to.relay, RelayMessage::ReadPlusOne)
+                .producing(ClientMessage::Got),
             ClientMessage::StartParked(patience) => {
-                Command::request(&cx.connections.gauge, GaugeMessage::Park)
+                Command::request(&cx.to.gauge, GaugeMessage::Park)
                     .timeout(patience)
                     .into_command()
             }

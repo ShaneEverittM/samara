@@ -354,8 +354,8 @@ impl Component for Probe {
 
     fn init(cx: &Context<Self>) -> Init<(), ()> {
         Init::new(()).with_command(Command::batch([
-            Command::send(&cx.connections.samples, Sample(7)),
-            Command::send(&cx.connections.queries, Query("latest")),
+            Command::send(&cx.to.samples, Sample(7)),
+            Command::send(&cx.to.queries, Query("latest")),
         ]))
     }
 

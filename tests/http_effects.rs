@@ -79,10 +79,7 @@ impl Component for HttpSequence {
         match message {
             HttpMessage::Start => Effect::perform(
                 http,
-                cx.configuration
-                    .first()
-                    .expect("nonempty test sequence")
-                    .clone(),
+                cx.config.first().expect("nonempty test sequence").clone(),
             )
             .producing(HttpMessage::Finished),
             HttpMessage::Finished(outcome) => {
@@ -90,7 +87,7 @@ impl Component for HttpSequence {
                     EffectOutcome::Succeeded(response) => SeenHttp::Response(response),
                     EffectOutcome::Failed(error) => SeenHttp::Error(error),
                 });
-                if let Some(request) = cx.configuration.get(model.seen.len()) {
+                if let Some(request) = cx.config.get(model.seen.len()) {
                     Effect::perform(http, request.clone()).producing(HttpMessage::Finished)
                 } else {
                     Effect::perform(observe, ObserveHttp(model.seen.clone()))

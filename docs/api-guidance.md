@@ -113,9 +113,9 @@ given and cannot change arrives as one `Context`
 ([ADR-0031](adr/0031-connections-configuration-and-context.md)):
 
 - `cx.io` is its capabilities, created at registration.
-- `cx.connections` is the other Components it can send to: Connectors,
+- `cx.to` is the other Components it can send to: Connectors,
   Ports, and ComponentRefs, supplied by whoever assembles the Program.
-- `cx.configuration` is plain settings, such as an interval or a
+- `cx.config` is plain settings, such as an interval or a
   SourceDescriptor, supplied by the host or defaulted.
 
 Keeping connections apart from settings lets Samara see them: they are

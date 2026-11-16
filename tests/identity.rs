@@ -31,7 +31,7 @@ impl Component for Probe {
     type Model = Model;
     type Message = Message;
     fn init(cx: &Context<Self>) -> Init<Model, Message> {
-        Init::new(cx.configuration.clone())
+        Init::new(cx.config.clone())
     }
     fn update(_: &Context<Self>, model: &mut Model, message: Message) -> Command<Message> {
         match message {

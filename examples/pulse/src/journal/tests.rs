@@ -62,11 +62,11 @@ impl Component for JournalClient {
         message: ClientMessage,
     ) -> Command<ClientMessage> {
         match message {
-            ClientMessage::Transition => Command::send(&cx.connections, transition()),
-            ClientMessage::Recent(count) => Command::request(&cx.connections, move |reply| {
-                JournalMessage::Recent { count, reply }
-            })
-            .producing(move |outcome| ClientMessage::Replied(count, outcome)),
+            ClientMessage::Transition => Command::send(&cx.to, transition()),
+            ClientMessage::Recent(count) => {
+                Command::request(&cx.to, move |reply| JournalMessage::Recent { count, reply })
+                    .producing(move |outcome| ClientMessage::Replied(count, outcome))
+            }
             ClientMessage::Replied(count, outcome) => {
                 model.push((count, outcome));
                 Command::none()

@@ -133,20 +133,18 @@ impl Component for Requester {
                 timeout,
                 key,
             } => match (timeout, key) {
-                (Some(timeout), Some(key)) => {
-                    Command::request(&cx.connections.port, ask(value, delay))
-                        .timeout(timeout)
-                        .producing(move |outcome| {
-                            RequesterMessage::Outcome(Observation {
-                                key: Some(key),
-                                outcome,
-                            })
+                (Some(timeout), Some(key)) => Command::request(&cx.to.port, ask(value, delay))
+                    .timeout(timeout)
+                    .producing(move |outcome| {
+                        RequesterMessage::Outcome(Observation {
+                            key: Some(key),
+                            outcome,
                         })
-                }
-                (Some(timeout), None) => Command::request(&cx.connections.port, ask(value, delay))
+                    }),
+                (Some(timeout), None) => Command::request(&cx.to.port, ask(value, delay))
                     .timeout(timeout)
                     .producing(RequesterMessage::from),
-                (None, _) => Command::request(&cx.connections.port, ask(value, delay))
+                (None, _) => Command::request(&cx.to.port, ask(value, delay))
                     .producing(RequesterMessage::from),
             },
             RequesterMessage::Outcome(observation) => {

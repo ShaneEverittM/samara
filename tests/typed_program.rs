@@ -22,7 +22,7 @@ impl Component for Reader {
     type Model = Vec<u64>;
     type Message = Option<u64>;
     fn init(cx: &Context<Self>) -> Init<Self::Model, Self::Message> {
-        cx.configuration.fetch_add(1, Ordering::SeqCst);
+        cx.config.fetch_add(1, Ordering::SeqCst);
         Init::default()
     }
     fn update(

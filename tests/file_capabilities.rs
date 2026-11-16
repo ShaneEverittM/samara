@@ -51,9 +51,7 @@ impl Component for Writer {
     fn update(cx: &Context<Self>, model: &mut Bytes, message: Message) -> Command<Message> {
         let (file, report) = &cx.io;
         match message {
-            Message::Start => {
-                File::append_line(file, cx.configuration).producing(Message::Appended)
-            }
+            Message::Start => File::append_line(file, cx.config).producing(Message::Appended),
             Message::Appended(EffectOutcome::Succeeded(())) => {
                 File::read(file).producing(Message::Read)
             }
@@ -136,7 +134,7 @@ impl Component for Replacer {
     type Message = EffectOutcome<(), FsError>;
     type Model = Option<Self::Message>;
     fn init(cx: &Context<Self>) -> Init<Self::Model, Self::Message> {
-        Init::new(None).with_command(File::replace_text(&cx.io, cx.configuration).into_command())
+        Init::new(None).with_command(File::replace_text(&cx.io, cx.config).into_command())
     }
     fn update(
         _: &Context<Self>,
@@ -350,15 +348,15 @@ impl Component for HiddenFile {
     type Model = ();
     type Message = bool;
     fn init(cx: &Context<Self>) -> Init<(), bool> {
-        Init::new(()).with_command(if cx.configuration.1 {
-            File::read(&cx.configuration.0).producing(|_| false)
+        Init::new(()).with_command(if cx.config.1 {
+            File::read(&cx.config.0).producing(|_| false)
         } else {
             Command::none()
         })
     }
     fn update(cx: &Context<Self>, _: &mut (), start: bool) -> Command<bool> {
         if start {
-            File::read(&cx.configuration.0).producing(|_| false)
+            File::read(&cx.config.0).producing(|_| false)
         } else {
             Command::none()
         }
