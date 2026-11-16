@@ -48,20 +48,21 @@ impl Component for OutputProbe {
         Effect<PrintStderr>,
         Effect<ObserveOutput>,
     );
-    type Config = OutputProbeConfig;
+    type Connections = ();
+    type Configuration = OutputProbeConfig;
     type Model = OutputModel;
     type Message = OutputMessage;
 
-    fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
+    fn init(_: &Context<Self>) -> Init<Self::Model, Self::Message> {
         Init::new(OutputModel::default())
     }
 
     fn update(
-        config: &Self::Config,
-        (stdout, stderr, observe): &Self::Io,
+        cx: &Context<Self>,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
+        let (stdout, stderr, observe) = &cx.io;
         match message {
             OutputMessage::Start => Command::batch([
                 Effect::perform(stdout, PrintStdout::text("")).producing(OutputMessage::Finished),
@@ -70,7 +71,7 @@ impl Component for OutputProbe {
             OutputMessage::Finished(outcome) => {
                 let EffectOutcome::Succeeded(()) = outcome;
                 model.succeeded += 1;
-                if config.observe {
+                if cx.configuration.observe {
                     Effect::perform(observe, ObserveOutput(true))
                         .producing(|_| OutputMessage::Observed)
                 } else {
@@ -87,7 +88,8 @@ fn output_program(observe: bool) -> (Program, InstalledComponent<OutputProbe>) {
     let probe = builder
         .component_builder::<OutputProbe>()
         .name("standard-output")
-        .register(OutputProbeConfig { observe });
+        .configuration(OutputProbeConfig { observe })
+        .register(());
     (builder.build().expect("valid output program"), probe)
 }
 

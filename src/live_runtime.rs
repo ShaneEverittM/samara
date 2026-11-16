@@ -3117,13 +3117,14 @@ mod tests {
         struct Listener;
         impl Component for Listener {
             type Io = crate::Source<StreamDescriptor<u64>>;
-            type Config = ();
+            type Connections = ();
+            type Configuration = ();
             type Model = ();
             type Message = ();
-            fn init(_: &(), _: &Self::Io) -> Init<(), ()> {
+            fn init(_: &crate::Context<Self>) -> Init<(), ()> {
                 Init::default()
             }
-            fn update(_: &(), _: &Self::Io, _: &mut (), _: ()) -> Command<()> {
+            fn update(_: &crate::Context<Self>, _: &mut (), _: ()) -> Command<()> {
                 Command::none()
             }
         }
@@ -3158,24 +3159,24 @@ mod tests {
 
     impl Component for CutoffComponent {
         type Io = crate::Effect<CutoffIntent>;
-        type Config = ();
+        type Connections = ();
+        type Configuration = ();
         type Model = bool;
         type Message = CutoffMessage;
 
-        fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
+        fn init(_: &crate::Context<Self>) -> Init<Self::Model, Self::Message> {
             Init::new(false)
         }
 
         fn update(
-            _: &Self::Config,
-            effect: &Self::Io,
+            cx: &crate::Context<Self>,
             started: &mut Self::Model,
             message: Self::Message,
         ) -> Command<Self::Message> {
             match message {
                 CutoffMessage::Start => {
                     *started = true;
-                    crate::Effect::perform(effect, CutoffIntent)
+                    crate::Effect::perform(&cx.io, CutoffIntent)
                         .producing(|_| CutoffMessage::Outcome)
                 }
                 CutoffMessage::Outcome => Command::none(),
@@ -3207,11 +3208,12 @@ mod tests {
 
     impl Component for GenerationComponent {
         type Io = crate::Source<GenerationSource>;
-        type Config = ();
+        type Connections = ();
+        type Configuration = ();
         type Model = GenerationModel;
         type Message = GenerationMessage;
 
-        fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
+        fn init(_: &crate::Context<Self>) -> Init<Self::Model, Self::Message> {
             Init::new(GenerationModel {
                 generation: 1,
                 items: Vec::new(),
@@ -3219,8 +3221,7 @@ mod tests {
         }
 
         fn update(
-            _config: &Self::Config,
-            _: &Self::Io,
+            _: &crate::Context<Self>,
             model: &mut Self::Model,
             message: Self::Message,
         ) -> Command<Self::Message> {
@@ -3234,13 +3235,12 @@ mod tests {
         }
 
         fn subscriptions(
-            _config: &Self::Config,
-            source: &Self::Io,
+            cx: &crate::Context<Self>,
             model: &Self::Model,
         ) -> Subscriptions<Self::Message> {
             Subscriptions::one(
                 Subscription::source_with(
-                    source,
+                    &cx.io,
                     GenerationSource(model.generation),
                     GenerationMessage::Event,
                 )
@@ -3300,17 +3300,17 @@ mod tests {
 
     impl Component for FramedDrainComponent {
         type Io = crate::Source<Framed<GenerationSource, DrainFailDecoder>>;
-        type Config = FramedDrainComponentConfig;
+        type Connections = ();
+        type Configuration = FramedDrainComponentConfig;
         type Model = ();
         type Message = SourceEvent<u64, FramedError<Infallible, &'static str>>;
 
-        fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
+        fn init(_: &crate::Context<Self>) -> Init<Self::Model, Self::Message> {
             Init::new(())
         }
 
         fn update(
-            _config: &Self::Config,
-            _: &Self::Io,
+            _: &crate::Context<Self>,
             _model: &mut Self::Model,
             _message: Self::Message,
         ) -> Command<Self::Message> {
@@ -3318,14 +3318,13 @@ mod tests {
         }
 
         fn subscriptions(
-            config: &Self::Config,
-            source: &Self::Io,
+            cx: &crate::Context<Self>,
             _model: &Self::Model,
         ) -> Subscriptions<Self::Message> {
             Subscriptions::one(
                 Subscription::source_with(
-                    source,
-                    Framed::new(GenerationSource(1), config.decoder.clone()),
+                    &cx.io,
+                    Framed::new(GenerationSource(1), cx.configuration.decoder.clone()),
                     std::convert::identity,
                 )
                 .key("framed-drain"),
@@ -3580,11 +3579,12 @@ mod tests {
         let component = builder
             .component_builder::<FramedDrainComponent>()
             .name("framed-drain")
-            .register(FramedDrainComponentConfig {
+            .configuration(FramedDrainComponentConfig {
                 decoder: DrainFailDecoder {
                     finish_calls: finish_calls.clone(),
                 },
-            });
+            })
+            .register(());
         let program = builder.build().expect("valid framed Drain Program");
         let sinks = Arc::new(Mutex::new(Vec::new()));
         let mut bindings = LiveBindings::new();

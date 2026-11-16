@@ -21,15 +21,16 @@
 //!
 //! impl Component for Counter {
 //!     type Io = ();
-//!     type Config = ();
+//!     type Connections = ();
+//!     type Configuration = ();
 //!     type Model = u64;
 //!     type Message = Message;
 //!
-//!     fn init(_config: &Self::Config, _: &Self::Io) -> Init<u64, Message> {
+//!     fn init(_: &Context<Self>) -> Init<u64, Message> {
 //!         Init::new(0)
 //!     }
 //!
-//!     fn update(_config: &Self::Config, _: &Self::Io, count: &mut u64, message: Message) -> Command<Message> {
+//!     fn update(_: &Context<Self>, count: &mut u64, message: Message) -> Command<Message> {
 //!         match message {
 //!             Message::Add(amount) => *count += amount,
 //!         }
@@ -98,6 +99,18 @@ pub use typed_program::*;
 /// }
 /// ```
 pub use samara_derive::Capabilities;
+/// Implements [`Connections`] for a struct with named fields, labelling
+/// each connection with its field's name.
+///
+/// ```
+/// use samara::prelude::*;
+/// #[derive(Connections)]
+/// struct Wiring {
+///     journal: Connector<String>,
+///     audit: Option<Port<u64>>,
+/// }
+/// ```
+pub use samara_derive::Connections;
 
 mod clock;
 mod component_kernel;
@@ -149,22 +162,22 @@ pub mod prelude {
     #[cfg(unix)]
     pub use crate::StdinDriver;
     pub use crate::{
-        Addressable, Assembly, BoxFuture, Capabilities, CapabilityKind, CapabilityManifest,
-        Command, Component, ComponentHandle, ComponentId, ComponentRef, Connector,
-        ControlledRuntime, ControlledRuntimeBuilder, DeclaredCapability, Declaring, Decoder,
-        Deliverable, DrivenSource, DriverStopped, Drivers, Effect, EffectBuilder, EffectDescriptor,
-        EffectDriver, EffectInvocation, EffectOutcome, EffectOutcomeKind, Framed, FramedError,
-        FramedLayer, HttpDriver, HttpError, HttpErrorKind, HttpJsonError, HttpRequest,
-        HttpResponse, HttpResponseError, HttpStatusError, Init, InstalledAssembly,
-        InstalledComponent, LogicalTime, MpscReceiver, NoMessage, PendingEffect, PendingWork, Port,
-        PortHandle, PortId, PrintStderr, PrintStdout, Program, ProgramBuildError, ProgramBuilder,
-        ReadSystemTime, ReplyWith, RequestBuilder, RequestError, RequestIntent, RequestOutcome,
-        RequestOutcomeKind, RunReport, Runtime, RuntimeError, RuntimeTask, Shutdown,
-        ShutdownReport, Source, SourceDescriptor, SourceDriver, SourceEvent, SourceEventKind,
-        SourceSink, StatusCode, StderrDriver, StdinError, StdinErrorKind, StdinLines, StdoutDriver,
-        StreamDescriptor, Subscription, SubscriptionAction, SubscriptionId, Subscriptions,
-        SystemClockDriver, TcpBytes, TcpDriver, TcpError, TcpErrorKind, TraceCommandKind,
-        TraceEvent, TraceId, TraceRecord, VendorsDrivers,
+        Addressable, Assembly, BoxFuture, Capabilities, CapabilityKind, Command, Component,
+        ComponentHandle, ComponentId, ComponentRef, Connections, Connector, Context,
+        ControlledRuntime, ControlledRuntimeBuilder, DeclaredCapability, DeclaredConnection,
+        Declaring, Decoder, Deliverable, DrivenSource, DriverStopped, Drivers, Effect,
+        EffectBuilder, EffectDescriptor, EffectDriver, EffectInvocation, EffectOutcome,
+        EffectOutcomeKind, Framed, FramedError, FramedLayer, HttpDriver, HttpError, HttpErrorKind,
+        HttpJsonError, HttpRequest, HttpResponse, HttpResponseError, HttpStatusError, Init,
+        InstalledAssembly, InstalledComponent, Listing, LogicalTime, Manifest, MpscReceiver,
+        NoMessage, PendingEffect, PendingWork, Port, PortHandle, PortId, PrintStderr, PrintStdout,
+        Program, ProgramBuildError, ProgramBuilder, ReadSystemTime, ReplyWith, RequestBuilder,
+        RequestError, RequestIntent, RequestOutcome, RequestOutcomeKind, RunReport, Runtime,
+        RuntimeError, RuntimeTask, Shutdown, ShutdownReport, Source, SourceDescriptor,
+        SourceDriver, SourceEvent, SourceEventKind, SourceSink, StatusCode, StderrDriver,
+        StdinError, StdinErrorKind, StdinLines, StdoutDriver, StreamDescriptor, Subscription,
+        SubscriptionAction, SubscriptionId, Subscriptions, SystemClockDriver, TcpBytes, TcpDriver,
+        TcpError, TcpErrorKind, TraceCommandKind, TraceEvent, TraceId, TraceRecord, VendorsDrivers,
     };
     #[cfg(feature = "fs")]
     pub use crate::{
@@ -676,12 +689,62 @@ where
     }
 }
 
+/// Everything a Component is given and cannot change: its capabilities, its
+/// connections to other Components, and its configuration.
+///
+/// Samara builds one at registration and passes it to every [`Component`]
+/// function. The fields are public: read `cx.io`, `cx.connections`, and
+/// `cx.configuration` directly.
+///
+/// ```
+/// use samara::prelude::*;
+/// struct Limiter;
+/// impl Component for Limiter {
+///     type Io = ();
+///     type Connections = ();
+///     type Configuration = u64;
+///     type Model = u64;
+///     type Message = u64;
+///     fn init(_: &Context<Self>) -> Init<u64, u64> { Init::new(0) }
+///     fn update(cx: &Context<Self>, total: &mut u64, amount: u64) -> Command<u64> {
+///         *total = (*total + amount).min(cx.configuration);
+///         Command::none()
+///     }
+/// }
+/// let cx = Context::<Limiter>::detached((), 5);
+/// let mut total = Limiter::init(&cx).model;
+/// assert!(Limiter::update(&cx, &mut total, 9).is_none());
+/// assert_eq!(total, 5);
+/// ```
+pub struct Context<C: Component + ?Sized> {
+    /// The capabilities created for this Component: its access to the world.
+    pub io: C::Io,
+    /// The other Components this one can send to.
+    pub connections: C::Connections,
+    /// This Component's settings.
+    pub configuration: C::Configuration,
+}
+
+impl<C: Component + ?Sized> Context<C> {
+    /// A context whose capabilities belong to no Program
+    /// ([`Capabilities::detached`]), for calling a Component's functions
+    /// directly in a unit test and inspecting what they return.
+    pub fn detached(connections: C::Connections, configuration: C::Configuration) -> Self {
+        Self {
+            io: C::Io::detached(),
+            connections,
+            configuration,
+        }
+    }
+}
+
 /// A kind of part of an application, with its own configuration, state, and messages.
 ///
-/// The type you implement `Component` on is only a name for the kind. Its
-/// immutable configuration, such as settings and ports, is a separate
-/// `Config` value supplied at registration. Its access to the world is its
-/// `Io`, created at registration. Its changing application state is
+/// The type you implement `Component` on is only a name for the kind. What it
+/// is given and cannot change arrives as a [`Context`]: its `Io` (access to
+/// the world, created at registration), its `Connections` (the other
+/// Components it can send to, supplied at registration), and its
+/// `Configuration` (plain settings). Its changing application state is
 /// the `Model`, which Samara owns. Samara calls `update` for each message, never
 /// overlapping updates to the same component.
 ///
@@ -693,17 +756,19 @@ where
 /// struct Counter;
 /// impl Component for Counter {
 ///     type Io = ();
-///     type Config = ();
+///     type Connections = ();
+///     type Configuration = ();
 ///     type Model = u64;
 ///     type Message = u64;
-///     fn init(_: &(), _: &Self::Io) -> Init<u64, u64> { Init::new(0) }
-///     fn update(_: &(), _: &Self::Io, count: &mut u64, amount: u64) -> Command<u64> {
+///     fn init(_: &Context<Self>) -> Init<u64, u64> { Init::new(0) }
+///     fn update(_: &Context<Self>, count: &mut u64, amount: u64) -> Command<u64> {
 ///         *count += amount;
 ///         Command::none()
 ///     }
 /// }
-/// let mut model = Counter::init(&(), &()).model;
-/// assert!(Counter::update(&(), &(), &mut model, 3).is_none());
+/// let cx = Context::detached((), ());
+/// let mut model = Counter::init(&cx).model;
+/// assert!(Counter::update(&cx, &mut model, 3).is_none());
 /// assert_eq!(model, 3);
 /// ```
 ///
@@ -714,17 +779,16 @@ where
 /// <summary>Compile-time checks</summary>
 ///
 /// ```compile_fail
-/// use samara::{Command, Component};
+/// use samara::{Command, Component, Context};
 ///
 /// struct OtherMessage;
 ///
 /// fn deliver_wrong_type<C: Component>(
-///     config: &C::Config,
-///     io: &C::Io,
+///     cx: &Context<C>,
 ///     model: &mut C::Model,
 ///     message: OtherMessage,
 /// ) -> Command<C::Message> {
-///     C::update(config, io, model, message)
+///     C::update(cx, model, message)
 /// }
 /// ```
 ///
@@ -734,27 +798,33 @@ pub trait Component: 'static {
     ///
     /// Use `()` for none, a tuple for a few, or a struct with named fields
     /// through `#[derive(Capabilities)]`. Registration creates one value for
-    /// each registered component and passes it to every function.
+    /// each registered component.
     type Io: Capabilities;
-    /// This component's immutable settings and component connections.
+    /// The other Components this one can send to.
     ///
-    /// Use `()` when there is none. Samara stores one value per registered
-    /// component and passes it to every function by shared reference.
-    type Config: Send + 'static;
+    /// Use `()` for none, a [`Connector`], [`Port`], or [`ComponentRef`] for
+    /// one, or a struct with named fields through `#[derive(Connections)]`.
+    /// Supplied at registration and listed in [`Program::manifest`].
+    type Connections: Connections;
+    /// This component's immutable settings: plain data Samara does not look
+    /// inside.
+    ///
+    /// Use `()` when there are none. [`ProgramBuilder::component`] uses the
+    /// `Default` value; set another with [`ComponentBuilder::configuration`].
+    type Configuration: Send + 'static;
     /// This component's mutable application state.
     type Model: Send + 'static;
     /// Messages this component handles in `update`.
     type Message: Send + 'static;
 
     /// Creates the starting model and optional startup work. Called when the component is registered.
-    fn init(config: &Self::Config, io: &Self::Io) -> Init<Self::Model, Self::Message>;
+    fn init(cx: &Context<Self>) -> Init<Self::Model, Self::Message>;
 
     /// Handles one message, updates the model, and returns the next actions.
     ///
     /// Use [`Command::none`] when no work is needed. Do not perform I/O here.
     fn update(
-        config: &Self::Config,
-        io: &Self::Io,
+        cx: &Context<Self>,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message>;
@@ -764,11 +834,7 @@ pub trait Component: 'static {
     /// Called for the initial model and after each update. Samara starts new inputs,
     /// keeps unchanged ones, and stops those omitted from the returned set.
     /// The default returns no subscriptions. See [`Subscription`] for comparison rules.
-    fn subscriptions(
-        _config: &Self::Config,
-        _io: &Self::Io,
-        _model: &Self::Model,
-    ) -> Subscriptions<Self::Message> {
+    fn subscriptions(_cx: &Context<Self>, _model: &Self::Model) -> Subscriptions<Self::Message> {
         Subscriptions::none()
     }
 
@@ -782,7 +848,7 @@ pub trait Component: 'static {
     /// here is reported to its requester as
     /// [`RequestError::ReplyAbandoned`]. Must be pure. [`Shutdown::Cancel`]
     /// and a faulted runtime do not call it. The default does nothing.
-    fn shutdown(_config: &Self::Config, _io: &Self::Io, _model: Self::Model) -> Command<NoMessage> {
+    fn shutdown(_cx: &Context<Self>, _model: Self::Model) -> Command<NoMessage> {
         Command::none()
     }
 }
@@ -2004,17 +2070,18 @@ impl<Message> From<Vec<Subscription<Message>>> for Subscriptions<Message> {
 ///
 /// impl Component for Sum {
 ///     type Io = (Source<StreamDescriptor<u64>>,);
-///     type Config = ();
+///     type Connections = ();
+///     type Configuration = ();
 ///     type Model = u64;
 ///     type Message = SourceEvent<u64, Infallible>;
-///     fn init(_config: &Self::Config, capabilities: &Self::Io) -> Init<u64, Self::Message> { Init::new(0) }
-///     fn update(_config: &Self::Config, capabilities: &Self::Io, sum: &mut u64, event: Self::Message) -> Command<Self::Message> {
+///     fn init(_: &Context<Self>) -> Init<u64, Self::Message> { Init::new(0) }
+///     fn update(_: &Context<Self>, sum: &mut u64, event: Self::Message) -> Command<Self::Message> {
 ///         if let SourceEvent::Item(value) = event { *sum += value; }
 ///         Command::none()
 ///     }
-///     fn subscriptions(_config: &Self::Config, capabilities: &Self::Io, _: &u64) -> Subscriptions<Self::Message> {
+///     fn subscriptions(cx: &Context<Self>, _: &u64) -> Subscriptions<Self::Message> {
 ///         Subscriptions::one(Subscription::source(
-///             &capabilities.0, StreamDescriptor::named("numbers"),
+///             &cx.io.0, StreamDescriptor::named("numbers"),
 ///         ))
 ///     }
 /// }
@@ -2122,14 +2189,15 @@ impl<T: Send + 'static> StreamSourceDescriptor for StreamDescriptor<T> {
 ///
 /// impl Component for Reader {
 ///     type Io = (Source<StdinLines>,);
-///     type Config = ();
+///     type Connections = ();
+///     type Configuration = ();
 ///     type Model = Model;
 ///     type Message = SourceEvent<String, StdinError>;
 ///
-///     fn init(_config: &Self::Config, capabilities: &Self::Io) -> Init<Model, Self::Message> {
+///     fn init(_: &Context<Self>) -> Init<Model, Self::Message> {
 ///         Init::new(Model { lines: Vec::new(), error: None, open: true })
 ///     }
-///     fn update(_config: &Self::Config, capabilities: &Self::Io, model: &mut Model, event: Self::Message) -> Command<Self::Message> {
+///     fn update(_: &Context<Self>, model: &mut Model, event: Self::Message) -> Command<Self::Message> {
 ///         match event {
 ///             SourceEvent::Item(line) => model.lines.push(line),
 ///             SourceEvent::Ended => model.open = false,
@@ -2140,10 +2208,10 @@ impl<T: Send + 'static> StreamSourceDescriptor for StreamDescriptor<T> {
 ///         }
 ///         Command::none()
 ///     }
-///     fn subscriptions(_config: &Self::Config, capabilities: &Self::Io, model: &Model) -> Subscriptions<Self::Message> {
+///     fn subscriptions(cx: &Context<Self>, model: &Model) -> Subscriptions<Self::Message> {
 ///         if !model.open { return Subscriptions::none(); }
 ///         Subscriptions::one(Subscription::source(
-///             &capabilities.0, StdinLines::new(),
+///             &cx.io.0, StdinLines::new(),
 ///         ))
 ///     }
 /// }
@@ -3658,11 +3726,12 @@ impl<C: Component> ComponentRef<C> {
 /// struct RecorderMessage(JournalMessage);
 /// impl Component for Recorder {
 ///     type Io = ();
-///     type Config = ();
+///     type Connections = ();
+///     type Configuration = ();
 ///     type Model = Vec<String>;
 ///     type Message = RecorderMessage;
-///     fn init(_: &(), _: &Self::Io) -> Init<Vec<String>, RecorderMessage> { Init::new(Vec::new()) }
-///     fn update(_: &(), _: &Self::Io, notes: &mut Vec<String>, message: RecorderMessage) -> Command<RecorderMessage> {
+///     fn init(_: &Context<Self>) -> Init<Vec<String>, RecorderMessage> { Init::new(Vec::new()) }
+///     fn update(_: &Context<Self>, notes: &mut Vec<String>, message: RecorderMessage) -> Command<RecorderMessage> {
 ///         let RecorderMessage(JournalMessage::Note(note)) = message;
 ///         notes.push(note);
 ///         Command::none()
@@ -4164,6 +4233,7 @@ pub struct Program {
     bindings: Vec<Box<dyn ErasedPortBinding>>,
     effect_requirements: Vec<EffectRequirement>,
     source_requirements: Vec<SourceRequirement>,
+    connections: Vec<DeclaredConnection>,
 }
 
 impl Program {
@@ -4179,6 +4249,7 @@ impl Program {
             bindings: Vec::new(),
             effect_requirements: Vec::new(),
             source_requirements: Vec::new(),
+            connections: Vec::new(),
             next_capability: 0,
         }
     }
@@ -4208,25 +4279,51 @@ pub struct DeclaredCapability {
     pub descriptor: &'static str,
 }
 
-/// Everything a Program can do to or hear from the world, in declaration
-/// order. Obtain one from [`Program::manifest`].
+/// One Component another Component can send to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeclaredConnection {
+    /// The diagnostic name of the Component that holds the connection.
+    pub owner: String,
+    /// The field it was declared as, when the Component's connections are a
+    /// struct with named fields.
+    pub name: Option<String>,
+    /// The message type the holder sends through it.
+    pub message: &'static str,
+    /// The diagnostic name of the Component that receives the messages.
+    pub target: String,
+    /// The Port the connection goes through, when it is not held directly.
+    pub port: Option<PortId>,
+}
+
+/// What a Program can reach and how it is wired: every capability and
+/// every declared connection. Obtain one from [`Program::manifest`].
 ///
 /// A Program can only reach the world through capabilities it declared, so
-/// this list is complete. Print it at startup, or compare its text against a
-/// checked-in copy in a test so that new world access shows up in review.
+/// the capability list is complete. Print the manifest at startup, or
+/// compare its text against a checked-in copy in a test so that new world
+/// access and new wiring show up in review.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CapabilityManifest(Vec<DeclaredCapability>);
+pub struct Manifest {
+    capabilities: Vec<DeclaredCapability>,
+    connections: Vec<DeclaredConnection>,
+}
 
-impl CapabilityManifest {
+impl Manifest {
     /// The declared capabilities, in declaration order.
-    pub fn entries(&self) -> &[DeclaredCapability] {
-        &self.0
+    pub fn capabilities(&self) -> &[DeclaredCapability] {
+        &self.capabilities
+    }
+
+    /// The connections Components declared in their
+    /// [`Component::Connections`], in registration order.
+    pub fn connections(&self) -> &[DeclaredConnection] {
+        &self.connections
     }
 }
 
-impl fmt::Display for CapabilityManifest {
+impl fmt::Display for Manifest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for entry in &self.0 {
+        for entry in &self.capabilities {
             let kind = match entry.kind {
                 CapabilityKind::Effect => "effect",
                 CapabilityKind::Source => "source",
@@ -4236,30 +4333,55 @@ impl fmt::Display for CapabilityManifest {
                 None => writeln!(f, "{}: {kind} {}", entry.owner, entry.descriptor)?,
             }
         }
+        for entry in &self.connections {
+            match &entry.name {
+                Some(name) => write!(f, "{}.{name}", entry.owner)?,
+                None => write!(f, "{}", entry.owner)?,
+            }
+            write!(f, ": connection {} -> {}", entry.message, entry.target)?;
+            match &entry.port {
+                Some(port) => writeln!(f, " (port {port:?})")?,
+                None => writeln!(f)?,
+            }
+        }
         Ok(())
     }
 }
 
 impl Program {
-    /// Lists every capability this Program declared: its complete access to
-    /// the world.
+    /// Lists every capability this Program declared, its complete access to
+    /// the world, and every connection its Components declared.
     ///
     /// ```
     /// use samara::prelude::*;
     /// struct Clock;
     /// impl Component for Clock {
-    ///     type Config = (); type Io = Effect<ReadSystemTime>;
+    ///     type Io = Effect<ReadSystemTime>;
+    ///     type Connections = (); type Configuration = ();
     ///     type Model = (); type Message = ();
-    ///     fn init(_: &(), _: &Self::Io) -> Init<(), ()> { Init::default() }
-    ///     fn update(_: &(), _: &Self::Io, _: &mut (), _: ()) -> Command<()> { Command::none() }
+    ///     fn init(_: &Context<Self>) -> Init<(), ()> { Init::default() }
+    ///     fn update(_: &Context<Self>, _: &mut (), _: ()) -> Command<()> { Command::none() }
+    /// }
+    /// struct Alarm;
+    /// impl Component for Alarm {
+    ///     type Io = ();
+    ///     type Connections = ComponentRef<Clock>; type Configuration = ();
+    ///     type Model = (); type Message = ();
+    ///     fn init(_: &Context<Self>) -> Init<(), ()> { Init::default() }
+    ///     fn update(_: &Context<Self>, _: &mut (), _: ()) -> Command<()> { Command::none() }
     /// }
     /// let mut program = Program::builder();
-    /// program.component_builder::<Clock>().name("clock").register(());
+    /// let clock = program.component_builder::<Clock>().name("clock").register(());
+    /// program.component_builder::<Alarm>().name("alarm").register(clock.reference().clone());
     /// let manifest = program.build()?.manifest();
-    /// assert_eq!(manifest.to_string(), "clock: effect samara::clock::ReadSystemTime\n");
+    /// assert_eq!(
+    ///     manifest.to_string(),
+    ///     "clock: effect samara::clock::ReadSystemTime\n\
+    ///      alarm: connection () -> clock\n",
+    /// );
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub fn manifest(&self) -> CapabilityManifest {
+    pub fn manifest(&self) -> Manifest {
         let effects = self.effect_requirements.iter().map(|requirement| {
             (
                 &requirement.token,
@@ -4284,7 +4406,10 @@ impl Program {
         });
         let mut entries: Vec<_> = effects.chain(sources).collect();
         entries.sort_by_key(|(token, _)| token.id);
-        CapabilityManifest(entries.into_iter().map(|(_, entry)| entry).collect())
+        Manifest {
+            capabilities: entries.into_iter().map(|(_, entry)| entry).collect(),
+            connections: self.connections.clone(),
+        }
     }
 }
 
@@ -4699,6 +4824,14 @@ pub enum ProgramBuildError {
         /// The provider identity.
         provider: ComponentId,
     },
+    /// A Component's [`Component::Connections`] holds an address from
+    /// another builder.
+    ForeignConnection {
+        /// The Component holding the connection.
+        component: ComponentId,
+        /// The field it is held in, when the connections are a named struct.
+        connection: Option<String>,
+    },
 }
 
 impl fmt::Display for ProgramBuildError {
@@ -4730,6 +4863,21 @@ impl fmt::Display for ProgramBuildError {
             Self::ProviderNotRegistered { provider } => {
                 write!(formatter, "provider {provider:?} is not registered")
             }
+            Self::ForeignConnection {
+                component,
+                connection,
+            } => match connection {
+                Some(connection) => write!(
+                    formatter,
+                    "connection {}.{connection} belongs to another ProgramBuilder",
+                    component.name()
+                ),
+                None => write!(
+                    formatter,
+                    "a connection of {} belongs to another ProgramBuilder",
+                    component.name()
+                ),
+            },
         }
     }
 }
@@ -4753,6 +4901,7 @@ pub struct ProgramBuilder {
     bindings: Vec<Box<dyn ErasedPortBinding>>,
     effect_requirements: Vec<EffectRequirement>,
     source_requirements: Vec<SourceRequirement>,
+    connections: Vec<(ComponentId, ListedConnection)>,
     next_capability: u64,
 }
 
@@ -4844,21 +4993,27 @@ impl ProgramBuilder {
         }
     }
 
-    /// Registers a Component of kind `C` with its settings and connections.
+    /// Registers a Component of kind `C` with its connections and its
+    /// default configuration.
     ///
     /// Creates the Component's capabilities, invokes [`Component::init`], and
     /// returns its handle. Startup work runs when the runtime starts.
     /// Registration order determines initial controlled work order, with no
     /// ordering promise for independent live events. Use
-    /// [`Self::component_builder`] to set a diagnostic name.
+    /// [`Self::component_builder`] to set a diagnostic name or a
+    /// configuration other than the default.
     ///
     /// See the [crate example](crate) or [`Self::connect`].
-    pub fn component<C: Component>(&mut self, config: C::Config) -> InstalledComponent<C> {
-        self.component_builder::<C>().register(config)
+    pub fn component<C: Component>(&mut self, connections: C::Connections) -> InstalledComponent<C>
+    where
+        C::Configuration: Default,
+    {
+        self.component_builder::<C>().register(connections)
     }
 
-    /// Starts registering a Component of kind `C` with options, such as a
-    /// diagnostic `.name(..)`; finish with `.register(config)`.
+    /// Starts registering a Component of kind `C` with options: a diagnostic
+    /// `.name(..)` and its `.configuration(..)`. Finish with
+    /// `.register(connections)`.
     pub fn component_builder<C: Component>(&mut self) -> ComponentBuilder<'_, C> {
         ComponentBuilder::new(self)
     }
@@ -4866,8 +5021,7 @@ impl ProgramBuilder {
     fn register<C: Component>(
         &mut self,
         name: Option<Arc<str>>,
-        config: C::Config,
-        io: C::Io,
+        context: Context<C>,
     ) -> ComponentRef<C> {
         let id = ComponentId::new(
             self.components.len() as u64,
@@ -4878,8 +5032,15 @@ impl ProgramBuilder {
             program: self.program.clone(),
             marker: PhantomData,
         };
+        let mut listed = Vec::new();
+        context.connections.list(&mut Listing::new(&mut listed));
+        self.connections.extend(
+            listed
+                .into_iter()
+                .map(|connection| (id.clone(), connection)),
+        );
         self.components
-            .push(Box::new(ComponentKernel::<C>::new(id, config, io)));
+            .push(Box::new(ComponentKernel::<C>::new(id, context)));
         component_ref
     }
 
@@ -4927,11 +5088,12 @@ impl ProgramBuilder {
     /// struct Counter;
     /// impl Component for Counter {
     ///     type Io = ();
-    ///     type Config = ();
+    ///     type Connections = ();
+    ///     type Configuration = ();
     ///     type Model = u64;
     ///     type Message = CounterMessage;
-    ///     fn init(_: &(), _: &Self::Io) -> Init<u64, CounterMessage> { Init::new(42) }
-    ///     fn update(_: &(), _: &Self::Io, count: &mut u64, message: CounterMessage) -> Command<CounterMessage> {
+    ///     fn init(_: &Context<Self>) -> Init<u64, CounterMessage> { Init::new(42) }
+    ///     fn update(_: &Context<Self>, count: &mut u64, message: CounterMessage) -> Command<CounterMessage> {
     ///         match message {
     ///             CounterMessage::Count(CountMessage::Read(reply_with)) => Command::reply(reply_with, *count),
     ///             CounterMessage::Tick => { *count += 1; Command::none() }
@@ -4940,17 +5102,16 @@ impl ProgramBuilder {
     /// }
     ///
     /// struct Client;
-    ///
-    /// struct ClientConfig { counter: Port<CountMessage> }
     /// impl Component for Client {
     ///     type Io = ();
-    ///     type Config = ClientConfig;
+    ///     type Connections = Port<CountMessage>;
+    ///     type Configuration = ();
     ///     type Model = Option<u64>;
     ///     type Message = RequestOutcome<u64>;
-    ///     fn init(config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
-    ///         Init::default().with_command(Command::request(&config.counter, CountMessage::Read).producing(|outcome| outcome))
+    ///     fn init(cx: &Context<Self>) -> Init<Self::Model, Self::Message> {
+    ///         Init::default().with_command(Command::request(&cx.connections, CountMessage::Read).producing(|outcome| outcome))
     ///     }
-    ///     fn update(_config: &Self::Config, _: &Self::Io, value: &mut Option<u64>, reply: Self::Message) -> Command<Self::Message> {
+    ///     fn update(_: &Context<Self>, value: &mut Option<u64>, reply: Self::Message) -> Command<Self::Message> {
     ///         if let RequestOutcome::Replied(count) = reply { *value = Some(count); }
     ///         Command::none()
     ///     }
@@ -4960,7 +5121,7 @@ impl ProgramBuilder {
     /// let port = builder.port::<CountMessage>(PortId::new("counter"));
     /// let counter = builder.component::<Counter>(());
     /// builder.connect(&port, &counter.accepting(CounterMessage::Count));
-    /// let client = builder.component::<Client>(ClientConfig { counter: port });
+    /// let client = builder.component::<Client>(port);
     /// let mut runtime = ControlledRuntime::builder(builder.build()?).control_all().build()?;
     /// runtime.run_until_idle()?;
     /// assert_eq!(*runtime.state(&client)?, Some(42));
@@ -5039,12 +5200,43 @@ impl ProgramBuilder {
             }
         }
 
+        let mut connections = Vec::with_capacity(self.connections.len());
+        for (owner, connection) in &self.connections {
+            if !Arc::ptr_eq(&connection.program, &self.program) {
+                return Err(ProgramBuildError::ForeignConnection {
+                    component: owner.clone(),
+                    connection: connection.name.clone(),
+                });
+            }
+            let (target, port) = match &connection.target {
+                ListedTarget::Component(target) => (target.name().to_owned(), None),
+                ListedTarget::Port { protocol, id } => {
+                    let provider = self
+                        .bindings
+                        .iter()
+                        .find(|binding| {
+                            binding.protocol_type() == *protocol && binding.port_id() == id
+                        })
+                        .expect("every declared Port has exactly one binding");
+                    (provider.provider_id().name().to_owned(), Some(id.clone()))
+                }
+            };
+            connections.push(DeclaredConnection {
+                owner: owner.name().to_owned(),
+                name: connection.name.clone(),
+                message: connection.message,
+                target,
+                port,
+            });
+        }
+
         Ok(Program {
             program: self.program,
             components: self.components,
             bindings: self.bindings,
             effect_requirements: self.effect_requirements,
             source_requirements: self.source_requirements,
+            connections,
         })
     }
 }
@@ -5077,10 +5269,10 @@ impl ProgramBuilder {
 /// }
 /// struct Checker;
 /// impl Component for Checker {
-///     type Config = (); type Io = Effect<CheckConnection>;
+///     type Connections = (); type Configuration = (); type Io = Effect<CheckConnection>;
 ///     type Model = (); type Message = ();
-///     fn init(_: &(), _: &Self::Io) -> Init<(), ()> { Init::default() }
-///     fn update(_: &(), _: &Self::Io, _: &mut (), _: ()) -> Command<()> { Command::none() }
+///     fn init(_: &Context<Self>) -> Init<(), ()> { Init::default() }
+///     fn update(_: &Context<Self>, _: &mut (), _: ()) -> Command<()> { Command::none() }
 /// }
 /// let mut program = Program::builder();
 /// let checker = program.component::<Checker>(());
@@ -5128,10 +5320,10 @@ pub trait EffectDriver<D: EffectDescriptor>: Send + Sync + 'static {
 /// }
 /// struct Listener;
 /// impl Component for Listener {
-///     type Config = (); type Io = Source<Values>;
+///     type Connections = (); type Configuration = (); type Io = Source<Values>;
 ///     type Model = (); type Message = ();
-///     fn init(_: &(), _: &Self::Io) -> Init<(), ()> { Init::default() }
-///     fn update(_: &(), _: &Self::Io, _: &mut (), _: ()) -> Command<()> { Command::none() }
+///     fn init(_: &Context<Self>) -> Init<(), ()> { Init::default() }
+///     fn update(_: &Context<Self>, _: &mut (), _: ()) -> Command<()> { Command::none() }
 /// }
 /// let mut program = Program::builder();
 /// let listener = program.component::<Listener>(());
@@ -5222,10 +5414,10 @@ impl Error for DriverStopped {}
 /// use samara::prelude::*;
 /// struct Clock;
 /// impl Component for Clock {
-///     type Config = (); type Io = Effect<ReadSystemTime>;
+///     type Connections = (); type Configuration = (); type Io = Effect<ReadSystemTime>;
 ///     type Model = (); type Message = ();
-///     fn init(_: &(), _: &Self::Io) -> Init<(), ()> { Init::default() }
-///     fn update(_: &(), _: &Self::Io, _: &mut (), _: ()) -> Command<()> { Command::none() }
+///     fn init(_: &Context<Self>) -> Init<(), ()> { Init::default() }
+///     fn update(_: &Context<Self>, _: &mut (), _: ()) -> Command<()> { Command::none() }
 /// }
 /// let mut program = Program::builder();
 /// let clock = program.component::<Clock>(());
@@ -5335,11 +5527,12 @@ pub(crate) struct RuntimeBuilder {
 /// struct Counter;
 /// impl Component for Counter {
 ///     type Io = ();
-///     type Config = ();
+///     type Connections = ();
+///     type Configuration = ();
 ///     type Model = u64;
 ///     type Message = u64;
-///     fn init(_config: &Self::Config, _: &Self::Io) -> Init<u64, u64> { Init::new(0) }
-///     fn update(_config: &Self::Config, _: &Self::Io, count: &mut u64, amount: u64) -> Command<u64> {
+///     fn init(_: &Context<Self>) -> Init<u64, u64> { Init::new(0) }
+///     fn update(_: &Context<Self>, count: &mut u64, amount: u64) -> Command<u64> {
 ///         *count += amount;
 ///         Command::none()
 ///     }
@@ -5560,11 +5753,12 @@ impl<C: Component> ComponentHandle<C> {
 /// struct Counter;
 /// impl Component for Counter {
 ///     type Io = ();
-///     type Config = ();
+///     type Connections = ();
+///     type Configuration = ();
 ///     type Model = u64;
 ///     type Message = CountMessage;
-///     fn init(_config: &Self::Config, _: &Self::Io) -> Init<u64, CountMessage> { Init::new(42) }
-///     fn update(_config: &Self::Config, _: &Self::Io, count: &mut u64, message: CountMessage) -> Command<CountMessage> {
+///     fn init(_: &Context<Self>) -> Init<u64, CountMessage> { Init::new(42) }
+///     fn update(_: &Context<Self>, count: &mut u64, message: CountMessage) -> Command<CountMessage> {
 ///         match message {
 ///             CountMessage::Read(reply_with) => Command::reply(reply_with, *count),
 ///         }
@@ -5943,15 +6137,16 @@ pub struct ControlledRuntimeBuilder {
 ///
 /// impl Component for Check {
 ///     type Io = (Effect<HttpRequest>,);
-///     type Config = ();
+///     type Connections = ();
+///     type Configuration = ();
 ///     type Model = Option<StatusCode>;
 ///     type Message = EffectOutcome<HttpResponse, HttpError>;
-///     fn init(_config: &Self::Config, capabilities: &Self::Io) -> Init<Self::Model, Self::Message> {
+///     fn init(cx: &Context<Self>) -> Init<Self::Model, Self::Message> {
 ///         Init::default().with_command(
-///             Effect::perform(&capabilities.0, HttpRequest::get("https://example.test/health")).into_command(),
+///             Effect::perform(&cx.io.0, HttpRequest::get("https://example.test/health")).into_command(),
 ///         )
 ///     }
-///     fn update(_config: &Self::Config, capabilities: &Self::Io, status: &mut Self::Model, outcome: Self::Message) -> Command<Self::Message> {
+///     fn update(_: &Context<Self>, status: &mut Self::Model, outcome: Self::Message) -> Command<Self::Message> {
 ///         if let EffectOutcome::Succeeded(response) = outcome {
 ///             *status = Some(response.status());
 ///         }
@@ -6124,13 +6319,14 @@ impl ControlledRuntime {
     /// struct Timer;
     /// impl Component for Timer {
     ///     type Io = ();
-    ///     type Config = ();
+    ///     type Connections = ();
+    ///     type Configuration = ();
     ///     type Model = bool;
     ///     type Message = ();
-    ///     fn init(_config: &Self::Config, _: &Self::Io) -> Init<bool, ()> {
+    ///     fn init(_: &Context<Self>) -> Init<bool, ()> {
     ///         Init::new(false).with_command(Command::after(Duration::from_secs(2), ()))
     ///     }
-    ///     fn update(_config: &Self::Config, _: &Self::Io, fired: &mut bool, _: ()) -> Command<()> {
+    ///     fn update(_: &Context<Self>, fired: &mut bool, _: ()) -> Command<()> {
     ///         *fired = true;
     ///         Command::none()
     ///     }
@@ -6664,17 +6860,17 @@ mod request_authority_tests {
 
     impl Component for Replier {
         type Io = ();
-        type Config = ();
+        type Connections = ();
+        type Configuration = ();
         type Model = ();
         type Message = ReplyWith<u64>;
 
-        fn init(_config: &Self::Config, _: &Self::Io) -> Init<(), Self::Message> {
+        fn init(_: &Context<Self>) -> Init<(), Self::Message> {
             Init::default()
         }
 
         fn update(
-            _config: &Self::Config,
-            _: &Self::Io,
+            _: &Context<Self>,
             _: &mut (),
             reply_with: Self::Message,
         ) -> Command<Self::Message> {

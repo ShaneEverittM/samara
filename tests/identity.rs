@@ -26,25 +26,26 @@ enum Message {
 struct Probe;
 impl Component for Probe {
     type Io = Inputs;
-    type Config = Model;
+    type Connections = ();
+    type Configuration = Model;
     type Model = Model;
     type Message = Message;
-    fn init(config: &Model, _: &Inputs) -> Init<Model, Message> {
-        Init::new(config.clone())
+    fn init(cx: &Context<Self>) -> Init<Model, Message> {
+        Init::new(cx.configuration.clone())
     }
-    fn update(_: &Model, _: &Inputs, model: &mut Model, message: Message) -> Command<Message> {
+    fn update(_: &Context<Self>, model: &mut Model, message: Message) -> Command<Message> {
         match message {
             Message::Configure(next) => *model = next,
             Message::Input(value) => model.received.push(value),
         }
         Command::none()
     }
-    fn subscriptions(_: &Model, caps: &Inputs, model: &Model) -> Subscriptions<Message> {
+    fn subscriptions(cx: &Context<Self>, model: &Model) -> Subscriptions<Message> {
         model
             .desired
             .iter()
             .map(|&(key, revision)| {
-                let cap = if model.alternate { &caps.1 } else { &caps.0 };
+                let cap = if model.alternate { &cx.io.1 } else { &cx.io.0 };
                 let offset = model.offset;
                 let subscription = Subscription::source_with(cap, Feed(revision), move |event| {
                     Message::Input(match event {
@@ -65,7 +66,10 @@ impl Component for Probe {
 
 fn controlled(model: Model) -> (ControlledRuntime, ComponentRef<Probe>, Inputs) {
     let mut builder = Program::builder();
-    let probe = builder.component::<Probe>(model);
+    let probe = builder
+        .component_builder::<Probe>()
+        .configuration(model)
+        .register(());
     let caps = probe.io.clone();
     let runtime = ControlledRuntime::builder(builder.build().unwrap())
         .control_all()
@@ -97,12 +101,17 @@ fn optional_and_duplicate_names_do_not_alias_components() {
     let first = builder
         .component_builder::<Probe>()
         .name("same")
-        .register(one(1));
+        .configuration(one(1))
+        .register(());
     let second = builder
         .component_builder::<Probe>()
         .name("same")
-        .register(one(1));
-    let unnamed = builder.component::<Probe>(Model::default());
+        .configuration(one(1))
+        .register(());
+    let unnamed = builder
+        .component_builder::<Probe>()
+        .configuration(Model::default())
+        .register(());
     assert_ne!(first.id(), second.id());
     assert_eq!(first.id().name(), "same");
     assert_eq!(unnamed.id().name(), std::any::type_name::<Probe>());
@@ -128,7 +137,8 @@ fn diagnostic_names_do_not_change_semantic_trace() {
             builder
                 .component_builder::<Probe>()
                 .name(name)
-                .register(one(1));
+                .configuration(one(1))
+                .register(());
         }
         let mut runtime = ControlledRuntime::builder(builder.build().unwrap())
             .control_all()
@@ -185,10 +195,13 @@ fn default_slot_retains_mapper_replaces_descriptor_and_cancels() {
 #[test]
 fn ambiguous_defaults_explain_how_to_supply_keys() {
     let mut builder = Program::builder();
-    builder.component::<Probe>(Model {
-        desired: vec![(1, 1), (2, 2)],
-        ..Model::default()
-    });
+    builder
+        .component_builder::<Probe>()
+        .configuration(Model {
+            desired: vec![(1, 1), (2, 2)],
+            ..Model::default()
+        })
+        .register(());
     let error = ControlledRuntime::builder(builder.build().unwrap())
         .control_all()
         .build()
@@ -275,7 +288,10 @@ fn dropped_registration_does_not_change_identity_or_startup_trace() {
         if drop_registration {
             drop(builder.component_builder::<Probe>().name("discarded"));
         }
-        builder.component::<Probe>(one(1));
+        builder
+            .component_builder::<Probe>()
+            .configuration(one(1))
+            .register(());
         let runtime = ControlledRuntime::builder(builder.build().unwrap())
             .control_all()
             .build()
@@ -293,20 +309,21 @@ impl EffectDescriptor for Report {
 struct Mirror;
 impl Component for Mirror {
     type Io = (Source<Feed>, Effect<Report>);
-    type Config = ();
+    type Connections = ();
+    type Configuration = ();
     type Model = ();
     type Message = SourceEvent<u64, Infallible>;
-    fn init(_: &(), _: &Self::Io) -> Init<(), Self::Message> {
+    fn init(_: &Context<Self>) -> Init<(), Self::Message> {
         Init::new(())
     }
-    fn update(_: &(), caps: &Self::Io, _: &mut (), event: Self::Message) -> Command<Self::Message> {
+    fn update(cx: &Context<Self>, _: &mut (), event: Self::Message) -> Command<Self::Message> {
         match event {
-            SourceEvent::Item(value) => Effect::perform(&caps.1, Report(value)).discard_outcome(),
+            SourceEvent::Item(value) => Effect::perform(&cx.io.1, Report(value)).discard_outcome(),
             _ => Command::none(),
         }
     }
-    fn subscriptions(_: &(), caps: &Self::Io, _: &()) -> Subscriptions<Self::Message> {
-        Subscriptions::one(Subscription::source(&caps.0, Feed(7)))
+    fn subscriptions(cx: &Context<Self>, _: &()) -> Subscriptions<Self::Message> {
+        Subscriptions::one(Subscription::source(&cx.io.0, Feed(7)))
     }
 }
 struct FeedDriver;

@@ -1,6 +1,9 @@
 # ADR-0030: Registration Returns Its Handle
 
 - Status: Accepted.
+  [ADR-0031](0031-connections-configuration-and-context.md) changed what
+  registration is given: `component::<C>(connections)`, with the
+  configuration defaulted or set by `.configuration(..)` on the builder.
 - Date: November 15, 2026
 - Deciders: Samara maintainers
 - Amends: [ADR-0021](0021-implicit-identities-and-diagnostic-names.md)

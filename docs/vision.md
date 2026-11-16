@@ -39,7 +39,7 @@ A **Samara program** is a closed, declared collection of Components and the capa
 through which they may communicate or interact with the world. `ProgramBuilder` issues
 Component references and Ports during assembly, and registering a Component creates the
 Effect, Source, and File capabilities that Component owns. References and Ports are
-threaded into immutable Component configuration. A capability stays with the one
+given to a Component as its immutable connections. A capability stays with the one
 Component it was created for. After the Program is built, execution cannot add another
 dependency.
 
@@ -95,11 +95,11 @@ These signatures describe semantics, not a final Rust API. Exclusively owned, in
 mutation may be used as an implementation technique when it is observationally
 equivalent to producing a new model value.
 
-The Rust type and `impl Component` form the Component implementation. A particular
-immutable value of that type is its Component configuration and may contain logical
-wiring such as Ports and declarative descriptor configuration. Capabilities are not part
-of it: a Component names them as its `Io`, and the runtime passes that value alongside
-the configuration. Receiving both by shared reference signals observational
+The Rust type and `impl Component` form the Component implementation. Each registered
+Component is given three immutable inputs: its connections (logical wiring such as
+Ports and Connectors), its configuration (plain settings such as declarative descriptor
+configuration), and its `Io` (the capabilities created for it). The runtime passes all
+three as one context. Receiving it by shared reference signals observational
 immutability; because Rust permits interior mutability, conformance still requires that
 behaviorally relevant mutable state belong in the Model.
 

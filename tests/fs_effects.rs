@@ -59,20 +59,21 @@ enum WalkerMessage {
 
 impl Component for Walker {
     type Io = WalkerIo;
-    type Config = ();
+    type Connections = ();
+    type Configuration = ();
     type Model = WalkerModel;
     type Message = WalkerMessage;
 
-    fn init(_: &(), _: &Self::Io) -> Init<WalkerModel, WalkerMessage> {
+    fn init(_: &Context<Self>) -> Init<WalkerModel, WalkerMessage> {
         Init::new(WalkerModel::default())
     }
 
     fn update(
-        _: &(),
-        (append, replace, read, remove, report): &Self::Io,
+        cx: &Context<Self>,
         model: &mut WalkerModel,
         message: WalkerMessage,
     ) -> Command<WalkerMessage> {
+        let (append, replace, read, remove, report) = &cx.io;
         let next = |model: &mut WalkerModel| -> Command<WalkerMessage> {
             model.step += 1;
             match model.step {
@@ -289,15 +290,16 @@ struct Owns<D>(std::marker::PhantomData<fn() -> D>);
 
 impl<D: EffectDescriptor> Component for Owns<D> {
     type Io = Effect<D>;
-    type Config = ();
+    type Connections = ();
+    type Configuration = ();
     type Model = ();
     type Message = ();
 
-    fn init(_: &(), _: &Self::Io) -> Init<(), ()> {
+    fn init(_: &Context<Self>) -> Init<(), ()> {
         Init::default()
     }
 
-    fn update(_: &(), _: &Self::Io, _: &mut (), _: ()) -> Command<()> {
+    fn update(_: &Context<Self>, _: &mut (), _: ()) -> Command<()> {
         Command::none()
     }
 }

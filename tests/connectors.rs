@@ -30,17 +30,17 @@ mod journal_lib {
 
     impl Component for Recorder {
         type Io = ();
-        type Config = ();
+        type Connections = ();
+        type Configuration = ();
         type Model = Vec<String>;
         type Message = RecorderMessage;
 
-        fn init(_: &(), _: &Self::Io) -> Init<Vec<String>, RecorderMessage> {
+        fn init(_: &Context<Self>) -> Init<Vec<String>, RecorderMessage> {
             Init::new(Vec::new())
         }
 
         fn update(
-            _: &(),
-            _: &Self::Io,
+            _: &Context<Self>,
             entries: &mut Vec<String>,
             RecorderMessage::Journal(message): RecorderMessage,
         ) -> Command<RecorderMessage> {
@@ -92,7 +92,8 @@ pub enum AuditMessage {
 
 struct Monitor;
 
-struct MonitorConfig {
+#[derive(Connections)]
+struct MonitorConnections {
     audit: Port<AuditMessage>,
 }
 
@@ -108,24 +109,24 @@ enum MonitorMessage {
 
 impl Component for Monitor {
     type Io = ();
-    type Config = MonitorConfig;
+    type Connections = MonitorConnections;
+    type Configuration = ();
     type Model = MonitorModel;
     type Message = MonitorMessage;
 
-    fn init(_: &MonitorConfig, _: &Self::Io) -> Init<MonitorModel, MonitorMessage> {
+    fn init(_: &Context<Self>) -> Init<MonitorModel, MonitorMessage> {
         Init::new(MonitorModel::default())
     }
 
     fn update(
-        config: &MonitorConfig,
-        _: &Self::Io,
+        cx: &Context<Self>,
         model: &mut MonitorModel,
         message: MonitorMessage,
     ) -> Command<MonitorMessage> {
         match message {
             MonitorMessage::Start => Command::batch([
                 Command::send(
-                    &config.audit,
+                    &cx.connections.audit,
                     AuditMessage::Changed {
                         what: "api".into(),
                         from: "up".into(),
@@ -133,14 +134,14 @@ impl Component for Monitor {
                     },
                 ),
                 Command::send(
-                    &config.audit,
+                    &cx.connections.audit,
                     AuditMessage::Changed {
                         what: "api".into(),
                         from: "down".into(),
                         to: "up".into(),
                     },
                 ),
-                Command::request(&config.audit, |reply_with| {
+                Command::request(&cx.connections.audit, |reply_with| {
                     AuditMessage::Tail(1, reply_with)
                 })
                 .producing(MonitorMessage::Tail),
@@ -175,7 +176,7 @@ fn assemble() -> (Program, InstalledAssembly<Journal>, ComponentRef<Monitor>) {
     let monitor = program
         .component_builder::<Monitor>()
         .name("monitor")
-        .register(MonitorConfig { audit });
+        .register(MonitorConnections { audit });
     (
         program.build().expect("program assembles"),
         journal,
@@ -223,7 +224,7 @@ fn connectors_are_inert_addresses_that_remember_only_what_they_accept() {
     let monitor = program
         .component_builder::<Monitor>()
         .name("monitor")
-        .register(MonitorConfig { audit });
+        .register(MonitorConnections { audit });
     let same: Connector<MonitorMessage> = monitor.connector();
     assert_eq!(same.id(), monitor.id());
 }
@@ -285,11 +286,12 @@ mod tally_lib {
 
     impl Component for Counter {
         type Io = ();
-        type Config = ();
+        type Connections = ();
+        type Configuration = ();
         type Model = CounterModel;
         type Message = TallyMessage;
 
-        fn init(_: &(), _: &Self::Io) -> Init<CounterModel, TallyMessage> {
+        fn init(_: &Context<Self>) -> Init<CounterModel, TallyMessage> {
             Init::new(CounterModel {
                 total: 0,
                 parked: Vec::new(),
@@ -297,8 +299,7 @@ mod tally_lib {
         }
 
         fn update(
-            _: &(),
-            _: &Self::Io,
+            _: &Context<Self>,
             model: &mut CounterModel,
             TallyMessage(inner): TallyMessage,
         ) -> Command<TallyMessage> {
@@ -338,12 +339,6 @@ use tally_lib::{Tally, TallyMessage};
 
 struct Teller;
 
-struct TellerConfig {
-    tally: Connector<TallyMessage>,
-    /// `None` asks for the total; `Some` parks a request with that timeout.
-    patience: Option<Duration>,
-}
-
 #[derive(Debug, Default, PartialEq, Eq)]
 struct TellerModel {
     total: Option<RequestOutcome<u64>>,
@@ -356,28 +351,29 @@ enum TellerMessage {
 
 impl Component for Teller {
     type Io = ();
-    type Config = TellerConfig;
+    type Connections = Connector<TallyMessage>;
+    /// `None` asks for the total; `Some` parks a request with that timeout.
+    type Configuration = Option<Duration>;
     type Model = TellerModel;
     type Message = TellerMessage;
 
-    fn init(_: &TellerConfig, _: &Self::Io) -> Init<TellerModel, TellerMessage> {
+    fn init(_: &Context<Self>) -> Init<TellerModel, TellerMessage> {
         Init::new(TellerModel::default())
     }
 
     fn update(
-        config: &TellerConfig,
-        _: &Self::Io,
+        cx: &Context<Self>,
         model: &mut TellerModel,
         message: TellerMessage,
     ) -> Command<TellerMessage> {
         match message {
             TellerMessage::Start => Command::batch([
-                Command::send(&config.tally, TallyMessage::add(2)),
-                Command::send(&config.tally, TallyMessage::add(3)),
-                match config.patience {
-                    None => Command::request(&config.tally, TallyMessage::total)
+                Command::send(&cx.connections, TallyMessage::add(2)),
+                Command::send(&cx.connections, TallyMessage::add(3)),
+                match cx.configuration {
+                    None => Command::request(&cx.connections, TallyMessage::total)
                         .producing(TellerMessage::Total),
-                    Some(patience) => Command::request(&config.tally, TallyMessage::park)
+                    Some(patience) => Command::request(&cx.connections, TallyMessage::park)
                         .timeout(patience)
                         .producing(TellerMessage::Total),
                 },
@@ -398,10 +394,8 @@ fn assemble_tally(
     let teller = program
         .component_builder::<Teller>()
         .name("teller")
-        .register(TellerConfig {
-            tally: tally.connector(),
-            patience,
-        });
+        .configuration(patience)
+        .register(tally.connector());
     (
         program.build().expect("program assembles"),
         tally,
@@ -478,37 +472,38 @@ fn a_connector_request_times_out_exactly_like_a_port_request() {
 /// Holds an adapted connector in its own vocabulary and never names the library's.
 struct DirectMonitor;
 
-struct DirectMonitorConfig {
+#[derive(Connections)]
+struct DirectMonitorConnections {
     audit: Connector<AuditMessage>,
 }
 
 impl Component for DirectMonitor {
     type Io = ();
-    type Config = DirectMonitorConfig;
+    type Connections = DirectMonitorConnections;
+    type Configuration = ();
     type Model = MonitorModel;
     type Message = MonitorMessage;
 
-    fn init(_: &DirectMonitorConfig, _: &Self::Io) -> Init<MonitorModel, MonitorMessage> {
+    fn init(_: &Context<Self>) -> Init<MonitorModel, MonitorMessage> {
         Init::new(MonitorModel::default())
     }
 
     fn update(
-        config: &DirectMonitorConfig,
-        _: &Self::Io,
+        cx: &Context<Self>,
         model: &mut MonitorModel,
         message: MonitorMessage,
     ) -> Command<MonitorMessage> {
         match message {
             MonitorMessage::Start => Command::batch([
                 Command::send(
-                    &config.audit,
+                    &cx.connections.audit,
                     AuditMessage::Changed {
                         what: "db".into(),
                         from: "cold".into(),
                         to: "warm".into(),
                     },
                 ),
-                Command::request(&config.audit, |reply_with| {
+                Command::request(&cx.connections.audit, |reply_with| {
                     AuditMessage::Tail(1, reply_with)
                 })
                 .producing(MonitorMessage::Tail),
@@ -536,7 +531,7 @@ fn a_connector_is_adapted_to_the_holders_vocabulary_once_with_accepting() {
     let monitor = program
         .component_builder::<DirectMonitor>()
         .name("monitor")
-        .register(DirectMonitorConfig { audit });
+        .register(DirectMonitorConnections { audit });
     let program = program.build().expect("program assembles");
     let mut runtime = ControlledRuntime::builder(program)
         .control_all()
@@ -563,22 +558,21 @@ struct EagerTeller;
 
 impl Component for EagerTeller {
     type Io = ();
-    type Config = Connector<TallyMessage>;
+    type Connections = ();
+    // Held as configuration, which Samara does not look inside, so the
+    // foreign Connector is not caught as a declared connection at build.
+    type Configuration = Connector<TallyMessage>;
     type Model = ();
     type Message = TellerMessage;
 
-    fn init(tally: &Connector<TallyMessage>, _: &Self::Io) -> Init<(), TellerMessage> {
+    fn init(cx: &Context<Self>) -> Init<(), TellerMessage> {
         Init::new(()).with_command(
-            Command::request(tally, TallyMessage::total).producing(TellerMessage::Total),
+            Command::request(&cx.configuration, TallyMessage::total)
+                .producing(TellerMessage::Total),
         )
     }
 
-    fn update(
-        _: &Connector<TallyMessage>,
-        _: &Self::Io,
-        _: &mut (),
-        _: TellerMessage,
-    ) -> Command<TellerMessage> {
+    fn update(_: &Context<Self>, _: &mut (), _: TellerMessage) -> Command<TellerMessage> {
         Command::none()
     }
 }
@@ -592,7 +586,8 @@ fn an_initial_request_to_a_foreign_connector_fails_both_profile_builds() {
         program
             .component_builder::<EagerTeller>()
             .name("eager")
-            .register(foreign.connector());
+            .configuration(foreign.connector())
+            .register(());
         program
             .build()
             .expect("the hidden connector is ordinary Rust until a profile reads initial work")

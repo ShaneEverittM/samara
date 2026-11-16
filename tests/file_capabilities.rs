@@ -41,20 +41,19 @@ enum Message {
 }
 impl Component for Writer {
     type Io = Needs;
-    type Config = &'static str;
+    type Connections = ();
+    type Configuration = &'static str;
     type Model = Bytes;
     type Message = Message;
-    fn init(_: &Self::Config, _: &Needs) -> Init<Bytes, Message> {
+    fn init(_: &Context<Self>) -> Init<Bytes, Message> {
         Init::default()
     }
-    fn update(
-        text: &Self::Config,
-        (file, report): &Needs,
-        model: &mut Bytes,
-        message: Message,
-    ) -> Command<Message> {
+    fn update(cx: &Context<Self>, model: &mut Bytes, message: Message) -> Command<Message> {
+        let (file, report) = &cx.io;
         match message {
-            Message::Start => File::append_line(file, *text).producing(Message::Appended),
+            Message::Start => {
+                File::append_line(file, cx.configuration).producing(Message::Appended)
+            }
             Message::Appended(EffectOutcome::Succeeded(())) => {
                 File::read(file).producing(Message::Read)
             }
@@ -70,8 +69,14 @@ impl Component for Writer {
 }
 fn fixture() -> Fixture {
     let mut builder = Program::builder();
-    let first = builder.component::<Writer>("first");
-    let second = builder.component::<Writer>("second");
+    let first = builder
+        .component_builder::<Writer>()
+        .configuration("first")
+        .register(());
+    let second = builder
+        .component_builder::<Writer>()
+        .configuration("second")
+        .register(());
     let files = [first.io.0.clone(), second.io.0.clone()];
     let reports = [first.io.1.clone(), second.io.1.clone()];
     (
@@ -126,15 +131,15 @@ fn write_authority_constructs_typed_replacements() {
 struct Replacer;
 impl Component for Replacer {
     type Io = File<WriteOnly>;
-    type Config = &'static str;
+    type Connections = ();
+    type Configuration = &'static str;
     type Message = EffectOutcome<(), FsError>;
     type Model = Option<Self::Message>;
-    fn init(text: &Self::Config, file: &Self::Io) -> Init<Self::Model, Self::Message> {
-        Init::new(None).with_command(File::replace_text(file, *text).into_command())
+    fn init(cx: &Context<Self>) -> Init<Self::Model, Self::Message> {
+        Init::new(None).with_command(File::replace_text(&cx.io, cx.configuration).into_command())
     }
     fn update(
-        _: &Self::Config,
-        _: &Self::Io,
+        _: &Context<Self>,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -156,8 +161,14 @@ fn replacements_select_the_exact_resource_and_deliver_typed_outcomes() {
     ] {
         let expected = outcome.clone();
         let mut builder = Program::builder();
-        let first = builder.component::<Replacer>("first");
-        let second = builder.component::<Replacer>("second");
+        let first = builder
+            .component_builder::<Replacer>()
+            .configuration("first")
+            .register(());
+        let second = builder
+            .component_builder::<Replacer>()
+            .configuration("second")
+            .register(());
         let mut runtime = ControlledRuntime::builder(builder.build().unwrap())
             .control_all()
             .build()
@@ -192,8 +203,14 @@ async fn live_write_permissions_replace_existing_contents_at_each_bound_path() {
     let second_path = root.0.join("nested/new.log");
     std::fs::write(&first_path, "old contents must be entirely replaced").unwrap();
     let mut builder = Program::builder();
-    let first = builder.component::<Replacer>("first");
-    let second = builder.component::<Replacer>("second");
+    let first = builder
+        .component_builder::<Replacer>()
+        .configuration("first")
+        .register(());
+    let second = builder
+        .component_builder::<Replacer>()
+        .configuration("second")
+        .register(());
     let runtime = Runtime::builder(builder.build().unwrap())
         .supply(&first.io, FileDriver::new(&first_path))
         .supply(&second.io, FileDriver::new(&second_path))
@@ -328,19 +345,20 @@ fn controlled_file_traces_repeat_for_identical_inputs() {
 struct HiddenFile;
 impl Component for HiddenFile {
     type Io = File<ReadOnly>;
-    type Config = (File<ReadOnly>, bool);
+    type Connections = ();
+    type Configuration = (File<ReadOnly>, bool);
     type Model = ();
     type Message = bool;
-    fn init(config: &Self::Config, _: &Self::Io) -> Init<(), bool> {
-        Init::new(()).with_command(if config.1 {
-            File::read(&config.0).producing(|_| false)
+    fn init(cx: &Context<Self>) -> Init<(), bool> {
+        Init::new(()).with_command(if cx.configuration.1 {
+            File::read(&cx.configuration.0).producing(|_| false)
         } else {
             Command::none()
         })
     }
-    fn update(config: &Self::Config, _: &Self::Io, _: &mut (), start: bool) -> Command<bool> {
+    fn update(cx: &Context<Self>, _: &mut (), start: bool) -> Command<bool> {
         if start {
-            File::read(&config.0).producing(|_| false)
+            File::read(&cx.configuration.0).producing(|_| false)
         } else {
             Command::none()
         }
@@ -352,7 +370,10 @@ fn hidden_foreign_file_is_rejected_at_startup_or_before_controlled_execution() {
     for initial in [true, false] {
         let foreign = <File<ReadOnly>>::detached();
         let mut builder = Program::builder();
-        let target = builder.component::<HiddenFile>((foreign, initial));
+        let target = builder
+            .component_builder::<HiddenFile>()
+            .configuration((foreign, initial))
+            .register(());
         let runtime = ControlledRuntime::builder(builder.build().unwrap())
             .control_all()
             .build();
@@ -377,7 +398,10 @@ async fn hidden_foreign_file_is_rejected_before_live_execution() {
     for initial in [true, false] {
         let foreign = <File<ReadOnly>>::detached();
         let mut builder = Program::builder();
-        let target = builder.component::<HiddenFile>((foreign, initial));
+        let target = builder
+            .component_builder::<HiddenFile>()
+            .configuration((foreign, initial))
+            .register(());
         let root = TempRoot::new();
         let runtime = Runtime::builder(builder.build().unwrap())
             .supply(&target.io, FileDriver::new(root.0.join("unread.log")))

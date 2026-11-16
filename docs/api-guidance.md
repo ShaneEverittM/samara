@@ -108,12 +108,19 @@ should become a Component.
 ### Where Does Each Kind of State Belong?
 
 
-The `Model` contains mutable behavioral state. `Component::Config` holds
-immutable settings and connections, such as Ports and SourceDescriptors.
-Capabilities do not go in `Config`. The kernel stores the Component's
-`Component::Io` value separately and passes it by shared reference alongside
-`&Config`; after registration, the configuration is observationally
-immutable. The type implementing `Component` is only a name for the kind and
+The `Model` contains mutable behavioral state. Everything a Component is
+given and cannot change arrives as one `Context`
+([ADR-0031](adr/0031-connections-configuration-and-context.md)):
+
+- `cx.io` is its capabilities, created at registration.
+- `cx.connections` is the other Components it can send to: Connectors,
+  Ports, and ComponentRefs, supplied by whoever assembles the Program.
+- `cx.configuration` is plain settings, such as an interval or a
+  SourceDescriptor, supplied by the host or defaulted.
+
+Keeping connections apart from settings lets Samara see them: they are
+listed in `Program::manifest()` and checked at `build()`. After
+registration the context is observationally immutable. The type implementing `Component` is only a name for the kind and
 holds nothing. Behaviorally relevant mutation belongs in the Model rather
 than behind interior mutability in the configuration.
 
@@ -223,10 +230,11 @@ struct MonitorIo {
 
 impl Component for Monitor {
     type Io = MonitorIo;
-    type Config = Connector<JournalMessage>;
+    type Connections = Connector<JournalMessage>;
+    type Configuration = ();
     // ...
-    fn update(journal: &Self::Config, io: &MonitorIo, _: &mut Model, message: Message) -> Command<Message> {
-        // samara::println!(&io.output, "Got response: {:?}", r)
+    fn update(cx: &Context<Self>, _: &mut Model, message: Message) -> Command<Message> {
+        // samara::println!(&cx.io.output, "Got response: {:?}", r)
     }
 }
 ```
@@ -248,11 +256,11 @@ let monitor = builder
 let program = builder.build()?;
 ```
 
-Every callback receives `&Io` separately from Config, and every issuance site
+Every callback receives the capabilities as `cx.io`, and every issuance site
 names the capability it uses. The values perform no I/O.
 
 A capability belongs to the one Component it was created for. It cannot be
-given to a second Component, may not be kept in `Config`, and cannot be
+given to a second Component, may not be kept in `Configuration`, and cannot be
 narrowed. A Component that uses a capability created for another Component
 faults the runtime with "belongs to another Component". Give other
 Components the `ComponentRef` or a Connector, never the capabilities.
@@ -299,18 +307,21 @@ distinct from receiver binding under Rust's trait coherence rules. Built-in
 source Layers execute in both profiles. `supply` is the only public live
 binding operation; `build()` validates the completed bindings.
 
-`Program::manifest()` lists every capability with its owner and field name.
+`Program::manifest()` lists every capability with its owner and field name,
+followed by every declared connection as
+`owner.field: connection <Message> -> <target>`.
 Its text has one line per capability, such as
 `clock: effect samara::clock::ReadSystemTime` for an unnamed capability of a
 Component registered through `component_builder` with `.name("clock")`, and `owner.field: ...` when `Io`
 is a named struct.
 
 To call `init`, `update`, or `subscriptions` directly in a unit test without
-a Program, make capability values with `Capabilities::detached()`:
+a Program, make a context with `Context::detached(connections,
+configuration)`, whose capabilities come from `Capabilities::detached()`:
 
 ```rust,ignore
-let io = <<Monitor as Component>::Io as Capabilities>::detached();
-let command = Monitor::update(&config, &io, &mut model, message);
+let cx = Context::<Monitor>::detached(journal, ());
+let command = Monitor::update(&cx, &mut model, message);
 ```
 
 Detached capabilities cannot be supplied with Drivers, and a runtime faults
@@ -675,7 +686,7 @@ dependency points the right way, from application to library, and the
 library's Component kind never becomes nameable outside its crate.
 
 A Connector is also an address in its own right. A Component may hold a `Connector<M>`
-in its `Config` and reach it with `Command::send(&target, ..)`, or with
+in its `Connections` and reach it with `Command::send(&target, ..)`, or with
 `Command::request(&connector, Constructor).producing(map)` where `Constructor` is a
 function the provider published that takes a `ReplyWith<R>`; the reply type is
 fixed by that parameter and checked against `map`. `Connector::accepting` adapts
@@ -934,7 +945,8 @@ impl Assembly for Journal {
 
 | Scope | Declaration | Supplied by |
 | --- | --- | --- |
-| Component settings and connections | `Component::Config` | Its assembler |
+| Component connections | `Component::Connections` | Its assembler, at registration |
+| Component settings | `Component::Configuration` | The host, through `component_builder`, or `Default` |
 | Component world dependencies | `Component::Io` | Created at registration |
 | Assembly world dependencies | `Assembly::Io` | Returned by `install` from its members' `io` |
 | Live Drivers | `supply(&capability, driver)` on `Runtime::builder(program)` | The host |
@@ -961,13 +973,14 @@ hosts supply constructors such as `FileDriver::new(path)` directly with
 
 Implement `Assembly` on a public marker struct, not on a Component.
 `Component`'s associated types are part of its public interface, so a public
-Component forces its `Config`, `Model`, and `Message` public too; a marker
+Component forces its `Connections`, `Configuration`, `Model`, and `Message`
+public too; a marker
 costs one line and names nothing else.
 
 An Assembly's address is a `Connector`, whether the Assembly is part of your
 own application or a library: the host either cuts a Port in its own
 vocabulary and connects the Connector to it, adapting with `accepting` when
-the vocabularies differ, or holds the Connector in a Config and addresses it
+the vocabularies differ, or holds the Connector in its Connections and addresses it
 directly. `Exports` takes one of three shapes (ADR-0026):
 
 ```rust,ignore
@@ -1111,9 +1124,9 @@ the first implementation.
 
 ## Component names and subscription keys
 
-Component registration needs only configuration. The builder issues an opaque
-identity and returns the handle. An optional name is set through
-`component_builder::<C>().name("Primary worker").register(config)` (ADR-0030); it
+Component registration needs only the Component's connections. The builder
+issues an opaque identity and returns the handle. An optional name is set through
+`component_builder::<C>().name("Primary worker").register(connections)` (ADR-0030); it
 improves diagnostics; duplicate names are allowed, and names do not affect
 routing or controlled execution order. Repeated Assembly installations need no
 coordination of private Component names.

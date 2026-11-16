@@ -100,22 +100,23 @@ struct PipelineComponent;
 
 impl Component for PipelineComponent {
     type Io = (Effect<HttpRequest>, Effect<ObservePipelineResult>);
-    type Config = String;
+    type Connections = ();
+    type Configuration = String;
     type Model = PipelineModel;
     type Message = PipelineMessage;
 
-    fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
+    fn init(_: &Context<Self>) -> Init<Self::Model, Self::Message> {
         Init::new(PipelineModel::default())
     }
 
     fn update(
-        url: &Self::Config,
-        (http, observe): &Self::Io,
+        cx: &Context<Self>,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
+        let (http, observe) = &cx.io;
         match message {
-            PipelineMessage::Start => HttpRequest::get(url.clone())
+            PipelineMessage::Start => HttpRequest::get(cx.configuration.clone())
                 .on_response()
                 .require_success()
                 .json::<Payload>()
@@ -154,7 +155,8 @@ fn pipeline_program(url: impl Into<String>) -> (Program, InstalledComponent<Pipe
     let component = builder
         .component_builder::<PipelineComponent>()
         .name("http-pipeline")
-        .register(url.into());
+        .configuration(url.into())
+        .register(());
     (builder.build().expect("valid pipeline program"), component)
 }
 

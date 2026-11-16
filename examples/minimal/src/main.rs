@@ -44,10 +44,10 @@ enum CounterMessage {
 }
 
 /// The Counter kind. The type is only a name; see `CounterConfig` and
-/// `CounterModel` for what one Counter is wired with and what it owns.
+/// `CounterModel` for what one Counter is configured with and what it owns.
 struct Counter;
 
-/// One Counter's immutable logical input wiring.
+/// One Counter's immutable configuration.
 ///
 /// The descriptor is inert logical configuration. The live `Receiver` remains at
 /// runtime assembly, outside this value and `CounterModel`.
@@ -58,17 +58,17 @@ struct CounterConfig {
 impl Component for Counter {
     // The one thing a Counter can reach in the world: its stream of increments.
     type Io = Source<StreamDescriptor<u64>>;
-    type Config = CounterConfig;
+    type Connections = ();
+    type Configuration = CounterConfig;
     type Model = CounterModel;
     type Message = CounterMessage;
 
-    fn init(_: &CounterConfig, _input: &Self::Io) -> Init<CounterModel, CounterMessage> {
+    fn init(_: &Context<Self>) -> Init<CounterModel, CounterMessage> {
         Init::new(CounterModel::default())
     }
 
     fn update(
-        _: &CounterConfig,
-        _input: &Self::Io,
+        _: &Context<Self>,
         model: &mut CounterModel,
         message: CounterMessage,
     ) -> Command<CounterMessage> {
@@ -87,11 +87,7 @@ impl Component for Counter {
         Command::none()
     }
 
-    fn subscriptions(
-        config: &CounterConfig,
-        input: &Self::Io,
-        model: &CounterModel,
-    ) -> Subscriptions<CounterMessage> {
+    fn subscriptions(cx: &Context<Self>, model: &CounterModel) -> Subscriptions<CounterMessage> {
         if model.input_closed {
             // Once the source reports normal completion, retaining desire for
             // it would ask reconciliation to start the same source again.
@@ -99,8 +95,8 @@ impl Component for Counter {
         }
 
         Subscriptions::one(Subscription::source_with(
-            input,
-            config.increments.clone(),
+            &cx.io,
+            cx.configuration.increments.clone(),
             |event| match event {
                 SourceEvent::Item(amount) => CounterMessage::Increment(amount),
                 SourceEvent::Ended => CounterMessage::InputClosed,
@@ -119,7 +115,10 @@ impl Component for Counter {
 fn program(increments: StreamDescriptor<u64>) -> (Program, InstalledComponent<Counter>) {
     let mut program = Program::builder();
 
-    let counter = program.component::<Counter>(CounterConfig { increments });
+    let counter = program
+        .component_builder::<Counter>()
+        .configuration(CounterConfig { increments })
+        .register(());
     (
         program.build().expect("the example graph is valid"),
         counter,
@@ -177,31 +176,28 @@ mod tests {
     #[test]
     fn component_logic_is_directly_testable() {
         let increments = StreamDescriptor::named(INCREMENT_INPUT);
-        let config = CounterConfig {
-            increments: increments.clone(),
-        };
-        // A capability that belongs to no Program is enough to call the
-        // Component's functions and inspect what they return.
-        let input = <Counter as Component>::Io::detached();
-        let mut model = Counter::init(&config, &input).model;
+        // A Context whose capabilities belong to no Program is enough to call
+        // the Component's functions and inspect what they return.
+        let cx = Context::<Counter>::detached(
+            (),
+            CounterConfig {
+                increments: increments.clone(),
+            },
+        );
+        let mut model = Counter::init(&cx).model;
 
         assert_eq!(
-            Counter::subscriptions(&config, &input, &model).find::<StreamDescriptor<u64>>(&input),
+            Counter::subscriptions(&cx, &model).find::<StreamDescriptor<u64>>(&cx.io),
             Some(&increments)
         );
 
-        let command = Counter::update(&config, &input, &mut model, CounterMessage::Increment(2));
+        let command = Counter::update(&cx, &mut model, CounterMessage::Increment(2));
         assert_eq!(model.total, 2);
         assert!(command.is_none());
 
-        let _ = Counter::update(&config, &input, &mut model, CounterMessage::InputClosed);
+        let _ = Counter::update(&cx, &mut model, CounterMessage::InputClosed);
         assert!(model.input_closed);
-        assert_eq!(
-            Counter::subscriptions(&config, &input, &model)
-                .iter()
-                .count(),
-            0
-        );
+        assert_eq!(Counter::subscriptions(&cx, &model).iter().count(), 0);
     }
 
     /// Specifies the controlled counterpart of `run_live` using the same

@@ -23,25 +23,23 @@ struct ProbeConfig {
 }
 impl Component for Probe {
     type Io = (Effect<HttpRequest>, Effect<Observed>);
-    type Config = ProbeConfig;
+    type Connections = ();
+    type Configuration = ProbeConfig;
     type Model = Vec<Outcome>;
     type Message = Outcome;
-    fn init(config: &Self::Config, (http, _): &Self::Io) -> Init<Self::Model, Self::Message> {
+    fn init(cx: &Context<Self>) -> Init<Self::Model, Self::Message> {
+        let (http, _) = &cx.io;
         Init::default().with_command(
-            config
+            cx.configuration
                 .request
                 .clone()
                 .on_response()
-                .follow_redirects(config.limit)
+                .follow_redirects(cx.configuration.limit)
                 .into_command_with(http, |outcome| outcome),
         )
     }
-    fn update(
-        _: &Self::Config,
-        (_, observed): &Self::Io,
-        model: &mut Self::Model,
-        outcome: Outcome,
-    ) -> Command<Outcome> {
+    fn update(cx: &Context<Self>, model: &mut Self::Model, outcome: Outcome) -> Command<Outcome> {
+        let (_, observed) = &cx.io;
         model.push(outcome.clone());
         Effect::perform(observed, Observed(outcome)).discard_outcome()
     }
@@ -51,7 +49,8 @@ fn program(request: HttpRequest, limit: usize) -> (Program, InstalledComponent<P
     let probe = builder
         .component_builder::<Probe>()
         .name("probe")
-        .register(ProbeConfig { request, limit });
+        .configuration(ProbeConfig { request, limit })
+        .register(());
     (builder.build().unwrap(), probe)
 }
 fn controlled(request: HttpRequest, limit: usize) -> (ControlledRuntime, ComponentRef<Probe>) {
@@ -340,10 +339,11 @@ struct JsonProbe;
 
 impl Component for JsonProbe {
     type Io = Effect<HttpRequest>;
-    type Config = ();
+    type Connections = ();
+    type Configuration = ();
     type Model = Option<EffectOutcome<serde_json::Value, HttpResponseError>>;
     type Message = EffectOutcome<serde_json::Value, HttpResponseError>;
-    fn init(_: &Self::Config, http: &Self::Io) -> Init<Self::Model, Self::Message> {
+    fn init(cx: &Context<Self>) -> Init<Self::Model, Self::Message> {
         Init::default().with_command(
             HttpRequest::get("https://example.test/")
                 .on_response()
@@ -351,12 +351,11 @@ impl Component for JsonProbe {
                 .follow_redirects(1)
                 .require_success()
                 .json::<serde_json::Value>()
-                .into_command_with(http, |outcome| outcome),
+                .into_command_with(&cx.io, |outcome| outcome),
         )
     }
     fn update(
-        _config: &Self::Config,
-        _: &Self::Io,
+        _: &Context<Self>,
         model: &mut Self::Model,
         outcome: Self::Message,
     ) -> Command<Self::Message> {

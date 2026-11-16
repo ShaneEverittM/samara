@@ -8,14 +8,15 @@ use std::marker::PhantomData;
 /// capability inside a Program.
 struct Holder<C>(PhantomData<C>);
 impl<C: crate::Capabilities> crate::Component for Holder<C> {
-    type Config = ();
+    type Connections = ();
+    type Configuration = ();
     type Io = C;
     type Model = ();
     type Message = ();
-    fn init(_: &(), _: &C) -> crate::Init<(), ()> {
+    fn init(_: &crate::Context<Self>) -> crate::Init<(), ()> {
         crate::Init::default()
     }
-    fn update(_: &(), _: &C, _: &mut (), _: ()) -> crate::Command<()> {
+    fn update(_: &crate::Context<Self>, _: &mut (), _: ()) -> crate::Command<()> {
         crate::Command::none()
     }
 }

@@ -5,6 +5,8 @@
   makes `install` return the Assembly's Connector alongside its exports, and
   then by [ADR-0026](0026-assemblies-export-one-value.md), which returns to a
   single `Exports` value that is usually that Connector.
+  [ADR-0031](0031-connections-configuration-and-context.md) splits
+  `Component::Config` into `Connections` and `Configuration`.
 - Date: November 8, 2026
 - Deciders: Samara maintainers
 - Scope: The `Component` trait signature, the reuse unit (`Assembly`), Port

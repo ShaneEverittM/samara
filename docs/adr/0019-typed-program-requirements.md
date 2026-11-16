@@ -4,8 +4,10 @@
   [ADR-0028](0028-a-capability-belongs-to-one-component.md) and
   [ADR-0029](0029-capabilities-are-named-values-a-component-owns.md):
   there is no `Program<R>`, no `Requires`, and no up-front declaration. The
-  `Component` signature decided here stands, with `io: &Self::Io` in place
-  of the capabilities parameter.
+  `Component` signature decided here was then replaced by
+  [ADR-0031](0031-connections-configuration-and-context.md): every function
+  takes one `&Context<Self>` holding `io`, `connections`, and
+  `configuration`.
 - Date: November 9, 2026
 - Amends: ADR-0005, ADR-0008, ADR-0009, ADR-0013, and ADR-0018.
 

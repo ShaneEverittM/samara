@@ -100,26 +100,26 @@ impl KernelComponentConfig {
 
 impl Component for KernelComponent {
     type Io = ();
-    type Config = KernelComponentConfig;
+    type Connections = ();
+    type Configuration = KernelComponentConfig;
     type Model = OwnedModel;
     type Message = KernelMessage;
 
-    fn init(config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
-        config.init_calls.fetch_add(1, Ordering::SeqCst);
+    fn init(cx: &Context<Self>) -> Init<Self::Model, Self::Message> {
+        cx.configuration.init_calls.fetch_add(1, Ordering::SeqCst);
         Init::new(OwnedModel {
             state: KernelModel::default(),
-            drops: config.model_drops.clone(),
+            drops: cx.configuration.model_drops.clone(),
         })
     }
 
     fn update(
-        config: &Self::Config,
-        _: &Self::Io,
+        cx: &Context<Self>,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
         match message {
-            KernelMessage::Add(amount) => model.state.total += amount * config.scale,
+            KernelMessage::Add(amount) => model.state.total += amount * cx.configuration.scale,
         }
         Command::none()
     }
@@ -128,11 +128,12 @@ impl Component for KernelComponent {
 #[test]
 fn v1_same_input_produces_equivalent_model_and_command_intent() {
     let (component, _, _, _) = KernelComponentConfig::fixture();
-    let mut left = KernelComponent::init(&component, &()).model;
-    let mut right = KernelComponent::init(&component, &()).model;
+    let cx = Context::<KernelComponent>::detached((), component);
+    let mut left = KernelComponent::init(&cx).model;
+    let mut right = KernelComponent::init(&cx).model;
 
-    let left_command = KernelComponent::update(&component, &(), &mut left, KernelMessage::Add(7));
-    let right_command = KernelComponent::update(&component, &(), &mut right, KernelMessage::Add(7));
+    let left_command = KernelComponent::update(&cx, &mut left, KernelMessage::Add(7));
+    let right_command = KernelComponent::update(&cx, &mut right, KernelMessage::Add(7));
 
     assert!(left_command.is_none());
     assert!(right_command.is_none());
@@ -142,8 +143,7 @@ fn v1_same_input_produces_equivalent_model_and_command_intent() {
 #[test]
 fn v1_update_has_no_runtime_capability() {
     let update: fn(
-        &KernelComponentConfig,
-        &(),
+        &Context<KernelComponent>,
         &mut OwnedModel,
         KernelMessage,
     ) -> Command<KernelMessage> = KernelComponent::update;
@@ -174,11 +174,13 @@ fn component_identity_follows_registration_independently_of_names() {
     let alpha_left = left_program
         .component_builder::<KernelComponent>()
         .name("alpha")
-        .register(left_first);
+        .configuration(left_first)
+        .register(());
     let beta_left = left_program
         .component_builder::<KernelComponent>()
         .name("beta")
-        .register(left_second);
+        .configuration(left_second)
+        .register(());
 
     let mut right_program = Program::builder();
     let (right_first, _, _, _) = KernelComponentConfig::fixture();
@@ -186,11 +188,13 @@ fn component_identity_follows_registration_independently_of_names() {
     let beta_right = right_program
         .component_builder::<KernelComponent>()
         .name("beta")
-        .register(right_first);
+        .configuration(right_first)
+        .register(());
     let alpha_right = right_program
         .component_builder::<KernelComponent>()
         .name("alpha")
-        .register(right_second);
+        .configuration(right_second)
+        .register(());
 
     assert_eq!(alpha_left.id(), beta_right.id());
     assert_eq!(beta_left.id(), alpha_right.id());
@@ -206,7 +210,8 @@ fn registration_transfers_configuration_and_model_ownership_to_program() {
     let component_ref = builder
         .component_builder::<KernelComponent>()
         .name("owned")
-        .register(component);
+        .configuration(component)
+        .register(());
 
     assert_eq!(component_ref.id().name(), "owned");
     assert_eq!(configuration_drops.load(Ordering::SeqCst), 0);

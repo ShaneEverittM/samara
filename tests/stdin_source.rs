@@ -52,17 +52,17 @@ struct StdinProbe;
 
 impl Component for StdinProbe {
     type Io = Source<StdinLines>;
-    type Config = ();
+    type Connections = ();
+    type Configuration = ();
     type Model = StdinModel;
     type Message = StdinMessage;
 
-    fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
+    fn init(_: &Context<Self>) -> Init<Self::Model, Self::Message> {
         Init::default()
     }
 
     fn update(
-        _config: &Self::Config,
-        _: &Self::Io,
+        _: &Context<Self>,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -78,16 +78,12 @@ impl Component for StdinProbe {
         Command::none()
     }
 
-    fn subscriptions(
-        _: &Self::Config,
-        stdin: &Self::Io,
-        model: &Self::Model,
-    ) -> Subscriptions<Self::Message> {
+    fn subscriptions(cx: &Context<Self>, model: &Self::Model) -> Subscriptions<Self::Message> {
         if model.terminal.is_some() {
             Subscriptions::none()
         } else {
             Subscriptions::one(
-                Subscription::source(stdin, StdinLines::new()).key(STDIN_SUBSCRIPTION),
+                Subscription::source(&cx.io, StdinLines::new()).key(STDIN_SUBSCRIPTION),
             )
         }
     }
@@ -108,15 +104,16 @@ struct Owns<C>(std::marker::PhantomData<fn() -> C>);
 
 impl<C: Capabilities> Component for Owns<C> {
     type Io = C;
-    type Config = ();
+    type Connections = ();
+    type Configuration = ();
     type Model = ();
     type Message = ();
 
-    fn init(_: &(), _: &Self::Io) -> Init<(), ()> {
+    fn init(_: &Context<Self>) -> Init<(), ()> {
         Init::default()
     }
 
-    fn update(_: &(), _: &Self::Io, _: &mut (), _: ()) -> Command<()> {
+    fn update(_: &Context<Self>, _: &mut (), _: ()) -> Command<()> {
         Command::none()
     }
 }

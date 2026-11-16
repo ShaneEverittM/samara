@@ -48,22 +48,22 @@ struct PrintProbe;
 
 impl Component for PrintProbe {
     type Io = Effect<PrintStdout>;
-    type Config = ();
+    type Connections = ();
+    type Configuration = ();
     type Model = PrintModel;
     type Message = PrintMessage;
 
-    fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
+    fn init(_: &Context<Self>) -> Init<Self::Model, Self::Message> {
         Init::new(PrintModel::default())
     }
 
     fn update(
-        _config: &Self::Config,
-        stdout: &Self::Io,
+        cx: &Context<Self>,
         model: &mut Self::Model,
         PrintMessage::Start: Self::Message,
     ) -> Command<Self::Message> {
         model.transitions += 1;
-        samara::println!(stdout, "transition {}", model.transitions)
+        samara::println!(&cx.io, "transition {}", model.transitions)
     }
 }
 
@@ -132,22 +132,22 @@ struct GateProbe;
 
 impl Component for GateProbe {
     type Io = Effect<GateEffect>;
-    type Config = ();
+    type Connections = ();
+    type Configuration = ();
     type Model = ();
     type Message = GateMessage;
 
-    fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
+    fn init(_: &Context<Self>) -> Init<Self::Model, Self::Message> {
         Init::new(())
     }
 
     fn update(
-        _config: &Self::Config,
-        effect: &Self::Io,
+        cx: &Context<Self>,
         _model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
         match message {
-            GateMessage::Start => Effect::perform(effect, GateEffect).discard_outcome(),
+            GateMessage::Start => Effect::perform(&cx.io, GateEffect).discard_outcome(),
             GateMessage::Noop => Command::none(),
         }
     }

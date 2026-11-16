@@ -103,8 +103,6 @@ impl Status {
 
 struct Checker;
 
-struct CheckerConfig {}
-
 /// Everything the URL checker can reach in the world. [`program`] returns
 /// these so the host can supply a live Driver for each.
 #[derive(Clone, Capabilities)]
@@ -121,26 +119,22 @@ impl Checker {
 
 impl Component for Checker {
     type Io = UrlIo;
-    type Config = CheckerConfig;
+    type Connections = ();
+    type Configuration = ();
     type Model = Status;
     type Message = Message;
 
-    fn init(_: &CheckerConfig, _io: &Self::Io) -> Init<Status, Message> {
+    fn init(_: &Context<Self>) -> Init<Status, Message> {
         Init::new(Status::Idle { revision: 0 })
     }
 
-    fn update(
-        _config: &CheckerConfig,
-        io: &Self::Io,
-        model: &mut Status,
-        message: Message,
-    ) -> Command<Message> {
+    fn update(cx: &Context<Self>, model: &mut Status, message: Message) -> Command<Message> {
         match message {
             Message::Input(event) => {
                 let command = match event {
                     InputEvent::Command(command) => command,
-                    InputEvent::Malformed(e) => return eprintln!(&io.stderr, "{e}"),
-                    InputEvent::Error(e) => return eprintln!(&io.stderr, "{e:?}"),
+                    InputEvent::Malformed(e) => return eprintln!(&cx.io.stderr, "{e}"),
+                    InputEvent::Error(e) => return eprintln!(&cx.io.stderr, "{e:?}"),
                     // This should return stop, and the runtime could perhaps exit
                     // if all components have stopped.
                     InputEvent::Eof => return Command::none(),
@@ -159,8 +153,11 @@ impl Component for Checker {
                             revision: next,
                         };
 
-                        let log =
-                            println!(&io.stdout, "Waiting {:?} before checking...", Self::DELAY);
+                        let log = println!(
+                            &cx.io.stdout,
+                            "Waiting {:?} before checking...",
+                            Self::DELAY
+                        );
                         let check = Command::after(
                             Self::DELAY,
                             Message::CheckDue {
@@ -178,31 +175,31 @@ impl Component for Checker {
                         *model = Status::Idle {
                             revision: revision.checked_add(1).expect("revision overflow"),
                         };
-                        println!(&io.stdout, "Cleared")
+                        println!(&cx.io.stdout, "Cleared")
                     }
 
                     UrlCommand::Status => match &model {
                         Status::Idle { .. } => {
                             println!(
-                                &io.stdout,
+                                &cx.io.stdout,
                                 "URL: {}\nState: {}\nLast result: {}", "none", "idle", "none"
                             )
                         }
                         Status::Pending { url, .. } => {
                             println!(
-                                &io.stdout,
+                                &cx.io.stdout,
                                 "URL: {}\nState: {}\nLast result: {}", url, "waiting", "none"
                             )
                         }
                         Status::InFlight { url, .. } => {
                             println!(
-                                &io.stdout,
+                                &cx.io.stdout,
                                 "URL: {}\nState: {}\nLast result: {}", url, "checking", "none"
                             )
                         }
                         Status::Finished { url, result, .. } => {
                             println!(
-                                &io.stdout,
+                                &cx.io.stdout,
                                 "URL: {}\nState: {}\nLast result: {}", url, "idle", result
                             )
                         }
@@ -224,9 +221,9 @@ impl Component for Checker {
                     url: Arc::clone(&url),
                     revision,
                 };
-                let log = println!(&io.stdout, "Checking {}", url);
+                let log = println!(&cx.io.stdout, "Checking {}", url);
                 let request =
-                    request.into_command_with(&io.http, move |r| Message::CheckFinished {
+                    request.into_command_with(&cx.io.http, move |r| Message::CheckFinished {
                         url,
                         revision,
                         outcome: r,
@@ -253,14 +250,14 @@ impl Component for Checker {
                     url: Arc::clone(&url),
                     result: result.clone(),
                 };
-                println!(&io.stdout, "{}: {}", url, result)
+                println!(&cx.io.stdout, "{}: {}", url, result)
             }
         }
     }
 
-    fn subscriptions(_config: &CheckerConfig, io: &Self::Io, _: &Status) -> Subscriptions<Message> {
+    fn subscriptions(cx: &Context<Self>, _: &Status) -> Subscriptions<Message> {
         Subscriptions::one(Subscription::source_with(
-            &io.stdin,
+            &cx.io.stdin,
             StdinLines::new(),
             |event| {
                 Message::Input(match event {
@@ -298,7 +295,7 @@ pub fn program() -> Result<(Program, UrlIo), ProgramBuildError> {
 fn assemble() -> Result<(Program, InstalledComponent<Checker>), ProgramBuildError> {
     let mut builder = Program::builder();
 
-    let checker = builder.component::<Checker>(CheckerConfig {});
+    let checker = builder.component::<Checker>(());
 
     Ok((builder.build()?, checker))
 }

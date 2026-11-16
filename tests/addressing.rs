@@ -31,17 +31,17 @@ struct LedgerModel {
 
 impl Component for Ledger {
     type Io = ();
-    type Config = ();
+    type Connections = ();
+    type Configuration = ();
     type Model = LedgerModel;
     type Message = LedgerProviderMessage;
 
-    fn init(_: &(), _: &Self::Io) -> Init<LedgerModel, LedgerProviderMessage> {
+    fn init(_: &Context<Self>) -> Init<LedgerModel, LedgerProviderMessage> {
         Init::new(LedgerModel::default())
     }
 
     fn update(
-        _: &(),
-        _: &Self::Io,
+        _: &Context<Self>,
         model: &mut LedgerModel,
         LedgerProviderMessage::Ledger(message): LedgerProviderMessage,
     ) -> Command<LedgerProviderMessage> {
@@ -61,11 +61,6 @@ impl Component for Ledger {
 
 struct Clerk;
 
-struct ClerkConfig {
-    ledger: Port<LedgerMessage>,
-    patience: Option<Duration>,
-}
-
 #[derive(Debug, Default, PartialEq, Eq)]
 struct ClerkModel {
     total: Option<RequestOutcome<u64>>,
@@ -79,28 +74,29 @@ enum ClerkMessage {
 
 impl Component for Clerk {
     type Io = ();
-    type Config = ClerkConfig;
+    type Connections = Port<LedgerMessage>;
+    /// `None` asks for the total; `Some` parks a request with that timeout.
+    type Configuration = Option<Duration>;
     type Model = ClerkModel;
     type Message = ClerkMessage;
 
-    fn init(_: &ClerkConfig, _: &Self::Io) -> Init<ClerkModel, ClerkMessage> {
+    fn init(_: &Context<Self>) -> Init<ClerkModel, ClerkMessage> {
         Init::new(ClerkModel::default())
     }
 
     fn update(
-        config: &ClerkConfig,
-        _: &Self::Io,
+        cx: &Context<Self>,
         model: &mut ClerkModel,
         message: ClerkMessage,
     ) -> Command<ClerkMessage> {
         match message {
             ClerkMessage::Start => Command::batch([
-                Command::send(&config.ledger, LedgerMessage::Add(2)),
-                Command::send(&config.ledger, LedgerMessage::Add(3)),
-                match config.patience {
-                    None => Command::request(&config.ledger, LedgerMessage::Total)
+                Command::send(&cx.connections, LedgerMessage::Add(2)),
+                Command::send(&cx.connections, LedgerMessage::Add(3)),
+                match cx.configuration {
+                    None => Command::request(&cx.connections, LedgerMessage::Total)
                         .producing(ClerkMessage::Total),
-                    Some(patience) => Command::request(&config.ledger, LedgerMessage::Park)
+                    Some(patience) => Command::request(&cx.connections, LedgerMessage::Park)
                         .timeout(patience)
                         .producing(ClerkMessage::Total),
                 },
@@ -124,10 +120,8 @@ fn assemble(patience: Option<Duration>) -> (Program, Port<LedgerMessage>, Compon
     let clerk = program
         .component_builder::<Clerk>()
         .name("clerk")
-        .register(ClerkConfig {
-            ledger: ledger.clone(),
-            patience,
-        });
+        .configuration(patience)
+        .register(ledger.clone());
     (
         program.build().expect("program assembles"),
         ledger,
@@ -227,18 +221,16 @@ fn an_initial_send_to_a_foreign_port_fails_both_profile_builds() {
     struct Eager;
     impl Component for Eager {
         type Io = ();
-        type Config = Port<LedgerMessage>;
+        type Connections = ();
+        // Held as configuration, which Samara does not look inside, so the
+        // foreign Port is not caught as a declared connection at build.
+        type Configuration = Port<LedgerMessage>;
         type Model = ();
         type Message = ClerkMessage;
-        fn init(ledger: &Port<LedgerMessage>, _: &Self::Io) -> Init<(), ClerkMessage> {
-            Init::new(()).with_command(Command::send(ledger, LedgerMessage::Add(1)))
+        fn init(cx: &Context<Self>) -> Init<(), ClerkMessage> {
+            Init::new(()).with_command(Command::send(&cx.configuration, LedgerMessage::Add(1)))
         }
-        fn update(
-            _: &Port<LedgerMessage>,
-            _: &Self::Io,
-            _: &mut (),
-            _: ClerkMessage,
-        ) -> Command<ClerkMessage> {
+        fn update(_: &Context<Self>, _: &mut (), _: ClerkMessage) -> Command<ClerkMessage> {
             Command::none()
         }
     }
@@ -249,7 +241,8 @@ fn an_initial_send_to_a_foreign_port_fails_both_profile_builds() {
         program
             .component_builder::<Eager>()
             .name("eager")
-            .register(foreign);
+            .configuration(foreign)
+            .register(());
         program.build().expect("the hidden Port is ordinary Rust")
     }
     let live = Runtime::builder(program())

@@ -8,7 +8,7 @@ use crate::controlled_runtime::{
 use crate::declarative_work::{
     DuplicateSubscriptionIdError, SubscriptionChange, SubscriptionReconciler,
 };
-use crate::{Command, Component, ComponentId, Init, SubscriptionId};
+use crate::{Command, Component, ComponentId, Context, Init, SubscriptionId};
 
 /// Runtime-owned state and transition mechanism for one Component.
 ///
@@ -18,22 +18,20 @@ use crate::{Command, Component, ComponentId, Init, SubscriptionId};
 /// boundary when concurrent entry is required.
 pub(crate) struct ComponentKernel<C: Component> {
     id: ComponentId,
-    config: C::Config,
-    capabilities: C::Io,
+    context: Context<C>,
     model: Option<C::Model>,
     initial_command: Option<Command<C::Message>>,
     subscriptions: SubscriptionReconciler<C::Message>,
 }
 
 impl<C: Component> ComponentKernel<C> {
-    pub(crate) fn new(id: ComponentId, config: C::Config, capabilities: C::Io) -> Self {
-        let Init { model, command } = C::init(&config, &capabilities);
+    pub(crate) fn new(id: ComponentId, context: Context<C>) -> Self {
+        let Init { model, command } = C::init(&context);
         let subscriptions = SubscriptionReconciler::new(id.clone());
 
         Self {
             id,
-            config,
-            capabilities,
+            context,
             model: Some(model),
             initial_command: Some(command),
             subscriptions,
@@ -49,7 +47,7 @@ impl<C: Component> ComponentKernel<C> {
             .model
             .as_mut()
             .expect("a stopped Component receives no transitions");
-        C::update(&self.config, &self.capabilities, model, message)
+        C::update(&self.context, model, message)
     }
 
     pub(crate) fn model(&self) -> Option<&C::Model> {
@@ -60,7 +58,7 @@ impl<C: Component> ComponentKernel<C> {
     /// Returns `None` when it has already stopped.
     pub(crate) fn shutdown(&mut self) -> Option<Command<C::Message>> {
         let model = self.model.take()?;
-        Some(C::shutdown(&self.config, &self.capabilities, model).widen())
+        Some(C::shutdown(&self.context, model).widen())
     }
 
     pub(crate) fn take_initial_command(&mut self) -> Option<Command<C::Message>> {
@@ -76,7 +74,7 @@ impl<C: Component> ComponentKernel<C> {
         &mut self,
     ) -> Result<Vec<SubscriptionChange<C::Message>>, DuplicateSubscriptionIdError> {
         let desired = match &self.model {
-            Some(model) => C::subscriptions(&self.config, &self.capabilities, model),
+            Some(model) => C::subscriptions(&self.context, model),
             None => crate::Subscriptions::none(),
         };
         self.subscriptions.reconcile(desired)
@@ -211,7 +209,7 @@ impl<C: Component> ErasedComponentKernel for ComponentKernel<C> {
         program: &crate::Program,
     ) -> Result<(), crate::RuntimeError> {
         let model = self.model.as_ref().expect("validated before shutdown");
-        let subscriptions = C::subscriptions(&self.config, &self.capabilities, model);
+        let subscriptions = C::subscriptions(&self.context, model);
         crate::validate_initial_capabilities(
             program,
             &self.id,
@@ -252,17 +250,17 @@ mod tests {
 
     impl Component for ProbeComponent {
         type Io = ();
-        type Config = ProbeComponentConfig;
+        type Connections = ();
+        type Configuration = ProbeComponentConfig;
         type Model = Vec<usize>;
         type Message = usize;
 
-        fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
+        fn init(_: &crate::Context<Self>) -> Init<Self::Model, Self::Message> {
             Init::new(Vec::new())
         }
 
         fn update(
-            _config: &Self::Config,
-            _: &Self::Io,
+            _: &crate::Context<Self>,
             model: &mut Self::Model,
             message: Self::Message,
         ) -> Command<Self::Message> {
@@ -287,10 +285,12 @@ mod tests {
     async fn assert_local_serialization(id: &str) {
         let component = SerializedComponent::new(ComponentKernel::<ProbeComponent>::new(
             ComponentId::new(0, id),
-            ProbeComponentConfig {
-                not_sync: PhantomData,
-            },
-            (),
+            crate::Context::detached(
+                (),
+                ProbeComponentConfig {
+                    not_sync: PhantomData,
+                },
+            ),
         ));
 
         let (left_entered, mut observe_left_entered) = oneshot::channel();
@@ -341,17 +341,17 @@ mod tests {
 
         impl Component for Startup {
             type Io = ();
-            type Config = ();
+            type Connections = ();
+            type Configuration = ();
             type Model = ();
             type Message = ();
 
-            fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
+            fn init(_: &crate::Context<Self>) -> Init<Self::Model, Self::Message> {
                 Init::new(()).with_command(Command::after(Duration::ZERO, ()))
             }
 
             fn update(
-                _config: &Self::Config,
-                _: &Self::Io,
+                _: &crate::Context<Self>,
                 _model: &mut Self::Model,
                 _message: Self::Message,
             ) -> Command<Self::Message> {
@@ -359,7 +359,10 @@ mod tests {
             }
         }
 
-        let mut kernel = ComponentKernel::<Startup>::new(ComponentId::new(0, "startup"), (), ());
+        let mut kernel = ComponentKernel::<Startup>::new(
+            ComponentId::new(0, "startup"),
+            crate::Context::detached((), ()),
+        );
 
         assert!(kernel.take_initial_command().is_some());
         assert!(kernel.take_initial_command().is_none());

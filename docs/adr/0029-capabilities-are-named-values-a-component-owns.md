@@ -3,6 +3,10 @@
 - Status: Accepted. [ADR-0030](0030-registration-returns-its-handle.md)
   then removed `finish()` and the `Result` from registration; the snippets
   below use that form.
+  [ADR-0031](0031-connections-configuration-and-context.md) then split
+  `Config` into `Connections` and `Configuration`, replaced the `config`
+  and `io` parameters with one `Context`, and added connections to the
+  manifest; the snippets below predate it.
 - Date: November 15, 2026
 - Deciders: Samara maintainers
 - Completes: [ADR-0028](0028-a-capability-belongs-to-one-component.md)

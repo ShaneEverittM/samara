@@ -22,23 +22,24 @@ struct FaultProbeConfig {
 
 impl Component for FaultProbe {
     type Io = ();
-    type Config = FaultProbeConfig;
+    type Connections = ();
+    type Configuration = FaultProbeConfig;
     type Model = ();
     type Message = FaultMessage;
 
-    fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
+    fn init(_: &Context<Self>) -> Init<Self::Model, Self::Message> {
         Init::new(())
     }
 
     fn update(
-        config: &Self::Config,
-        _: &Self::Io,
+        cx: &Context<Self>,
         (): &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
         match message {
             FaultMessage::Trigger => {
-                Effect::perform(&config.effect, DynamicallyReachedEffect).discard_outcome()
+                Effect::perform(&cx.configuration.effect, DynamicallyReachedEffect)
+                    .discard_outcome()
             }
         }
     }
@@ -52,7 +53,8 @@ async fn live_host_observes_a_later_foreign_effect_fault() {
     let probe = program
         .component_builder::<FaultProbe>()
         .name("fault")
-        .register(FaultProbeConfig { effect });
+        .configuration(FaultProbeConfig { effect })
+        .register(());
     let runtime = Runtime::builder(program.build().unwrap()).build().unwrap();
     let handle = runtime.handle(&probe).unwrap();
     let mut task = runtime.spawn();
@@ -65,17 +67,17 @@ struct Idle;
 
 impl Component for Idle {
     type Io = ();
-    type Config = ();
+    type Connections = ();
+    type Configuration = ();
     type Model = usize;
     type Message = ();
 
-    fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
+    fn init(_: &Context<Self>) -> Init<Self::Model, Self::Message> {
         Init::new(0)
     }
 
     fn update(
-        _config: &Self::Config,
-        _: &Self::Io,
+        _: &Context<Self>,
         count: &mut Self::Model,
         (): Self::Message,
     ) -> Command<Self::Message> {
@@ -167,15 +169,16 @@ struct RecurringTimer;
 
 impl Component for RecurringTimer {
     type Io = ();
-    type Config = ();
+    type Connections = ();
+    type Configuration = ();
     type Model = ();
     type Message = ();
 
-    fn init(_config: &Self::Config, _: &Self::Io) -> Init<(), ()> {
+    fn init(_: &Context<Self>) -> Init<(), ()> {
         Init::new(()).with_command(Command::after(std::time::Duration::ZERO, ()))
     }
 
-    fn update(_config: &Self::Config, _: &Self::Io, (): &mut (), (): ()) -> Command<()> {
+    fn update(_: &Context<Self>, (): &mut (), (): ()) -> Command<()> {
         Command::after(std::time::Duration::from_millis(1), ())
     }
 }
@@ -215,20 +218,22 @@ async fn shutdown_grace_period_escalates_recurring_timer_and_joins() {
 struct Stopping;
 impl Component for Stopping {
     type Io = ();
-    type Config = std::sync::Arc<std::sync::atomic::AtomicUsize>;
+    type Connections = ();
+    type Configuration = std::sync::Arc<std::sync::atomic::AtomicUsize>;
     type Model = ();
     type Message = ();
 
-    fn init(_: &Self::Config, _: &()) -> Init<(), ()> {
+    fn init(_: &Context<Self>) -> Init<(), ()> {
         Init::new(())
     }
 
-    fn update(_: &Self::Config, _: &(), (): &mut (), (): ()) -> Command<()> {
+    fn update(_: &Context<Self>, (): &mut (), (): ()) -> Command<()> {
         Command::none()
     }
 
-    fn shutdown(stopped: &Self::Config, _: &(), (): ()) -> Command<NoMessage> {
-        stopped.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    fn shutdown(cx: &Context<Self>, (): ()) -> Command<NoMessage> {
+        cx.configuration
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Command::none()
     }
 }
@@ -237,7 +242,10 @@ impl Component for Stopping {
 async fn run_until_drains_when_the_signal_completes() {
     let stopped = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let mut program = Program::builder();
-    program.component::<Stopping>(stopped.clone());
+    program
+        .component_builder::<Stopping>()
+        .configuration(stopped.clone())
+        .register(());
     let runtime = Runtime::builder(program.build().unwrap()).build().unwrap();
 
     let (signal, wait) = tokio::sync::oneshot::channel::<()>();
@@ -259,9 +267,12 @@ async fn run_until_drains_when_the_signal_completes() {
 #[tokio::test]
 async fn run_until_returns_a_fault_without_waiting_for_the_signal() {
     let mut program = Program::builder();
-    let probe = program.component::<FaultProbe>(FaultProbeConfig {
-        effect: <Effect<DynamicallyReachedEffect>>::detached(),
-    });
+    let probe = program
+        .component_builder::<FaultProbe>()
+        .configuration(FaultProbeConfig {
+            effect: <Effect<DynamicallyReachedEffect>>::detached(),
+        })
+        .register(());
     let runtime = Runtime::builder(program.build().unwrap()).build().unwrap();
     let handle = runtime.handle(&probe).unwrap();
 

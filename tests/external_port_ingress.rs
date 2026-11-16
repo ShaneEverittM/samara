@@ -34,17 +34,17 @@ struct PanickingBindingProvider;
 
 impl Component for PanickingBindingProvider {
     type Io = ();
-    type Config = ();
+    type Connections = ();
+    type Configuration = ();
     type Model = ();
     type Message = PanickingBindingProviderMessage;
 
-    fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
+    fn init(_: &Context<Self>) -> Init<Self::Model, Self::Message> {
         Init::new(())
     }
 
     fn update(
-        _config: &Self::Config,
-        _: &Self::Io,
+        _: &Context<Self>,
         _model: &mut Self::Model,
         _message: Self::Message,
     ) -> Command<Self::Message> {
@@ -79,20 +79,21 @@ struct TestProgram {
 
 impl Component for Provider {
     type Io = ProviderIo;
-    type Config = ();
+    type Connections = ();
+    type Configuration = ();
     type Model = u64;
     type Message = ProviderMessage;
 
-    fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
+    fn init(_: &Context<Self>) -> Init<Self::Model, Self::Message> {
         Init::new(0)
     }
 
     fn update(
-        _config: &Self::Config,
-        (ingress_observed, request_observed, await_release): &Self::Io,
+        cx: &Context<Self>,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
+        let (ingress_observed, request_observed, await_release) = &cx.io;
         match message {
             ProviderMessage::Host(HostMessage::Set(value)) => {
                 *model = value;

@@ -53,29 +53,44 @@ The accepted Phase 2 audit constrains Phase 3 to this slice:
   names do not affect equality or routing. ADR-0021 replaces user-supplied names
   and name-based controlled ordering with successful registration order.
 - The type implementing `Component` names a kind and is never stored. Its
-  immutable logical configuration is `Component::Config`, supplied at
-  registration as `component::<Kind>(config)`; behaviorally relevant
-  mutable state belongs in `Component::Model`
-  ([ADR-0013](adr/0013-component-kinds-assemblies-and-first-party-effects.md)).
+  immutable inputs are `Component::Connections` (the other Components it can
+  send to, supplied at registration as `component::<Kind>(connections)`),
+  `Component::Configuration` (plain settings, defaulted or set with
+  `component_builder::<Kind>().configuration(..)`), and `Component::Io`.
+  Behaviorally relevant mutable state belongs in `Component::Model`
+  ([ADR-0013](adr/0013-component-kinds-assemblies-and-first-party-effects.md),
+  [ADR-0031](adr/0031-connections-configuration-and-context.md)).
+- Every Component function receives the three immutable inputs as one
+  `&Context<Self>` with public fields `io`, `connections`, and
+  `configuration`. `Context::detached(connections, configuration)` makes one
+  with detached capabilities for a unit test.
+- `Component::Connections` implements `Connections`: `()`, `Connector<M>`,
+  `Port<M>`, `ComponentRef<C>`, an `Option`, `Vec`, or tuple of those, or a
+  struct with `#[derive(Connections)]`. Registration walks it;
+  `ProgramBuilder::build()` rejects an address from another builder with
+  `ProgramBuildError::ForeignConnection`. An address held any other way is
+  not checked at build and still faults when a Command using it is
+  interpreted.
 - `Component::Message` is the only transition input.
 - `Component::Io` names the capabilities the Component owns. It implements
   `Capabilities`: `()`, `Effect<D>`, `Source<S>`, `File<P>`, a tuple of
   those, or a struct with `#[derive(Clone, Capabilities)]`
   ([ADR-0029](adr/0029-capabilities-are-named-values-a-component-owns.md)).
-  Registration creates the value and passes it by reference to every
-  callback. Capabilities are not kept in `Config`.
-- `Component::init(&Config, &Io) -> Init<Model, Message>` declares initial state and
+  Registration creates the value and passes it to every callback as
+  `cx.io`. Capabilities are not kept in `Configuration`.
+- `Component::init(&Context<Self>) -> Init<Model, Message>` declares initial state and
   optional startup work.
-- `Component::update(&Config, &Io, &mut Model, Message) -> Command<Message>` is the
+- `Component::update(&Context<Self>, &mut Model, Message) -> Command<Message>` is the
   v0 Rust spelling of the conceptual pure transition. Exclusively owned
   in-place mutation is observationally equivalent to returning a new Model.
 - One composable `Command<Message>` is returned. `Command::none` represents no
   finite work and `Command::batch` groups declarations; batching does not
   promise completion order.
-- `Component::subscriptions(&Config, &Io, &Model) -> Subscriptions<Message>` is a
+- `Component::subscriptions(&Context<Self>, &Model) -> Subscriptions<Message>` is a
   pure projection with an empty default.
-- The base Component contract requires movable `Config`, Model, and Messages,
-  but does not require `Config` to be `Sync`. Per-Component serialization does
+- The base Component contract requires movable `Connections`,
+  `Configuration`, Model, and Messages, but does not require any of them to
+  be `Sync`. Per-Component serialization does
   not require concurrent access to the configuration, and a stronger bound
   would prematurely constrain placement.
 - `ComponentRef<C>` is an inert typed logical address. It grants neither model
@@ -528,7 +543,7 @@ around values issued by one `ProgramBuilder`, as amended by
 - `Program::builder()` returns a `ProgramBuilder` and declares nothing up
   front. `Program`, `ProgramBuilder`, `RuntimeSetup`, and
   `ControlledRuntimeSetup` have no type parameter.
-- `component::<C>(config)` creates the capabilities named by
+- `component::<C>(connections)` creates the capabilities named by
   `C::Io` through `Capabilities::declare`. A capability can be made only
   through `Declaring`, which only the library constructs. The Program is
   closed when `ProgramBuilder::build()` returns.
@@ -539,14 +554,18 @@ around values issued by one `ProgramBuilder`, as amended by
   Program, for calling `init`, `update`, or `subscriptions` directly in a
   unit test. They cannot be supplied with Drivers, and a runtime faults if a
   Component uses one.
-- `Program::manifest()` lists every declared capability in declaration
-  order with its owner's diagnostic name, its field name when `Io` is a
-  struct with named fields, its kind, and its descriptor type. A `File`
-  appears once per permitted operation.
+- `Program::manifest()` returns a `Manifest`. `capabilities()` lists every
+  declared capability in declaration order with its owner's diagnostic
+  name, its field name when `Io` is a struct with named fields, its kind,
+  and its descriptor type. A `File` appears once per permitted operation.
+  `connections()` lists every declared connection in registration order
+  with its owner, its field name, the message type, and the diagnostic name
+  of the Component that receives it; a connection through a Port is
+  resolved to the Port's provider and names the Port (ADR-0031).
 - Component references and Ports remain the corresponding Program-issued
   values for concrete and provider-neutral Component communication.
-- The kernel stores these inert values separately from Config and passes
-  `&Component::Io` to every callback. They expose no I/O,
+- The kernel stores these inert values in the Component's `Context` and
+  passes it to every callback. They expose no I/O,
   runtime handle, Driver, or controlled-world operation.
 - `Effect::perform(&capability, descriptor).into_command()`,
   `Effect::perform(&capability, descriptor).producing(mapper)`, and
@@ -770,7 +789,7 @@ as amended by [ADR-0018](adr/0018-assemblies-export-a-connector.md),
 
 [ADR-0024](adr/0024-component-shutdown.md):
 
-- `Component::shutdown(config, io, model) -> Command<NoMessage>`
+- `Component::shutdown(cx, model) -> Command<NoMessage>`
   takes the Model by value and returns finishing work only. The default does
   nothing. It is pure.
 - Only Drain calls it. Stopping begins when no messages are queued and no

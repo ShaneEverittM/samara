@@ -25,26 +25,27 @@ struct Model;
 
 impl Component for Recorder {
     type Io = JournalIo;
-    type Config = ();
+    type Connections = ();
+    type Configuration = ();
     type Model = Model;
     type Message = Message;
 
-    fn init(_: &(), _: &Self::Io) -> Init<Model, Message> {
+    fn init(_: &Context<Self>) -> Init<Model, Message> {
         Init::default()
     }
 
-    fn update(_: &(), io: &JournalIo, _: &mut Model, message: Message) -> Command<Message> {
+    fn update(cx: &Context<Self>, _: &mut Model, message: Message) -> Command<Message> {
         match message {
             // An external request.
             Message::Journal(journal) => match journal {
                 JournalMessage::Transition(transition) => {
-                    Effect::perform(&io.clock, ReadSystemTime).producing(
+                    Effect::perform(&cx.io.clock, ReadSystemTime).producing(
                         |EffectOutcome::Succeeded(time)| Message::Time { time, transition },
                     )
                 }
 
                 JournalMessage::Recent { count, reply } => {
-                    File::read(&io.file).finish_with(move |outcome| {
+                    File::read(&cx.io.file).finish_with(move |outcome| {
                         Command::reply(
                             reply,
                             match outcome {
@@ -61,7 +62,7 @@ impl Component for Recorder {
                 time,
                 transition: Transition { name, from, to },
             } => File::append_line(
-                &io.file,
+                &cx.io.file,
                 format!(
                     "[{}]{name}: {from} -> {to}",
                     time.duration_since(UNIX_EPOCH).unwrap().as_millis()

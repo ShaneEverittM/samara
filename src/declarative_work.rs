@@ -177,17 +177,17 @@ mod tests {
 
     impl Component for DesiredComponent {
         type Io = ();
-        type Config = DesiredComponentConfig;
+        type Connections = ();
+        type Configuration = DesiredComponentConfig;
         type Model = Option<&'static str>;
         type Message = DesiredMessage;
 
-        fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
+        fn init(_: &crate::Context<Self>) -> Init<Self::Model, Self::Message> {
             Init::new(Some("one"))
         }
 
         fn update(
-            _config: &Self::Config,
-            _: &Self::Io,
+            _: &crate::Context<Self>,
             model: &mut Self::Model,
             message: Self::Message,
         ) -> Command<Self::Message> {
@@ -200,14 +200,13 @@ mod tests {
         }
 
         fn subscriptions(
-            config: &Self::Config,
-            _: &Self::Io,
+            cx: &crate::Context<Self>,
             model: &Self::Model,
         ) -> Subscriptions<Self::Message> {
             match model {
                 Some(binding) => Subscriptions::one(
                     Subscription::source_with(
-                        &config.source,
+                        &cx.configuration.source,
                         StreamDescriptor::<u64>::named(*binding),
                         DesiredMessage::Input,
                     )
@@ -261,8 +260,7 @@ mod tests {
         let source = <crate::Source<StreamDescriptor<u64>> as crate::Capabilities>::detached();
         let mut kernel = ComponentKernel::<DesiredComponent>::new(
             ComponentId::new(0, "desired"),
-            DesiredComponentConfig { source },
-            (),
+            crate::Context::detached((), DesiredComponentConfig { source }),
         );
 
         assert!(matches!(

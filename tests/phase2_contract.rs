@@ -63,20 +63,21 @@ impl ContractComponentConfig {
 
 impl Component for ContractComponent {
     type Io = ContractIo;
-    type Config = ContractComponentConfig;
+    type Connections = ();
+    type Configuration = ContractComponentConfig;
     type Model = ContractModel;
     type Message = ContractMessage;
 
-    fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
+    fn init(_: &Context<Self>) -> Init<Self::Model, Self::Message> {
         Init::new(ContractModel::default())
     }
 
     fn update(
-        _config: &Self::Config,
-        (_, save): &Self::Io,
+        cx: &Context<Self>,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
+        let (_, save) = &cx.io;
         match message {
             ContractMessage::Add(amount) => {
                 model.total += amount;
@@ -99,33 +100,31 @@ impl Component for ContractComponent {
         }
     }
 
-    fn subscriptions(
-        config: &Self::Config,
-        (source, _): &Self::Io,
-        model: &Self::Model,
-    ) -> Subscriptions<Self::Message> {
+    fn subscriptions(cx: &Context<Self>, model: &Self::Model) -> Subscriptions<Self::Message> {
+        let (source, _) = &cx.io;
         if model.input_closed {
             return Subscriptions::none();
         }
 
         Subscriptions::one(
-            Subscription::source_with(source, config.input.clone(), ContractMessage::Input)
-                .key(INPUT_SUBSCRIPTION),
+            Subscription::source_with(
+                source,
+                cx.configuration.input.clone(),
+                ContractMessage::Input,
+            )
+            .key(INPUT_SUBSCRIPTION),
         )
     }
 }
 
 #[test]
 fn v1_same_input_produces_equivalent_model_and_command_intent() {
-    let io = ContractIo::detached();
-    let component = ContractComponentConfig::new();
-    let mut left = ContractComponent::init(&component, &io).model;
-    let mut right = ContractComponent::init(&component, &io).model;
+    let cx = Context::<ContractComponent>::detached((), ContractComponentConfig::new());
+    let mut left = ContractComponent::init(&cx).model;
+    let mut right = ContractComponent::init(&cx).model;
 
-    let left_command =
-        ContractComponent::update(&component, &io, &mut left, ContractMessage::Add(7));
-    let right_command =
-        ContractComponent::update(&component, &io, &mut right, ContractMessage::Add(7));
+    let left_command = ContractComponent::update(&cx, &mut left, ContractMessage::Add(7));
+    let right_command = ContractComponent::update(&cx, &mut right, ContractMessage::Add(7));
 
     assert_eq!(left, right);
     assert_eq!(
@@ -136,11 +135,10 @@ fn v1_same_input_produces_equivalent_model_and_command_intent() {
 
 #[test]
 fn v3_effect_command_exposes_typed_descriptor() {
-    let io = ContractIo::detached();
-    let component = ContractComponentConfig::new();
-    let mut model = ContractComponent::init(&component, &io).model;
+    let cx = Context::<ContractComponent>::detached((), ContractComponentConfig::new());
+    let mut model = ContractComponent::init(&cx).model;
 
-    let command = ContractComponent::update(&component, &io, &mut model, ContractMessage::Add(11));
+    let command = ContractComponent::update(&cx, &mut model, ContractMessage::Add(11));
 
     assert_eq!(
         command.effect_intent::<SaveTotal>(),
@@ -154,11 +152,10 @@ fn v3_effect_command_exposes_typed_descriptor() {
 
 #[test]
 fn v4_subscription_separates_component_identity_from_source_descriptor() {
-    let io = ContractIo::detached();
-    let component = ContractComponentConfig::new();
-    let model = ContractComponent::init(&component, &io).model;
+    let cx = Context::<ContractComponent>::detached((), ContractComponentConfig::new());
+    let model = ContractComponent::init(&cx).model;
 
-    let subscriptions = ContractComponent::subscriptions(&component, &io, &model);
+    let subscriptions = ContractComponent::subscriptions(&cx, &model);
     let subscription = subscriptions.iter().next().expect("one input desire");
 
     assert_eq!(subscription.id(), &SubscriptionId::key(INPUT_SUBSCRIPTION));
@@ -178,7 +175,8 @@ fn component_kernel_accepts_non_sync_configuration() {
     let component = program
         .component_builder::<ContractComponent>()
         .name("contract")
-        .register(contract);
+        .configuration(contract)
+        .register(());
 
     assert_eq!(component.id().name(), "contract");
 }

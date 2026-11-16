@@ -38,17 +38,17 @@ struct VaultModel {
 
 impl Component for Vault {
     type Io = Effect<Farewell>;
-    type Config = ();
+    type Connections = ();
+    type Configuration = ();
     type Model = VaultModel;
     type Message = VaultMessage;
 
-    fn init(_: &(), _: &Self::Io) -> Init<VaultModel, VaultMessage> {
+    fn init(_: &Context<Self>) -> Init<VaultModel, VaultMessage> {
         Init::default()
     }
 
     fn update(
-        _: &(),
-        _: &Self::Io,
+        _: &Context<Self>,
         model: &mut VaultModel,
         message: VaultMessage,
     ) -> Command<VaultMessage> {
@@ -62,13 +62,13 @@ impl Component for Vault {
 
     /// Answers every held caller and writes one farewell. The forgotten
     /// tokens are dropped with the Model.
-    fn shutdown(_: &(), farewell: &Self::Io, model: VaultModel) -> Command<NoMessage> {
+    fn shutdown(cx: &Context<Self>, model: VaultModel) -> Command<NoMessage> {
         let mut finishing: Vec<Command<NoMessage>> = model
             .held
             .into_iter()
             .map(|reply| Command::reply(reply, "closing"))
             .collect();
-        finishing.push(Effect::perform(farewell, Farewell("vault")).discard_outcome());
+        finishing.push(Effect::perform(&cx.io, Farewell("vault")).discard_outcome());
         Command::batch(finishing)
     }
 }
@@ -109,21 +109,21 @@ struct Elder;
 
 impl Component for Elder {
     type Io = ();
-    type Config = Port<VaultMessage>;
+    type Connections = Port<VaultMessage>;
+    type Configuration = ();
     type Model = Vec<RequestOutcome<&'static str>>;
     type Message = AskerMessage;
 
-    fn init(_: &Self::Config, _: &()) -> Init<Self::Model, AskerMessage> {
+    fn init(_: &Context<Self>) -> Init<Self::Model, AskerMessage> {
         Init::default()
     }
 
     fn update(
-        vault: &Self::Config,
-        _: &(),
+        cx: &Context<Self>,
         heard: &mut Self::Model,
         message: AskerMessage,
     ) -> Command<AskerMessage> {
-        ask(vault, heard, message)
+        ask(&cx.connections, heard, message)
     }
 }
 
@@ -133,25 +133,25 @@ struct Asker;
 
 impl Component for Asker {
     type Io = ();
-    type Config = Connector<VaultMessage>;
+    type Connections = Connector<VaultMessage>;
+    type Configuration = ();
     type Model = Vec<RequestOutcome<&'static str>>;
     type Message = AskerMessage;
 
-    fn init(_: &Self::Config, _: &()) -> Init<Self::Model, AskerMessage> {
+    fn init(_: &Context<Self>) -> Init<Self::Model, AskerMessage> {
         Init::default()
     }
 
     fn update(
-        vault: &Self::Config,
-        _: &(),
+        cx: &Context<Self>,
         heard: &mut Self::Model,
         message: AskerMessage,
     ) -> Command<AskerMessage> {
-        ask(vault, heard, message)
+        ask(&cx.connections, heard, message)
     }
 
-    fn shutdown(vault: &Self::Config, _: &(), _: Self::Model) -> Command<NoMessage> {
-        Command::send(vault, VaultMessage::Note("asker out"))
+    fn shutdown(cx: &Context<Self>, _: Self::Model) -> Command<NoMessage> {
+        Command::send(&cx.connections, VaultMessage::Note("asker out"))
     }
 }
 

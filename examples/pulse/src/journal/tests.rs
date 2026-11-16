@@ -47,23 +47,23 @@ enum ClientMessage {
 
 impl Component for JournalClient {
     type Io = ();
-    type Config = Connector<JournalMessage>;
+    type Connections = Connector<JournalMessage>;
+    type Configuration = ();
     type Model = Vec<(usize, RequestOutcome<JournalReply>)>;
     type Message = ClientMessage;
 
-    fn init(_: &Self::Config, _: &()) -> Init<Self::Model, ClientMessage> {
+    fn init(_: &Context<Self>) -> Init<Self::Model, ClientMessage> {
         Init::default()
     }
 
     fn update(
-        journal: &Self::Config,
-        _: &(),
+        cx: &Context<Self>,
         model: &mut Self::Model,
         message: ClientMessage,
     ) -> Command<ClientMessage> {
         match message {
-            ClientMessage::Transition => Command::send(journal, transition()),
-            ClientMessage::Recent(count) => Command::request(journal, move |reply| {
+            ClientMessage::Transition => Command::send(&cx.connections, transition()),
+            ClientMessage::Recent(count) => Command::request(&cx.connections, move |reply| {
                 JournalMessage::Recent { count, reply }
             })
             .producing(move |outcome| ClientMessage::Replied(count, outcome)),
@@ -400,8 +400,9 @@ async fn recent_reads_existing_entries_through_the_standard_driver() {
     assert!(task.shutdown(Shutdown::Drain).await.unwrap().is_clean());
 }
 
-/// The journal's whole access to the world, pinned so a new capability shows
-/// up as a failing test and a reviewed diff.
+/// The journal's whole access to the world and who sends to it, pinned so a
+/// new capability or connection shows up as a failing test and a reviewed
+/// diff.
 #[test]
 fn the_journal_reaches_one_file_and_the_clock() {
     let (program, ..) = program();
@@ -409,6 +410,8 @@ fn the_journal_reaches_one_file_and_the_clock() {
         program.manifest().to_string(),
         "pulse::journal::Recorder.file: effect samara::file::FileRead\n\
          pulse::journal::Recorder.file: effect samara::file::FileAppend\n\
-         pulse::journal::Recorder.clock: effect samara::clock::ReadSystemTime\n"
+         pulse::journal::Recorder.clock: effect samara::clock::ReadSystemTime\n\
+         pulse::journal::tests::JournalClient: connection pulse::journal::JournalMessage \
+         -> pulse::journal::Recorder\n"
     );
 }

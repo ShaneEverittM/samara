@@ -188,6 +188,27 @@ a journal Component; exploratory proposals, not accepted API decisions.
   typed decode failure beside `FsError` would make the correct handling the
   easy one. Found November 2026 reviewing the merged journal.
 
+- [ ] **Context, connections, and configuration: what ADR-0031 left
+  open.** The split landed November 15, 2026. Still to decide:
+  - Whether `init` should receive the configuration by value, once, so a
+    Component can compute or prepare from it rather than re-deriving on
+    every call; and whether a setup step should run between `init` and the
+    first `update`.
+  - Whether a send to an address the sender did not declare should fault,
+    which would make the manifest's connection list complete in the way
+    capability ownership makes the capability list complete. Today an
+    address kept in `Configuration` or received in a Message is unlisted
+    and unchecked at build.
+  - Whether `Assembly::Config` should be split the same way. It is a
+    function argument today and the Assembly decides what becomes a
+    member's connections and what its configuration.
+  - The registration spelling. `component::<C>(connections)` defaults the
+    configuration; a Component with real settings is registered through
+    `component_builder::<C>().configuration(..).register(connections)`,
+    which is long. Most tests take that path.
+  - `Vec` and `Option` connections print one row per element under the
+    same field name, with no index.
+
 - [ ] **Capability manifest, next steps.** `Program::manifest()` landed
   November 15, 2026 as the first piece of capability-based review: it lists
   kind, descriptor type, owner, and field name. Resolved the same day by

@@ -43,17 +43,17 @@ struct Provider;
 
 impl Component for Provider {
     type Io = ();
-    type Config = ();
+    type Connections = ();
+    type Configuration = ();
     type Model = Vec<u64>;
     type Message = ProviderMessage;
 
-    fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
+    fn init(_: &Context<Self>) -> Init<Self::Model, Self::Message> {
         Init::default()
     }
 
     fn update(
-        _config: &Self::Config,
-        _: &Self::Io,
+        _: &Context<Self>,
         seen: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -105,23 +105,24 @@ impl From<RequestOutcome<u64>> for RequesterMessage {
 
 struct Requester;
 
-struct RequesterConfig {
+#[derive(Connections)]
+struct RequesterConnections {
     port: Port<ProbeProtocolMessage>,
 }
 
 impl Component for Requester {
     type Io = Effect<Observation>;
-    type Config = RequesterConfig;
+    type Connections = RequesterConnections;
+    type Configuration = ();
     type Model = Vec<Observation>;
     type Message = RequesterMessage;
 
-    fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
+    fn init(_: &Context<Self>) -> Init<Self::Model, Self::Message> {
         Init::default()
     }
 
     fn update(
-        config: &Self::Config,
-        observe: &Self::Io,
+        cx: &Context<Self>,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -132,23 +133,25 @@ impl Component for Requester {
                 timeout,
                 key,
             } => match (timeout, key) {
-                (Some(timeout), Some(key)) => Command::request(&config.port, ask(value, delay))
-                    .timeout(timeout)
-                    .producing(move |outcome| {
-                        RequesterMessage::Outcome(Observation {
-                            key: Some(key),
-                            outcome,
+                (Some(timeout), Some(key)) => {
+                    Command::request(&cx.connections.port, ask(value, delay))
+                        .timeout(timeout)
+                        .producing(move |outcome| {
+                            RequesterMessage::Outcome(Observation {
+                                key: Some(key),
+                                outcome,
+                            })
                         })
-                    }),
-                (Some(timeout), None) => Command::request(&config.port, ask(value, delay))
+                }
+                (Some(timeout), None) => Command::request(&cx.connections.port, ask(value, delay))
                     .timeout(timeout)
                     .producing(RequesterMessage::from),
-                (None, _) => Command::request(&config.port, ask(value, delay))
+                (None, _) => Command::request(&cx.connections.port, ask(value, delay))
                     .producing(RequesterMessage::from),
             },
             RequesterMessage::Outcome(observation) => {
                 model.push(observation.clone());
-                Effect::perform(observe, observation).discard_outcome()
+                Effect::perform(&cx.io, observation).discard_outcome()
             }
         }
     }
@@ -173,7 +176,7 @@ fn fixture() -> Fixture {
     let requester = builder
         .component_builder::<Requester>()
         .name("requester")
-        .register(RequesterConfig { port: port.clone() });
+        .register(RequesterConnections { port: port.clone() });
     Fixture {
         program: builder.build().unwrap(),
         observe: requester.io.clone(),

@@ -50,20 +50,21 @@ impl From<LedgerMessage> for RecorderMessage {
 
 impl Component for Recorder {
     type Io = RecorderNeeds;
-    type Config = ();
+    type Connections = ();
+    type Configuration = ();
     type Model = Vec<String>;
     type Message = RecorderMessage;
 
-    fn init(_: &(), _: &RecorderNeeds) -> Init<Vec<String>, RecorderMessage> {
+    fn init(_: &Context<Self>) -> Init<Vec<String>, RecorderMessage> {
         Init::new(Vec::new())
     }
 
     fn update(
-        _: &(),
-        (stamp, _pulses): &RecorderNeeds,
+        cx: &Context<Self>,
         entries: &mut Vec<String>,
         message: RecorderMessage,
     ) -> Command<RecorderMessage> {
+        let (stamp, _pulses) = &cx.io;
         match message {
             RecorderMessage::Ledger(LedgerMessage::Record(entry)) => {
                 entries.push(entry);
@@ -84,11 +85,8 @@ impl Component for Recorder {
         }
     }
 
-    fn subscriptions(
-        _: &(),
-        (_stamp, pulses): &RecorderNeeds,
-        _: &Vec<String>,
-    ) -> Subscriptions<RecorderMessage> {
+    fn subscriptions(cx: &Context<Self>, _: &Vec<String>) -> Subscriptions<RecorderMessage> {
+        let (_stamp, pulses) = &cx.io;
         Subscriptions::one(
             Subscription::source_with(pulses, Pulses, RecorderMessage::Pulse).key("pulses"),
         )
@@ -275,15 +273,16 @@ struct Query(&'static str);
 struct Ingest;
 impl Component for Ingest {
     type Io = ();
-    type Config = ();
+    type Connections = ();
+    type Configuration = ();
     type Model = Vec<u8>;
     type Message = Sample;
 
-    fn init(_: &(), _: &()) -> Init<Vec<u8>, Sample> {
+    fn init(_: &Context<Self>) -> Init<Vec<u8>, Sample> {
         Init::new(Vec::new())
     }
 
-    fn update(_: &(), _: &(), seen: &mut Vec<u8>, Sample(value): Sample) -> Command<Sample> {
+    fn update(_: &Context<Self>, seen: &mut Vec<u8>, Sample(value): Sample) -> Command<Sample> {
         seen.push(value);
         Command::none()
     }
@@ -292,17 +291,17 @@ impl Component for Ingest {
 struct Reader;
 impl Component for Reader {
     type Io = ();
-    type Config = ();
+    type Connections = ();
+    type Configuration = ();
     type Model = Vec<&'static str>;
     type Message = Query;
 
-    fn init(_: &(), _: &()) -> Init<Vec<&'static str>, Query> {
+    fn init(_: &Context<Self>) -> Init<Vec<&'static str>, Query> {
         Init::new(Vec::new())
     }
 
     fn update(
-        _: &(),
-        _: &(),
+        _: &Context<Self>,
         asked: &mut Vec<&'static str>,
         Query(question): Query,
     ) -> Command<Query> {
@@ -341,24 +340,26 @@ impl Assembly for Telemetry {
 
 /// Holds one Connector per door and uses each once at startup.
 struct Probe;
-struct ProbeConfig {
+#[derive(Connections)]
+struct ProbeConnections {
     samples: Connector<Sample>,
     queries: Connector<Query>,
 }
 impl Component for Probe {
     type Io = ();
-    type Config = ProbeConfig;
+    type Connections = ProbeConnections;
+    type Configuration = ();
     type Model = ();
     type Message = ();
 
-    fn init(config: &ProbeConfig, _: &()) -> Init<(), ()> {
+    fn init(cx: &Context<Self>) -> Init<(), ()> {
         Init::new(()).with_command(Command::batch([
-            Command::send(&config.samples, Sample(7)),
-            Command::send(&config.queries, Query("latest")),
+            Command::send(&cx.connections.samples, Sample(7)),
+            Command::send(&cx.connections.queries, Query("latest")),
         ]))
     }
 
-    fn update(_: &ProbeConfig, _: &(), (): &mut (), (): ()) -> Command<()> {
+    fn update(_: &Context<Self>, (): &mut (), (): ()) -> Command<()> {
         Command::none()
     }
 }
@@ -368,7 +369,7 @@ fn an_assembly_with_two_doors_exports_both_as_peers() {
     let mut program = Program::builder();
     let telemetry = program.assembly::<Telemetry>(());
     let doors = telemetry.exports();
-    program.component::<Probe>(ProbeConfig {
+    program.component::<Probe>(ProbeConnections {
         samples: doors.samples.clone(),
         queries: doors.queries.clone(),
     });

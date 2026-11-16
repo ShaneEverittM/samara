@@ -1,6 +1,6 @@
 use samara::{
-    Capabilities, Command, Component, Connector, Effect, FileDriver, Init, PrintStdout, Program,
-    RequestOutcome, Runtime, Source, SourceEvent, StdinDriver, StdinLines, StdoutDriver,
+    Capabilities, Command, Component, Connector, Context, Effect, FileDriver, Init, PrintStdout,
+    Program, RequestOutcome, Runtime, Source, SourceEvent, StdinDriver, StdinLines, StdoutDriver,
     Subscription, Subscriptions, SystemClockDriver,
 };
 
@@ -32,7 +32,8 @@ impl Component for Monitor {
     type Io = MonitorIo;
 
     // What this component needs as static config, including program connections.
-    type Config = Connector<JournalMessage>;
+    type Connections = Connector<JournalMessage>;
+    type Configuration = ();
 
     // The only thing this component can mutate directly.
     type Model = Model;
@@ -40,37 +41,34 @@ impl Component for Monitor {
     // What Self::update processes.
     type Message = Message;
 
-    fn init(_: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
+    fn init(_: &Context<Self>) -> Init<Self::Model, Self::Message> {
         Init::new(Model)
     }
 
     fn update(
-        journal: &Self::Config,
-        io: &MonitorIo,
+        cx: &Context<Self>,
         _: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
         match message {
-            Message::Input(s) => Command::request(journal, move |reply| JournalMessage::Recent {
-                count: if s == "5" { 5 } else { 10 },
-                reply,
-            })
-            .producing(|response| match response {
-                RequestOutcome::Replied(r) => Message::JournalResponse(r.unwrap()),
-                // This would handle error or cancellation.
-                _ => todo!(),
-            }),
-            Message::JournalResponse(r) => samara::println!(&io.output, "Got response: {:?}", r),
+            Message::Input(s) => {
+                Command::request(&cx.connections, move |reply| JournalMessage::Recent {
+                    count: if s == "5" { 5 } else { 10 },
+                    reply,
+                })
+                .producing(|response| match response {
+                    RequestOutcome::Replied(r) => Message::JournalResponse(r.unwrap()),
+                    // This would handle error or cancellation.
+                    _ => todo!(),
+                })
+            }
+            Message::JournalResponse(r) => samara::println!(&cx.io.output, "Got response: {:?}", r),
         }
     }
 
-    fn subscriptions(
-        _: &Self::Config,
-        io: &MonitorIo,
-        _model: &Self::Model,
-    ) -> Subscriptions<Self::Message> {
+    fn subscriptions(cx: &Context<Self>, _model: &Self::Model) -> Subscriptions<Self::Message> {
         Subscriptions::one(Subscription::source_with(
-            &io.input,
+            &cx.io.input,
             StdinLines::new(),
             |event| match event {
                 SourceEvent::Item(s) => Message::Input(s),

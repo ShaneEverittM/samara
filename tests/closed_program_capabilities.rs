@@ -17,15 +17,16 @@ struct Holds<C>(std::marker::PhantomData<fn() -> C>);
 
 impl<C: Capabilities> Component for Holds<C> {
     type Io = C;
-    type Config = ();
+    type Connections = ();
+    type Configuration = ();
     type Model = ();
     type Message = ();
 
-    fn init(_: &(), _: &C) -> Init<(), ()> {
+    fn init(_: &Context<Self>) -> Init<(), ()> {
         Init::new(())
     }
 
-    fn update(_: &(), _: &C, (): &mut (), (): ()) -> Command<()> {
+    fn update(_: &Context<Self>, (): &mut (), (): ()) -> Command<()> {
         Command::none()
     }
 }
@@ -65,25 +66,27 @@ struct EffectComponentConfig {
 
 impl Component for EffectComponent {
     type Io = (Effect<LateEffect>,);
-    type Config = EffectComponentConfig;
+    type Connections = ();
+    type Configuration = EffectComponentConfig;
     type Model = Option<u64>;
     type Message = EffectMessage;
 
-    fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
+    fn init(_: &Context<Self>) -> Init<Self::Model, Self::Message> {
         Init::new(None)
     }
 
     fn update(
-        config: &Self::Config,
-        (own,): &Self::Io,
+        cx: &Context<Self>,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
+        let (own,) = &cx.io;
         match message {
-            EffectMessage::Trigger => {
-                Effect::perform(config.smuggled.as_ref().unwrap_or(own), LateEffect(41))
-                    .producing(|EffectOutcome::Succeeded(value)| EffectMessage::Finished(value))
-            }
+            EffectMessage::Trigger => Effect::perform(
+                cx.configuration.smuggled.as_ref().unwrap_or(own),
+                LateEffect(41),
+            )
+            .producing(|EffectOutcome::Succeeded(value)| EffectMessage::Finished(value)),
             EffectMessage::Finished(value) => {
                 *model = Some(value);
                 Command::none()
@@ -97,7 +100,8 @@ fn effect_program() -> (Program, InstalledComponent<EffectComponent>) {
     let component = program
         .component_builder::<EffectComponent>()
         .name("effect")
-        .register(EffectComponentConfig::default());
+        .configuration(EffectComponentConfig::default())
+        .register(());
     (program.build().expect("valid closed Program"), component)
 }
 
@@ -130,17 +134,17 @@ struct SourceComponentConfig {
 
 impl Component for SourceComponent {
     type Io = (Source<LateSource>,);
-    type Config = SourceComponentConfig;
+    type Connections = ();
+    type Configuration = SourceComponentConfig;
     type Model = bool;
     type Message = SourceMessage;
 
-    fn init(config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
-        Init::new(config.initially_enabled)
+    fn init(cx: &Context<Self>) -> Init<Self::Model, Self::Message> {
+        Init::new(cx.configuration.initially_enabled)
     }
 
     fn update(
-        _config: &Self::Config,
-        _: &Self::Io,
+        _: &Context<Self>,
         enabled: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -151,15 +155,12 @@ impl Component for SourceComponent {
         Command::none()
     }
 
-    fn subscriptions(
-        config: &Self::Config,
-        (own,): &Self::Io,
-        enabled: &Self::Model,
-    ) -> Subscriptions<Self::Message> {
+    fn subscriptions(cx: &Context<Self>, enabled: &Self::Model) -> Subscriptions<Self::Message> {
+        let (own,) = &cx.io;
         if *enabled {
             Subscriptions::one(
                 Subscription::source_with(
-                    config.smuggled.as_ref().unwrap_or(own),
+                    cx.configuration.smuggled.as_ref().unwrap_or(own),
                     LateSource,
                     SourceMessage::Event,
                 )
@@ -176,10 +177,11 @@ fn source_program() -> (Program, InstalledComponent<SourceComponent>) {
     let component = program
         .component_builder::<SourceComponent>()
         .name("source")
-        .register(SourceComponentConfig {
+        .configuration(SourceComponentConfig {
             smuggled: None,
             initially_enabled: false,
-        });
+        })
+        .register(());
     (program.build().expect("valid closed Program"), component)
 }
 
@@ -212,10 +214,11 @@ fn foreign_source_program(
     let component = owner
         .component_builder::<SourceComponent>()
         .name("foreign-source")
-        .register(SourceComponentConfig {
+        .configuration(SourceComponentConfig {
             smuggled: Some(from_another_program()),
             initially_enabled,
-        });
+        })
+        .register(());
     (owner.build().expect("valid owner Program"), component)
 }
 
@@ -355,17 +358,19 @@ struct InitialEffectComponentConfig {
 
 impl Component for InitialEffectComponent {
     type Io = (Effect<LateEffect>,);
-    type Config = InitialEffectComponentConfig;
+    type Connections = ();
+    type Configuration = InitialEffectComponentConfig;
     type Model = ();
     type Message = ();
 
-    fn init(config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
-        Init::new(()).with_command(Effect::perform(&config.effect, LateEffect(1)).discard_outcome())
+    fn init(cx: &Context<Self>) -> Init<Self::Model, Self::Message> {
+        Init::new(()).with_command(
+            Effect::perform(&cx.configuration.effect, LateEffect(1)).discard_outcome(),
+        )
     }
 
     fn update(
-        _config: &Self::Config,
-        _: &Self::Io,
+        _: &Context<Self>,
         _model: &mut Self::Model,
         _message: Self::Message,
     ) -> Command<Self::Message> {
@@ -380,9 +385,10 @@ fn initial_foreign_effect_program() -> (Program, InstalledComponent<InitialEffec
     let component = owner
         .component_builder::<InitialEffectComponent>()
         .name("initial-foreign-effect")
-        .register(InitialEffectComponentConfig {
+        .configuration(InitialEffectComponentConfig {
             effect: from_another_program(),
-        });
+        })
+        .register(());
     (
         owner.build().expect("the hidden field is ordinary Rust"),
         component,
@@ -418,17 +424,17 @@ struct UnitComponent;
 
 impl Component for UnitComponent {
     type Io = ();
-    type Config = ();
+    type Connections = ();
+    type Configuration = ();
     type Model = ();
     type Message = ();
 
-    fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
+    fn init(_: &Context<Self>) -> Init<Self::Model, Self::Message> {
         Init::new(())
     }
 
     fn update(
-        _config: &Self::Config,
-        _: &Self::Io,
+        _: &Context<Self>,
         _model: &mut Self::Model,
         _message: Self::Message,
     ) -> Command<Self::Message> {
@@ -444,17 +450,17 @@ struct InitialForeignSendConfig {
 
 impl Component for InitialForeignSend {
     type Io = ();
-    type Config = InitialForeignSendConfig;
+    type Connections = ();
+    type Configuration = InitialForeignSendConfig;
     type Model = ();
     type Message = ();
 
-    fn init(config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
-        Init::new(()).with_command(Command::send(&config.target, ()))
+    fn init(cx: &Context<Self>) -> Init<Self::Model, Self::Message> {
+        Init::new(()).with_command(Command::send(&cx.configuration.target, ()))
     }
 
     fn update(
-        _config: &Self::Config,
-        _: &Self::Io,
+        _: &Context<Self>,
         _model: &mut Self::Model,
         _message: Self::Message,
     ) -> Command<Self::Message> {
@@ -473,9 +479,10 @@ fn initial_foreign_send_program() -> Program {
     owner
         .component_builder::<InitialForeignSend>()
         .name("initial-foreign-send")
-        .register(InitialForeignSendConfig {
+        .configuration(InitialForeignSendConfig {
             target: target.into(),
-        });
+        })
+        .register(());
     owner.build().expect("valid owner Program")
 }
 
@@ -496,17 +503,20 @@ struct InitialForeignPortSendConfig {
 
 impl Component for InitialForeignPortSend {
     type Io = ();
-    type Config = InitialForeignPortSendConfig;
+    type Connections = ();
+    type Configuration = InitialForeignPortSendConfig;
     type Model = ();
     type Message = ();
 
-    fn init(config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
-        Init::new(()).with_command(Command::send(&config.port, ForeignMessage::Signal))
+    fn init(cx: &Context<Self>) -> Init<Self::Model, Self::Message> {
+        Init::new(()).with_command(Command::send(
+            &cx.configuration.port,
+            ForeignMessage::Signal,
+        ))
     }
 
     fn update(
-        _config: &Self::Config,
-        _: &Self::Io,
+        _: &Context<Self>,
         _model: &mut Self::Model,
         _message: Self::Message,
     ) -> Command<Self::Message> {
@@ -522,18 +532,19 @@ struct InitialForeignRequestConfig {
 
 impl Component for InitialForeignRequest {
     type Io = ();
-    type Config = InitialForeignRequestConfig;
+    type Connections = ();
+    type Configuration = InitialForeignRequestConfig;
     type Model = ();
     type Message = ();
 
-    fn init(config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
-        Init::new(())
-            .with_command(Command::request(&config.port, ForeignMessage::Read).producing(|_| ()))
+    fn init(cx: &Context<Self>) -> Init<Self::Model, Self::Message> {
+        Init::new(()).with_command(
+            Command::request(&cx.configuration.port, ForeignMessage::Read).producing(|_| ()),
+        )
     }
 
     fn update(
-        _config: &Self::Config,
-        _: &Self::Io,
+        _: &Context<Self>,
         _model: &mut Self::Model,
         _message: Self::Message,
     ) -> Command<Self::Message> {
@@ -549,12 +560,14 @@ fn initial_foreign_port_program(request: bool) -> Program {
         owner
             .component_builder::<InitialForeignRequest>()
             .name("initial-foreign-request")
-            .register(InitialForeignRequestConfig { port });
+            .configuration(InitialForeignRequestConfig { port })
+            .register(());
     } else {
         owner
             .component_builder::<InitialForeignPortSend>()
             .name("initial-foreign-port-send")
-            .register(InitialForeignPortSendConfig { port });
+            .configuration(InitialForeignPortSendConfig { port })
+            .register(());
     }
     owner.build().expect("valid owner Program")
 }
@@ -593,9 +606,10 @@ fn dynamically_used_foreign_effect_capability_is_rejected_before_controlled_beha
     let component = owner
         .component_builder::<EffectComponent>()
         .name("foreign-effect")
-        .register(EffectComponentConfig {
+        .configuration(EffectComponentConfig {
             smuggled: Some(from_another_program()),
-        });
+        })
+        .register(());
     let program = owner.build().expect("the hidden field is ordinary Rust");
     let mut runtime = ControlledRuntime::builder(program)
         .control_all()
@@ -618,9 +632,10 @@ async fn run_forever_surfaces_dynamic_foreign_capability_before_live_driver() {
     let component = owner
         .component_builder::<EffectComponent>()
         .name("foreign-live-effect")
-        .register(EffectComponentConfig {
+        .configuration(EffectComponentConfig {
             smuggled: Some(from_another_program()),
-        });
+        })
+        .register(());
     let calls = Arc::new(AtomicUsize::new(0));
     let program = owner.build().expect("valid owner Program");
     let runtime = Runtime::builder(program)
@@ -763,22 +778,23 @@ type DualStreamIo = (
 
 impl Component for DualStreamComponent {
     type Io = DualStreamIo;
-    type Config = DualStreamComponentConfig;
+    type Connections = ();
+    type Configuration = DualStreamComponentConfig;
     type Model = (u64, u64);
     type Message = DualStreamMessage;
 
-    fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
+    fn init(_: &Context<Self>) -> Init<Self::Model, Self::Message> {
         Init::new((0, 0))
     }
 
     fn update(
-        config: &Self::Config,
-        (_, _, observe): &Self::Io,
+        cx: &Context<Self>,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
+        let (_, _, observe) = &cx.io;
         let record = |lane, value| {
-            if config.observe {
+            if cx.configuration.observe {
                 Effect::perform(observe, RecordDualStream { lane, value }).discard_outcome()
             } else {
                 Command::none()
@@ -800,16 +816,21 @@ impl Component for DualStreamComponent {
         }
     }
 
-    fn subscriptions(
-        config: &Self::Config,
-        (first, second, _): &Self::Io,
-        _model: &Self::Model,
-    ) -> Subscriptions<Self::Message> {
+    fn subscriptions(cx: &Context<Self>, _model: &Self::Model) -> Subscriptions<Self::Message> {
+        let (first, second, _) = &cx.io;
         vec![
-            Subscription::source_with(first, config.descriptor.clone(), DualStreamMessage::First)
-                .key("first"),
-            Subscription::source_with(second, config.descriptor.clone(), DualStreamMessage::Second)
-                .key("second"),
+            Subscription::source_with(
+                first,
+                cx.configuration.descriptor.clone(),
+                DualStreamMessage::First,
+            )
+            .key("first"),
+            Subscription::source_with(
+                second,
+                cx.configuration.descriptor.clone(),
+                DualStreamMessage::Second,
+            )
+            .key("second"),
         ]
         .into()
     }
@@ -822,10 +843,11 @@ fn exact_stream_input_is_disambiguated_by_capability_not_equal_descriptor()
     let component = program
         .component_builder::<DualStreamComponent>()
         .name("dual-stream")
-        .register(DualStreamComponentConfig {
+        .configuration(DualStreamComponentConfig {
             descriptor: StreamDescriptor::named("same-descriptor"),
             observe: false,
-        });
+        })
+        .register(());
     let (first, second, _) = component.io.clone();
     let mut runtime = ControlledRuntime::builder(program.build().expect("valid Program"))
         .control_all()
@@ -845,10 +867,11 @@ async fn live_exact_streams_with_equal_descriptors_route_by_capability() -> Resu
     let component = program
         .component_builder::<DualStreamComponent>()
         .name("live-dual-stream")
-        .register(DualStreamComponentConfig {
+        .configuration(DualStreamComponentConfig {
             descriptor: StreamDescriptor::named("same-descriptor"),
             observe: true,
-        });
+        })
+        .register(());
     let (first_sender, first_receiver) = tokio::sync::mpsc::channel(1);
     let (second_sender, second_receiver) = tokio::sync::mpsc::channel(1);
     let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
@@ -953,25 +976,26 @@ struct FramedStreamComponentConfig {
 
 impl Component for FramedStreamComponent {
     type Io = (Source<FramedStream>, Effect<RecordDualStream>);
-    type Config = FramedStreamComponentConfig;
+    type Connections = ();
+    type Configuration = FramedStreamComponentConfig;
     type Model = Vec<u64>;
     type Message = FramedStreamMessage;
 
-    fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
+    fn init(_: &Context<Self>) -> Init<Self::Model, Self::Message> {
         Init::new(Vec::new())
     }
 
     fn update(
-        config: &Self::Config,
-        (_, observe): &Self::Io,
+        cx: &Context<Self>,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
+        let (_, observe) = &cx.io;
         let FramedStreamMessage::Event(event) = message;
         match event {
             SourceEvent::Item(value) => {
                 model.push(value);
-                if config.observe {
+                if cx.configuration.observe {
                     Effect::perform(
                         observe,
                         RecordDualStream {
@@ -990,11 +1014,8 @@ impl Component for FramedStreamComponent {
         }
     }
 
-    fn subscriptions(
-        _config: &Self::Config,
-        (source, _): &Self::Io,
-        _model: &Self::Model,
-    ) -> Subscriptions<Self::Message> {
+    fn subscriptions(cx: &Context<Self>, _model: &Self::Model) -> Subscriptions<Self::Message> {
+        let (source, _) = &cx.io;
         Subscriptions::one(
             Subscription::source_with(
                 source,
@@ -1021,7 +1042,8 @@ fn framed_stream_program(
         } else {
             "framed-stream"
         })
-        .register(FramedStreamComponentConfig { observe });
+        .configuration(FramedStreamComponentConfig { observe })
+        .register(());
     let source = component.io.0.clone();
     (
         program.build().expect("valid composed stream Program"),

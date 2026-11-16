@@ -61,24 +61,28 @@ struct HttpSequence;
 
 impl Component for HttpSequence {
     type Io = (Effect<HttpRequest>, Effect<ObserveHttp>);
-    type Config = Vec<HttpRequest>;
+    type Connections = ();
+    type Configuration = Vec<HttpRequest>;
     type Model = HttpModel;
     type Message = HttpMessage;
 
-    fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
+    fn init(_: &Context<Self>) -> Init<Self::Model, Self::Message> {
         Init::new(HttpModel::default())
     }
 
     fn update(
-        requests: &Self::Config,
-        (http, observe): &Self::Io,
+        cx: &Context<Self>,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
+        let (http, observe) = &cx.io;
         match message {
             HttpMessage::Start => Effect::perform(
                 http,
-                requests.first().expect("nonempty test sequence").clone(),
+                cx.configuration
+                    .first()
+                    .expect("nonempty test sequence")
+                    .clone(),
             )
             .producing(HttpMessage::Finished),
             HttpMessage::Finished(outcome) => {
@@ -86,7 +90,7 @@ impl Component for HttpSequence {
                     EffectOutcome::Succeeded(response) => SeenHttp::Response(response),
                     EffectOutcome::Failed(error) => SeenHttp::Error(error),
                 });
-                if let Some(request) = requests.get(model.seen.len()) {
+                if let Some(request) = cx.configuration.get(model.seen.len()) {
                     Effect::perform(http, request.clone()).producing(HttpMessage::Finished)
                 } else {
                     Effect::perform(observe, ObserveHttp(model.seen.clone()))
@@ -125,7 +129,8 @@ fn http_program(requests: Vec<HttpRequest>) -> (Program, InstalledComponent<Http
     let probe = builder
         .component_builder::<HttpSequence>()
         .name("http-sequence")
-        .register(requests);
+        .configuration(requests)
+        .register(());
     (builder.build().expect("valid HTTP program"), probe)
 }
 

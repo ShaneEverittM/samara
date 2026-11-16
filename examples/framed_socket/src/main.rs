@@ -260,17 +260,17 @@ struct Health;
 
 impl Component for Health {
     type Io = ();
-    type Config = ();
+    type Connections = ();
+    type Configuration = ();
     type Model = HealthModel;
     type Message = HealthMessage;
 
-    fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
+    fn init(_: &Context<Self>) -> Init<Self::Model, Self::Message> {
         Init::new(HealthModel::default())
     }
 
     fn update(
-        _config: &Self::Config,
-        _: &Self::Io,
+        _: &Context<Self>,
         model: &mut Self::Model,
         HealthMessage::Protocol(message): Self::Message,
     ) -> Command<Self::Message> {
@@ -402,7 +402,8 @@ struct StoreError(String);
 /// and decoder state belong in the runtime Driver and framing Layer.
 struct Telemetry;
 
-struct TelemetryConfig {
+#[derive(Connections)]
+struct TelemetryConnections {
     /// Named Port dependency, independent of the provider's message enum.
     health: Port<HealthProtocolMessage>,
 }
@@ -432,17 +433,17 @@ fn health_checked(
 
 impl Component for Telemetry {
     type Io = TelemetryIo;
-    type Config = TelemetryConfig;
+    type Connections = TelemetryConnections;
+    type Configuration = ();
     type Model = TelemetryModel;
     type Message = TelemetryMessage;
 
-    fn init(_config: &Self::Config, _io: &Self::Io) -> Init<Self::Model, Self::Message> {
+    fn init(_: &Context<Self>) -> Init<Self::Model, Self::Message> {
         Init::new(TelemetryModel::default())
     }
 
     fn update(
-        telemetry: &Self::Config,
-        io: &Self::Io,
+        cx: &Context<Self>,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -453,7 +454,7 @@ impl Component for Telemetry {
                 model.desired = Some(config.clone());
                 model.last_failure = None;
                 Command::send(
-                    &telemetry.health,
+                    &cx.connections.health,
                     HealthProtocolMessage::Connecting(config.endpoint),
                 )
             }
@@ -461,15 +462,15 @@ impl Component for Telemetry {
                 // Removing desire is enough. Reconciliation and cancellation
                 // are runtime work, not reducer-side effects.
                 model.desired = None;
-                Command::send(&telemetry.health, HealthProtocolMessage::Disconnected)
+                Command::send(&cx.connections.health, HealthProtocolMessage::Disconnected)
             }
             TelemetryMessage::Socket(SourceEvent::Item(frame)) => {
                 model.received += 1;
                 // One transition can declare independent intents without
                 // performing either operation inline.
                 Command::batch([
-                    Command::send(&telemetry.health, HealthProtocolMessage::FrameSeen),
-                    Effect::perform(&io.storage, StoreFrame { frame })
+                    Command::send(&cx.connections.health, HealthProtocolMessage::FrameSeen),
+                    Effect::perform(&cx.io.storage, StoreFrame { frame })
                         .producing(TelemetryMessage::Stored),
                 ])
             }
@@ -479,11 +480,11 @@ impl Component for Telemetry {
                 model.desired = None;
                 let error = format!("{error:?}");
                 model.last_failure = Some(error.clone());
-                Command::send(&telemetry.health, HealthProtocolMessage::Failed(error))
+                Command::send(&cx.connections.health, HealthProtocolMessage::Failed(error))
             }
             TelemetryMessage::Socket(SourceEvent::Ended) => {
                 model.desired = None;
-                Command::send(&telemetry.health, HealthProtocolMessage::Disconnected)
+                Command::send(&cx.connections.health, HealthProtocolMessage::Disconnected)
             }
             TelemetryMessage::Stored(EffectOutcome::Succeeded(_frame_id)) => {
                 // Async completion re-enters the Component only as a Message.
@@ -499,7 +500,7 @@ impl Component for Telemetry {
                 // order is intentionally not assumed; each pure mapper captures
                 // the domain key needed to interpret its eventual reply.
                 Command::batch(probes.map(|probe| {
-                    Command::request(&telemetry.health, HealthProtocolMessage::Read)
+                    Command::request(&cx.connections.health, HealthProtocolMessage::Read)
                         .producing(health_checked(probe))
                 }))
             }
@@ -510,11 +511,7 @@ impl Component for Telemetry {
         }
     }
 
-    fn subscriptions(
-        _telemetry: &Self::Config,
-        io: &Self::Io,
-        model: &Self::Model,
-    ) -> Subscriptions<Self::Message> {
+    fn subscriptions(cx: &Context<Self>, model: &Self::Model) -> Subscriptions<Self::Message> {
         // Subscriptions are a pure projection of current Model state, analogous
         // to declarative resource desire rather than imperative task spawning.
         let Some(config) = &model.desired else {
@@ -526,7 +523,7 @@ impl Component for Telemetry {
         // descriptor replaces it while keeping the logical subscription
         // identity.
         Subscriptions::one(Subscription::source_with(
-            &io.socket,
+            &cx.io.socket,
             Framed::new(
                 TcpBytes {
                     endpoint: config.endpoint.clone(),
@@ -593,7 +590,7 @@ fn program() -> (Program, AppRefs) {
     // Port-message conversion through its `From` implementation.
     program.connect(&health_port, &health.connector());
 
-    let telemetry = program.component::<Telemetry>(TelemetryConfig {
+    let telemetry = program.component::<Telemetry>(TelemetryConnections {
         health: health_port.clone(),
     });
 
@@ -733,9 +730,9 @@ mod tests {
     /// A Telemetry Component's wiring and capabilities for calling its
     /// functions directly. The capabilities belong to no Program, which is
     /// enough to inspect the Commands and Subscriptions they produce.
-    fn telemetry_fixture() -> (TelemetryConfig, TelemetryIo) {
+    fn telemetry_fixture() -> Context<Telemetry> {
         let health = Program::builder().port(PortId::new(HEALTH));
-        (TelemetryConfig { health }, TelemetryIo::detached())
+        Context::detached(TelemetryConnections { health }, ())
     }
 
     /// Activates the controlled path through Port sends, composed Source
@@ -809,26 +806,24 @@ mod tests {
     /// logical subscription retains the same stable identity.
     #[test]
     fn same_subscription_identity_exposes_changed_configuration() {
-        let (component, io) = telemetry_fixture();
-        let mut model = Telemetry::init(&component, &io).model;
-        let id = &io.socket;
+        let cx = telemetry_fixture();
+        let mut model = Telemetry::init(&cx).model;
+        let id = &cx.io.socket;
 
         let _ = Telemetry::update(
-            &component,
-            &io,
+            &cx,
             &mut model,
             TelemetryMessage::Connect(config("one:7000", 1)),
         );
-        let first = Telemetry::subscriptions(&component, &io, &model);
+        let first = Telemetry::subscriptions(&cx, &model);
         let first = first.find::<TelemetryFeed>(id).unwrap();
 
         let _ = Telemetry::update(
-            &component,
-            &io,
+            &cx,
             &mut model,
             TelemetryMessage::Connect(config("two:7000", 2)),
         );
-        let second = Telemetry::subscriptions(&component, &io, &model);
+        let second = Telemetry::subscriptions(&cx, &model);
         let second = second.find::<TelemetryFeed>(id).unwrap();
 
         assert_ne!(first, second);
@@ -863,12 +858,11 @@ mod tests {
     /// constructing the provider's private `HealthMessage` vocabulary.
     #[test]
     fn telemetry_sends_port_messages_without_provider_messages() {
-        let (component, io) = telemetry_fixture();
-        let mut model = Telemetry::init(&component, &io).model;
+        let cx = telemetry_fixture();
+        let mut model = Telemetry::init(&cx).model;
 
         let command = Telemetry::update(
-            &component,
-            &io,
+            &cx,
             &mut model,
             TelemetryMessage::Connect(config("one:7000", 1)),
         );
@@ -933,8 +927,8 @@ mod tests {
         );
         assert!(runtime.cancel()?.is_clean());
 
-        let (component, io) = telemetry_fixture();
-        let mut model = Telemetry::init(&component, &io).model;
+        let cx = telemetry_fixture();
+        let mut model = Telemetry::init(&cx).model;
 
         let snapshot = HealthSnapshot {
             status: "receiving".to_owned(),
@@ -943,8 +937,8 @@ mod tests {
         let first = health_checked(ProbeId(17))(RequestOutcome::Replied(snapshot.clone()));
         let second = health_checked(ProbeId(29))(RequestOutcome::TimedOut);
 
-        let _ = Telemetry::update(&component, &io, &mut model, second);
-        let _ = Telemetry::update(&component, &io, &mut model, first);
+        let _ = Telemetry::update(&cx, &mut model, second);
+        let _ = Telemetry::update(&cx, &mut model, first);
         assert_eq!(
             model.health_checks,
             vec![

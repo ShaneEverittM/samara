@@ -35,17 +35,17 @@ struct GaugeModel {
 
 impl Component for Gauge {
     type Io = Effect<Probe>;
-    type Config = ();
+    type Connections = ();
+    type Configuration = ();
     type Model = GaugeModel;
     type Message = GaugeMessage;
 
-    fn init(_: &(), _: &Self::Io) -> Init<GaugeModel, GaugeMessage> {
+    fn init(_: &Context<Self>) -> Init<GaugeModel, GaugeMessage> {
         Init::default()
     }
 
     fn update(
-        _: &(),
-        probe: &Self::Io,
+        cx: &Context<Self>,
         model: &mut GaugeModel,
         message: GaugeMessage,
     ) -> Command<GaugeMessage> {
@@ -53,7 +53,7 @@ impl Component for Gauge {
             // Answer the caller straight from the effect's outcome: no private
             // Message variant carries the reply token across the hop.
             GaugeMessage::Read(reply) => {
-                Effect::perform(probe, Probe).finish_with(move |outcome| {
+                Effect::perform(&cx.io, Probe).finish_with(move |outcome| {
                     Command::reply(
                         reply,
                         match outcome {
@@ -85,22 +85,22 @@ enum RelayMessage {
 
 impl Component for Relay {
     type Io = ();
-    type Config = Connector<GaugeMessage>;
+    type Connections = Connector<GaugeMessage>;
+    type Configuration = ();
     type Model = ();
     type Message = RelayMessage;
 
-    fn init(_: &Self::Config, _: &()) -> Init<(), RelayMessage> {
+    fn init(_: &Context<Self>) -> Init<(), RelayMessage> {
         Init::default()
     }
 
     fn update(
-        gauge: &Self::Config,
-        _: &(),
+        cx: &Context<Self>,
         _: &mut (),
         RelayMessage::ReadPlusOne(reply): RelayMessage,
     ) -> Command<RelayMessage> {
-        let audit = gauge.clone();
-        Command::request(&gauge, GaugeMessage::Read).finish_with(move |outcome| {
+        let audit = cx.connections.clone();
+        Command::request(&cx.connections, GaugeMessage::Read).finish_with(move |outcome| {
             let reading = match outcome {
                 RequestOutcome::Replied(reading) => reading + 1,
                 _ => 0,
@@ -116,7 +116,8 @@ impl Component for Relay {
 
 struct Client;
 
-struct ClientConfig {
+#[derive(Connections)]
+struct ClientConnections {
     relay: Connector<RelayMessage>,
     gauge: Connector<GaugeMessage>,
 }
@@ -136,25 +137,27 @@ impl From<RequestOutcome<u64>> for ClientMessage {
 
 impl Component for Client {
     type Io = ();
-    type Config = ClientConfig;
+    type Connections = ClientConnections;
+    type Configuration = ();
     type Model = Vec<RequestOutcome<u64>>;
     type Message = ClientMessage;
 
-    fn init(_: &ClientConfig, _: &()) -> Init<Self::Model, ClientMessage> {
+    fn init(_: &Context<Self>) -> Init<Self::Model, ClientMessage> {
         Init::default()
     }
 
     fn update(
-        config: &ClientConfig,
-        _: &(),
+        cx: &Context<Self>,
         model: &mut Self::Model,
         message: ClientMessage,
     ) -> Command<ClientMessage> {
         match message {
-            ClientMessage::Start => Command::request(&config.relay, RelayMessage::ReadPlusOne)
-                .producing(ClientMessage::Got),
+            ClientMessage::Start => {
+                Command::request(&cx.connections.relay, RelayMessage::ReadPlusOne)
+                    .producing(ClientMessage::Got)
+            }
             ClientMessage::StartParked(patience) => {
-                Command::request(&config.gauge, GaugeMessage::Park)
+                Command::request(&cx.connections.gauge, GaugeMessage::Park)
                     .timeout(patience)
                     .into_command()
             }
@@ -179,7 +182,7 @@ fn fixture() -> Fixture {
     let relay = builder.component::<Relay>(gauge.connector());
     let relay_port = builder.port::<RelayMessage>(PortId::new("relay"));
     builder.connect(&relay_port, &relay.connector());
-    let client = builder.component::<Client>(ClientConfig {
+    let client = builder.component::<Client>(ClientConnections {
         relay: relay.connector(),
         gauge: gauge.connector(),
     });

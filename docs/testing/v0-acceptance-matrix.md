@@ -196,6 +196,12 @@ The following evidence must pass before the Phase 2 audit:
   as `owner.field`. Using another Component's capability faults in both
   controlled and live execution. `examples/pulse` pins the journal's
   manifest text.
+- `tests/connections.rs` validates declared connections and configuration
+  (ADR-0031): the manifest lists a bare Connector, a `ComponentRef`, a Port
+  resolved to its provider, and the fields of a derived struct including
+  `Option` and `Vec`; a connection from another builder fails `build` with
+  the holder and field named; configuration defaults and is overridden
+  through the builder; and a detached `Context` is enough to call `update`.
 - `tests/capability_binding.rs` validates per-capability Driver binding
   (ADR-0027, ADR-0028): a Driver follows its capability value, not a
   position, a tuple is supplied whole or split, and a missing capability, a

@@ -81,12 +81,12 @@ impl CanWrite for ReadWrite {}
 /// use samara::prelude::*;
 /// struct Scribe;
 /// impl Component for Scribe {
-///     type Config = (); type Io = File<ReadAppend>;
+///     type Connections = (); type Configuration = (); type Io = File<ReadAppend>;
 ///     type Model = (); type Message = ();
-///     fn init(_: &(), file: &Self::Io) -> Init<(), ()> {
-///         Init::new(()).with_command(File::append_line(file, "hello").discard_outcome())
+///     fn init(cx: &Context<Self>) -> Init<(), ()> {
+///         Init::new(()).with_command(File::append_line(&cx.io, "hello").discard_outcome())
 ///     }
-///     fn update(_: &(), _: &Self::Io, _: &mut (), _: ()) -> Command<()> { Command::none() }
+///     fn update(_: &Context<Self>, _: &mut (), _: ()) -> Command<()> { Command::none() }
 /// }
 /// let mut program = Program::builder();
 /// let scribe = program.component::<Scribe>(());

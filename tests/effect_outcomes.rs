@@ -39,20 +39,17 @@ struct Reader;
 
 impl Component for Reader {
     type Io = (Effect<ReadText>, Effect<CountBytes>);
-    type Config = ();
+    type Connections = ();
+    type Configuration = ();
     type Model = Vec<Observation>;
     type Message = Message;
 
-    fn init(_: &(), _: &Self::Io) -> Init<Self::Model, Message> {
+    fn init(_: &Context<Self>) -> Init<Self::Model, Message> {
         Init::default()
     }
 
-    fn update(
-        _: &(),
-        (read, count): &Self::Io,
-        model: &mut Self::Model,
-        message: Message,
-    ) -> Command<Message> {
+    fn update(cx: &Context<Self>, model: &mut Self::Model, message: Message) -> Command<Message> {
+        let (read, count) = &cx.io;
         let observed = match message {
             Message::Read => {
                 return Effect::perform(read, ReadText).producing(|outcome| match outcome {
@@ -140,22 +137,22 @@ enum StampMessage {
 
 impl Component for Stamper {
     type Io = Effect<ReadSystemTime>;
-    type Config = ();
+    type Connections = ();
+    type Configuration = ();
     type Model = Option<SystemTime>;
     type Message = StampMessage;
 
-    fn init(_: &(), _: &Self::Io) -> Init<Self::Model, StampMessage> {
+    fn init(_: &Context<Self>) -> Init<Self::Model, StampMessage> {
         Init::default()
     }
 
     fn update(
-        _: &(),
-        clock: &Self::Io,
+        cx: &Context<Self>,
         model: &mut Self::Model,
         message: StampMessage,
     ) -> Command<StampMessage> {
         match message {
-            StampMessage::Stamp => Effect::perform(clock, ReadSystemTime)
+            StampMessage::Stamp => Effect::perform(&cx.io, ReadSystemTime)
                 .producing(|EffectOutcome::Succeeded(now)| StampMessage::Now(now)),
             StampMessage::Now(now) => {
                 *model = Some(now);

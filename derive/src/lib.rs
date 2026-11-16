@@ -56,3 +56,57 @@ pub fn derive_capabilities(input: TokenStream) -> TokenStream {
     }
     .into()
 }
+
+/// Implements `samara::Connections` for a struct with named fields.
+///
+/// Each field's connections are listed under the field's name. Field types
+/// must themselves implement `Connections`: `Connector<M>`, `Port<M>`,
+/// `ComponentRef<C>`, an `Option`, `Vec`, or tuple of those, or another
+/// struct that derives it.
+#[proc_macro_derive(Connections)]
+pub fn derive_connections(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    let name = &input.ident;
+    let (impl_generics, type_generics, where_clause) = input.generics.split_for_impl();
+
+    let fields = match &input.data {
+        Data::Struct(data) => match &data.fields {
+            Fields::Named(fields) => &fields.named,
+            other => {
+                return syn::Error::new(
+                    other.span(),
+                    "Connections can only be derived for a struct with named fields; \
+                     use a tuple type directly for unnamed connections",
+                )
+                .to_compile_error()
+                .into();
+            }
+        },
+        _ => {
+            return syn::Error::new(
+                input.ident.span(),
+                "Connections can only be derived for a struct with named fields",
+            )
+            .to_compile_error()
+            .into();
+        }
+    };
+
+    let listings = fields.iter().map(|field| {
+        let ident = field.ident.as_ref().expect("named field");
+        let label = ident.to_string();
+        // Spanned to the field's type so an unsupported type is reported there.
+        quote_spanned! { field.ty.span() =>
+            into.field(#label, &self.#ident);
+        }
+    });
+
+    quote! {
+        impl #impl_generics ::samara::Connections for #name #type_generics #where_clause {
+            fn list(&self, into: &mut ::samara::Listing<'_>) {
+                #(#listings)*
+            }
+        }
+    }
+    .into()
+}

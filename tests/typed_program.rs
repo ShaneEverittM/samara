@@ -16,20 +16,21 @@ impl EffectDescriptor for Read {
 // Application state belongs in Model.
 struct Reader;
 impl Component for Reader {
-    type Config = Arc<AtomicUsize>;
+    type Connections = ();
+    type Configuration = Arc<AtomicUsize>;
     type Io = (Effect<Read>,);
     type Model = Vec<u64>;
     type Message = Option<u64>;
-    fn init(count: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
-        count.fetch_add(1, Ordering::SeqCst);
+    fn init(cx: &Context<Self>) -> Init<Self::Model, Self::Message> {
+        cx.configuration.fetch_add(1, Ordering::SeqCst);
         Init::default()
     }
     fn update(
-        _: &Self::Config,
-        (read,): &Self::Io,
+        cx: &Context<Self>,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
+        let (read,) = &cx.io;
         if let Some(value) = message {
             model.push(value);
             Command::none()
@@ -52,14 +53,15 @@ impl EffectDriver<Read> for ReadDriver {
 /// obliges its host to supply.
 struct Holds<C>(std::marker::PhantomData<fn() -> C>);
 impl<C: Capabilities> Component for Holds<C> {
-    type Config = ();
+    type Connections = ();
+    type Configuration = ();
     type Io = C;
     type Model = ();
     type Message = ();
-    fn init(_: &(), _: &C) -> Init<(), ()> {
+    fn init(_: &Context<Self>) -> Init<(), ()> {
         Init::new(())
     }
-    fn update(_: &(), _: &C, (): &mut (), (): ()) -> Command<()> {
+    fn update(_: &Context<Self>, (): &mut (), (): ()) -> Command<()> {
         Command::none()
     }
 }
@@ -71,11 +73,13 @@ fn each_components_own_capability_reaches_callbacks_and_delayed_effects() {
     let first = program
         .component_builder::<Reader>()
         .name("first")
-        .register(count.clone());
+        .configuration(count.clone())
+        .register(());
     let second = program
         .component_builder::<Reader>()
         .name("second")
-        .register(count.clone());
+        .configuration(count.clone())
+        .register(());
     assert_eq!(count.load(Ordering::SeqCst), 2);
     let mut runtime = ControlledRuntime::builder(program.build().unwrap())
         .control_all()
@@ -106,11 +110,13 @@ async fn live_drivers_are_supplied_per_component_capability() {
         let first = program
             .component_builder::<Reader>()
             .name("first")
-            .register(count.clone());
+            .configuration(count.clone())
+            .register(());
         let second = program
             .component_builder::<Reader>()
             .name("second")
-            .register(count);
+            .configuration(count)
+            .register(());
         (program.build().unwrap(), first, second)
     }
     // One Driver no longer serves every capability of its descriptor type.
@@ -171,7 +177,8 @@ impl Assembly for Library {
         let reader = program
             .component_builder::<Reader>()
             .name("library")
-            .register(count);
+            .configuration(count)
+            .register(());
         let io = reader.io.clone();
         (reader.into(), io)
     }
@@ -201,7 +208,7 @@ fn assembly_carries_a_subset_of_the_programs_capabilities() {
     let reader = installed.exports().clone();
     drop(installed); // The Program itself carries all binding obligations.
     let program = program.build().unwrap();
-    assert_eq!(program.manifest().entries().len(), 2);
+    assert_eq!(program.manifest().capabilities().len(), 2);
     let mut runtime = ControlledRuntime::builder(program)
         .control_all()
         .build()

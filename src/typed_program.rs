@@ -248,10 +248,10 @@ impl<S: SourceDescriptor<Terminal = StdinLines>> private::Driver<Source<S>> for 
 /// use samara::prelude::*;
 /// struct Clock;
 /// impl Component for Clock {
-///     type Config = (); type Io = Effect<ReadSystemTime>;
+///     type Connections = (); type Configuration = (); type Io = Effect<ReadSystemTime>;
 ///     type Model = (); type Message = ();
-///     fn init(_: &(), _: &Self::Io) -> Init<(), ()> { Init::default() }
-///     fn update(_: &(), _: &Self::Io, _: &mut (), _: ()) -> Command<()> { Command::none() }
+///     fn init(_: &Context<Self>) -> Init<(), ()> { Init::default() }
+///     fn update(_: &Context<Self>, _: &mut (), _: ()) -> Command<()> { Command::none() }
 /// }
 /// let mut program = Program::builder();
 /// let clock = program.component::<Clock>(());
@@ -277,10 +277,10 @@ impl<S: SourceDescriptor<Terminal = StdinLines>> private::Driver<Source<S>> for 
 /// use samara::prelude::*;
 /// # struct Clock;
 /// # impl Component for Clock {
-/// #     type Config = (); type Io = Effect<ReadSystemTime>;
+/// #     type Connections = (); type Configuration = (); type Io = Effect<ReadSystemTime>;
 /// #     type Model = (); type Message = ();
-/// #     fn init(_: &(), _: &Self::Io) -> Init<(), ()> { Init::default() }
-/// #     fn update(_: &(), _: &Self::Io, _: &mut (), _: ()) -> Command<()> { Command::none() }
+/// #     fn init(_: &Context<Self>) -> Init<(), ()> { Init::default() }
+/// #     fn update(_: &Context<Self>, _: &mut (), _: ()) -> Command<()> { Command::none() }
 /// # }
 /// let mut program = Program::builder();
 /// program.component_builder::<Clock>().name("clock").register(());
@@ -344,6 +344,188 @@ impl ControlledRuntimeSetup {
     }
 }
 
+/// The other Components one Component can send to: its
+/// [`Component::Connections`].
+///
+/// Implemented for `()`, [`Connector`], [`Port`], [`ComponentRef`],
+/// `Option` and `Vec` of those, tuples up to eight, and structs with named
+/// fields through `#[derive(Connections)]`. Samara walks the value at
+/// registration so that [`Program::manifest`] can list who sends to whom
+/// and [`ProgramBuilder::build`] can reject an address from another
+/// builder.
+///
+/// ```
+/// use samara::prelude::*;
+/// # enum JournalMessage {}
+/// # enum AuditMessage {}
+/// #[derive(Connections)]
+/// struct Wiring {
+///     journal: Connector<JournalMessage>,
+///     audit: Port<AuditMessage>,
+/// }
+/// ```
+///
+/// Written by hand, an implementation names each field:
+///
+/// ```
+/// use samara::prelude::*;
+/// # enum JournalMessage {}
+/// struct Wiring { journal: Connector<JournalMessage> }
+/// impl Connections for Wiring {
+///     fn list(&self, into: &mut Listing<'_>) {
+///         into.field("journal", &self.journal);
+///     }
+/// }
+/// ```
+pub trait Connections: Send + 'static {
+    /// Lists each connection this value holds.
+    fn list(&self, into: &mut Listing<'_>);
+}
+
+/// Collects the connections of the Component being registered. Passed to
+/// [`Connections::list`].
+pub struct Listing<'a> {
+    listed: &'a mut Vec<ListedConnection>,
+    path: Vec<&'static str>,
+}
+
+impl<'a> Listing<'a> {
+    pub(crate) fn new(listed: &'a mut Vec<ListedConnection>) -> Self {
+        Self {
+            listed,
+            path: Vec::new(),
+        }
+    }
+
+    /// Lists the connections held in one named field. The name appears in
+    /// [`Program::manifest`] and in the error for a foreign connection.
+    pub fn field<C: Connections + ?Sized>(&mut self, name: &'static str, connections: &C) {
+        self.path.push(name);
+        connections.list(self);
+        self.path.pop();
+    }
+
+    fn push(&mut self, program: &Arc<()>, message: &'static str, target: ListedTarget) {
+        self.listed.push(ListedConnection {
+            name: (!self.path.is_empty()).then(|| self.path.join(".")),
+            program: program.clone(),
+            message,
+            target,
+        });
+    }
+}
+
+/// One address found in a Component's connections, before `build` checks
+/// it and resolves a Port to its provider.
+pub(crate) struct ListedConnection {
+    pub(crate) name: Option<String>,
+    pub(crate) program: Arc<()>,
+    pub(crate) message: &'static str,
+    pub(crate) target: ListedTarget,
+}
+
+pub(crate) enum ListedTarget {
+    Component(ComponentId),
+    Port { protocol: TypeId, id: PortId },
+}
+
+impl Connections for () {
+    fn list(&self, _: &mut Listing<'_>) {}
+}
+impl<M: Send + 'static> Connections for Connector<M> {
+    fn list(&self, into: &mut Listing<'_>) {
+        into.push(
+            &self.program,
+            std::any::type_name::<M>(),
+            ListedTarget::Component(self.id.clone()),
+        );
+    }
+}
+impl<C: Component> Connections for ComponentRef<C> {
+    fn list(&self, into: &mut Listing<'_>) {
+        into.push(
+            &self.program,
+            std::any::type_name::<C::Message>(),
+            ListedTarget::Component(self.id.clone()),
+        );
+    }
+}
+impl<P: Send + 'static> Connections for Port<P> {
+    fn list(&self, into: &mut Listing<'_>) {
+        into.push(
+            &self.program,
+            std::any::type_name::<P>(),
+            ListedTarget::Port {
+                protocol: TypeId::of::<P>(),
+                id: self.id.clone(),
+            },
+        );
+    }
+}
+impl<T: Connections> Connections for Option<T> {
+    fn list(&self, into: &mut Listing<'_>) {
+        if let Some(connections) = self {
+            connections.list(into);
+        }
+    }
+}
+impl<T: Connections> Connections for Vec<T> {
+    fn list(&self, into: &mut Listing<'_>) {
+        for connections in self {
+            connections.list(into);
+        }
+    }
+}
+macro_rules! connection_tuples {
+    ($(($($c:ident),+))+) => {$(
+        impl<$($c: Connections),+> Connections for ($($c,)+) {
+            fn list(&self, into: &mut Listing<'_>) {
+                #[allow(non_snake_case)]
+                let ($($c,)+) = self;
+                $($c.list(into);)+
+            }
+        }
+    )+};
+}
+connection_tuples! {
+    (A)
+    (A, B)
+    (A, B, C)
+    (A, B, C, D)
+    (A, B, C, D, E)
+    (A, B, C, D, E, F)
+    (A, B, C, D, E, F, G)
+    (A, B, C, D, E, F, G, H)
+}
+
+/// Marks a [`ComponentBuilder`] whose configuration has not been set, so
+/// registration uses the `Default` value.
+pub struct DefaultConfiguration;
+/// Marks a [`ComponentBuilder`] whose configuration was set with
+/// [`ComponentBuilder::configuration`].
+pub struct GivenConfiguration<T>(T);
+
+mod configuration_private {
+    #[diagnostic::on_unimplemented(
+        message = "`{T}` has no default value to register this Component with",
+        note = "set one with `.component_builder::<C>().configuration(..).register(..)`, or implement `Default` for `{T}`"
+    )]
+    pub trait Slot<T> {
+        fn take(self) -> T;
+    }
+}
+use configuration_private::Slot;
+impl<T: Default> Slot<T> for DefaultConfiguration {
+    fn take(self) -> T {
+        T::default()
+    }
+}
+impl<T> Slot<T> for GivenConfiguration<T> {
+    fn take(self) -> T {
+        self.0
+    }
+}
+
 /// Registers a Component with options. Made by
 /// [`ProgramBuilder::component_builder`]; use [`ProgramBuilder::component`]
 /// when there is nothing to set.
@@ -352,23 +534,46 @@ impl ControlledRuntimeSetup {
 /// use samara::prelude::*;
 /// struct Clock;
 /// impl Component for Clock {
-///     type Config = (); type Io = (Effect<ReadSystemTime>,);
+///     type Io = (Effect<ReadSystemTime>,);
+///     type Connections = (); type Configuration = u64;
 ///     type Model = (); type Message = ();
-///     fn init(_: &(), _: &Self::Io) -> Init<(), ()> { Init::default() }
-///     fn update(_: &(), _: &Self::Io, _: &mut (), _: ()) -> Command<()> { Command::none() }
+///     fn init(_: &Context<Self>) -> Init<(), ()> { Init::default() }
+///     fn update(_: &Context<Self>, _: &mut (), _: ()) -> Command<()> { Command::none() }
 /// }
 /// let mut program = Program::builder();
-/// let clock = program.component_builder::<Clock>().name("wall clock").register(());
+/// let clock = program
+///     .component_builder::<Clock>()
+///     .name("wall clock")
+///     .configuration(60)
+///     .register(());
 /// assert_eq!(clock.id().name(), "wall clock");
 /// let runtime = Runtime::builder(program.build()?)
 ///     .supply(&clock.io.0, SystemClockDriver)
 ///     .build()?;
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
-#[must_use = "register the Component with .register(config)"]
-pub struct ComponentBuilder<'a, C: Component> {
+///
+/// A Component whose configuration has no `Default` must be given one:
+///
+/// ```compile_fail
+/// use samara::prelude::*;
+/// struct Settings { limit: u64 }
+/// struct Limiter;
+/// impl Component for Limiter {
+///     type Io = ();
+///     type Connections = (); type Configuration = Settings;
+///     type Model = (); type Message = ();
+///     fn init(_: &Context<Self>) -> Init<(), ()> { Init::default() }
+///     fn update(_: &Context<Self>, _: &mut (), _: ()) -> Command<()> { Command::none() }
+/// }
+/// let mut program = Program::builder();
+/// program.component::<Limiter>(());
+/// ```
+#[must_use = "register the Component with .register(connections)"]
+pub struct ComponentBuilder<'a, C: Component, Configuration = DefaultConfiguration> {
     program: &'a mut ProgramBuilder,
     name: Option<Arc<str>>,
+    configuration: Configuration,
     kind: PhantomData<fn() -> C>,
 }
 impl<'a, C: Component> ComponentBuilder<'a, C> {
@@ -376,10 +581,26 @@ impl<'a, C: Component> ComponentBuilder<'a, C> {
         Self {
             program,
             name: None,
+            configuration: DefaultConfiguration,
             kind: PhantomData,
         }
     }
 
+    /// Sets the Component's configuration. Without this, registration uses
+    /// its `Default` value.
+    pub fn configuration(
+        self,
+        configuration: C::Configuration,
+    ) -> ComponentBuilder<'a, C, GivenConfiguration<C::Configuration>> {
+        ComponentBuilder {
+            program: self.program,
+            name: self.name,
+            configuration: GivenConfiguration(configuration),
+            kind: PhantomData,
+        }
+    }
+}
+impl<C: Component, Configuration> ComponentBuilder<'_, C, Configuration> {
     /// Sets a diagnostic label. Names need not be unique and never affect routing
     /// or execution order. Without this, diagnostics use the Component type name.
     pub fn name(mut self, name: impl Into<Arc<str>>) -> Self {
@@ -387,11 +608,21 @@ impl<'a, C: Component> ComponentBuilder<'a, C> {
         self
     }
 
-    /// Creates the Component's capabilities, initializes it, and registers it.
-    pub fn register(self, config: C::Config) -> InstalledComponent<C> {
+    /// Creates the Component's capabilities, initializes it, and registers it
+    /// with these connections.
+    #[allow(private_bounds)]
+    pub fn register(self, connections: C::Connections) -> InstalledComponent<C>
+    where
+        Configuration: Slot<C::Configuration>,
+    {
         let mark = self.program.requirement_mark();
         let io = declare::<C::Io>(self.program);
-        let reference = self.program.register::<C>(self.name, config, io.clone());
+        let context = Context {
+            io: io.clone(),
+            connections,
+            configuration: self.configuration.take(),
+        };
+        let reference = self.program.register::<C>(self.name, context);
         self.program.claim(mark, reference.id());
         InstalledComponent { io, reference }
     }

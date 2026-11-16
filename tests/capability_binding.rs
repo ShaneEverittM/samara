@@ -12,15 +12,17 @@ use std::{
 struct Scribe;
 impl Component for Scribe {
     type Io = (File<ReadAppend>,);
-    type Config = &'static str;
+    type Connections = ();
+    type Configuration = &'static str;
     type Model = ();
     type Message = ();
 
-    fn init(line: &&'static str, (file,): &Self::Io) -> Init<(), ()> {
-        Init::new(()).with_command(File::append_line(file, *line).discard_outcome())
+    fn init(cx: &Context<Self>) -> Init<(), ()> {
+        let (file,) = &cx.io;
+        Init::new(()).with_command(File::append_line(file, cx.configuration).discard_outcome())
     }
 
-    fn update(_: &&'static str, _: &Self::Io, (): &mut (), (): ()) -> Command<()> {
+    fn update(_: &Context<Self>, (): &mut (), (): ()) -> Command<()> {
         Command::none()
     }
 }
@@ -48,8 +50,14 @@ async fn a_driver_follows_its_capability_value_not_a_position() {
     // The Drivers are supplied against registration order on purpose: with
     // positional binding this is the silent swap of two same-typed files.
     let mut builder = Program::builder();
-    let journal = builder.component::<Scribe>("journal");
-    let config = builder.component::<Scribe>("config");
+    let journal = builder
+        .component_builder::<Scribe>()
+        .configuration("journal")
+        .register(());
+    let config = builder
+        .component_builder::<Scribe>()
+        .configuration("config")
+        .register(());
 
     let runtime = Runtime::builder(builder.build().unwrap())
         .supply(&config.io.0, FileDriver::new(root.0.join("config.log")))
@@ -76,15 +84,16 @@ type FileAndClock = (File<ReadAppend>, Effect<ReadSystemTime>);
 struct Keeper;
 impl Component for Keeper {
     type Io = FileAndClock;
-    type Config = ();
+    type Connections = ();
+    type Configuration = ();
     type Model = ();
     type Message = ();
 
-    fn init(_: &(), _: &Self::Io) -> Init<(), ()> {
+    fn init(_: &Context<Self>) -> Init<(), ()> {
         Init::new(())
     }
 
-    fn update(_: &(), _: &Self::Io, (): &mut (), (): ()) -> Command<()> {
+    fn update(_: &Context<Self>, (): &mut (), (): ()) -> Command<()> {
         Command::none()
     }
 }

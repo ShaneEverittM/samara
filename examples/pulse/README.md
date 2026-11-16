@@ -78,6 +78,10 @@ forces policy into the Driver instead of the Component.
   `Component::Requires`, typed on the Program (ADR-0019), so a host that
   forgot a driver failed to compile. Component names are optional
   diagnostics (ADR-0021).
+- `Config` split into `Connections` and `Configuration`, and every
+  function takes one `Context` (ADR-0031). Monitor's connection to the
+  journal is its `Connections`, so the manifest shows the wiring as well as
+  the capabilities.
 - `Requires` became `Io`, and the Program lost its type parameter (ADR-0028,
   0029). The journal's capabilities are a named struct, `JournalIo`, with a
   `file` and a `clock`; Monitor's are `MonitorIo`, with an `input` and an

@@ -202,17 +202,17 @@ struct EchoProvider;
 
 impl Component for EchoProvider {
     type Io = ();
-    type Config = ();
+    type Connections = ();
+    type Configuration = ();
     type Model = ();
     type Message = ProviderMessage;
 
-    fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
+    fn init(_: &Context<Self>) -> Init<Self::Model, Self::Message> {
         Init::new(())
     }
 
     fn update(
-        _config: &Self::Config,
-        _: &Self::Io,
+        _: &Context<Self>,
         _model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
@@ -245,36 +245,39 @@ impl From<RequestOutcome<u64>> for RequesterMessage {
 
 struct Requester;
 
-struct RequesterConfig {
+#[derive(Connections)]
+struct RequesterConnections {
     echo: Port<EchoProtocolMessage>,
 }
 
 impl Component for Requester {
     type Io = ();
-    type Config = RequesterConfig;
+    type Connections = RequesterConnections;
+    type Configuration = ();
     type Model = RequesterModel;
     type Message = RequesterMessage;
 
-    fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
+    fn init(_: &Context<Self>) -> Init<Self::Model, Self::Message> {
         Init::new(RequesterModel::default())
     }
 
     fn update(
-        config: &Self::Config,
-        _: &Self::Io,
+        cx: &Context<Self>,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
         match message {
             // The short form: `Message::from` is the continuation, so the
             // `From<RequestOutcome<u64>>` impl above still decides the variant.
-            RequesterMessage::StartDefault => Command::request(&config.echo, |reply_with| {
-                EchoProtocolMessage::Echo(11, reply_with)
-            })
-            .producing(RequesterMessage::from),
+            RequesterMessage::StartDefault => {
+                Command::request(&cx.connections.echo, |reply_with| {
+                    EchoProtocolMessage::Echo(11, reply_with)
+                })
+                .producing(RequesterMessage::from)
+            }
             RequesterMessage::StartExplicit => {
                 let context = "second request";
-                Command::request(&config.echo, |reply_with| {
+                Command::request(&cx.connections.echo, |reply_with| {
                     EchoProtocolMessage::Echo(12, reply_with)
                 })
                 .producing(move |outcome| RequesterMessage::Explicit { context, outcome })
@@ -303,7 +306,7 @@ fn request_to_with_message_from_uses_from_and_a_closure_preserves_context() {
     let requester = builder
         .component_builder::<Requester>()
         .name("requester")
-        .register(RequesterConfig { echo: echo.clone() });
+        .register(RequesterConnections { echo: echo.clone() });
     let mut runtime = ControlledRuntime::builder(builder.build().unwrap())
         .control_all()
         .build()

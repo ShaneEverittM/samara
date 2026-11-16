@@ -32,19 +32,21 @@ impl EffectDriver<Tag> for NamedDriver {
 struct Asker;
 impl Component for Asker {
     type Io = (Effect<Tag>,);
-    type Config = &'static str;
+    type Connections = ();
+    type Configuration = &'static str;
     type Model = Option<&'static str>;
     type Message = &'static str;
 
-    fn init(label: &&'static str, (tag,): &Self::Io) -> Init<Self::Model, Self::Message> {
+    fn init(cx: &Context<Self>) -> Init<Self::Model, Self::Message> {
+        let (tag,) = &cx.io;
         Init::new(None).with_command(
-            Effect::perform(tag, Tag(label)).producing(|EffectOutcome::Succeeded(by)| by),
+            Effect::perform(tag, Tag(cx.configuration))
+                .producing(|EffectOutcome::Succeeded(by)| by),
         )
     }
 
     fn update(
-        _: &&'static str,
-        _: &Self::Io,
+        _: &Context<Self>,
         answered_by: &mut Self::Model,
         by: &'static str,
     ) -> Command<Self::Message> {
@@ -56,8 +58,14 @@ impl Component for Asker {
 #[tokio::test]
 async fn two_components_with_the_same_effect_each_get_their_own_driver() {
     let mut builder = Program::builder();
-    let first = builder.component::<Asker>("first");
-    let second = builder.component::<Asker>("second");
+    let first = builder
+        .component_builder::<Asker>()
+        .configuration("first")
+        .register(());
+    let second = builder
+        .component_builder::<Asker>()
+        .configuration("second")
+        .register(());
 
     let seen = Seen::default();
     let runtime = Runtime::builder(builder.build().unwrap())
@@ -95,8 +103,14 @@ async fn two_components_with_the_same_effect_each_get_their_own_driver() {
 #[test]
 fn a_component_left_without_its_driver_fails_the_build() {
     let mut builder = Program::builder();
-    let first = builder.component::<Asker>("first");
-    let _second = builder.component::<Asker>("second");
+    let first = builder
+        .component_builder::<Asker>()
+        .configuration("first")
+        .register(());
+    let _second = builder
+        .component_builder::<Asker>()
+        .configuration("second")
+        .register(());
 
     let error = Runtime::builder(builder.build().unwrap())
         .supply(
@@ -118,8 +132,14 @@ fn a_component_left_without_its_driver_fails_the_build() {
 #[test]
 fn controlled_execution_controls_capabilities_created_at_registration() {
     let mut builder = Program::builder();
-    let first = builder.component::<Asker>("first");
-    let second = builder.component::<Asker>("second");
+    let first = builder
+        .component_builder::<Asker>()
+        .configuration("first")
+        .register(());
+    let second = builder
+        .component_builder::<Asker>()
+        .configuration("second")
+        .register(());
 
     let mut runtime = ControlledRuntime::builder(builder.build().unwrap())
         .control_all()
@@ -147,7 +167,10 @@ impl Assembly for Tagging {
     type Io = (Effect<Tag>,);
 
     fn install(program: &mut ProgramBuilder, label: &'static str) -> (Self::Exports, Self::Io) {
-        let asker = program.component::<Asker>(label);
+        let asker = program
+            .component_builder::<Asker>()
+            .configuration(label)
+            .register(());
         (asker.connector(), asker.io.clone())
     }
 }
@@ -188,15 +211,16 @@ async fn an_installed_assembly_carries_its_capabilities_for_the_host() {
 struct Quiet;
 impl Component for Quiet {
     type Io = ();
-    type Config = ();
+    type Connections = ();
+    type Configuration = ();
     type Model = ();
     type Message = ();
 
-    fn init(_: &(), _: &()) -> Init<(), ()> {
+    fn init(_: &Context<Self>) -> Init<(), ()> {
         Init::new(())
     }
 
-    fn update(_: &(), _: &(), (): &mut (), (): ()) -> Command<()> {
+    fn update(_: &Context<Self>, (): &mut (), (): ()) -> Command<()> {
         Command::none()
     }
 }
@@ -205,7 +229,10 @@ impl Component for Quiet {
 fn a_component_with_no_capabilities_is_installed_like_any_other() {
     let mut builder = Program::builder();
     let quiet: InstalledComponent<Quiet> = builder.component::<Quiet>(());
-    let asker: InstalledComponent<Asker> = builder.component::<Asker>("asker");
+    let asker: InstalledComponent<Asker> = builder
+        .component_builder::<Asker>()
+        .configuration("asker")
+        .register(());
     let () = quiet.io;
     // The handle is an address and offers what a ComponentRef does.
     let _: Connector<&'static str> = asker.connector();
@@ -227,13 +254,14 @@ fn a_program_lists_every_capability_it_declared_and_who_owns_it() {
     builder
         .component_builder::<Asker>()
         .name("first")
-        .register("first");
+        .configuration("first")
+        .register(());
     builder.component::<Quiet>(());
     builder.assembly::<Tagging>("left");
     let manifest = builder.build().unwrap().manifest();
 
     let owners: Vec<_> = manifest
-        .entries()
+        .capabilities()
         .iter()
         .map(|entry| (entry.owner.as_str(), entry.name.as_deref(), entry.kind))
         .collect();
@@ -277,20 +305,21 @@ struct DeskIo {
 struct Desk;
 impl Component for Desk {
     type Io = DeskIo;
-    type Config = ();
+    type Connections = ();
+    type Configuration = ();
     type Model = ();
     type Message = SourceEvent<u8, Infallible>;
 
-    fn init(_: &(), io: &DeskIo) -> Init<(), Self::Message> {
-        Init::new(()).with_command(Effect::perform(&io.tag, Tag("desk")).discard_outcome())
+    fn init(cx: &Context<Self>) -> Init<(), Self::Message> {
+        Init::new(()).with_command(Effect::perform(&cx.io.tag, Tag("desk")).discard_outcome())
     }
 
-    fn update(_: &(), _: &DeskIo, (): &mut (), _: Self::Message) -> Command<Self::Message> {
+    fn update(_: &Context<Self>, (): &mut (), _: Self::Message) -> Command<Self::Message> {
         Command::none()
     }
 
-    fn subscriptions(_: &(), io: &DeskIo, (): &()) -> Subscriptions<Self::Message> {
-        Subscriptions::one(Subscription::source(&io.ticks, Ticks))
+    fn subscriptions(cx: &Context<Self>, (): &()) -> Subscriptions<Self::Message> {
+        Subscriptions::one(Subscription::source(&cx.io.ticks, Ticks))
     }
 }
 
@@ -311,7 +340,7 @@ fn every_capability_in_the_manifest_has_an_owner() {
     let manifest = program.manifest();
     assert_eq!(
         manifest
-            .entries()
+            .capabilities()
             .iter()
             .map(|entry| (entry.owner.as_str(), entry.name.as_deref(), entry.kind))
             .collect::<Vec<_>>(),
@@ -373,15 +402,17 @@ fn a_missing_driver_for_a_named_field_is_reported_as_owner_dot_field() {
 struct Borrower;
 impl Component for Borrower {
     type Io = (Effect<Tag>,);
-    type Config = (Effect<Tag>,);
+    type Connections = ();
+    type Configuration = (Effect<Tag>,);
     type Model = ();
     type Message = ();
 
-    fn init(_: &Self::Config, _: &Self::Io) -> Init<(), ()> {
+    fn init(_: &Context<Self>) -> Init<(), ()> {
         Init::new(())
     }
 
-    fn update((theirs,): &Self::Config, _: &Self::Io, (): &mut (), (): ()) -> Command<()> {
+    fn update(cx: &Context<Self>, (): &mut (), (): ()) -> Command<()> {
+        let (theirs,) = &cx.configuration;
         Effect::perform(theirs, Tag("borrower")).discard_outcome()
     }
 }
@@ -392,8 +423,14 @@ fn borrowing_program() -> (
     InstalledComponent<Borrower>,
 ) {
     let mut builder = Program::builder();
-    let owner = builder.component::<Asker>("owner");
-    let borrower = builder.component::<Borrower>(owner.io.clone());
+    let owner = builder
+        .component_builder::<Asker>()
+        .configuration("owner")
+        .register(());
+    let borrower = builder
+        .component_builder::<Borrower>()
+        .configuration(owner.io.clone())
+        .register(());
     (builder.build().unwrap(), owner, borrower)
 }
 

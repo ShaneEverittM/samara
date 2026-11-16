@@ -54,20 +54,21 @@ struct StreamModel {
 
 impl Component for StreamProbe {
     type Io = (Source<StreamDescriptor<u64>>, Effect<ObserveStream>);
-    type Config = StreamProbeConfig;
+    type Connections = ();
+    type Configuration = StreamProbeConfig;
     type Model = StreamModel;
     type Message = StreamMessage;
 
-    fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
+    fn init(_: &Context<Self>) -> Init<Self::Model, Self::Message> {
         Init::new(StreamModel { desired: true })
     }
 
     fn update(
-        _config: &Self::Config,
-        (_, observe): &Self::Io,
+        cx: &Context<Self>,
         model: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
+        let (_, observe) = &cx.io;
         match message {
             StreamMessage::Event(SourceEvent::Item(value)) => {
                 Effect::perform(observe, ObserveStream(StreamObservation::Item(value)))
@@ -87,19 +88,16 @@ impl Component for StreamProbe {
         }
     }
 
-    fn subscriptions(
-        config: &Self::Config,
-        (stream, _): &Self::Io,
-        model: &Self::Model,
-    ) -> Subscriptions<Self::Message> {
+    fn subscriptions(cx: &Context<Self>, model: &Self::Model) -> Subscriptions<Self::Message> {
+        let (stream, _) = &cx.io;
         if model.desired {
             STREAM_KEYS
                 .into_iter()
-                .take(config.claimants)
+                .take(cx.configuration.claimants)
                 .map(|key| {
                     Subscription::source_with(
                         stream,
-                        config.descriptor.clone(),
+                        cx.configuration.descriptor.clone(),
                         StreamMessage::Event,
                     )
                     .key(key)
@@ -120,10 +118,11 @@ fn stream_program(
     let probe = program
         .component_builder::<StreamProbe>()
         .name("stream-0")
-        .register(StreamProbeConfig {
+        .configuration(StreamProbeConfig {
             descriptor,
             claimants,
-        });
+        })
+        .register(());
     (program.build().expect("valid stream program"), probe)
 }
 
@@ -278,20 +277,21 @@ struct TcpProbeConfig {
 
 impl Component for TcpProbe {
     type Io = (Source<TcpBytes>, Effect<ObserveTcp>);
-    type Config = TcpProbeConfig;
+    type Connections = ();
+    type Configuration = TcpProbeConfig;
     type Model = bool;
     type Message = TcpMessage;
 
-    fn init(_config: &Self::Config, _: &Self::Io) -> Init<Self::Model, Self::Message> {
+    fn init(_: &Context<Self>) -> Init<Self::Model, Self::Message> {
         Init::new(true)
     }
 
     fn update(
-        _config: &Self::Config,
-        (_, observe): &Self::Io,
+        cx: &Context<Self>,
         active: &mut Self::Model,
         message: Self::Message,
     ) -> Command<Self::Message> {
+        let (_, observe) = &cx.io;
         let observation = match message {
             TcpMessage::Event(SourceEvent::Item(bytes)) => TcpObservation::Bytes(bytes),
             TcpMessage::Event(SourceEvent::Failed(error)) => {
@@ -307,14 +307,12 @@ impl Component for TcpProbe {
         Effect::perform(observe, ObserveTcp(observation)).producing(|_| TcpMessage::Observed)
     }
 
-    fn subscriptions(
-        config: &Self::Config,
-        (source, _): &Self::Io,
-        active: &Self::Model,
-    ) -> Subscriptions<Self::Message> {
+    fn subscriptions(cx: &Context<Self>, active: &Self::Model) -> Subscriptions<Self::Message> {
+        let (source, _) = &cx.io;
         if *active {
             Subscriptions::one(
-                Subscription::source_with(source, config.tcp.clone(), TcpMessage::Event).key("tcp"),
+                Subscription::source_with(source, cx.configuration.tcp.clone(), TcpMessage::Event)
+                    .key("tcp"),
             )
         } else {
             Subscriptions::none()
@@ -327,9 +325,10 @@ fn tcp_program(endpoint: SocketAddr) -> (Program, InstalledComponent<TcpProbe>) 
     let probe = program
         .component_builder::<TcpProbe>()
         .name("tcp-probe")
-        .register(TcpProbeConfig {
+        .configuration(TcpProbeConfig {
             tcp: TcpBytes::connect(endpoint),
-        });
+        })
+        .register(());
     (program.build().expect("valid TCP program"), probe)
 }
 

@@ -63,7 +63,7 @@ reference or a Connector, never the capabilities (ADR-0028, ADR-0029).
 Component owns: its whole access to the world. It is `()`, one `Effect<D>`,
 `Source<S>`, or `File<P>`, a tuple of those, or a struct with named fields
 and `#[derive(Clone, Capabilities)]`. Registration creates one fresh value
-for the Component, passes it by reference to every `init`, `update`,
+for the Component, passes it as `cx.io` to every `init`, `update`,
 `subscriptions`, and `shutdown` call, and exposes the same value as
 `InstalledComponent::io` (ADR-0029). `Assembly::Io` is the corresponding
 type for an Assembly and has no trait bound. *Requires* is the historical
@@ -82,20 +82,26 @@ Drivers, and a runtime faults if a Component uses one (ADR-0029).
 
 **Capability ownership** — A capability belongs to the one Component it was
 created for. It cannot be handed to a second Component at registration,
-cannot be narrowed, and may not be kept in `Config`. A Component that uses a
+cannot be narrowed, and may not be kept in `Configuration`. A Component that uses a
 capability created for another Component faults the runtime with "belongs to
 another Component". Two Components that need the same file do not each hold
 it: one owns it and the others send it Messages. Whether two capabilities
 are backed by one real resource is the host's choice when it supplies
 Drivers (ADR-0028).
 
-**Capability manifest** — `Program::manifest()`: every capability a Program
-declared, in declaration order, each with its kind (effect or source), its
-descriptor type, the diagnostic name of the Component that owns it, and its
-field name when the Component's `Io` is a struct with named fields. A
-Program can reach the world only through declared capabilities, so the list
-is complete. A `File` appears as one row per permitted operation. Print it
-at startup or pin its text in a test so new world access shows up in review.
+**Manifest** — `Program::manifest()`: what a Program can reach and how it
+is wired. `capabilities()` lists every capability the Program declared, in
+declaration order, each with its kind (effect or source), its descriptor
+type, the diagnostic name of the Component that owns it, and its field name
+when the Component's `Io` is a struct with named fields. A Program can reach
+the world only through declared capabilities, so that list is complete. A
+`File` appears as one row per permitted operation. `connections()` lists
+every connection a Component declared in its `Connections`, in registration
+order, with the message type and the Component that receives it; a
+connection through a Port names the Port and its provider (ADR-0031). An
+address held some other way is not listed. Print the manifest at startup or
+pin its text in a test so new world access and new wiring show up in
+review. *Capability manifest* is the historical name.
 
 **Requires** — Historical. See *Io*.
 
@@ -126,12 +132,27 @@ name: no value of it is ever stored, and `init`, `update`, and
 `subscriptions` are associated functions on it (ADR-0013). `ComponentRef<C>`
 and `component::<C>(..)` name the kind.
 
-**Component configuration / `Component::Config`** — The immutable value a
-kind is registered with. It holds logical wiring and declarative
-configuration, such as Ports and SourceDescriptors. Capabilities are not
-kept in it: they are the separate `Component::Io` value. Both are passed by
-shared reference, signaling that they are observationally read-only during
-execution.
+**Context** — `Context<C>`: everything a Component is given and cannot
+change, passed by shared reference to every `init`, `update`,
+`subscriptions`, and `shutdown` call. It has three public fields: `io`,
+`connections`, and `configuration` (ADR-0031). `Context::detached` makes one
+for a unit test.
+
+**Connections / `Component::Connections`** — The other Components a
+Component can send to, supplied at registration by whoever assembles the
+Program: `()`, a `Connector`, `Port`, or `ComponentRef`, an `Option`, `Vec`,
+or tuple of those, or a struct with named fields and
+`#[derive(Connections)]`. Samara walks the value at registration, rejects an
+address from another builder at `build()`, and lists each one in the
+Manifest (ADR-0031).
+
+**Component configuration / `Component::Configuration`** — A Component's
+immutable settings: plain data such as an interval or a SourceDescriptor,
+which Samara does not look inside. `component::<C>(connections)` uses its
+`Default` value; `component_builder::<C>().configuration(..)` sets another.
+Capabilities are not kept in it, and connections belong in `Connections`.
+It is observationally read-only during execution. `Config` is the historical
+name for configuration and connections together.
 Because Rust permits interior mutability, preserving that property is also a
 conformance obligation. Behaviorally relevant mutable state does not belong
 here.
@@ -637,7 +658,7 @@ to hold.
 | Command and EffectDescriptor | A Command is the broader finite-work envelope; an EffectDescriptor is one typed world-facing intent it may contain. |
 | Effect capability and EffectDescriptor | The capability declares one dependency of the Component that owns it; each descriptor carries one concrete finite intent. |
 | Effect or Source capability and a live Handle | Capabilities are inert values a Component owns that only authorize declarative work; ComponentHandle and PortHandle cross live external ingress. |
-| `Config` and `Io` | `Config` is wiring and settings the host passes in; `Io` is the capabilities registration creates. A capability is never kept in `Config`. |
+| `Connections`, `Configuration`, and `Io` | `Connections` are addresses of other Components, supplied by the assembler and visible to Samara; `Configuration` is plain settings from the host, opaque to Samara; `Io` is the capabilities registration creates. A capability is never kept in either of the other two. |
 | EffectOutcome and SourceEvent | An EffectOutcome terminates one invocation; a SourceEvent is one of zero or more occurrences from ongoing work. |
 | Source capability (`Source<S>`), SourceDescriptor, Subscription, SourcePlan, and Source | A Source capability declares one dependency of the Component that owns it, a SourceDescriptor describes concrete ongoing production, a Subscription adds desire, identity, and mapping, a SourcePlan lowers that desire to ordered Layers and a terminal descriptor, and a Source is the runtime-scoped realization. |
 | Layer and Driver | A Layer composes declarations inside the program boundary; a Driver terminates a descriptor into the selected live world. |
@@ -688,6 +709,8 @@ to hold.
 | `ProgramBuilder::install::<A>(config)` | `ProgramBuilder::assembly::<A>(config)` | Renamed November 15, 2026 (ADR-0030). Builder methods that create something and return its handle are nouns (`port`, `component`, `assembly`); `Assembly::install`, which an author implements, keeps its verb. |
 | `with(&capability).supplied_by(driver)` | `supply(&capability, driver)` | Replaced November 15, 2026 (ADR-0029). With named fields the pair reads on one line: `.supply(&journal.io.file, FileDriver::new(path))`. |
 | `Program::capabilities()` | `InstalledComponent::io`, `InstalledAssembly::io` | Removed November 15, 2026 (ADR-0028). Test fixtures return their handles or the `io` values they need. |
+| `Component::Config`, `update(&Config, &Io, &mut Model, Message)`, `component::<C>(config)` | `Component::Connections` and `Component::Configuration`, `update(&Context<Self>, &mut Model, Message)`, `component::<C>(connections)` with `component_builder::<C>().configuration(..)` | Split November 15, 2026 (ADR-0031). Connections are walked by Samara, listed in the manifest, and checked at build; configuration is opaque and defaults. `Assembly::Config` is unchanged. |
+| `CapabilityManifest`, `CapabilityManifest::entries()` | `Manifest`, `Manifest::capabilities()` and `Manifest::connections()` | Renamed November 15, 2026 (ADR-0031). The manifest also lists declared connections. |
 | `File` narrowing: `read_only()`, `append_only()`, `read_append()`, `write_only()` | None | Removed November 15, 2026 (ADR-0028, ADR-0029). Narrowing existed to hand a file to another Component; a file now has one owner and other Components send it Messages. |
 | `InstalledAssembly::capabilities()`, `InstalledComponent::capabilities()` | The public `io` field | Renamed November 15, 2026 (ADR-0029). The accessor was the interim ADR-0028 spelling. |
 | `VendorsDrivers::drivers(driver_config)` returning a driver tuple | `VendorsDrivers::supply(setup, io, driver_config)` | Replaced November 15, 2026 (ADR-0029). The Assembly supplies its own named capabilities, so no tuple order is exposed. |
