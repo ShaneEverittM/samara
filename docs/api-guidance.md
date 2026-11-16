@@ -311,7 +311,9 @@ bindings.
 Where a capability's type already says what it is made of, let the library
 fill in the Driver: `.supply_default(&monitor.io.input)` for a
 `Source<StdinLines>`, and likewise stdout, stderr, the system clock, HTTP,
-and TCP. It is one explicit call per capability, the same as `supply`. A
+and TCP. Pass a tuple of references to supply several in one call:
+`.supply_default((&journal.io.clock, &monitor.io.input, &monitor.io.output))`.
+Every capability is still named by the host, the same as with `supply`. A
 capability whose Driver needs a setting, such as a `File`'s path, has no
 default.
 

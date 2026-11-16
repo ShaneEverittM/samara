@@ -220,7 +220,7 @@ async fn standard_drivers_are_supplied_by_default_whole_or_one_at_a_time() {
         Runtime::builder(program)
             .supply_default(&console.io.0)
             .supply(&console.io.1, StderrDriver::new())
-            .supply_default(&(console.io.2.clone(), console.io.3.clone()))
+            .supply_default((&console.io.2, &console.io.3))
             .supply_default(&console.io.4)
             .build()
             .is_ok()

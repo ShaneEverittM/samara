@@ -262,8 +262,8 @@ impl<S: SourceDescriptor<Terminal = StdinLines>> private::Driver<Source<S>> for 
 ///
 /// Implemented for `Effect<PrintStdout>`, `Effect<PrintStderr>`,
 /// `Effect<ReadSystemTime>`, `Effect<HttpRequest>`, any [`Source`] whose
-/// terminal descriptor is [`StdinLines`] or [`TcpBytes`], `()`, and tuples
-/// of those. A capability whose Driver needs a setting, such as a `File`'s
+/// terminal descriptor is [`StdinLines`] or [`TcpBytes`], `()`, references
+/// to those, and tuples of any of them. A capability whose Driver needs a setting, such as a `File`'s
 /// path, has no default. Sealed.
 #[allow(private_bounds)] // Sealed marker; registry access stays inside the crate.
 pub trait HasDefaultDriver: private::DefaultDriver {}
@@ -285,6 +285,11 @@ where
 }
 impl private::DefaultDriver for () {
     fn bind_default(&self, _: &mut live_runtime::LiveBindings) {}
+}
+impl<T: private::DefaultDriver + ?Sized> private::DefaultDriver for &T {
+    fn bind_default(&self, bindings: &mut live_runtime::LiveBindings) {
+        (**self).bind_default(bindings);
+    }
 }
 macro_rules! default_tuples {
     ($(($($c:ident),+))+) => {$(
@@ -423,7 +428,9 @@ impl RuntimeSetup {
     /// the system clock, HTTP, or TCP, by the capability's type.
     ///
     /// It is `supply` with the obvious Driver filled in, and counts as that
-    /// capability's one Driver.
+    /// capability's one Driver. Pass a reference to one capability, or a tuple
+    /// of references to supply several at once:
+    /// `.supply_default((&journal.io.clock, &monitor.io.input))`.
     ///
     /// ```
     /// use samara::prelude::*;
@@ -450,8 +457,8 @@ impl RuntimeSetup {
     ///     setup.supply_default(journal);
     /// }
     /// ```
-    pub fn supply_default<C: HasDefaultDriver>(mut self, capability: &C) -> Self {
-        capability.bind_default(&mut self.builder.bindings);
+    pub fn supply_default(mut self, capabilities: impl HasDefaultDriver) -> Self {
+        capabilities.bind_default(&mut self.builder.bindings);
         self
     }
 
