@@ -167,8 +167,8 @@ pub mod prelude {
         ControlledRuntimeBuilder, DeclaredCapability, DeclaredConnection, Declaring, Decoder,
         Deliverable, DrivenSource, DriverStopped, Drivers, Effect, EffectBuilder, EffectDescriptor,
         EffectDriver, EffectInvocation, EffectOutcome, EffectOutcomeKind, Framed, FramedError,
-        FramedLayer, HttpDriver, HttpError, HttpErrorKind, HttpJsonError, HttpRequest,
-        HttpResponse, HttpResponseError, HttpStatusError, Init, InstalledAssembly,
+        FramedLayer, HasDefaultDriver, HttpDriver, HttpError, HttpErrorKind, HttpJsonError,
+        HttpRequest, HttpResponse, HttpResponseError, HttpStatusError, Init, InstalledAssembly,
         InstalledComponent, Io, Listing, LogicalTime, Manifest, MpscReceiver, NoMessage,
         PendingEffect, PendingWork, Port, PortHandle, PortId, PrintStderr, PrintStdout, Program,
         ProgramBuildError, ProgramBuilder, ReadSystemTime, ReplyWith, RequestBuilder, RequestError,
@@ -813,7 +813,7 @@ pub trait Component: 'static {
     /// inside.
     ///
     /// Use `()` when there are none. [`ProgramBuilder::add_component`] uses the
-    /// `Default` value; set another with [`ComponentBuilder::configuration`].
+    /// `Default` value; set another with [`ComponentBuilder::config`].
     type Configuration: Send + 'static;
     /// This component's mutable application state.
     type Model: Send + 'static;
@@ -5018,7 +5018,7 @@ impl ProgramBuilder {
     }
 
     /// Starts registering a Component of kind `C` with options: a diagnostic
-    /// `.name(..)` and its `.configuration(..)`. Finish with
+    /// `.name(..)` and its `.config(..)`. Finish with
     /// `.add(connections)`.
     pub fn configure_component<C: Component>(&mut self) -> ComponentBuilder<'_, C> {
         ComponentBuilder::new(self)

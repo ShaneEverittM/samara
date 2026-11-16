@@ -59,11 +59,11 @@ async fn two_components_with_the_same_effect_each_get_their_own_driver() {
     let mut builder = Program::builder();
     let first = builder
         .configure_component::<Asker>()
-        .configuration("first")
+        .config("first")
         .add(());
     let second = builder
         .configure_component::<Asker>()
-        .configuration("second")
+        .config("second")
         .add(());
 
     let seen = Seen::default();
@@ -104,11 +104,11 @@ fn a_component_left_without_its_driver_fails_the_build() {
     let mut builder = Program::builder();
     let first = builder
         .configure_component::<Asker>()
-        .configuration("first")
+        .config("first")
         .add(());
     let _second = builder
         .configure_component::<Asker>()
-        .configuration("second")
+        .config("second")
         .add(());
 
     let error = Runtime::builder(builder.build().unwrap())
@@ -133,11 +133,11 @@ fn controlled_execution_controls_capabilities_created_at_registration() {
     let mut builder = Program::builder();
     let first = builder
         .configure_component::<Asker>()
-        .configuration("first")
+        .config("first")
         .add(());
     let second = builder
         .configure_component::<Asker>()
-        .configuration("second")
+        .config("second")
         .add(());
 
     let mut runtime = ControlledRuntime::builder(builder.build().unwrap())
@@ -166,10 +166,7 @@ impl Assembly for Tagging {
     type Io = (Effect<Tag>,);
 
     fn install(program: &mut ProgramBuilder, label: &'static str) -> (Self::Exports, Self::Io) {
-        let asker = program
-            .configure_component::<Asker>()
-            .configuration(label)
-            .add(());
+        let asker = program.configure_component::<Asker>().config(label).add(());
         (asker.connector(), asker.io.clone())
     }
 }
@@ -230,7 +227,7 @@ fn a_component_with_no_capabilities_is_installed_like_any_other() {
     let quiet: InstalledComponent<Quiet> = builder.add_component::<Quiet>(());
     let asker: InstalledComponent<Asker> = builder
         .configure_component::<Asker>()
-        .configuration("asker")
+        .config("asker")
         .add(());
     let () = quiet.io;
     // The handle is an address and offers what a ComponentRef does.
@@ -253,7 +250,7 @@ fn a_program_lists_every_capability_it_declared_and_who_owns_it() {
     builder
         .configure_component::<Asker>()
         .name("first")
-        .configuration("first")
+        .config("first")
         .add(());
     builder.add_component::<Quiet>(());
     builder.add_assembly::<Tagging>("left");
@@ -421,11 +418,11 @@ fn borrowing_program() -> (
     let mut builder = Program::builder();
     let owner = builder
         .configure_component::<Asker>()
-        .configuration("owner")
+        .config("owner")
         .add(());
     let borrower = builder
         .configure_component::<Borrower>()
-        .configuration(owner.io.clone())
+        .config(owner.io.clone())
         .add(());
     (builder.build().unwrap(), owner, borrower)
 }

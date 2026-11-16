@@ -206,7 +206,10 @@ The following evidence must pass before the Phase 2 audit:
   (ADR-0027, ADR-0028): a Driver follows its capability value, not a
   position, a tuple is supplied whole or split, and a missing capability, a
   capability supplied twice, and a capability from another Program each
-  fail `build`.
+  fail `build`. `supply_default` supplies the standard Driver for stdout,
+  stderr, the clock, HTTP, TCP, and stdin, whole or one at a time; it
+  counts as the capability's one Driver, and a `File` has no default (a
+  compile-fail doctest on `RuntimeSetup::supply_default`).
 - `tests/assemblies.rs` validates `Assembly`, `Io`, `Drivers`,
   `VendorsDrivers`, and `InstalledAssembly` (ADR-0013, ADR-0026, ADR-0029):
   `ProgramBuilder::add_assembly(...)` returns the

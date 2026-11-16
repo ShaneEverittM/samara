@@ -304,8 +304,16 @@ which does the same thing. Both profiles retain value-level validation.
 For a source Driver written for a terminal descriptor type, use
 `DrivenSource::new(driver)`. The wrapper keeps source Driver selection
 distinct from receiver binding under Rust's trait coherence rules. Built-in
-source Layers execute in both profiles. `supply` is the only public live
-binding operation; `build()` validates the completed bindings.
+source Layers execute in both profiles. `supply` and `supply_default` are
+the only public live binding operations; `build()` validates the completed
+bindings.
+
+Where a capability's type already says what it is made of, let the library
+fill in the Driver: `.supply_default(&monitor.io.input)` for a
+`Source<StdinLines>`, and likewise stdout, stderr, the system clock, HTTP,
+and TCP. It is one explicit call per capability, the same as `supply`. A
+capability whose Driver needs a setting, such as a `File`'s path, has no
+default.
 
 `Program::manifest()` lists every capability with its owner and field name,
 followed by every declared connection as

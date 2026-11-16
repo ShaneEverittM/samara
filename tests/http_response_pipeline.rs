@@ -155,7 +155,7 @@ fn pipeline_program(url: impl Into<String>) -> (Program, InstalledComponent<Pipe
     let component = builder
         .configure_component::<PipelineComponent>()
         .name("http-pipeline")
-        .configuration(url.into())
+        .config(url.into())
         .add(());
     (builder.build().expect("valid pipeline program"), component)
 }

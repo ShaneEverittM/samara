@@ -3579,7 +3579,7 @@ mod tests {
         let component = builder
             .configure_component::<FramedDrainComponent>()
             .name("framed-drain")
-            .configuration(FramedDrainComponentConfig {
+            .config(FramedDrainComponentConfig {
                 decoder: DrainFailDecoder {
                     finish_calls: finish_calls.clone(),
                 },

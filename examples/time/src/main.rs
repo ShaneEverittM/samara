@@ -324,11 +324,11 @@ async fn main() -> Result<()> {
 
     // Configure a runtime for real usage: every capability gets its live Driver.
     let runtime = Runtime::builder(program)
-        .supply(&http_time_server.io.http, samara::HttpDriver::new())
-        .supply(&http_time_server.io.stderr, samara::StderrDriver::new())
-        .supply(&cli.io.stdin, samara::StdinDriver)
-        .supply(&cli.io.stdout, samara::StdoutDriver::new())
-        .supply(&cli.io.stderr, samara::StderrDriver::new())
+        .supply_default(&http_time_server.io.http)
+        .supply_default(&http_time_server.io.stderr)
+        .supply_default(&cli.io.stdin)
+        .supply_default(&cli.io.stdout)
+        .supply_default(&cli.io.stderr)
         .build()?;
 
     // We've now set up the program, runtime, and ingress points, so start the runtime.

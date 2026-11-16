@@ -56,7 +56,7 @@ The accepted Phase 2 audit constrains Phase 3 to this slice:
   immutable inputs are `Component::Connections` (the other Components it can
   send to, supplied at registration as `add_component::<Kind>(connections)`),
   `Component::Configuration` (plain settings, defaulted or set with
-  `configure_component::<Kind>().configuration(..)`), and `Component::Io`.
+  `configure_component::<Kind>().config(..)`), and `Component::Io`.
   Behaviorally relevant mutable state belongs in `Component::Model`
   ([ADR-0013](adr/0013-component-kinds-assemblies-and-first-party-effects.md),
   [ADR-0031](adr/0031-connections-configuration-and-context.md)).
@@ -595,7 +595,11 @@ applicable terminal behavior for every capability. In live execution every
 capability is bound to its own Driver with `supply(&capability, driver)`,
 including plain `Effect<D>` capabilities and sources whose Driver is wrapped
 in `DrivenSource`; two Components that read the clock are each supplied a
-Driver, and the host may supply clones of one. A capability with no Driver
+Driver, and the host may supply clones of one.
+`supply_default(&capability)` is `supply` with the standard first-party
+Driver for that capability's type (stdin, stdout, stderr, the system clock,
+HTTP, TCP), and counts as its one Driver; capabilities whose Driver needs a
+setting do not implement `HasDefaultDriver`. A capability with no Driver
 fails `build()` with an error naming its owner, its field, and its
 descriptor type, for example
 `Effect capability Recorder.file (FileAppend) has 0 live bindings; expected exactly one`.

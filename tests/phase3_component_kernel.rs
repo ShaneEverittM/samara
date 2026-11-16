@@ -174,12 +174,12 @@ fn component_identity_follows_registration_independently_of_names() {
     let alpha_left = left_program
         .configure_component::<KernelComponent>()
         .name("alpha")
-        .configuration(left_first)
+        .config(left_first)
         .add(());
     let beta_left = left_program
         .configure_component::<KernelComponent>()
         .name("beta")
-        .configuration(left_second)
+        .config(left_second)
         .add(());
 
     let mut right_program = Program::builder();
@@ -188,12 +188,12 @@ fn component_identity_follows_registration_independently_of_names() {
     let beta_right = right_program
         .configure_component::<KernelComponent>()
         .name("beta")
-        .configuration(right_first)
+        .config(right_first)
         .add(());
     let alpha_right = right_program
         .configure_component::<KernelComponent>()
         .name("alpha")
-        .configuration(right_second)
+        .config(right_second)
         .add(());
 
     assert_eq!(alpha_left.id(), beta_right.id());
@@ -210,7 +210,7 @@ fn registration_transfers_configuration_and_model_ownership_to_program() {
     let component_ref = builder
         .configure_component::<KernelComponent>()
         .name("owned")
-        .configuration(component)
+        .config(component)
         .add(());
 
     assert_eq!(component_ref.id().name(), "owned");

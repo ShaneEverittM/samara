@@ -210,10 +210,17 @@ a journal Component; exploratory proposals, not accepted API decisions.
     member's connections and what its configuration.
   - The registration spelling. `add_component::<C>(connections)` defaults the
     configuration; a Component with real settings is registered through
-    `configure_component::<C>().configuration(..).add(connections)`,
+    `configure_component::<C>().config(..).add(connections)`,
     which is long. Most tests take that path.
   - `Vec` and `Option` connections print one row per element under the
     same field name, with no index.
+
+- [ ] **Default Drivers, next steps.** `supply_default(&capability)` landed
+  November 15, 2026 for the first-party descriptors with an obvious Driver.
+  Still open: the set is sealed, so a library's own descriptor cannot offer
+  a default; and a named `Io` struct cannot be supplied whole, only field
+  by field or as a tuple, because `#[derive(Io)]` does not know which
+  fields have defaults.
 
 - [ ] **Capability manifest, next steps.** `Program::manifest()` landed
   November 15, 2026 as the first piece of capability-based review: it lists

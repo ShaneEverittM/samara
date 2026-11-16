@@ -392,7 +392,7 @@ fn assemble_tally(
     let teller = program
         .configure_component::<Teller>()
         .name("teller")
-        .configuration(patience)
+        .config(patience)
         .add(tally.connector());
     (
         program.build().expect("program assembles"),
@@ -581,7 +581,7 @@ fn an_initial_request_to_a_foreign_connector_fails_both_profile_builds() {
         program
             .configure_component::<EagerTeller>()
             .name("eager")
-            .configuration(foreign.connector())
+            .config(foreign.connector())
             .add(());
         program
             .build()

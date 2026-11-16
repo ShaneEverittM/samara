@@ -8,6 +8,24 @@ mod private {
     pub(crate) trait Driver<C> {
         fn bind(self, capability: &C, bindings: &mut LiveBindings);
     }
+
+    /// A capability whose descriptor has one obvious live Driver.
+    pub(crate) trait DefaultDriver {
+        fn bind_default(&self, bindings: &mut LiveBindings);
+    }
+
+    /// An effect descriptor's obvious live Driver.
+    pub(crate) trait EffectDefault: crate::EffectDescriptor + Sized {
+        fn driver() -> impl crate::EffectDriver<Self>;
+    }
+
+    /// A terminal source descriptor's obvious live Driver, bound to any
+    /// source layered over it.
+    pub(crate) trait SourceDefault: crate::SourceDescriptor {
+        fn bind<S>(capability: &crate::Source<S>, bindings: &mut LiveBindings)
+        where
+            S: crate::SourceDescriptor<Terminal = Self>;
+    }
 }
 
 /// The capabilities a Component owns: its whole access to the world.
@@ -239,6 +257,94 @@ impl<S: SourceDescriptor<Terminal = StdinLines>> private::Driver<Source<S>> for 
     }
 }
 
+/// A capability that has one obvious live Driver, for
+/// [`RuntimeSetup::supply_default`].
+///
+/// Implemented for `Effect<PrintStdout>`, `Effect<PrintStderr>`,
+/// `Effect<ReadSystemTime>`, `Effect<HttpRequest>`, any [`Source`] whose
+/// terminal descriptor is [`StdinLines`] or [`TcpBytes`], `()`, and tuples
+/// of those. A capability whose Driver needs a setting, such as a `File`'s
+/// path, has no default. Sealed.
+#[allow(private_bounds)] // Sealed marker; registry access stays inside the crate.
+pub trait HasDefaultDriver: private::DefaultDriver {}
+impl<T: private::DefaultDriver> HasDefaultDriver for T {}
+
+impl<D: private::EffectDefault> private::DefaultDriver for Effect<D> {
+    fn bind_default(&self, bindings: &mut live_runtime::LiveBindings) {
+        private::Driver::bind(D::driver(), self, bindings);
+    }
+}
+impl<S> private::DefaultDriver for Source<S>
+where
+    S: SourceDescriptor,
+    S::Terminal: private::SourceDefault,
+{
+    fn bind_default(&self, bindings: &mut live_runtime::LiveBindings) {
+        <S::Terminal as private::SourceDefault>::bind(self, bindings);
+    }
+}
+impl private::DefaultDriver for () {
+    fn bind_default(&self, _: &mut live_runtime::LiveBindings) {}
+}
+macro_rules! default_tuples {
+    ($(($($c:ident),+))+) => {$(
+        impl<$($c: private::DefaultDriver),+> private::DefaultDriver for ($($c,)+) {
+            fn bind_default(&self, bindings: &mut live_runtime::LiveBindings) {
+                #[allow(non_snake_case)]
+                let ($($c,)+) = self;
+                $($c.bind_default(bindings);)+
+            }
+        }
+    )+};
+}
+default_tuples! {
+    (A)
+    (A, B)
+    (A, B, C)
+    (A, B, C, D)
+    (A, B, C, D, E)
+    (A, B, C, D, E, F)
+    (A, B, C, D, E, F, G)
+    (A, B, C, D, E, F, G, H)
+}
+impl private::EffectDefault for PrintStdout {
+    fn driver() -> impl EffectDriver<Self> {
+        StdoutDriver::new()
+    }
+}
+impl private::EffectDefault for PrintStderr {
+    fn driver() -> impl EffectDriver<Self> {
+        StderrDriver::new()
+    }
+}
+impl private::EffectDefault for ReadSystemTime {
+    fn driver() -> impl EffectDriver<Self> {
+        SystemClockDriver
+    }
+}
+impl private::EffectDefault for HttpRequest {
+    fn driver() -> impl EffectDriver<Self> {
+        HttpDriver::new()
+    }
+}
+#[cfg(unix)]
+impl private::SourceDefault for StdinLines {
+    fn bind<S>(capability: &Source<S>, bindings: &mut live_runtime::LiveBindings)
+    where
+        S: SourceDescriptor<Terminal = Self>,
+    {
+        private::Driver::bind(StdinDriver, capability, bindings);
+    }
+}
+impl private::SourceDefault for TcpBytes {
+    fn bind<S>(capability: &Source<S>, bindings: &mut live_runtime::LiveBindings)
+    where
+        S: SourceDescriptor<Terminal = Self>,
+    {
+        private::Driver::bind(DrivenSource::new(TcpDriver), capability, bindings);
+    }
+}
+
 /// A live Program awaiting Drivers for its capabilities.
 ///
 /// Supply each capability its Driver with [`Self::supply`], in any order,
@@ -310,6 +416,42 @@ impl RuntimeSetup {
     /// is checked by [`Self::build`].
     pub fn supply<C>(mut self, capability: &C, drivers: impl Drivers<C>) -> Self {
         private::Driver::bind(drivers, capability, &mut self.builder.bindings);
+        self
+    }
+
+    /// Supplies a capability its standard live Driver: stdin, stdout, stderr,
+    /// the system clock, HTTP, or TCP, by the capability's type.
+    ///
+    /// It is `supply` with the obvious Driver filled in, and counts as that
+    /// capability's one Driver.
+    ///
+    /// ```
+    /// use samara::prelude::*;
+    /// # struct Clock;
+    /// # impl Component for Clock {
+    /// #     type Connections = (); type Configuration = (); type Io = Effect<ReadSystemTime>;
+    /// #     type Model = (); type Message = ();
+    /// #     fn init(_: &Context<Self>) -> Init<(), ()> { Init::default() }
+    /// #     fn update(_: &Context<Self>, _: &mut (), _: ()) -> Command<()> { Command::none() }
+    /// # }
+    /// let mut program = Program::builder();
+    /// let clock = program.add_component::<Clock>(());
+    /// let runtime = Runtime::builder(program.build()?)
+    ///     .supply_default(&clock.io)
+    ///     .build()?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// A capability whose Driver needs a setting has no default:
+    ///
+    /// ```compile_fail
+    /// use samara::prelude::*;
+    /// fn no_path(setup: samara::RuntimeSetup, journal: &File<ReadAppend>) {
+    ///     setup.supply_default(journal);
+    /// }
+    /// ```
+    pub fn supply_default<C: HasDefaultDriver>(mut self, capability: &C) -> Self {
+        capability.bind_default(&mut self.builder.bindings);
         self
     }
 
@@ -502,13 +644,13 @@ connection_tuples! {
 /// registration uses the `Default` value.
 pub struct DefaultConfiguration;
 /// Marks a [`ComponentBuilder`] whose configuration was set with
-/// [`ComponentBuilder::configuration`].
+/// [`ComponentBuilder::config`].
 pub struct GivenConfiguration<T>(T);
 
 mod configuration_private {
     #[diagnostic::on_unimplemented(
         message = "`{T}` has no default value to register this Component with",
-        note = "set one with `.configure_component::<C>().configuration(..).add(..)`, or implement `Default` for `{T}`"
+        note = "set one with `.configure_component::<C>().config(..).add(..)`, or implement `Default` for `{T}`"
     )]
     pub trait Slot<T> {
         fn take(self) -> T;
@@ -544,7 +686,7 @@ impl<T> Slot<T> for GivenConfiguration<T> {
 /// let clock = program
 ///     .configure_component::<Clock>()
 ///     .name("wall clock")
-///     .configuration(60)
+///     .config(60)
 ///     .add(());
 /// assert_eq!(clock.id().name(), "wall clock");
 /// let runtime = Runtime::builder(program.build()?)
@@ -588,7 +730,7 @@ impl<'a, C: Component> ComponentBuilder<'a, C> {
 
     /// Sets the Component's configuration. Without this, registration uses
     /// its `Default` value.
-    pub fn configuration(
+    pub fn config(
         self,
         configuration: C::Configuration,
     ) -> ComponentBuilder<'a, C, GivenConfiguration<C::Configuration>> {

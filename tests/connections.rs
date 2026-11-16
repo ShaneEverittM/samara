@@ -198,7 +198,7 @@ fn configuration_defaults_and_the_builder_overrides_it() {
     let defaulted = program.add_component::<Clerk<Connector<LedgerMessage>>>(main.connector());
     let configured = program
         .configure_component::<Clerk<Connector<LedgerMessage>>>()
-        .configuration(7)
+        .config(7)
         .add(main.connector());
     let mut runtime = ControlledRuntime::builder(program.build().unwrap())
         .build()

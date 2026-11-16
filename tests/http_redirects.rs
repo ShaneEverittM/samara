@@ -49,7 +49,7 @@ fn program(request: HttpRequest, limit: usize) -> (Program, InstalledComponent<P
     let probe = builder
         .configure_component::<Probe>()
         .name("probe")
-        .configuration(ProbeConfig { request, limit })
+        .config(ProbeConfig { request, limit })
         .add(());
     (builder.build().unwrap(), probe)
 }

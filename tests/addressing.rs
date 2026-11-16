@@ -120,7 +120,7 @@ fn assemble(patience: Option<Duration>) -> (Program, Port<LedgerMessage>, Compon
     let clerk = program
         .configure_component::<Clerk>()
         .name("clerk")
-        .configuration(patience)
+        .config(patience)
         .add(ledger.clone());
     (
         program.build().expect("program assembles"),
@@ -241,7 +241,7 @@ fn an_initial_send_to_a_foreign_port_fails_both_profile_builds() {
         program
             .configure_component::<Eager>()
             .name("eager")
-            .configuration(foreign)
+            .config(foreign)
             .add(());
         program.build().expect("the hidden Port is ordinary Rust")
     }

@@ -1,6 +1,7 @@
 # ADR-0033: Context Fields Are `io`, `to`, and `config`
 
-- Status: Accepted.
+- Status: Accepted. `ComponentBuilder::configuration(..)` was then renamed
+  `config(..)` to match the field.
 - Date: November 15, 2026
 - Deciders: Samara maintainers
 - Amends: [ADR-0031](0031-connections-configuration-and-context.md) (the
@@ -53,8 +54,8 @@ fn update(cx: &Context<Self>, _: &mut Model, message: Message) -> Command<Messag
 every use is a send or a request to it. Beside `io` it keeps the prefix
 meaningful to a reviewer: `io` is the world, `to` is another Component.
 
-`Context::detached(connections, configuration)` and
-`ComponentBuilder::configuration(..)` are unchanged.
+`Context::detached(connections, configuration)` is unchanged. The builder
+method that sets the configuration is `ComponentBuilder::config(..)`.
 
 ## Alternatives considered
 

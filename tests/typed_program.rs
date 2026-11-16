@@ -73,12 +73,12 @@ fn each_components_own_capability_reaches_callbacks_and_delayed_effects() {
     let first = program
         .configure_component::<Reader>()
         .name("first")
-        .configuration(count.clone())
+        .config(count.clone())
         .add(());
     let second = program
         .configure_component::<Reader>()
         .name("second")
-        .configuration(count.clone())
+        .config(count.clone())
         .add(());
     assert_eq!(count.load(Ordering::SeqCst), 2);
     let mut runtime = ControlledRuntime::builder(program.build().unwrap())
@@ -110,12 +110,12 @@ async fn live_drivers_are_supplied_per_component_capability() {
         let first = program
             .configure_component::<Reader>()
             .name("first")
-            .configuration(count.clone())
+            .config(count.clone())
             .add(());
         let second = program
             .configure_component::<Reader>()
             .name("second")
-            .configuration(count)
+            .config(count)
             .add(());
         (program.build().unwrap(), first, second)
     }
@@ -177,7 +177,7 @@ impl Assembly for Library {
         let reader = program
             .configure_component::<Reader>()
             .name("library")
-            .configuration(count)
+            .config(count)
             .add(());
         let io = reader.io.clone();
         (reader.into(), io)

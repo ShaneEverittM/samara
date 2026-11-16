@@ -52,7 +52,7 @@ async fn live_host_observes_a_later_foreign_effect_fault() {
     let probe = program
         .configure_component::<FaultProbe>()
         .name("fault")
-        .configuration(FaultProbeConfig { effect })
+        .config(FaultProbeConfig { effect })
         .add(());
     let runtime = Runtime::builder(program.build().unwrap()).build().unwrap();
     let handle = runtime.handle(&probe).unwrap();
@@ -242,7 +242,7 @@ async fn run_until_drains_when_the_signal_completes() {
     let mut program = Program::builder();
     program
         .configure_component::<Stopping>()
-        .configuration(stopped.clone())
+        .config(stopped.clone())
         .add(());
     let runtime = Runtime::builder(program.build().unwrap()).build().unwrap();
 
@@ -267,7 +267,7 @@ async fn run_until_returns_a_fault_without_waiting_for_the_signal() {
     let mut program = Program::builder();
     let probe = program
         .configure_component::<FaultProbe>()
-        .configuration(FaultProbeConfig {
+        .config(FaultProbeConfig {
             effect: <Effect<DynamicallyReachedEffect>>::detached(),
         })
         .add(());

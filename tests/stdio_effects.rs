@@ -88,7 +88,7 @@ fn output_program(observe: bool) -> (Program, InstalledComponent<OutputProbe>) {
     let probe = builder
         .configure_component::<OutputProbe>()
         .name("standard-output")
-        .configuration(OutputProbeConfig { observe })
+        .config(OutputProbeConfig { observe })
         .add(());
     (builder.build().expect("valid output program"), probe)
 }

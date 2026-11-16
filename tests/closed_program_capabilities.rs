@@ -99,7 +99,7 @@ fn effect_program() -> (Program, InstalledComponent<EffectComponent>) {
     let component = program
         .configure_component::<EffectComponent>()
         .name("effect")
-        .configuration(EffectComponentConfig::default())
+        .config(EffectComponentConfig::default())
         .add(());
     (program.build().expect("valid closed Program"), component)
 }
@@ -176,7 +176,7 @@ fn source_program() -> (Program, InstalledComponent<SourceComponent>) {
     let component = program
         .configure_component::<SourceComponent>()
         .name("source")
-        .configuration(SourceComponentConfig {
+        .config(SourceComponentConfig {
             smuggled: None,
             initially_enabled: false,
         })
@@ -213,7 +213,7 @@ fn foreign_source_program(
     let component = owner
         .configure_component::<SourceComponent>()
         .name("foreign-source")
-        .configuration(SourceComponentConfig {
+        .config(SourceComponentConfig {
             smuggled: Some(from_another_program()),
             initially_enabled,
         })
@@ -383,7 +383,7 @@ fn initial_foreign_effect_program() -> (Program, InstalledComponent<InitialEffec
     let component = owner
         .configure_component::<InitialEffectComponent>()
         .name("initial-foreign-effect")
-        .configuration(InitialEffectComponentConfig {
+        .config(InitialEffectComponentConfig {
             effect: from_another_program(),
         })
         .add(());
@@ -477,7 +477,7 @@ fn initial_foreign_send_program() -> Program {
     owner
         .configure_component::<InitialForeignSend>()
         .name("initial-foreign-send")
-        .configuration(InitialForeignSendConfig {
+        .config(InitialForeignSendConfig {
             target: target.into(),
         })
         .add(());
@@ -554,13 +554,13 @@ fn initial_foreign_port_program(request: bool) -> Program {
         owner
             .configure_component::<InitialForeignRequest>()
             .name("initial-foreign-request")
-            .configuration(InitialForeignRequestConfig { port })
+            .config(InitialForeignRequestConfig { port })
             .add(());
     } else {
         owner
             .configure_component::<InitialForeignPortSend>()
             .name("initial-foreign-port-send")
-            .configuration(InitialForeignPortSendConfig { port })
+            .config(InitialForeignPortSendConfig { port })
             .add(());
     }
     owner.build().expect("valid owner Program")
@@ -600,7 +600,7 @@ fn dynamically_used_foreign_effect_capability_is_rejected_before_controlled_beha
     let component = owner
         .configure_component::<EffectComponent>()
         .name("foreign-effect")
-        .configuration(EffectComponentConfig {
+        .config(EffectComponentConfig {
             smuggled: Some(from_another_program()),
         })
         .add(());
@@ -626,7 +626,7 @@ async fn run_forever_surfaces_dynamic_foreign_capability_before_live_driver() {
     let component = owner
         .configure_component::<EffectComponent>()
         .name("foreign-live-effect")
-        .configuration(EffectComponentConfig {
+        .config(EffectComponentConfig {
             smuggled: Some(from_another_program()),
         })
         .add(());
@@ -837,7 +837,7 @@ fn exact_stream_input_is_disambiguated_by_capability_not_equal_descriptor()
     let component = program
         .configure_component::<DualStreamComponent>()
         .name("dual-stream")
-        .configuration(DualStreamComponentConfig {
+        .config(DualStreamComponentConfig {
             descriptor: StreamDescriptor::named("same-descriptor"),
             observe: false,
         })
@@ -861,7 +861,7 @@ async fn live_exact_streams_with_equal_descriptors_route_by_capability() -> Resu
     let component = program
         .configure_component::<DualStreamComponent>()
         .name("live-dual-stream")
-        .configuration(DualStreamComponentConfig {
+        .config(DualStreamComponentConfig {
             descriptor: StreamDescriptor::named("same-descriptor"),
             observe: true,
         })
@@ -1036,7 +1036,7 @@ fn framed_stream_program(
         } else {
             "framed-stream"
         })
-        .configuration(FramedStreamComponentConfig { observe })
+        .config(FramedStreamComponentConfig { observe })
         .add(());
     let source = component.io.0.clone();
     (

@@ -171,7 +171,7 @@ fn component_kernel_accepts_non_sync_configuration() {
     let component = program
         .configure_component::<ContractComponent>()
         .name("contract")
-        .configuration(contract)
+        .config(contract)
         .add(());
 
     assert_eq!(component.id().name(), "contract");

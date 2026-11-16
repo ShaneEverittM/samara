@@ -340,7 +340,7 @@ fn program(increments: StreamDescriptor<u64>) -> (Program, AppRefs) {
     let quota_port = program.add_port(PortId::new(QUOTA));
     let quota = program
         .configure_component::<Quota>()
-        .configuration(QuotaConfig { initial: 100 })
+        .config(QuotaConfig { initial: 100 })
         .add(());
 
     // Assembly chooses the concrete provider. `QuotaMessage` declares its
@@ -349,7 +349,7 @@ fn program(increments: StreamDescriptor<u64>) -> (Program, AppRefs) {
     program.connect(&quota_port, &quota.connector());
     let counter = program
         .configure_component::<Counter>()
-        .configuration(CounterConfig {
+        .config(CounterConfig {
             increments: increments.clone(),
         })
         .add(CounterConnections { quota: quota_port });

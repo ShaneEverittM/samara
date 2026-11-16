@@ -5,6 +5,14 @@
   `supply(&capability, driver)` replaces `with(&capability).supplied_by(driver)`,
   registration no longer takes capabilities at all, and
   `Program::capabilities()` is removed.
+  Extended November 15, 2026: `supply_default(&capability)` supplies the
+  standard Driver for a capability whose descriptor has an obvious one
+  (stdin, stdout, stderr, the system clock, HTTP, TCP). It is `supply` with
+  the Driver filled in from the capability's type: still one explicit call
+  per capability or tuple, still exactly one Driver per capability, and
+  nothing is supplied that the host did not name. A capability whose Driver
+  needs a setting, such as a `File`, has none. The set is first-party and
+  sealed for now.
 - Date: November 10, 2026
 - Deciders: Samara maintainers
 - Amends: [ADR-0019](0019-typed-program-requirements.md) (live binding and

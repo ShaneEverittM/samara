@@ -69,11 +69,11 @@ fn fixture() -> Fixture {
     let mut builder = Program::builder();
     let first = builder
         .configure_component::<Writer>()
-        .configuration("first")
+        .config("first")
         .add(());
     let second = builder
         .configure_component::<Writer>()
-        .configuration("second")
+        .config("second")
         .add(());
     let files = [first.io.0.clone(), second.io.0.clone()];
     let reports = [first.io.1.clone(), second.io.1.clone()];
@@ -161,11 +161,11 @@ fn replacements_select_the_exact_resource_and_deliver_typed_outcomes() {
         let mut builder = Program::builder();
         let first = builder
             .configure_component::<Replacer>()
-            .configuration("first")
+            .config("first")
             .add(());
         let second = builder
             .configure_component::<Replacer>()
-            .configuration("second")
+            .config("second")
             .add(());
         let mut runtime = ControlledRuntime::builder(builder.build().unwrap())
             .control_all()
@@ -203,11 +203,11 @@ async fn live_write_permissions_replace_existing_contents_at_each_bound_path() {
     let mut builder = Program::builder();
     let first = builder
         .configure_component::<Replacer>()
-        .configuration("first")
+        .config("first")
         .add(());
     let second = builder
         .configure_component::<Replacer>()
-        .configuration("second")
+        .config("second")
         .add(());
     let runtime = Runtime::builder(builder.build().unwrap())
         .supply(&first.io, FileDriver::new(&first_path))
@@ -370,7 +370,7 @@ fn hidden_foreign_file_is_rejected_at_startup_or_before_controlled_execution() {
         let mut builder = Program::builder();
         let target = builder
             .configure_component::<HiddenFile>()
-            .configuration((foreign, initial))
+            .config((foreign, initial))
             .add(());
         let runtime = ControlledRuntime::builder(builder.build().unwrap())
             .control_all()
@@ -398,7 +398,7 @@ async fn hidden_foreign_file_is_rejected_before_live_execution() {
         let mut builder = Program::builder();
         let target = builder
             .configure_component::<HiddenFile>()
-            .configuration((foreign, initial))
+            .config((foreign, initial))
             .add(());
         let root = TempRoot::new();
         let runtime = Runtime::builder(builder.build().unwrap())

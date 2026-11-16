@@ -111,7 +111,7 @@ fn counter_program(
     let counter = program
         .configure_component::<Counter>()
         .name("counter")
-        .configuration(CounterConfig { input_descriptor })
+        .config(CounterConfig { input_descriptor })
         .add(());
     (program.build().expect("valid program"), counter)
 }
@@ -240,7 +240,7 @@ async fn phase6_scope_cancel_drops_effect_without_invoking_mapper() {
     let probe = program
         .configure_component::<CancelProbe>()
         .name("cancel-probe")
-        .configuration(CancelProbeConfig {
+        .config(CancelProbeConfig {
             mapper_calls: mapper_calls.clone(),
         })
         .add(());
@@ -277,7 +277,7 @@ async fn phase6_cancelled_shutdown_future_detaches_no_runtime_work() {
     let probe = program
         .configure_component::<CancelProbe>()
         .name("shutdown-future-cancel")
-        .configuration(CancelProbeConfig {
+        .config(CancelProbeConfig {
             mapper_calls: mapper_calls.clone(),
         })
         .add(());
@@ -344,7 +344,7 @@ async fn shutdown_escalation_joins_pending_effect_without_mapping() {
     let probe = program
         .configure_component::<CancelProbe>()
         .name("escalation-effect")
-        .configuration(CancelProbeConfig {
+        .config(CancelProbeConfig {
             mapper_calls: mapper_calls.clone(),
         })
         .add(());
@@ -428,7 +428,7 @@ async fn phase6_cancel_stops_driving_without_mapping_scope_abort() {
     let probe = program
         .configure_component::<InitialCancelProbe>()
         .name("immediate-cancel")
-        .configuration(InitialCancelProbeConfig {
+        .config(InitialCancelProbeConfig {
             mapper_calls: mapper_calls.clone(),
         })
         .add(());
@@ -464,7 +464,7 @@ async fn shutdown_escalation_before_owner_poll_cannot_restart_work() {
     let probe = program
         .configure_component::<InitialCancelProbe>()
         .name("early-escalation")
-        .configuration(InitialCancelProbeConfig {
+        .config(InitialCancelProbeConfig {
             mapper_calls: mapper_calls.clone(),
         })
         .add(());
@@ -751,7 +751,7 @@ fn source_fixture(causal_timer: bool) -> SourceFixture {
     let component = program
         .configure_component::<SourceProbe>()
         .name("source-probe")
-        .configuration(SourceProbeConfig { causal_timer })
+        .config(SourceProbeConfig { causal_timer })
         .add(());
     let (observation_tx, observations) = tokio::sync::mpsc::unbounded_channel();
     let (sink_tx, sinks) = tokio::sync::mpsc::unbounded_channel();
@@ -858,7 +858,7 @@ async fn phase6_silent_source_return_ends_once() {
     let probe = program
         .configure_component::<SourceProbe>()
         .name("silent-source")
-        .configuration(SourceProbeConfig {
+        .config(SourceProbeConfig {
             causal_timer: false,
         })
         .add(());
@@ -926,7 +926,7 @@ async fn phase6_source_driver_panics_fault_and_clean_the_scope() {
         let probe = program
             .configure_component::<SourceProbe>()
             .name(format!("source-panic-{mode:?}"))
-            .configuration(SourceProbeConfig {
+            .config(SourceProbeConfig {
                 causal_timer: false,
             })
             .add(());
@@ -1229,7 +1229,7 @@ async fn phase6_knowable_live_binding_errors_fail_build() {
     let probe = program
         .configure_component::<SourceProbe>()
         .name("duplicate-source")
-        .configuration(SourceProbeConfig {
+        .config(SourceProbeConfig {
             causal_timer: false,
         })
         .add(());
@@ -1380,7 +1380,7 @@ async fn phase6_effect_success_and_failure_map_exactly_once() -> Result<(), Runt
     let probe = program
         .configure_component::<QueryProbe>()
         .name("query")
-        .configuration(QueryProbeConfig {
+        .config(QueryProbeConfig {
             mapper_calls: mapper_calls.clone(),
         })
         .add(());
@@ -1738,13 +1738,13 @@ fn echo_program(
     let provider = program
         .configure_component::<EchoProvider>()
         .name("echo-provider")
-        .configuration(EchoProviderConfig { reply })
+        .config(EchoProviderConfig { reply })
         .add(());
     program.connect(&echo, &provider.accepting(EchoProviderMessage::Echo));
     let requester = program
         .configure_component::<EchoRequester>()
         .name("echo-requester")
-        .configuration(continuation_calls)
+        .config(continuation_calls)
         .add(echo);
     (
         program.build().expect("valid Echo program"),
@@ -2021,7 +2021,7 @@ fn query_program(mapper_calls: Arc<AtomicUsize>) -> (Program, InstalledComponent
     let probe = program
         .configure_component::<QueryProbe>()
         .name("query-parity")
-        .configuration(QueryProbeConfig { mapper_calls })
+        .config(QueryProbeConfig { mapper_calls })
         .add(());
     (program.build().expect("valid query program"), probe)
 }

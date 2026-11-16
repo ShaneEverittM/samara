@@ -126,7 +126,7 @@ fn http_program(requests: Vec<HttpRequest>) -> (Program, InstalledComponent<Http
     let probe = builder
         .configure_component::<HttpSequence>()
         .name("http-sequence")
-        .configuration(requests)
+        .config(requests)
         .add(());
     (builder.build().expect("valid HTTP program"), probe)
 }

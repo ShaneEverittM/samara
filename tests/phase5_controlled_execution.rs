@@ -241,7 +241,7 @@ fn effect_program(mapper_calls: Arc<AtomicUsize>) -> (Program, ComponentRef<Effe
     let component = builder
         .configure_component::<EffectComponent>()
         .name("effect")
-        .configuration(EffectComponentConfig { mapper_calls })
+        .config(EffectComponentConfig { mapper_calls })
         .add(());
     (
         builder.build().expect("valid effect program"),
@@ -1270,7 +1270,7 @@ fn ownership_runtime() -> (ControlledRuntime, ComponentRef<OwnershipComponent>) 
     let provider = builder
         .configure_component::<EchoProvider>()
         .name("provider")
-        .configuration(EchoProviderConfig { reply: false })
+        .config(EchoProviderConfig { reply: false })
         .add(());
     builder.connect(&port, &provider.connector());
     let component = builder
@@ -1367,7 +1367,7 @@ fn v9_source_cancellation_emits_no_unpromised_event() {
     let _component = builder
         .configure_component::<CancellationProbe>()
         .name("cancellation-probe")
-        .configuration(CancellationProbeConfig {
+        .config(CancellationProbeConfig {
             mapper_calls: mapper_calls.clone(),
         })
         .add(());
@@ -1512,13 +1512,13 @@ fn echo_program(reply: bool, requests: usize) -> (Program, ComponentRef<EchoRequ
     let provider = builder
         .configure_component::<EchoProvider>()
         .name("provider")
-        .configuration(EchoProviderConfig { reply })
+        .config(EchoProviderConfig { reply })
         .add(());
     builder.connect(&port, &provider.connector());
     let requester = builder
         .configure_component::<EchoRequester>()
         .name("requester")
-        .configuration(requests)
+        .config(requests)
         .add(port);
     (builder.build().unwrap(), requester.into())
 }

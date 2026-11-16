@@ -52,11 +52,11 @@ async fn a_driver_follows_its_capability_value_not_a_position() {
     let mut builder = Program::builder();
     let journal = builder
         .configure_component::<Scribe>()
-        .configuration("journal")
+        .config("journal")
         .add(());
     let config = builder
         .configure_component::<Scribe>()
-        .configuration("config")
+        .config("config")
         .add(());
 
     let runtime = Runtime::builder(builder.build().unwrap())
@@ -172,4 +172,104 @@ fn a_capability_from_another_program_fails_the_build() {
         .to_string();
     assert!(error.contains("ReadSystemTime"), "{error}");
     assert!(error.contains("another Program"), "{error}");
+}
+
+/// One of each capability that has a standard Driver, and nothing else.
+struct Console;
+
+impl Component for Console {
+    type Io = (
+        Effect<PrintStdout>,
+        Effect<PrintStderr>,
+        Effect<ReadSystemTime>,
+        Effect<HttpRequest>,
+        Source<TcpBytes>,
+    );
+    type Connections = ();
+    type Configuration = ();
+    type Model = ();
+    type Message = ();
+
+    fn init(_: &Context<Self>) -> Init<(), ()> {
+        Init::default()
+    }
+
+    fn update(_: &Context<Self>, _: &mut (), _: ()) -> Command<()> {
+        Command::none()
+    }
+}
+
+fn console_program() -> (Program, InstalledComponent<Console>) {
+    let mut program = Program::builder();
+    let console = program.add_component::<Console>(());
+    (program.build().expect("program assembles"), console)
+}
+
+#[tokio::test]
+async fn standard_drivers_are_supplied_by_default_whole_or_one_at_a_time() {
+    let (program, console) = console_program();
+    assert!(
+        Runtime::builder(program)
+            .supply_default(&console.io)
+            .build()
+            .is_ok()
+    );
+
+    let (program, console) = console_program();
+    assert!(
+        Runtime::builder(program)
+            .supply_default(&console.io.0)
+            .supply(&console.io.1, StderrDriver::new())
+            .supply_default(&(console.io.2.clone(), console.io.3.clone()))
+            .supply_default(&console.io.4)
+            .build()
+            .is_ok()
+    );
+}
+
+#[tokio::test]
+async fn a_default_driver_counts_as_the_capability_s_one_driver() {
+    let (program, console) = console_program();
+    let error = Runtime::builder(program)
+        .supply_default(&console.io)
+        .supply(&console.io.0, StdoutDriver::new())
+        .build()
+        .err()
+        .expect("a second Driver for one capability is rejected");
+    assert!(error.to_string().contains("PrintStdout"), "{error}");
+
+    let (program, console) = console_program();
+    let error = Runtime::builder(program)
+        .supply_default(&console.io.0)
+        .build()
+        .err()
+        .expect("the capabilities left out are still missing");
+    assert!(error.to_string().contains("PrintStderr"), "{error}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn stdin_has_a_default_driver() {
+    struct Reader;
+    impl Component for Reader {
+        type Io = Source<StdinLines>;
+        type Connections = ();
+        type Configuration = ();
+        type Model = ();
+        type Message = ();
+        fn init(_: &Context<Self>) -> Init<(), ()> {
+            Init::default()
+        }
+        fn update(_: &Context<Self>, _: &mut (), _: ()) -> Command<()> {
+            Command::none()
+        }
+    }
+    let mut program = Program::builder();
+    let reader = program.add_component::<Reader>(());
+    assert!(
+        Runtime::builder(program.build().unwrap())
+            .supply_default(&reader.io)
+            .build()
+            .is_ok()
+    );
 }

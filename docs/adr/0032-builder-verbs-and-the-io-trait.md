@@ -1,6 +1,8 @@
 # ADR-0032: Builder Methods Are Verbs, and the Capability Trait Is `Io`
 
-- Status: Accepted.
+- Status: Accepted. The builder's `.configuration(..)` in the snippet below
+  was then renamed `.config(..)`
+  ([ADR-0033](0033-context-fields-are-io-to-and-config.md)).
 - Date: November 15, 2026
 - Deciders: Samara maintainers
 - Amends: [ADR-0029](0029-capabilities-are-named-values-a-component-owns.md)

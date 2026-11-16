@@ -66,10 +66,7 @@ impl Component for Probe {
 
 fn controlled(model: Model) -> (ControlledRuntime, ComponentRef<Probe>, Inputs) {
     let mut builder = Program::builder();
-    let probe = builder
-        .configure_component::<Probe>()
-        .configuration(model)
-        .add(());
+    let probe = builder.configure_component::<Probe>().config(model).add(());
     let caps = probe.io.clone();
     let runtime = ControlledRuntime::builder(builder.build().unwrap())
         .control_all()
@@ -101,16 +98,16 @@ fn optional_and_duplicate_names_do_not_alias_components() {
     let first = builder
         .configure_component::<Probe>()
         .name("same")
-        .configuration(one(1))
+        .config(one(1))
         .add(());
     let second = builder
         .configure_component::<Probe>()
         .name("same")
-        .configuration(one(1))
+        .config(one(1))
         .add(());
     let unnamed = builder
         .configure_component::<Probe>()
-        .configuration(Model::default())
+        .config(Model::default())
         .add(());
     assert_ne!(first.id(), second.id());
     assert_eq!(first.id().name(), "same");
@@ -137,7 +134,7 @@ fn diagnostic_names_do_not_change_semantic_trace() {
             builder
                 .configure_component::<Probe>()
                 .name(name)
-                .configuration(one(1))
+                .config(one(1))
                 .add(());
         }
         let mut runtime = ControlledRuntime::builder(builder.build().unwrap())
@@ -197,7 +194,7 @@ fn ambiguous_defaults_explain_how_to_supply_keys() {
     let mut builder = Program::builder();
     builder
         .configure_component::<Probe>()
-        .configuration(Model {
+        .config(Model {
             desired: vec![(1, 1), (2, 2)],
             ..Model::default()
         })
@@ -290,7 +287,7 @@ fn dropped_registration_does_not_change_identity_or_startup_trace() {
         }
         builder
             .configure_component::<Probe>()
-            .configuration(one(1))
+            .config(one(1))
             .add(());
         let runtime = ControlledRuntime::builder(builder.build().unwrap())
             .control_all()

@@ -277,10 +277,10 @@ impl Component for Checker {
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let (program, io) = urlchecker::program()?;
 /// let runtime = samara::Runtime::builder(program)
-///     .supply(&io.stdin, samara::StdinDriver)
-///     .supply(&io.stdout, samara::StdoutDriver::new())
-///     .supply(&io.stderr, samara::StderrDriver::new())
-///     .supply(&io.http, samara::HttpDriver::new())
+///     .supply_default(&io.stdin)
+///     .supply_default(&io.stdout)
+///     .supply_default(&io.stderr)
+///     .supply_default(&io.http)
 ///     .build()?;
 /// // Inside Tokio, call runtime.spawn() and use its RuntimeTask for shutdown.
 /// # Ok(())

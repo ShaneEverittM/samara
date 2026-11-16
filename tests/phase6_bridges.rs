@@ -118,7 +118,7 @@ fn stream_program(
     let probe = program
         .configure_component::<StreamProbe>()
         .name("stream-0")
-        .configuration(StreamProbeConfig {
+        .config(StreamProbeConfig {
             descriptor,
             claimants,
         })
@@ -325,7 +325,7 @@ fn tcp_program(endpoint: SocketAddr) -> (Program, InstalledComponent<TcpProbe>) 
     let probe = program
         .configure_component::<TcpProbe>()
         .name("tcp-probe")
-        .configuration(TcpProbeConfig {
+        .config(TcpProbeConfig {
             tcp: TcpBytes::connect(endpoint),
         })
         .add(());
