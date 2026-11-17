@@ -1,8 +1,4 @@
-use samara::{
-    Command, Component, Connector, Context, Effect, FileDriver, Init, Io, PrintStdout, Program,
-    RequestOutcome, Runtime, Source, SourceEvent, StdinDriver, StdinLines, StdoutDriver,
-    Subscription, Subscriptions, SystemClockDriver,
-};
+use samara::prelude::*;
 
 // This is a "library assembly", that is a subsection of a Program (discussed later)
 // designed to be embedded in another program.
@@ -12,8 +8,8 @@ use pulse::journal::{Journal, JournalMessage};
 struct Monitor;
 
 // What it can reach in the world, by name.
-#[derive(Clone, Io)]
-struct MonitorIo {
+#[derive(Clone, samara::Io)]
+struct Io {
     input: Source<StdinLines>,
     output: Effect<PrintStdout>,
 }
@@ -29,10 +25,11 @@ enum Message {
 
 impl Component for Monitor {
     // What this component needs from the world.
-    type Io = MonitorIo;
+    type Io = Io;
 
     // What this component needs as static config, including program connections.
     type Connections = Connector<JournalMessage>;
+
     type Configuration = ();
 
     // The only thing this component can mutate directly.
@@ -81,23 +78,18 @@ impl Component for Monitor {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // A program is dormant, it declares how things are internally connected.
     let mut builder = Program::builder();
 
     let journal = builder.add_assembly::<Journal>(());
-
     let monitor = builder.add_component::<Monitor>(journal.connector());
 
-    // Assemble the program, this checks things that _can't_ be checked at compile time.
     let program = builder.build()?;
 
-    // Create a runtime for our program...
+    println!("{}", program.manifest());
+
     let runtime = Runtime::builder(program)
-        // ...and say what each capability is made of.
-        .supply(&journal.io.file, FileDriver::new("./data/pulse.journal"))
-        .supply(&journal.io.clock, SystemClockDriver)
-        .supply(&monitor.io.input, StdinDriver)
-        .supply(&monitor.io.output, StdoutDriver::new())
+        .supply(&journal.io.file, FileDriver::new("data/pulse.journal"))
+        .supply_default(&(journal.io.clock, monitor.io.input, monitor.io.output))
         .build()?;
 
     // Run it until Ctrl-C, then let every Component finish.
