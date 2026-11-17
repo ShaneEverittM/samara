@@ -5,7 +5,7 @@ use syn::{Data, DeriveInput, Fields, parse_macro_input, spanned::Spanned};
 
 /// Implements `samara::Io` for a struct with named fields.
 ///
-/// Each field becomes one freshly created capability, labelled with the
+/// Each field becomes one freshly created capability, labeled with the
 /// field's name. Field types must themselves implement `Io`:
 /// `Effect<D>`, `Source<S>`, `File<P>`, a tuple of those, or another struct
 /// that derives it. The struct must also be `Clone`.

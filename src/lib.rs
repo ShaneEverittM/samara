@@ -5679,6 +5679,20 @@ impl Runtime {
             _ = signal => task.shutdown(Shutdown::Drain).await,
         }
     }
+
+    /// Run until an interrupt.
+    /// 
+    /// Equivalent to:
+    /// 
+    /// ```no_run
+    /// # use samara::prelude::*;
+    /// # async fn host(runtime: Runtime) -> Result<(), Box<dyn std::error::Error>> {
+    /// runtime.run_until(tokio::signal::ctrl_c()).await?;
+    /// # Ok(()) }
+    /// ```
+    pub async fn run(self) -> Result<ShutdownReport, RuntimeError> {
+        self.run_until(tokio::signal::ctrl_c()).await
+    }
 }
 
 impl RuntimeBuilder {
