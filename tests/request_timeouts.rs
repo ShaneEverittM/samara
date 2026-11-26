@@ -21,10 +21,12 @@ fn ask(
     value: u64,
     delay: Option<Duration>,
 ) -> impl FnOnce(ReplyWith<u64>) -> ProbeProtocolMessage + Send + 'static {
-    move |reply_with| ProbeProtocolMessage::Ask {
-        value,
-        delay,
-        reply_with,
+    move |reply_with| {
+        ProbeProtocolMessage::Ask {
+            value,
+            delay,
+            reply_with,
+        }
     }
 }
 
@@ -132,21 +134,29 @@ impl Component for Requester {
                 delay,
                 timeout,
                 key,
-            } => match (timeout, key) {
-                (Some(timeout), Some(key)) => Command::request(&cx.to.port, ask(value, delay))
-                    .timeout(timeout)
-                    .producing(move |outcome| {
-                        RequesterMessage::Outcome(Observation {
-                            key: Some(key),
-                            outcome,
-                        })
-                    }),
-                (Some(timeout), None) => Command::request(&cx.to.port, ask(value, delay))
-                    .timeout(timeout)
-                    .producing(RequesterMessage::from),
-                (None, _) => Command::request(&cx.to.port, ask(value, delay))
-                    .producing(RequesterMessage::from),
-            },
+            } => {
+                match (timeout, key) {
+                    (Some(timeout), Some(key)) => {
+                        Command::request(&cx.to.port, ask(value, delay))
+                            .timeout(timeout)
+                            .producing(move |outcome| {
+                                RequesterMessage::Outcome(Observation {
+                                    key: Some(key),
+                                    outcome,
+                                })
+                            })
+                    }
+                    (Some(timeout), None) => {
+                        Command::request(&cx.to.port, ask(value, delay))
+                            .timeout(timeout)
+                            .producing(RequesterMessage::from)
+                    }
+                    (None, _) => {
+                        Command::request(&cx.to.port, ask(value, delay))
+                            .producing(RequesterMessage::from)
+                    }
+                }
+            }
             RequesterMessage::Outcome(observation) => {
                 model.push(observation.clone());
                 Effect::perform(&cx.io, observation).discard_outcome()

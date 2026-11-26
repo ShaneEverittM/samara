@@ -909,12 +909,14 @@ impl SourceDriver<ScriptedSource> for PanickingSourceDriver {
                 }
                 panic!("SourceDriver start panic fixture");
             }
-            SourcePanicMode::Future => Box::pin(async move {
-                if let Some(entered) = entered {
-                    let _ = entered.send(());
-                }
-                panic!("SourceDriver future panic fixture");
-            }),
+            SourcePanicMode::Future => {
+                Box::pin(async move {
+                    if let Some(entered) = entered {
+                        let _ = entered.send(());
+                    }
+                    panic!("SourceDriver future panic fixture");
+                })
+            }
         }
     }
 }
@@ -1236,10 +1238,12 @@ async fn phase6_knowable_live_binding_errors_fail_build() {
     let (sinks, _sink_rx) = tokio::sync::mpsc::unbounded_channel();
     let starts = Arc::new(AtomicUsize::new(0));
     let dropped = Arc::new(AtomicUsize::new(0));
-    let binding = || HarnessSourceDriver {
-        starts: starts.clone(),
-        dropped: dropped.clone(),
-        sinks: sinks.clone(),
+    let binding = || {
+        HarnessSourceDriver {
+            starts: starts.clone(),
+            dropped: dropped.clone(),
+            sinks: sinks.clone(),
+        }
     };
     let (observed, _observations) = tokio::sync::mpsc::unbounded_channel();
     let program = program.build().expect("valid program");
@@ -1919,12 +1923,14 @@ impl Component for IndependentProbe {
         message: Self::Message,
     ) -> Command<Self::Message> {
         match message {
-            IndependentMessage::Start => Command::batch([
-                Effect::perform(&cx.io.0, Independent('A'))
-                    .producing(IndependentMessage::Completed),
-                Effect::perform(&cx.io.0, Independent('B'))
-                    .producing(IndependentMessage::Completed),
-            ]),
+            IndependentMessage::Start => {
+                Command::batch([
+                    Effect::perform(&cx.io.0, Independent('A'))
+                        .producing(IndependentMessage::Completed),
+                    Effect::perform(&cx.io.0, Independent('B'))
+                        .producing(IndependentMessage::Completed),
+                ])
+            }
             IndependentMessage::Completed(EffectOutcome::Succeeded(label)) => {
                 Effect::perform(&cx.io.1, RecordOrder(label))
                     .producing(|_| IndependentMessage::Recorded)
@@ -2029,9 +2035,11 @@ fn query_program(mapper_calls: Arc<AtomicUsize>) -> (Program, InstalledComponent
 fn normalize_query_observations(observations: Vec<QueryObservation>) -> Vec<String> {
     let mut normalized = observations
         .into_iter()
-        .map(|observation| match observation {
-            QueryObservation::Succeeded(value) => format!("succeeded:{value}"),
-            QueryObservation::Failed(error) => format!("failed:{error}"),
+        .map(|observation| {
+            match observation {
+                QueryObservation::Succeeded(value) => format!("succeeded:{value}"),
+                QueryObservation::Failed(error) => format!("failed:{error}"),
+            }
         })
         .collect::<Vec<_>>();
     normalized.sort();

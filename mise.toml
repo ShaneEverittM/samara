@@ -1,0 +1,42 @@
+# Toolchain and everyday commands for Samara. Run `mise install` once, then
+# `mise run check` before a commit.
+#
+# The compiler is stable. Only formatting uses nightly, because
+# `rustfmt.toml` sets an option stable rustfmt does not have yet.
+
+[tools]
+rust = { version = "stable", components = "clippy,rustfmt" }
+
+[env]
+# The nightly used only for formatting. Pinned to a date so every machine
+# formats identically; change the date here to move it.
+RUSTFMT_TOOLCHAIN = "nightly-2026-11-25"
+
+[tasks.setup]
+description = "Install the nightly rustfmt that formatting uses"
+run = "rustup toolchain list | grep -q \"^$RUSTFMT_TOOLCHAIN\" || rustup toolchain install $RUSTFMT_TOOLCHAIN --profile minimal --component rustfmt"
+
+[tasks.fmt]
+description = "Format the workspace with nightly rustfmt"
+depends = ["setup"]
+run = "cargo +$RUSTFMT_TOOLCHAIN fmt --all"
+
+[tasks."fmt:check"]
+description = "Check formatting without changing files"
+depends = ["setup"]
+run = "cargo +$RUSTFMT_TOOLCHAIN fmt --all --check"
+
+[tasks.test]
+description = "Run every test, including doc examples"
+run = "cargo test --workspace --all-features"
+
+[tasks.lint]
+description = "Clippy and rustdoc with warnings denied"
+run = [
+  "cargo clippy --workspace --all-features --all-targets -- -D warnings",
+  "RUSTDOCFLAGS='-D warnings' cargo doc --workspace --all-features --no-deps",
+]
+
+[tasks.check]
+description = "The gate for a commit: format check, tests, clippy, rustdoc"
+depends = ["fmt:check", "test", "lint"]

@@ -108,10 +108,12 @@ impl Component for HttpTimeServer {
             (state @ Polling { .. }, PollFinished(result)) => {
                 let (current_time, command) = match result {
                     Ok(time) => (Some(time), Command::none()),
-                    Err(error) => (
-                        state.current_time(),
-                        samara::eprintln!(&cx.io.stderr, "Failed to get time: {error}"),
-                    ),
+                    Err(error) => {
+                        (
+                            state.current_time(),
+                            samara::eprintln!(&cx.io.stderr, "Failed to get time: {error}"),
+                        )
+                    }
                 };
                 *state = Idle { current_time };
                 command
@@ -220,10 +222,12 @@ impl Component for Cli {
                 Command::request(&cx.to.time_server, TimeServerMessage::GetCurrentTime)
                     .producing(CliMessage::TimeReceived)
             }
-            CliMessage::InvalidCommand(command) => samara::eprintln!(
-                &cx.io.stderr,
-                "Unknown command `{command}`; use `print <text>` or `time`"
-            ),
+            CliMessage::InvalidCommand(command) => {
+                samara::eprintln!(
+                    &cx.io.stderr,
+                    "Unknown command `{command}`; use `print <text>` or `time`"
+                )
+            }
             CliMessage::InputEnded => {
                 model.input_closed = true;
                 Command::none()
@@ -261,10 +265,12 @@ impl Component for Cli {
         Subscriptions::one(Subscription::source_with(
             &cx.io.stdin,
             StdinLines::new(),
-            |event| match event {
-                SourceEvent::Item(line) => parse_cli_command(line),
-                SourceEvent::Ended => CliMessage::InputEnded,
-                SourceEvent::Failed(error) => CliMessage::InputFailed(error),
+            |event| {
+                match event {
+                    SourceEvent::Item(line) => parse_cli_command(line),
+                    SourceEvent::Ended => CliMessage::InputEnded,
+                    SourceEvent::Failed(error) => CliMessage::InputFailed(error),
+                }
             },
         ))
     }

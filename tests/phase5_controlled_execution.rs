@@ -368,10 +368,12 @@ impl Component for MappingComponent {
             Subscription::source_with(
                 &cx.io,
                 StreamDescriptor::<u64>::named(model.binding),
-                move |event| match event {
-                    SourceEvent::Item(value) => MappingMessage::Observed { mapper, value },
-                    SourceEvent::Ended => MappingMessage::Ended,
-                    SourceEvent::Failed(never) => match never {},
+                move |event| {
+                    match event {
+                        SourceEvent::Item(value) => MappingMessage::Observed { mapper, value },
+                        SourceEvent::Ended => MappingMessage::Ended,
+                        SourceEvent::Failed(never) => match never {},
+                    }
                 },
             )
             .key("input"),
@@ -514,13 +516,15 @@ fn v4_replaced_generation_discards_stale_work() {
             .unwrap(),
         StreamDescriptor::named("two")
     );
-    assert!(runtime.trace().iter().any(|record| matches!(
-        record.event,
-        TraceEvent::StaleSourceWorkDropped {
-            mapped_message: false,
-            ..
-        }
-    )));
+    assert!(runtime.trace().iter().any(|record| {
+        matches!(
+            record.event,
+            TraceEvent::StaleSourceWorkDropped {
+                mapped_message: false,
+                ..
+            }
+        )
+    }));
 }
 
 #[test]
@@ -546,13 +550,15 @@ fn v4_replaced_generation_discards_already_mapped_message() {
     runtime.run_until_idle().unwrap();
 
     assert!(runtime.state(&component).unwrap().observed.is_empty());
-    assert!(runtime.trace().iter().any(|record| matches!(
-        record.event,
-        TraceEvent::StaleSourceWorkDropped {
-            mapped_message: true,
-            ..
-        }
-    )));
+    assert!(runtime.trace().iter().any(|record| {
+        matches!(
+            record.event,
+            TraceEvent::StaleSourceWorkDropped {
+                mapped_message: true,
+                ..
+            }
+        )
+    }));
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -806,9 +812,11 @@ fn v7_initial_work_follows_registration_order_independently_of_names() {
     fn names(trace: &[TraceRecord]) -> Vec<&str> {
         trace
             .iter()
-            .filter_map(|record| match &record.event {
-                TraceEvent::Initialization { component } => Some(component.name()),
-                _ => None,
+            .filter_map(|record| {
+                match &record.event {
+                    TraceEvent::Initialization { component } => Some(component.name()),
+                    _ => None,
+                }
             })
             .collect()
     }
@@ -1228,13 +1236,15 @@ impl Component for OwnershipComponent {
     ) -> Command<Self::Message> {
         let (effect, _) = &cx.io;
         match message {
-            OwnershipMessage::Kick => Command::batch([
-                Effect::perform(effect, ProbeEffect(1)).producing(OwnershipMessage::Effect),
-                Command::request(&cx.to.port, |reply_with| {
-                    EchoProtocolMessage::Echo(1, reply_with)
-                })
-                .producing(OwnershipMessage::Request),
-            ]),
+            OwnershipMessage::Kick => {
+                Command::batch([
+                    Effect::perform(effect, ProbeEffect(1)).producing(OwnershipMessage::Effect),
+                    Command::request(&cx.to.port, |reply_with| {
+                        EchoProtocolMessage::Echo(1, reply_with)
+                    })
+                    .producing(OwnershipMessage::Request),
+                ])
+            }
             OwnershipMessage::Effect(outcome) => {
                 let _ = outcome;
                 Command::none()
@@ -1488,12 +1498,14 @@ impl Component for EchoRequester {
         message: Self::Message,
     ) -> Command<Self::Message> {
         match message {
-            EchoRequesterMessage::Start => Command::batch((0..cx.config).map(|slot| {
-                Command::request(&cx.to, |reply_with| {
-                    EchoProtocolMessage::Echo(7, reply_with)
-                })
-                .producing(move |outcome| EchoRequesterMessage::Replied { slot, outcome })
-            })),
+            EchoRequesterMessage::Start => {
+                Command::batch((0..cx.config).map(|slot| {
+                    Command::request(&cx.to, |reply_with| {
+                        EchoProtocolMessage::Echo(7, reply_with)
+                    })
+                    .producing(move |outcome| EchoRequesterMessage::Replied { slot, outcome })
+                }))
+            }
             EchoRequesterMessage::Replied {
                 slot,
                 outcome: RequestOutcome::Replied(value),

@@ -24,17 +24,19 @@ impl InputEvent {
     fn parse(line: &str) -> InputEvent {
         let mut words = line.split_whitespace();
         match (words.next(), words.next(), words.next()) {
-            (Some("url"), Some(url), None) => match Url::parse(url) {
-                Ok(url) => Self::Command(UrlCommand::Url(url)),
-                Err(_) => {
-                    let url = String::from("https://") + url;
-                    if let Ok(url) = Url::parse(&url) {
-                        return Self::Command(UrlCommand::Url(url));
-                    }
+            (Some("url"), Some(url), None) => {
+                match Url::parse(url) {
+                    Ok(url) => Self::Command(UrlCommand::Url(url)),
+                    Err(_) => {
+                        let url = String::from("https://") + url;
+                        if let Ok(url) = Url::parse(&url) {
+                            return Self::Command(UrlCommand::Url(url));
+                        }
 
-                    Self::Malformed(format!("Invalid URL: {}", url))
+                        Self::Malformed(format!("Invalid URL: {}", url))
+                    }
                 }
-            },
+            }
             (Some("status"), None, None) => Self::Command(UrlCommand::Status),
             (Some("clear"), None, None) => Self::Command(UrlCommand::Clear),
             _ => Self::Malformed("usage: url <address> | status | clear".into()),
@@ -178,32 +180,34 @@ impl Component for Checker {
                         println!(&cx.io.stdout, "Cleared")
                     }
 
-                    UrlCommand::Status => match &model {
-                        Status::Idle { .. } => {
-                            println!(
-                                &cx.io.stdout,
-                                "URL: {}\nState: {}\nLast result: {}", "none", "idle", "none"
-                            )
+                    UrlCommand::Status => {
+                        match &model {
+                            Status::Idle { .. } => {
+                                println!(
+                                    &cx.io.stdout,
+                                    "URL: {}\nState: {}\nLast result: {}", "none", "idle", "none"
+                                )
+                            }
+                            Status::Pending { url, .. } => {
+                                println!(
+                                    &cx.io.stdout,
+                                    "URL: {}\nState: {}\nLast result: {}", url, "waiting", "none"
+                                )
+                            }
+                            Status::InFlight { url, .. } => {
+                                println!(
+                                    &cx.io.stdout,
+                                    "URL: {}\nState: {}\nLast result: {}", url, "checking", "none"
+                                )
+                            }
+                            Status::Finished { url, result, .. } => {
+                                println!(
+                                    &cx.io.stdout,
+                                    "URL: {}\nState: {}\nLast result: {}", url, "idle", result
+                                )
+                            }
                         }
-                        Status::Pending { url, .. } => {
-                            println!(
-                                &cx.io.stdout,
-                                "URL: {}\nState: {}\nLast result: {}", url, "waiting", "none"
-                            )
-                        }
-                        Status::InFlight { url, .. } => {
-                            println!(
-                                &cx.io.stdout,
-                                "URL: {}\nState: {}\nLast result: {}", url, "checking", "none"
-                            )
-                        }
-                        Status::Finished { url, result, .. } => {
-                            println!(
-                                &cx.io.stdout,
-                                "URL: {}\nState: {}\nLast result: {}", url, "idle", result
-                            )
-                        }
-                    },
+                    }
                 }
             }
 
@@ -222,12 +226,13 @@ impl Component for Checker {
                     revision,
                 };
                 let log = println!(&cx.io.stdout, "Checking {}", url);
-                let request =
-                    request.into_command_with(&cx.io.http, move |r| Message::CheckFinished {
+                let request = request.into_command_with(&cx.io.http, move |r| {
+                    Message::CheckFinished {
                         url,
                         revision,
                         outcome: r,
-                    });
+                    }
+                });
                 Command::batch([log, request])
             }
 

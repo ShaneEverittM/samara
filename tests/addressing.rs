@@ -90,17 +90,23 @@ impl Component for Clerk {
         message: ClerkMessage,
     ) -> Command<ClerkMessage> {
         match message {
-            ClerkMessage::Start => Command::batch([
-                Command::send(&cx.to, LedgerMessage::Add(2)),
-                Command::send(&cx.to, LedgerMessage::Add(3)),
-                match cx.config {
-                    None => Command::request(&cx.to, LedgerMessage::Total)
-                        .producing(ClerkMessage::Total),
-                    Some(patience) => Command::request(&cx.to, LedgerMessage::Park)
-                        .timeout(patience)
-                        .producing(ClerkMessage::Total),
-                },
-            ]),
+            ClerkMessage::Start => {
+                Command::batch([
+                    Command::send(&cx.to, LedgerMessage::Add(2)),
+                    Command::send(&cx.to, LedgerMessage::Add(3)),
+                    match cx.config {
+                        None => {
+                            Command::request(&cx.to, LedgerMessage::Total)
+                                .producing(ClerkMessage::Total)
+                        }
+                        Some(patience) => {
+                            Command::request(&cx.to, LedgerMessage::Park)
+                                .timeout(patience)
+                                .producing(ClerkMessage::Total)
+                        }
+                    },
+                ])
+            }
             ClerkMessage::Total(outcome) => {
                 model.total = Some(outcome);
                 Command::none()

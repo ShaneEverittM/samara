@@ -39,14 +39,18 @@ impl Component for Monitor {
     ) -> Command<Self::Message> {
         match message {
             Message::Input(s) => {
-                Command::request(&cx.to, move |reply| JournalMessage::Recent {
-                    count: if s == "5" { 5 } else { 10 },
-                    reply,
+                Command::request(&cx.to, move |reply| {
+                    JournalMessage::Recent {
+                        count: if s == "5" { 5 } else { 10 },
+                        reply,
+                    }
                 })
-                .producing(|response| match response {
-                    RequestOutcome::Replied(r) => Message::JournalResponse(r.unwrap()),
-                    // This would handle error or cancellation.
-                    _ => todo!(),
+                .producing(|response| {
+                    match response {
+                        RequestOutcome::Replied(r) => Message::JournalResponse(r.unwrap()),
+                        // This would handle error or cancellation.
+                        _ => todo!(),
+                    }
                 })
             }
             Message::JournalResponse(r) => samara::println!(&cx.io.output, "Got response: {:?}", r),
@@ -57,10 +61,12 @@ impl Component for Monitor {
         Subscriptions::one(Subscription::source_with(
             &cx.io.input,
             StdinLines::new(),
-            |event| match event {
-                SourceEvent::Item(s) => Message::Input(s),
-                // This would handle EOF or errors.
-                _ => todo!(),
+            |event| {
+                match event {
+                    SourceEvent::Item(s) => Message::Input(s),
+                    // This would handle EOF or errors.
+                    _ => todo!(),
+                }
             },
         ))
     }

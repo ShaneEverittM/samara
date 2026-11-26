@@ -64,10 +64,14 @@ impl Component for OutputProbe {
     ) -> Command<Self::Message> {
         let (stdout, stderr, observe) = &cx.io;
         match message {
-            OutputMessage::Start => Command::batch([
-                Effect::perform(stdout, PrintStdout::text("")).producing(OutputMessage::Finished),
-                Effect::perform(stderr, PrintStderr::text("")).producing(OutputMessage::Finished),
-            ]),
+            OutputMessage::Start => {
+                Command::batch([
+                    Effect::perform(stdout, PrintStdout::text(""))
+                        .producing(OutputMessage::Finished),
+                    Effect::perform(stderr, PrintStderr::text(""))
+                        .producing(OutputMessage::Finished),
+                ])
+            }
             OutputMessage::Finished(outcome) => {
                 let EffectOutcome::Succeeded(()) = outcome;
                 model.succeeded += 1;

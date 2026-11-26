@@ -122,9 +122,11 @@ impl SubscriptionId {
 
     pub(crate) fn duplicate_message(&self) -> String {
         match &self.0 {
-            Slot::Default(_) => format!(
-                "ambiguous default Subscription slot {self:?}; use .key(...) to distinguish multiple subscriptions through the same capability"
-            ),
+            Slot::Default(_) => {
+                format!(
+                    "ambiguous default Subscription slot {self:?}; use .key(...) to distinguish multiple subscriptions through the same capability"
+                )
+            }
             Slot::Key(_) => format!("duplicate desired Subscription key {self:?}"),
         }
     }
@@ -133,10 +135,11 @@ impl SubscriptionId {
 impl fmt::Debug for SubscriptionId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.0 {
-            Slot::Default(token) => f
-                .debug_tuple("DefaultSubscription")
-                .field(&token.id)
-                .finish(),
+            Slot::Default(token) => {
+                f.debug_tuple("DefaultSubscription")
+                    .field(&token.id)
+                    .finish()
+            }
             Slot::Key(key) => f.debug_tuple("SubscriptionKey").field(key).finish(),
         }
     }

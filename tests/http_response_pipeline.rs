@@ -116,11 +116,13 @@ impl Component for PipelineComponent {
     ) -> Command<Self::Message> {
         let (http, observe) = &cx.io;
         match message {
-            PipelineMessage::Start => HttpRequest::get(cx.config.clone())
-                .on_response()
-                .require_success()
-                .json::<Payload>()
-                .into_command_with(http, PipelineMessage::Finished),
+            PipelineMessage::Start => {
+                HttpRequest::get(cx.config.clone())
+                    .on_response()
+                    .require_success()
+                    .json::<Payload>()
+                    .into_command_with(http, PipelineMessage::Finished)
+            }
             PipelineMessage::Finished(outcome) => {
                 let result = match outcome {
                     EffectOutcome::Succeeded(payload) => PipelineResult::Succeeded(payload.value),

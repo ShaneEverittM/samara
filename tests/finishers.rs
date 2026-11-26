@@ -152,8 +152,10 @@ impl Component for Client {
         message: ClientMessage,
     ) -> Command<ClientMessage> {
         match message {
-            ClientMessage::Start => Command::request(&cx.to.relay, RelayMessage::ReadPlusOne)
-                .producing(ClientMessage::Got),
+            ClientMessage::Start => {
+                Command::request(&cx.to.relay, RelayMessage::ReadPlusOne)
+                    .producing(ClientMessage::Got)
+            }
             ClientMessage::StartParked(patience) => {
                 Command::request(&cx.to.gauge, GaugeMessage::Park)
                     .timeout(patience)

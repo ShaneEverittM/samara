@@ -52,15 +52,19 @@ impl Component for Reader {
         let (read, count) = &cx.io;
         let observed = match message {
             Message::Read => {
-                return Effect::perform(read, ReadText).producing(|outcome| match outcome {
-                    EffectOutcome::Succeeded(text) => Message::Text(text),
-                    EffectOutcome::Failed(reason) => Message::Failed(reason),
+                return Effect::perform(read, ReadText).producing(|outcome| {
+                    match outcome {
+                        EffectOutcome::Succeeded(text) => Message::Text(text),
+                        EffectOutcome::Failed(reason) => Message::Failed(reason),
+                    }
                 });
             }
             Message::Count => {
-                return Effect::perform(count, CountBytes).producing(|outcome| match outcome {
-                    EffectOutcome::Succeeded(count) => Message::Counted(count),
-                    EffectOutcome::Failed(reason) => Message::Failed(reason),
+                return Effect::perform(count, CountBytes).producing(|outcome| {
+                    match outcome {
+                        EffectOutcome::Succeeded(count) => Message::Counted(count),
+                        EffectOutcome::Failed(reason) => Message::Failed(reason),
+                    }
                 });
             }
             Message::Text(text) => Observation::Text(text),
@@ -117,9 +121,11 @@ fn shared_failure_message_preserves_domain_mapping_and_trace_reasons() {
         let trace = runtime
             .trace()
             .iter()
-            .filter_map(|record| match &record.event {
-                TraceEvent::EffectOutcome { outcome, .. } => Some(*outcome),
-                _ => None,
+            .filter_map(|record| {
+                match &record.event {
+                    TraceEvent::EffectOutcome { outcome, .. } => Some(*outcome),
+                    _ => None,
+                }
             })
             .collect::<Vec<_>>();
         assert_eq!(trace, expected_trace);

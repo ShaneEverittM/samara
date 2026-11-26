@@ -1,0 +1,6 @@
+# Needs nightly rustfmt: run `mise run fmt`, not `cargo fmt`.
+edition = "2024"
+
+# A match arm or closure body that spans more than one line is wrapped in a
+# block, so a method chain's later calls are indented inside the arm.
+force_multiline_blocks = true

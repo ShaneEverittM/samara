@@ -123,9 +123,8 @@ impl Component for Provider {
             }
             ProviderMessage::Host(HostMessage::Held(value, reply_with)) => {
                 Effect::perform(await_release, AwaitRelease(value)).producing(
-                    move |EffectOutcome::Succeeded(value)| ProviderMessage::CompleteDelayed {
-                        reply_with,
-                        value,
+                    move |EffectOutcome::Succeeded(value)| {
+                        ProviderMessage::CompleteDelayed { reply_with, value }
                     },
                 )
             }
@@ -266,9 +265,11 @@ fn selectively_panicking_binding_program() -> (TestProgram, Port<HostMessage>) {
         .add(());
     builder.connect(
         &port,
-        &provider.accepting(|message| match message {
-            HostMessage::Set(0) => panic!("send binding conversion panic"),
-            other => ProviderMessage::Host(other),
+        &provider.accepting(|message| {
+            match message {
+                HostMessage::Set(0) => panic!("send binding conversion panic"),
+                other => ProviderMessage::Host(other),
+            }
         }),
     );
     let program = TestProgram {

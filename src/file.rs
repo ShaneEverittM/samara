@@ -291,18 +291,22 @@ impl FileDriver {
     pub fn new(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
         match path.file_name() {
-            Some(name) => Self {
-                fs: FsDriver::new(
-                    path.parent()
-                        .filter(|parent| !parent.as_os_str().is_empty())
-                        .unwrap_or(Path::new(".")),
-                ),
-                file: name.into(),
-            },
-            None => Self {
-                fs: FsDriver::new("."),
-                file: path,
-            },
+            Some(name) => {
+                Self {
+                    fs: FsDriver::new(
+                        path.parent()
+                            .filter(|parent| !parent.as_os_str().is_empty())
+                            .unwrap_or(Path::new(".")),
+                    ),
+                    file: name.into(),
+                }
+            }
+            None => {
+                Self {
+                    fs: FsDriver::new("."),
+                    file: path,
+                }
+            }
         }
     }
 }

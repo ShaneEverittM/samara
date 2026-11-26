@@ -283,10 +283,12 @@ impl Component for Counter {
         Subscriptions::one(Subscription::source_with(
             &cx.io.increments,
             cx.config.increments.clone(),
-            |event| match event {
-                SourceEvent::Item(by) => CounterMessage::Increment(by),
-                SourceEvent::Ended => CounterMessage::InputClosed,
-                SourceEvent::Failed(never) => match never {},
+            |event| {
+                match event {
+                    SourceEvent::Item(by) => CounterMessage::Increment(by),
+                    SourceEvent::Ended => CounterMessage::InputClosed,
+                    SourceEvent::Failed(never) => match never {},
+                }
             },
         ))
     }

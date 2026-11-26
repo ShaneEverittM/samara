@@ -101,9 +101,11 @@ fn successful_replies(
         .state(client)
         .unwrap()
         .iter()
-        .map(|(count, outcome)| match outcome {
-            RequestOutcome::Replied(Ok(lines)) => (*count, lines.clone()),
-            other => panic!("expected a successful Journal reply, got {other:?}"),
+        .map(|(count, outcome)| {
+            match outcome {
+                RequestOutcome::Replied(Ok(lines)) => (*count, lines.clone()),
+                other => panic!("expected a successful Journal reply, got {other:?}"),
+            }
         })
         .collect()
 }

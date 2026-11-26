@@ -998,14 +998,16 @@ impl ControlledCore {
                         }
                     };
                     let deadline = match command.timeout() {
-                        Some(timeout) => Some(self.now.checked_add(timeout).ok_or_else(|| {
-                            self.set_fault(
-                                component.clone(),
-                                None,
-                                work,
-                                "request deadline is unrepresentable",
-                            )
-                        })?),
+                        Some(timeout) => {
+                            Some(self.now.checked_add(timeout).ok_or_else(|| {
+                                self.set_fault(
+                                    component.clone(),
+                                    None,
+                                    work,
+                                    "request deadline is unrepresentable",
+                                )
+                            })?)
+                        }
                         None => None,
                     };
                     let correlation = self.next_correlation;
@@ -1444,18 +1446,20 @@ impl ControlledCore {
         });
         if let Some(mapper) = effect.mapper.take() {
             match mapper(Box::new(outcome)) {
-                ErasedEffectContinuation::Message(message) => self.schedule_message(
-                    QueuedMessage {
-                        target: effect.component,
-                        target_message_type: effect.message_type,
-                        message_type_name: effect.message_type_name,
-                        message,
-                        cause: outcome_trace,
-                        source: None,
-                        delivery: DeliveryKind::Message,
-                    },
-                    self.now,
-                ),
+                ErasedEffectContinuation::Message(message) => {
+                    self.schedule_message(
+                        QueuedMessage {
+                            target: effect.component,
+                            target_message_type: effect.message_type,
+                            message_type_name: effect.message_type_name,
+                            message,
+                            cause: outcome_trace,
+                            source: None,
+                            delivery: DeliveryKind::Message,
+                        },
+                        self.now,
+                    )
+                }
                 ErasedEffectContinuation::Command(command) => {
                     command.interpret(self, &effect.component, outcome_trace)?;
                 }
@@ -1500,18 +1504,20 @@ impl ControlledCore {
             .take()
             .expect("an outstanding Request owns one mapper");
         match mapper(outcome) {
-            ErasedEffectContinuation::Message(message) => self.schedule_message(
-                QueuedMessage {
-                    target: request.requester,
-                    target_message_type: request.message_type,
-                    message_type_name: request.message_type_name,
-                    message,
-                    cause: trace,
-                    source: None,
-                    delivery: DeliveryKind::Message,
-                },
-                self.now,
-            ),
+            ErasedEffectContinuation::Message(message) => {
+                self.schedule_message(
+                    QueuedMessage {
+                        target: request.requester,
+                        target_message_type: request.message_type,
+                        message_type_name: request.message_type_name,
+                        message,
+                        cause: trace,
+                        source: None,
+                        delivery: DeliveryKind::Message,
+                    },
+                    self.now,
+                )
+            }
             ErasedEffectContinuation::Command(command) => {
                 command.interpret(self, &request.requester, trace)?;
             }
@@ -1623,13 +1629,15 @@ impl ControlledCore {
 
         let delivery_cause = match message.delivery {
             DeliveryKind::Message => message.cause,
-            DeliveryKind::Timer => self.push_child(
-                message.cause,
-                TraceEvent::TimerFired {
-                    component: message.target.clone(),
-                    message_type: message.message_type_name,
-                },
-            ),
+            DeliveryKind::Timer => {
+                self.push_child(
+                    message.cause,
+                    TraceEvent::TimerFired {
+                        component: message.target.clone(),
+                        message_type: message.message_type_name,
+                    },
+                )
+            }
         };
 
         let Some(index) = self.component_index(&message.target, message.target_message_type) else {

@@ -1175,11 +1175,13 @@ fn typed_request_outcome<Reply: Send + 'static>(
     outcome: RequestOutcome<Box<dyn Any + Send>>,
 ) -> RequestOutcome<Reply> {
     match outcome {
-        RequestOutcome::Replied(reply) => RequestOutcome::Replied(
-            *reply
-                .downcast::<Reply>()
-                .expect("Request couples correlation to its Reply type"),
-        ),
+        RequestOutcome::Replied(reply) => {
+            RequestOutcome::Replied(
+                *reply
+                    .downcast::<Reply>()
+                    .expect("Request couples correlation to its Reply type"),
+            )
+        }
         RequestOutcome::TimedOut => RequestOutcome::TimedOut,
         RequestOutcome::Failed(error) => RequestOutcome::Failed(error),
         RequestOutcome::Cancelled => RequestOutcome::Cancelled,
@@ -1601,10 +1603,12 @@ impl<Message> Command<Message> {
                     Err(_) => unreachable!("the descriptor type was checked before interception"),
                 };
                 let mapper = mapper.expect("mapped effects retain one outcome mapper");
-                let mapper = Box::new(move |outcome| match mapper(Box::new(outcome)) {
-                    EffectContinuation::Message(message) => message,
-                    EffectContinuation::Command(_) => {
-                        unreachable!("direct Message mapper checked above")
+                let mapper = Box::new(move |outcome| {
+                    match mapper(Box::new(outcome)) {
+                        EffectContinuation::Message(message) => message,
+                        EffectContinuation::Command(_) => {
+                            unreachable!("direct Message mapper checked above")
+                        }
                     }
                 });
                 Ok(EffectInvocation { descriptor, mapper })
@@ -2740,14 +2744,18 @@ where
             transform,
         } = self;
         match redirect_limit {
-            Some(limit) => http_redirect::command(
-                capability.clone(),
-                request,
-                limit,
-                Box::new(move |outcome| map(transform(outcome))),
-            ),
-            None => Effect::perform(capability, request)
-                .producing(move |outcome| map(transform(outcome))),
+            Some(limit) => {
+                http_redirect::command(
+                    capability.clone(),
+                    request,
+                    limit,
+                    Box::new(move |outcome| map(transform(outcome))),
+                )
+            }
+            None => {
+                Effect::perform(capability, request)
+                    .producing(move |outcome| map(transform(outcome)))
+            }
         }
     }
 }
@@ -2811,14 +2819,16 @@ impl HttpResponsePipeline<HttpResponse, HttpError> {
     ///
     /// </details>
     pub fn require_success(self) -> HttpResponsePipeline<HttpResponse, HttpResponseError> {
-        self.then(|outcome| match outcome {
-            EffectOutcome::Succeeded(response) if response.status().is_success() => {
-                EffectOutcome::Succeeded(response)
+        self.then(|outcome| {
+            match outcome {
+                EffectOutcome::Succeeded(response) if response.status().is_success() => {
+                    EffectOutcome::Succeeded(response)
+                }
+                EffectOutcome::Succeeded(response) => {
+                    EffectOutcome::Failed(HttpStatusError::new(response).into())
+                }
+                EffectOutcome::Failed(error) => EffectOutcome::Failed(error.into()),
             }
-            EffectOutcome::Succeeded(response) => {
-                EffectOutcome::Failed(HttpStatusError::new(response).into())
-            }
-            EffectOutcome::Failed(error) => EffectOutcome::Failed(error.into()),
         })
     }
 }
@@ -2846,17 +2856,19 @@ where
     where
         T: serde::de::DeserializeOwned + Send + 'static,
     {
-        self.then(|outcome| match outcome {
-            EffectOutcome::Succeeded(response) => {
-                let decoded = serde_json::from_slice(response.body());
-                match decoded {
-                    Ok(output) => EffectOutcome::Succeeded(output),
-                    Err(source) => {
-                        EffectOutcome::Failed(HttpJsonError::new(source, response).into())
+        self.then(|outcome| {
+            match outcome {
+                EffectOutcome::Succeeded(response) => {
+                    let decoded = serde_json::from_slice(response.body());
+                    match decoded {
+                        Ok(output) => EffectOutcome::Succeeded(output),
+                        Err(source) => {
+                            EffectOutcome::Failed(HttpJsonError::new(source, response).into())
+                        }
                     }
                 }
+                EffectOutcome::Failed(error) => EffectOutcome::Failed(error.into()),
             }
-            EffectOutcome::Failed(error) => EffectOutcome::Failed(error.into()),
         })
     }
 }
@@ -3342,14 +3354,18 @@ where
             SourceEvent::Failed(error) => {
                 vec![SourceEvent::Failed(FramedError::Source(error))]
             }
-            SourceEvent::Ended => match self.descriptor.decoder.finish(&mut self.state) {
-                Ok(frames) => frames
-                    .into_iter()
-                    .map(SourceEvent::Item)
-                    .chain(std::iter::once(SourceEvent::Ended))
-                    .collect(),
-                Err(error) => vec![SourceEvent::Failed(FramedError::Decode(error))],
-            },
+            SourceEvent::Ended => {
+                match self.descriptor.decoder.finish(&mut self.state) {
+                    Ok(frames) => {
+                        frames
+                            .into_iter()
+                            .map(SourceEvent::Item)
+                            .chain(std::iter::once(SourceEvent::Ended))
+                            .collect()
+                    }
+                    Err(error) => vec![SourceEvent::Failed(FramedError::Decode(error))],
+                }
+            }
         }
     }
 }
@@ -3907,10 +3923,12 @@ impl<Message: Send + 'static> ErasedEffectCommand<Message> for WidenedEffect {
     fn into_parts(self: Box<Self>) -> (Box<dyn Any + Send>, Option<ErasedEffectMapper<Message>>) {
         let (descriptor, mapper) = self.0.into_parts();
         let mapper = mapper.map(|mapper| {
-            Box::new(move |outcome| match mapper(outcome) {
-                EffectContinuation::Message(message) => match message.0 {},
-                EffectContinuation::Command(command) => {
-                    EffectContinuation::Command(command.widen())
+            Box::new(move |outcome| {
+                match mapper(outcome) {
+                    EffectContinuation::Message(message) => match message.0 {},
+                    EffectContinuation::Command(command) => {
+                        EffectContinuation::Command(command.widen())
+                    }
                 }
             }) as ErasedEffectMapper<Message>
         });
@@ -4195,17 +4213,21 @@ enum AddressKind<M: Send + 'static> {
 impl<M: Send + 'static> Address<M> {
     fn target(&self) -> MessageTarget<'_> {
         match &self.0 {
-            AddressKind::Port(port) => MessageTarget::Port {
-                id: port.id(),
-                program: &port.program,
-                protocol: TypeId::of::<M>(),
-            },
-            AddressKind::Connector(connector) => MessageTarget::Connector {
-                id: &connector.id,
-                program: &connector.program,
-                message_type: connector.message_type,
-                message_type_name: connector.message_type_name,
-            },
+            AddressKind::Port(port) => {
+                MessageTarget::Port {
+                    id: port.id(),
+                    program: &port.program,
+                    protocol: TypeId::of::<M>(),
+                }
+            }
+            AddressKind::Connector(connector) => {
+                MessageTarget::Connector {
+                    id: &connector.id,
+                    program: &connector.program,
+                    message_type: connector.message_type,
+                    message_type_name: connector.message_type_name,
+                }
+            }
         }
     }
 
@@ -4613,64 +4635,68 @@ where
                     )))
                 }
             }
-            CommandKind::Send(send) => match send.target() {
-                MessageTarget::Port {
-                    id,
-                    program: port_program,
-                    protocol,
-                } => {
-                    if program.declares_port_target(port_program, id, protocol) {
-                        Ok(())
-                    } else {
-                        Err(RuntimeError::harness(format!(
-                            "Component {component:?} has an initial send Port {id:?} from another Program or absent from this Program"
-                        )))
+            CommandKind::Send(send) => {
+                match send.target() {
+                    MessageTarget::Port {
+                        id,
+                        program: port_program,
+                        protocol,
+                    } => {
+                        if program.declares_port_target(port_program, id, protocol) {
+                            Ok(())
+                        } else {
+                            Err(RuntimeError::harness(format!(
+                                "Component {component:?} has an initial send Port {id:?} from another Program or absent from this Program"
+                            )))
+                        }
+                    }
+                    MessageTarget::Connector {
+                        id,
+                        program: target_program,
+                        message_type,
+                        ..
+                    } => {
+                        if program.declares_component_target(target_program, id, message_type) {
+                            Ok(())
+                        } else {
+                            Err(RuntimeError::harness(format!(
+                                "Component {component:?} has an initial direct-send target {id:?} from another Program or absent from this Program"
+                            )))
+                        }
                     }
                 }
-                MessageTarget::Connector {
-                    id,
-                    program: target_program,
-                    message_type,
-                    ..
-                } => {
-                    if program.declares_component_target(target_program, id, message_type) {
-                        Ok(())
-                    } else {
-                        Err(RuntimeError::harness(format!(
-                            "Component {component:?} has an initial direct-send target {id:?} from another Program or absent from this Program"
-                        )))
+            }
+            CommandKind::Request(request) => {
+                match request.target() {
+                    MessageTarget::Port {
+                        id,
+                        program: port_program,
+                        protocol,
+                    } => {
+                        if program.declares_port_target(port_program, id, protocol) {
+                            Ok(())
+                        } else {
+                            Err(RuntimeError::harness(format!(
+                                "Component {component:?} has an initial request Port {id:?} from another Program or absent from this Program"
+                            )))
+                        }
+                    }
+                    MessageTarget::Connector {
+                        id,
+                        program: target_program,
+                        message_type,
+                        ..
+                    } => {
+                        if program.declares_component_target(target_program, id, message_type) {
+                            Ok(())
+                        } else {
+                            Err(RuntimeError::harness(format!(
+                                "Component {component:?} has an initial request Connector target {id:?} from another Program or absent from this Program"
+                            )))
+                        }
                     }
                 }
-            },
-            CommandKind::Request(request) => match request.target() {
-                MessageTarget::Port {
-                    id,
-                    program: port_program,
-                    protocol,
-                } => {
-                    if program.declares_port_target(port_program, id, protocol) {
-                        Ok(())
-                    } else {
-                        Err(RuntimeError::harness(format!(
-                            "Component {component:?} has an initial request Port {id:?} from another Program or absent from this Program"
-                        )))
-                    }
-                }
-                MessageTarget::Connector {
-                    id,
-                    program: target_program,
-                    message_type,
-                    ..
-                } => {
-                    if program.declares_component_target(target_program, id, message_type) {
-                        Ok(())
-                    } else {
-                        Err(RuntimeError::harness(format!(
-                            "Component {component:?} has an initial request Connector target {id:?} from another Program or absent from this Program"
-                        )))
-                    }
-                }
-            },
+            }
             CommandKind::Batch(commands) => {
                 for command in commands {
                     validate_command(program, component, command)?;
@@ -4870,39 +4896,51 @@ impl fmt::Display for ProgramBuildError {
                 protocol_type,
                 port,
                 count,
-            } => write!(
-                formatter,
-                "Port {port:?} for {protocol_type} has {count} bindings; expected exactly one"
-            ),
+            } => {
+                write!(
+                    formatter,
+                    "Port {port:?} for {protocol_type} has {count} bindings; expected exactly one"
+                )
+            }
             Self::ForeignPort {
                 protocol_type,
                 port,
-            } => write!(
-                formatter,
-                "Port {port:?} for {protocol_type} belongs to another ProgramBuilder"
-            ),
-            Self::ForeignProvider { provider } => write!(
-                formatter,
-                "provider {provider:?} belongs to another ProgramBuilder"
-            ),
+            } => {
+                write!(
+                    formatter,
+                    "Port {port:?} for {protocol_type} belongs to another ProgramBuilder"
+                )
+            }
+            Self::ForeignProvider { provider } => {
+                write!(
+                    formatter,
+                    "provider {provider:?} belongs to another ProgramBuilder"
+                )
+            }
             Self::ProviderNotRegistered { provider } => {
                 write!(formatter, "provider {provider:?} is not registered")
             }
             Self::ForeignConnection {
                 component,
                 connection,
-            } => match connection {
-                Some(connection) => write!(
-                    formatter,
-                    "connection {}.{connection} belongs to another ProgramBuilder",
-                    component.name()
-                ),
-                None => write!(
-                    formatter,
-                    "a connection of {} belongs to another ProgramBuilder",
-                    component.name()
-                ),
-            },
+            } => {
+                match connection {
+                    Some(connection) => {
+                        write!(
+                            formatter,
+                            "connection {}.{connection} belongs to another ProgramBuilder",
+                            component.name()
+                        )
+                    }
+                    None => {
+                        write!(
+                            formatter,
+                            "a connection of {} belongs to another ProgramBuilder",
+                            component.name()
+                        )
+                    }
+                }
+            }
         }
     }
 }
@@ -5525,13 +5563,15 @@ impl fmt::Display for RuntimeError {
                 descriptor_type,
                 work,
                 reason,
-            } => write!(
-                formatter,
-                "Component {component:?} faulted at work {work:?}{}: {reason}",
-                descriptor_type
-                    .map(|name| format!(" ({name})"))
-                    .unwrap_or_default()
-            ),
+            } => {
+                write!(
+                    formatter,
+                    "Component {component:?} faulted at work {work:?}{}: {reason}",
+                    descriptor_type
+                        .map(|name| format!(" ({name})"))
+                        .unwrap_or_default()
+                )
+            }
             RuntimeErrorKind::Harness(reason) => formatter.write_str(reason),
         }
     }
@@ -5703,9 +5743,9 @@ impl Runtime {
     }
 
     /// Run until an interrupt.
-    /// 
+    ///
     /// Equivalent to:
-    /// 
+    ///
     /// ```no_run
     /// # use samara::prelude::*;
     /// # async fn host(runtime: Runtime) -> Result<(), Box<dyn std::error::Error>> {

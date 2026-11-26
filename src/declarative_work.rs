@@ -204,14 +204,16 @@ mod tests {
             model: &Self::Model,
         ) -> Subscriptions<Self::Message> {
             match model {
-                Some(binding) => Subscriptions::one(
-                    Subscription::source_with(
-                        &cx.config.source,
-                        StreamDescriptor::<u64>::named(*binding),
-                        DesiredMessage::Input,
+                Some(binding) => {
+                    Subscriptions::one(
+                        Subscription::source_with(
+                            &cx.config.source,
+                            StreamDescriptor::<u64>::named(*binding),
+                            DesiredMessage::Input,
+                        )
+                        .key("input"),
                     )
-                    .key("input"),
-                ),
+                }
                 None => Subscriptions::none(),
             }
         }

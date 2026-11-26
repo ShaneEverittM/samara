@@ -35,9 +35,11 @@ impl Component for Reader {
             model.push(value);
             Command::none()
         } else {
-            Effect::perform(read, Read).producing(|outcome| match outcome {
-                EffectOutcome::Succeeded(value) => Some(value),
-                _ => None,
+            Effect::perform(read, Read).producing(|outcome| {
+                match outcome {
+                    EffectOutcome::Succeeded(value) => Some(value),
+                    _ => None,
+                }
             })
         }
     }

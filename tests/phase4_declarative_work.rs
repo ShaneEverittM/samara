@@ -61,9 +61,11 @@ fn v3_all_effect_outcomes_remain_typed_message_input() {
     let (declared_0,) = <(samara::Effect<PersistValue>,) as samara::Io>::detached();
     let persist = declared_0;
     let failed = Effect::perform(&persist, PersistValue { value: 5 })
-        .producing(|outcome| EffectMessage::Persisted {
-            request: 5,
-            outcome,
+        .producing(|outcome| {
+            EffectMessage::Persisted {
+                request: 5,
+                outcome,
+            }
         })
         .map_effect_outcome::<PersistValue>(EffectOutcome::Failed(PersistError))
         .unwrap_or_else(|_| panic!("failure descriptor should match"));

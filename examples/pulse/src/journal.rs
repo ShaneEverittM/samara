@@ -37,35 +37,43 @@ impl Component for Recorder {
     fn update(cx: &Context<Self>, _: &mut Model, message: Message) -> Command<Message> {
         match message {
             // An external request.
-            Message::Journal(journal) => match journal {
-                JournalMessage::Transition(transition) => Clock::system_time(&cx.io.clock)
-                    .succeeding(|time| Message::Time { time, transition }),
+            Message::Journal(journal) => {
+                match journal {
+                    JournalMessage::Transition(transition) => {
+                        Clock::system_time(&cx.io.clock)
+                            .succeeding(|time| Message::Time { time, transition })
+                    }
 
-                JournalMessage::Recent { count, reply } => {
-                    File::read(&cx.io.file).finish_with(move |outcome| {
-                        Command::reply(
-                            reply,
-                            match outcome {
-                                EffectOutcome::Succeeded(contents) => Ok(tail(&contents, count)),
-                                EffectOutcome::Failed(_) => Err(Error::CouldNotReadJournal),
-                            },
-                        )
-                    })
+                    JournalMessage::Recent { count, reply } => {
+                        File::read(&cx.io.file).finish_with(move |outcome| {
+                            Command::reply(
+                                reply,
+                                match outcome {
+                                    EffectOutcome::Succeeded(contents) => {
+                                        Ok(tail(&contents, count))
+                                    }
+                                    EffectOutcome::Failed(_) => Err(Error::CouldNotReadJournal),
+                                },
+                            )
+                        })
+                    }
                 }
-            },
+            }
 
             // Yeah, I got time.
             Message::Time {
                 time,
                 transition: Transition { name, from, to },
-            } => File::append_line(
-                &cx.io.file,
-                format!(
-                    "[{}]{name}: {from} -> {to}",
-                    time.duration_since(UNIX_EPOCH).unwrap().as_millis()
-                ),
-            )
-            .discard_outcome(),
+            } => {
+                File::append_line(
+                    &cx.io.file,
+                    format!(
+                        "[{}]{name}: {from} -> {to}",
+                        time.duration_since(UNIX_EPOCH).unwrap().as_millis()
+                    ),
+                )
+                .discard_outcome()
+            }
         }
     }
 }

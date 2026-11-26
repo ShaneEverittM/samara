@@ -16,18 +16,20 @@ pub fn derive_io(input: TokenStream) -> TokenStream {
     let (impl_generics, type_generics, where_clause) = input.generics.split_for_impl();
 
     let fields = match &input.data {
-        Data::Struct(data) => match &data.fields {
-            Fields::Named(fields) => &fields.named,
-            other => {
-                return syn::Error::new(
-                    other.span(),
-                    "Io can only be derived for a struct with named fields; \
+        Data::Struct(data) => {
+            match &data.fields {
+                Fields::Named(fields) => &fields.named,
+                other => {
+                    return syn::Error::new(
+                        other.span(),
+                        "Io can only be derived for a struct with named fields; \
                      use a tuple type directly for unnamed capabilities",
-                )
-                .to_compile_error()
-                .into();
+                    )
+                    .to_compile_error()
+                    .into();
+                }
             }
-        },
+        }
         _ => {
             return syn::Error::new(
                 input.ident.span(),
@@ -70,18 +72,20 @@ pub fn derive_connections(input: TokenStream) -> TokenStream {
     let (impl_generics, type_generics, where_clause) = input.generics.split_for_impl();
 
     let fields = match &input.data {
-        Data::Struct(data) => match &data.fields {
-            Fields::Named(fields) => &fields.named,
-            other => {
-                return syn::Error::new(
-                    other.span(),
-                    "Connections can only be derived for a struct with named fields; \
+        Data::Struct(data) => {
+            match &data.fields {
+                Fields::Named(fields) => &fields.named,
+                other => {
+                    return syn::Error::new(
+                        other.span(),
+                        "Connections can only be derived for a struct with named fields; \
                      use a tuple type directly for unnamed connections",
-                )
-                .to_compile_error()
-                .into();
+                    )
+                    .to_compile_error()
+                    .into();
+                }
             }
-        },
+        }
         _ => {
             return syn::Error::new(
                 input.ident.span(),

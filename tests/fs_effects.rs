@@ -77,18 +77,26 @@ impl Component for Walker {
         let next = |model: &mut WalkerModel| -> Command<WalkerMessage> {
             model.step += 1;
             match model.step {
-                1 => Effect::perform(append, AppendToFile::line(FILE, "first"))
-                    .producing(WalkerMessage::Wrote),
-                2 => Effect::perform(append, AppendToFile::line(FILE, "second"))
-                    .producing(WalkerMessage::Wrote),
+                1 => {
+                    Effect::perform(append, AppendToFile::line(FILE, "first"))
+                        .producing(WalkerMessage::Wrote)
+                }
+                2 => {
+                    Effect::perform(append, AppendToFile::line(FILE, "second"))
+                        .producing(WalkerMessage::Wrote)
+                }
                 3 | 5 | 7 => {
                     Effect::perform(read, ReadFile::new(FILE)).producing(WalkerMessage::Read)
                 }
-                4 => Effect::perform(replace, ReplaceFile::text(FILE, "replaced"))
-                    .producing(WalkerMessage::Wrote),
+                4 => {
+                    Effect::perform(replace, ReplaceFile::text(FILE, "replaced"))
+                        .producing(WalkerMessage::Wrote)
+                }
                 6 => Effect::perform(remove, RemoveFile::new(FILE)).producing(WalkerMessage::Wrote),
-                _ => Effect::perform(report, Report("done".into()))
-                    .producing(|_| WalkerMessage::Reported),
+                _ => {
+                    Effect::perform(report, Report("done".into()))
+                        .producing(|_| WalkerMessage::Reported)
+                }
             }
         };
         match message {

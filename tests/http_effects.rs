@@ -77,11 +77,13 @@ impl Component for HttpSequence {
     ) -> Command<Self::Message> {
         let (http, observe) = &cx.io;
         match message {
-            HttpMessage::Start => Effect::perform(
-                http,
-                cx.config.first().expect("nonempty test sequence").clone(),
-            )
-            .producing(HttpMessage::Finished),
+            HttpMessage::Start => {
+                Effect::perform(
+                    http,
+                    cx.config.first().expect("nonempty test sequence").clone(),
+                )
+                .producing(HttpMessage::Finished)
+            }
             HttpMessage::Finished(outcome) => {
                 model.seen.push(match outcome {
                     EffectOutcome::Succeeded(response) => SeenHttp::Response(response),
@@ -253,22 +255,26 @@ async fn serve_two_requests(listener: TcpListener) -> std::io::Result<ServerRepo
                 .nth(1)
                 .expect("request target");
             let response = match path {
-                "/status" => concat!(
-                    "HTTP/1.1 503 Service Unavailable\r\n",
-                    "X-Response: status\r\n",
-                    "Content-Length: 11\r\n",
-                    "Connection: keep-alive\r\n",
-                    "\r\n",
-                    "unavailable"
-                ),
-                "/redirect" => concat!(
-                    "HTTP/1.1 302 Found\r\n",
-                    "Location: /must-not-follow\r\n",
-                    "Content-Length: 8\r\n",
-                    "Connection: keep-alive\r\n",
-                    "\r\n",
-                    "redirect"
-                ),
+                "/status" => {
+                    concat!(
+                        "HTTP/1.1 503 Service Unavailable\r\n",
+                        "X-Response: status\r\n",
+                        "Content-Length: 11\r\n",
+                        "Connection: keep-alive\r\n",
+                        "\r\n",
+                        "unavailable"
+                    )
+                }
+                "/redirect" => {
+                    concat!(
+                        "HTTP/1.1 302 Found\r\n",
+                        "Location: /must-not-follow\r\n",
+                        "Content-Length: 8\r\n",
+                        "Connection: keep-alive\r\n",
+                        "\r\n",
+                        "redirect"
+                    )
+                }
                 other => panic!("the HTTP Driver made an undeclared request to {other}"),
             };
             requests.push(request);

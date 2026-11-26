@@ -192,9 +192,11 @@ fn shutdown_order(runtime: &ControlledRuntime) -> Vec<ComponentId> {
     runtime
         .trace()
         .iter()
-        .filter_map(|record| match &record.event {
-            TraceEvent::ComponentShutdown { component } => Some(component.clone()),
-            _ => None,
+        .filter_map(|record| {
+            match &record.event {
+                TraceEvent::ComponentShutdown { component } => Some(component.clone()),
+                _ => None,
+            }
         })
         .collect()
 }
@@ -300,9 +302,11 @@ fn shutdown_answers_held_callers_and_abandons_dropped_tokens() {
     let outcomes: Vec<_> = runtime
         .trace()
         .iter()
-        .filter_map(|record| match &record.event {
-            TraceEvent::RequestOutcome { outcome, .. } => Some(*outcome),
-            _ => None,
+        .filter_map(|record| {
+            match &record.event {
+                TraceEvent::RequestOutcome { outcome, .. } => Some(*outcome),
+                _ => None,
+            }
         })
         .collect();
     assert_eq!(
@@ -321,10 +325,12 @@ fn a_message_to_a_stopped_component_is_dropped_and_traced() {
 
     runtime.send(&asker, AskerMessage::Hold).unwrap();
     assert_eq!(runtime.run_until_idle().unwrap().transitions, 0);
-    assert!(runtime.trace().iter().any(|record| matches!(
-        &record.event,
-        TraceEvent::MessageDropped { component, .. } if component == asker.id()
-    )));
+    assert!(runtime.trace().iter().any(|record| {
+        matches!(
+            &record.event,
+            TraceEvent::MessageDropped { component, .. } if component == asker.id()
+        )
+    }));
 }
 
 #[test]

@@ -319,14 +319,16 @@ fn controlled_traces_repeat_and_next_hop_is_caused_by_previous_outcome() {
             .iter()
             .find(|r| matches!(r.event, TraceEvent::EffectOutcome { .. }))
             .unwrap();
-        assert!(trace.iter().any(|r| r.cause == Some(raw_outcome.id)
-            && matches!(
-                r.event,
-                TraceEvent::CommandEmitted {
-                    kind: TraceCommandKind::Effect,
-                    ..
-                }
-            )));
+        assert!(trace.iter().any(|r| {
+            r.cause == Some(raw_outcome.id)
+                && matches!(
+                    r.event,
+                    TraceEvent::CommandEmitted {
+                        kind: TraceCommandKind::Effect,
+                        ..
+                    }
+                )
+        }));
         finish(&mut runtime, response(200, None));
         let trace = runtime.trace().to_vec();
         runtime.cancel().unwrap();

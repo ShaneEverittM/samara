@@ -124,26 +124,28 @@ impl Component for Monitor {
         message: MonitorMessage,
     ) -> Command<MonitorMessage> {
         match message {
-            MonitorMessage::Start => Command::batch([
-                Command::send(
-                    &cx.to.audit,
-                    AuditMessage::Changed {
-                        what: "api".into(),
-                        from: "up".into(),
-                        to: "down".into(),
-                    },
-                ),
-                Command::send(
-                    &cx.to.audit,
-                    AuditMessage::Changed {
-                        what: "api".into(),
-                        from: "down".into(),
-                        to: "up".into(),
-                    },
-                ),
-                Command::request(&cx.to.audit, |reply_with| AuditMessage::Tail(1, reply_with))
-                    .producing(MonitorMessage::Tail),
-            ]),
+            MonitorMessage::Start => {
+                Command::batch([
+                    Command::send(
+                        &cx.to.audit,
+                        AuditMessage::Changed {
+                            what: "api".into(),
+                            from: "up".into(),
+                            to: "down".into(),
+                        },
+                    ),
+                    Command::send(
+                        &cx.to.audit,
+                        AuditMessage::Changed {
+                            what: "api".into(),
+                            from: "down".into(),
+                            to: "up".into(),
+                        },
+                    ),
+                    Command::request(&cx.to.audit, |reply_with| AuditMessage::Tail(1, reply_with))
+                        .producing(MonitorMessage::Tail),
+                ])
+            }
             MonitorMessage::Tail(RequestOutcome::Replied(tail)) => {
                 model.tail = Some(tail);
                 Command::none()
@@ -157,11 +159,13 @@ impl Component for Monitor {
 /// `JournalMessage` is spelled outside the library.
 fn couple(message: AuditMessage) -> JournalMessage {
     match message {
-        AuditMessage::Changed { what, from, to } => JournalMessage::Transition {
-            name: what,
-            from,
-            to,
-        },
+        AuditMessage::Changed { what, from, to } => {
+            JournalMessage::Transition {
+                name: what,
+                from,
+                to,
+            }
+        }
         AuditMessage::Tail(count, reply_with) => JournalMessage::Recent(count, reply_with),
     }
 }
@@ -365,17 +369,23 @@ impl Component for Teller {
         message: TellerMessage,
     ) -> Command<TellerMessage> {
         match message {
-            TellerMessage::Start => Command::batch([
-                Command::send(&cx.to, TallyMessage::add(2)),
-                Command::send(&cx.to, TallyMessage::add(3)),
-                match cx.config {
-                    None => Command::request(&cx.to, TallyMessage::total)
-                        .producing(TellerMessage::Total),
-                    Some(patience) => Command::request(&cx.to, TallyMessage::park)
-                        .timeout(patience)
-                        .producing(TellerMessage::Total),
-                },
-            ]),
+            TellerMessage::Start => {
+                Command::batch([
+                    Command::send(&cx.to, TallyMessage::add(2)),
+                    Command::send(&cx.to, TallyMessage::add(3)),
+                    match cx.config {
+                        None => {
+                            Command::request(&cx.to, TallyMessage::total)
+                                .producing(TellerMessage::Total)
+                        }
+                        Some(patience) => {
+                            Command::request(&cx.to, TallyMessage::park)
+                                .timeout(patience)
+                                .producing(TellerMessage::Total)
+                        }
+                    },
+                ])
+            }
             TellerMessage::Total(outcome) => {
                 model.total = Some(outcome);
                 Command::none()
@@ -492,18 +502,20 @@ impl Component for DirectMonitor {
         message: MonitorMessage,
     ) -> Command<MonitorMessage> {
         match message {
-            MonitorMessage::Start => Command::batch([
-                Command::send(
-                    &cx.to.audit,
-                    AuditMessage::Changed {
-                        what: "db".into(),
-                        from: "cold".into(),
-                        to: "warm".into(),
-                    },
-                ),
-                Command::request(&cx.to.audit, |reply_with| AuditMessage::Tail(1, reply_with))
-                    .producing(MonitorMessage::Tail),
-            ]),
+            MonitorMessage::Start => {
+                Command::batch([
+                    Command::send(
+                        &cx.to.audit,
+                        AuditMessage::Changed {
+                            what: "db".into(),
+                            from: "cold".into(),
+                            to: "warm".into(),
+                        },
+                    ),
+                    Command::request(&cx.to.audit, |reply_with| AuditMessage::Tail(1, reply_with))
+                        .producing(MonitorMessage::Tail),
+                ])
+            }
             MonitorMessage::Tail(RequestOutcome::Replied(tail)) => {
                 model.tail = Some(tail);
                 Command::none()

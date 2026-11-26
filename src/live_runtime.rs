@@ -1318,10 +1318,12 @@ impl LiveScope {
     pub(crate) fn accept_ingress(&self, event: LiveEvent) -> Result<(), RuntimeError> {
         let state = lock(&self.state);
         match &state.phase {
-            ScopePhase::Running => state
-                .sender
-                .send(event)
-                .map_err(|_| RuntimeError::harness("live runtime task is no longer running")),
+            ScopePhase::Running => {
+                state
+                    .sender
+                    .send(event)
+                    .map_err(|_| RuntimeError::harness("live runtime task is no longer running"))
+            }
             ScopePhase::Faulted(error) => Err(error.clone()),
             ScopePhase::Draining | ScopePhase::Cancelling | ScopePhase::Closed => {
                 Err(RuntimeError::harness("live runtime ingress is closed"))
@@ -2080,13 +2082,15 @@ impl LiveCore {
                             target,
                             message_type,
                             message_type_name,
-                        } => QueuedMessage {
-                            target,
-                            target_message_type: message_type,
-                            message_type_name,
-                            message,
-                            source: None,
-                        },
+                        } => {
+                            QueuedMessage {
+                                target,
+                                target_message_type: message_type,
+                                message_type_name,
+                                message,
+                                source: None,
+                            }
+                        }
                     };
                     let _ = self.scope.accept_finite(LiveEvent::Message(message));
                 }
@@ -2141,18 +2145,20 @@ impl LiveCore {
                         }
                     };
                     let deadline = match command.timeout() {
-                        Some(timeout) => Some(
-                            tokio::time::Instant::now()
-                                .checked_add(timeout)
-                                .ok_or_else(|| {
-                                    self.runtime_fault(
-                                        component.clone(),
-                                        None,
-                                        work,
-                                        "request deadline is unrepresentable",
-                                    )
-                                })?,
-                        ),
+                        Some(timeout) => {
+                            Some(
+                                tokio::time::Instant::now()
+                                    .checked_add(timeout)
+                                    .ok_or_else(|| {
+                                        self.runtime_fault(
+                                            component.clone(),
+                                            None,
+                                            work,
+                                            "request deadline is unrepresentable",
+                                        )
+                                    })?,
+                            )
+                        }
                         None => None,
                     };
                     let correlation = self.next_request;
@@ -2178,13 +2184,15 @@ impl LiveCore {
                             target,
                             message_type,
                             message_type_name,
-                        } => QueuedMessage {
-                            target,
-                            target_message_type: message_type,
-                            message_type_name,
-                            message: port_message,
-                            source: None,
-                        },
+                        } => {
+                            QueuedMessage {
+                                target,
+                                target_message_type: message_type,
+                                message_type_name,
+                                message: port_message,
+                                source: None,
+                            }
+                        }
                     };
                     let deadline_task =
                         self.schedule_request_deadline(correlation, deadline, component, work);
@@ -2936,16 +2944,18 @@ impl LiveCore {
                     self.runtime_fault(stamp.component, Some(descriptor_type), work, reason)
                 })
             }
-            TaskContext::Timer { component, work } => Some(self.runtime_fault(
-                component,
-                None,
-                work,
-                if panicked {
-                    Arc::from("runtime-owned timer task panicked")
-                } else {
-                    reason
-                },
-            )),
+            TaskContext::Timer { component, work } => {
+                Some(self.runtime_fault(
+                    component,
+                    None,
+                    work,
+                    if panicked {
+                        Arc::from("runtime-owned timer task panicked")
+                    } else {
+                        reason
+                    },
+                ))
+            }
         }
     }
 

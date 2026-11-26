@@ -54,10 +54,25 @@ setup. The root validation commands still cover every example package.
 
 ## Validate the Contract
 
+With [mise](https://mise.jdx.dev) installed:
+
 ```sh
-cargo fmt --all -- --check
-cargo test --workspace --all-targets
-cargo test --workspace --doc
+mise install      # the stable toolchain, once
+mise run check    # format check, tests, clippy, rustdoc
+mise run fmt      # format
+```
+
+The compiler is stable. Formatting alone uses a pinned nightly rustfmt,
+because `rustfmt.toml` sets `force_multiline_blocks`, which stable rustfmt
+does not have. Plain `cargo fmt` on stable ignores that option and produces
+different output, so format through `mise run fmt`. The pin is
+`RUSTFMT_TOOLCHAIN` in `mise.toml`.
+
+Without mise, the same checks are:
+
+```sh
+cargo +nightly-2026-11-25 fmt --all -- --check
+cargo test --workspace --all-features
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --all-features
 ```
