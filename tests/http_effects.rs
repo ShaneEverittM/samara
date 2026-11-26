@@ -1,4 +1,4 @@
-use std::{convert::Infallible, time::Duration};
+use std::time::Duration;
 
 use bytes::Bytes;
 use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Version};
@@ -82,7 +82,7 @@ impl Component for HttpSequence {
                     http,
                     cx.config.first().expect("nonempty test sequence").clone(),
                 )
-                .producing(HttpMessage::Finished)
+                .on_outcome(HttpMessage::Finished)
             }
             HttpMessage::Finished(outcome) => {
                 model.seen.push(match outcome {
@@ -90,10 +90,10 @@ impl Component for HttpSequence {
                     EffectOutcome::Failed(error) => SeenHttp::Error(error),
                 });
                 if let Some(request) = cx.config.get(model.seen.len()) {
-                    Effect::perform(http, request.clone()).producing(HttpMessage::Finished)
+                    Effect::perform(http, request.clone()).on_outcome(HttpMessage::Finished)
                 } else {
                     Effect::perform(observe, ObserveHttp(model.seen.clone()))
-                        .producing(|_| HttpMessage::Observed)
+                        .on_outcome(|_| HttpMessage::Observed)
                 }
             }
             HttpMessage::Observed => Command::none(),
@@ -106,7 +106,7 @@ struct ObserveHttp(Vec<SeenHttp>);
 
 impl EffectDescriptor for ObserveHttp {
     type Output = ();
-    type Error = Infallible;
+    type Error = !;
 }
 
 struct HttpObserver {
@@ -114,7 +114,7 @@ struct HttpObserver {
 }
 
 impl EffectDriver<ObserveHttp> for HttpObserver {
-    fn execute(&self, descriptor: ObserveHttp) -> BoxFuture<Result<(), Infallible>> {
+    fn execute(&self, descriptor: ObserveHttp) -> BoxFuture<Result<(), !>> {
         let observations = self.observations.clone();
         Box::pin(async move {
             let _ = observations.send(descriptor.0);

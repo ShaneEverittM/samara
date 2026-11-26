@@ -142,7 +142,7 @@ particular:
 
 - EffectDescriptors remain separately interceptable from their pure one-shot
   message mappers and need not be `Clone` or comparable.
-- `.discard_outcome()` removes only the application Message
+- `.discard()` removes only the application Message
   continuation. The effect remains a runtime-owned, controllable, traceable
   finite obligation subject to ordinary Drain, Cancel, and fault behavior.
 - Each Command occurrence is distinct even when descriptor values look equal.
@@ -389,7 +389,7 @@ terminal EffectDescriptors:
   standard error.
 
 Both descriptors own text, provide `text` for exact UTF-8 and `line` for UTF-8
-followed by `\n`, produce `()`, and use `Infallible` as their Error type. The
+followed by `\n`, produce `()`, and use `!` as their Error type. The
 values contain no handles and perform no work when constructed.
 
 `supply` accepts `StdoutDriver::new()` for an `Effect<PrintStdout>`
@@ -412,7 +412,7 @@ The root-qualified `samara::print!`, `samara::println!`, `samara::eprint!`, and
 `samara::eprintln!` macros take the matching `Effect` capability as their first
 argument, accept familiar Rust formatting syntax, own the resulting `String` in
 the matching descriptor, and return an ordinary
-`.discard_outcome()`. They are deliberately absent from
+`.discard()`. They are deliberately absent from
 `samara::prelude`; qualification makes the deferred Samara effect visible at
 the call site. The returned `Command` remains `#[must_use]` because dropping it
 requests no output. By contrast, Rust's unqualified `print!` and `println!`
@@ -569,8 +569,8 @@ around values issued by one `ProgramBuilder`, as amended by
   passes it to every callback. They expose no I/O,
   runtime handle, Driver, or controlled-world operation.
 - `Effect::perform(&capability, descriptor).into_command()`,
-  `Effect::perform(&capability, descriptor).producing(mapper)`, and
-  `Effect::perform(&capability, descriptor).discard_outcome()` are the only
+  `Effect::perform(&capability, descriptor).on_outcome(mapper)`, and
+  `Effect::perform(&capability, descriptor).discard()` are the only
   primitive public Effect issuance paths. Under ADR-0022, `File<P>`
   constructs bound `FileEffect<D>` values whose command conversion methods
   lower through these same paths, retaining the resource's exact identity.
@@ -655,7 +655,7 @@ exposed and renames the consumer-owned one:
 - A Connector from another `ProgramBuilder` fails `build()` as a foreign provider
   under ADR-0008's existing rule.
 - `Command::send(&target, message)` takes any `Addressable`.
-  `Command::request(&target, constructor).producing(map)` and `request_to_timeout`
+  `Command::request(&target, constructor).on_outcome(map)` and `request_to_timeout`
   address a request to an `Addressable`: `constructor: FnOnce(ReplyWith<R>) ->
   T::Message` is a function the provider published, its `ReplyWith<R>`
   parameter fixes the reply type, and the runtime mints the token and routes
@@ -674,8 +674,8 @@ interaction and leaves one way for a Command to reach a Component:
 
 - `Addressable` is implemented for `Port<M>`, `Connector<M>`, and
   `ComponentRef<C>`. `Command::send(&target, message)`,
-  `Command::request(&target, constructor).producing(map)`, and
-  `Command::request(&target, constructor).timeout(timeout).producing(map)` accept any
+  `Command::request(&target, constructor).on_outcome(map)`, and
+  `Command::request(&target, constructor).timeout(timeout).on_outcome(map)` accept any
   of them and deliver a value of the destination's message type.
 - A request is a message variant carrying `ReplyWith<R>`; `constructor:
   FnOnce(ReplyWith<R>) -> M` fixes `R`, and `map: FnOnce(RequestOutcome<R>) ->
@@ -777,14 +777,20 @@ as amended by [ADR-0018](adr/0018-assemblies-export-a-connector.md),
   returns an inert `RequestBuilder`, optionally bounded with `.timeout(d)`;
   `Command::send(&target, message)` and `Command::reply(reply, value)` return a
   `Command` directly. `Command::` keeps `none`, `batch`, and `after`.
-- A builder becomes a `Command` through one finisher: `producing(map)`,
-  `into_command()` (`Message::from`), `finish_with(f)`, or, for effects,
-  `discard_outcome()`, `succeeding(map)` when the effect cannot fail, and
-  `replying(reply).succeeding(f).failing(g)`.
-- `replying` is `finish_with` specialised to answering a request: each arm
-  returns the reply value and the builder holds the reply token. A fallible
-  effect requires both arms; an infallible one ends with `.into_command()`.
-- `finish_with(f)` runs `f` on the outcome and interprets the
+- A builder becomes a `Command` through one finisher, named for what its
+  function receives
+  ([ADR-0034](adr/0034-finishers-are-named-for-what-they-receive.md)):
+  `on_outcome(map)`, `into_command()` (`Message::from`), and
+  `divert_with(f)` on effects and requests; on effects also `on_value(map)`
+  when `Error = !`, `on_success(f).on_failure(g)`, `divert_to(d)`, and
+  `discard()`.
+- `divert_to(d)` sends the result to a `ReplyWith` token or an address in
+  place of the issuing Component. What it returns has `on_outcome`,
+  `on_value`, and `on_success(f).on_failure(g)`, whose functions return
+  the value to deliver. It is `divert_with` underneath: one hop, no
+  Message, no transition. `on_success` alone is not a Command; a fallible
+  effect requires both arms.
+- `divert_with(f)` runs `f` on the outcome and interprets the
   `Command<NoMessage>` it returns under the issuing Component, traced as
   caused by the outcome. No transition occurs. `NoMessage` is uninhabited and
   not `Send`, and continuation-bearing finishers require

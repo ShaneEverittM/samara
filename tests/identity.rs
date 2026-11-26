@@ -1,13 +1,12 @@
 //! ADR-0021: names are diagnostics; subscription keys are optional.
 use samara::prelude::*;
-use std::convert::Infallible;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Feed(u64);
 impl SourceDescriptor for Feed {
     type Terminal = Self;
     type Item = u64;
-    type Error = Infallible;
+    type Error = !;
 }
 
 type Inputs = (Source<Feed>, Source<Feed>);
@@ -267,9 +266,9 @@ fn foreign_capability_cannot_select_a_default_slot() {
 #[test]
 fn default_slots_distinguish_exact_capabilities_and_explicit_keys() {
     let caps = <Inputs>::detached();
-    let first = Subscription::<SourceEvent<u64, Infallible>>::source(&caps.0, Feed(1));
-    let second = Subscription::<SourceEvent<u64, Infallible>>::source(&caps.1, Feed(1));
-    let keyed = Subscription::<SourceEvent<u64, Infallible>>::source(&caps.0, Feed(1)).key(0_u64);
+    let first = Subscription::<SourceEvent<u64, !>>::source(&caps.0, Feed(1));
+    let second = Subscription::<SourceEvent<u64, !>>::source(&caps.1, Feed(1));
+    let keyed = Subscription::<SourceEvent<u64, !>>::source(&caps.0, Feed(1)).key(0_u64);
     assert_ne!(first.id(), second.id());
     assert_ne!(first.id(), keyed.id());
     let inputs: Subscriptions<_> = vec![first, second, keyed].into();
@@ -301,7 +300,7 @@ fn dropped_registration_does_not_change_identity_or_startup_trace() {
 struct Report(u64);
 impl EffectDescriptor for Report {
     type Output = ();
-    type Error = Infallible;
+    type Error = !;
 }
 struct Mirror;
 impl Component for Mirror {
@@ -309,13 +308,13 @@ impl Component for Mirror {
     type Connections = ();
     type Configuration = ();
     type Model = ();
-    type Message = SourceEvent<u64, Infallible>;
+    type Message = SourceEvent<u64, !>;
     fn init(_: &Context<Self>) -> Init<(), Self::Message> {
         Init::new(())
     }
     fn update(cx: &Context<Self>, _: &mut (), event: Self::Message) -> Command<Self::Message> {
         match event {
-            SourceEvent::Item(value) => Effect::perform(&cx.io.1, Report(value)).discard_outcome(),
+            SourceEvent::Item(value) => Effect::perform(&cx.io.1, Report(value)).discard(),
             _ => Command::none(),
         }
     }
@@ -334,7 +333,7 @@ impl SourceDriver<Feed> for FeedDriver {
 }
 struct ReportDriver(tokio::sync::mpsc::UnboundedSender<u64>);
 impl EffectDriver<Report> for ReportDriver {
-    fn execute(&self, report: Report) -> BoxFuture<Result<(), Infallible>> {
+    fn execute(&self, report: Report) -> BoxFuture<Result<(), !>> {
         let sender = self.0.clone();
         Box::pin(async move {
             sender.send(report.0).unwrap();

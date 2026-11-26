@@ -1,5 +1,3 @@
-use std::convert::Infallible;
-
 use samara::prelude::*;
 
 #[derive(Debug)]
@@ -7,7 +5,7 @@ struct DynamicallyReachedEffect;
 
 impl EffectDescriptor for DynamicallyReachedEffect {
     type Output = ();
-    type Error = Infallible;
+    type Error = !;
 }
 
 enum FaultMessage {
@@ -38,7 +36,7 @@ impl Component for FaultProbe {
     ) -> Command<Self::Message> {
         match message {
             FaultMessage::Trigger => {
-                Effect::perform(&cx.config.effect, DynamicallyReachedEffect).discard_outcome()
+                Effect::perform(&cx.config.effect, DynamicallyReachedEffect).discard()
             }
         }
     }

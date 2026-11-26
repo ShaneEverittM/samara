@@ -52,7 +52,7 @@ impl Component for Reader {
         let (read, count) = &cx.io;
         let observed = match message {
             Message::Read => {
-                return Effect::perform(read, ReadText).producing(|outcome| {
+                return Effect::perform(read, ReadText).on_outcome(|outcome| {
                     match outcome {
                         EffectOutcome::Succeeded(text) => Message::Text(text),
                         EffectOutcome::Failed(reason) => Message::Failed(reason),
@@ -60,7 +60,7 @@ impl Component for Reader {
                 });
             }
             Message::Count => {
-                return Effect::perform(count, CountBytes).producing(|outcome| {
+                return Effect::perform(count, CountBytes).on_outcome(|outcome| {
                     match outcome {
                         EffectOutcome::Succeeded(count) => Message::Counted(count),
                         EffectOutcome::Failed(reason) => Message::Failed(reason),
@@ -158,7 +158,7 @@ impl Component for Stamper {
         message: StampMessage,
     ) -> Command<StampMessage> {
         match message {
-            StampMessage::Stamp => Clock::system_time(&cx.io).succeeding(StampMessage::Now),
+            StampMessage::Stamp => Clock::system_time(&cx.io).on_value(StampMessage::Now),
             StampMessage::Now(now) => {
                 *model = Some(now);
                 Command::none()

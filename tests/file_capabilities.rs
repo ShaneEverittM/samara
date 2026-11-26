@@ -3,7 +3,6 @@
 use bytes::Bytes;
 use samara::prelude::*;
 use std::{
-    convert::Infallible,
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
@@ -21,11 +20,11 @@ type Fixture = (
 struct Report(String);
 impl EffectDescriptor for Report {
     type Output = ();
-    type Error = Infallible;
+    type Error = !;
 }
 struct Reporter(tokio::sync::mpsc::UnboundedSender<String>);
 impl EffectDriver<Report> for Reporter {
-    fn execute(&self, Report(text): Report) -> BoxFuture<Result<(), Infallible>> {
+    fn execute(&self, Report(text): Report) -> BoxFuture<Result<(), !>> {
         let sender = self.0.clone();
         Box::pin(async move {
             sender.send(text).unwrap();
@@ -51,14 +50,14 @@ impl Component for Writer {
     fn update(cx: &Context<Self>, model: &mut Bytes, message: Message) -> Command<Message> {
         let (file, report) = &cx.io;
         match message {
-            Message::Start => File::append_line(file, cx.config).producing(Message::Appended),
+            Message::Start => File::append_line(file, cx.config).on_outcome(Message::Appended),
             Message::Appended(EffectOutcome::Succeeded(())) => {
-                File::read(file).producing(Message::Read)
+                File::read(file).on_outcome(Message::Read)
             }
             Message::Read(EffectOutcome::Succeeded(contents)) => {
                 *model = contents;
                 Effect::perform(report, Report(String::from_utf8(model.to_vec()).unwrap()))
-                    .discard_outcome()
+                    .discard()
             }
             Message::Appended(EffectOutcome::Failed(_))
             | Message::Read(EffectOutcome::Failed(_)) => Command::none(),
@@ -96,7 +95,7 @@ fn file_operations_are_inert_and_preserve_their_typed_results() {
     );
     let read: Command<EffectOutcome<Bytes, FsError>> = File::read(&file).into_command();
     assert!(read.effect_intent::<FileRead>().is_some());
-    let append = File::append_text(&file, "raw").discard_outcome::<()>();
+    let append = File::append_text(&file, "raw").discard::<()>();
     assert_eq!(
         append.effect_intent::<FileAppend>().unwrap().as_bytes(),
         b"raw"
@@ -113,13 +112,12 @@ fn write_authority_constructs_typed_replacements() {
         Some("new contents")
     );
     let write_only = <File<WriteOnly>>::detached();
-    let binary =
-        File::replace_bytes(&write_only, Bytes::from_static(&[0, 255])).discard_outcome::<()>();
+    let binary = File::replace_bytes(&write_only, Bytes::from_static(&[0, 255])).discard::<()>();
     assert_eq!(
         binary.effect_intent::<FileReplace>().unwrap().as_bytes(),
         &[0, 255]
     );
-    let append = File::append_text(&write_only, "tail").discard_outcome::<()>();
+    let append = File::append_text(&write_only, "tail").discard::<()>();
     assert_eq!(
         append.effect_intent::<FileAppend>().unwrap().as_str(),
         Some("tail")
@@ -349,14 +347,14 @@ impl Component for HiddenFile {
     type Message = bool;
     fn init(cx: &Context<Self>) -> Init<(), bool> {
         Init::new(()).with_command(if cx.config.1 {
-            File::read(&cx.config.0).producing(|_| false)
+            File::read(&cx.config.0).on_outcome(|_| false)
         } else {
             Command::none()
         })
     }
     fn update(cx: &Context<Self>, _: &mut (), start: bool) -> Command<bool> {
         if start {
-            File::read(&cx.config.0).producing(|_| false)
+            File::read(&cx.config.0).on_outcome(|_| false)
         } else {
             Command::none()
         }

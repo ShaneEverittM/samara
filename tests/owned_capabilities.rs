@@ -1,16 +1,13 @@
 //! ADR-0028: registration creates a Component's capabilities, the installed
 //! handle carries them for the host, and each is bound to its own Driver.
 use samara::prelude::*;
-use std::{
-    convert::Infallible,
-    sync::{Arc, Mutex},
-};
+use std::sync::{Arc, Mutex};
 
 /// Asks the world to note who is asking.
 struct Tag(&'static str);
 impl EffectDescriptor for Tag {
     type Output = &'static str;
-    type Error = Infallible;
+    type Error = !;
 }
 
 type Seen = Arc<Mutex<Vec<(&'static str, &'static str)>>>;
@@ -21,7 +18,7 @@ struct NamedDriver {
     seen: Seen,
 }
 impl EffectDriver<Tag> for NamedDriver {
-    fn execute(&self, Tag(asker): Tag) -> BoxFuture<Result<&'static str, Infallible>> {
+    fn execute(&self, Tag(asker): Tag) -> BoxFuture<Result<&'static str, !>> {
         self.seen.lock().unwrap().push((self.name, asker));
         let name = self.name;
         Box::pin(async move { Ok(name) })
@@ -40,7 +37,7 @@ impl Component for Asker {
     fn init(cx: &Context<Self>) -> Init<Self::Model, Self::Message> {
         let (tag,) = &cx.io;
         Init::new(None).with_command(
-            Effect::perform(tag, Tag(cx.config)).producing(|EffectOutcome::Succeeded(by)| by),
+            Effect::perform(tag, Tag(cx.config)).on_outcome(|EffectOutcome::Succeeded(by)| by),
         )
     }
 
@@ -281,7 +278,7 @@ struct Ticks;
 impl SourceDescriptor for Ticks {
     type Terminal = Self;
     type Item = u8;
-    type Error = Infallible;
+    type Error = !;
 }
 
 struct SilentTicks;
@@ -304,10 +301,10 @@ impl Component for Desk {
     type Connections = ();
     type Configuration = ();
     type Model = ();
-    type Message = SourceEvent<u8, Infallible>;
+    type Message = SourceEvent<u8, !>;
 
     fn init(cx: &Context<Self>) -> Init<(), Self::Message> {
-        Init::new(()).with_command(Effect::perform(&cx.io.tag, Tag("desk")).discard_outcome())
+        Init::new(()).with_command(Effect::perform(&cx.io.tag, Tag("desk")).discard())
     }
 
     fn update(_: &Context<Self>, (): &mut (), _: Self::Message) -> Command<Self::Message> {
@@ -406,7 +403,7 @@ impl Component for Borrower {
 
     fn update(cx: &Context<Self>, (): &mut (), (): ()) -> Command<()> {
         let (theirs,) = &cx.config;
-        Effect::perform(theirs, Tag("borrower")).discard_outcome()
+        Effect::perform(theirs, Tag("borrower")).discard()
     }
 }
 

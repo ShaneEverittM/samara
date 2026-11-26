@@ -471,7 +471,7 @@ impl Component for Telemetry {
                 Command::batch([
                     Command::send(&cx.to.health, HealthProtocolMessage::FrameSeen),
                     Effect::perform(&cx.io.storage, StoreFrame { frame })
-                        .producing(TelemetryMessage::Stored),
+                        .on_outcome(TelemetryMessage::Stored),
                 ])
             }
             TelemetryMessage::Socket(SourceEvent::Failed(error)) => {
@@ -501,7 +501,7 @@ impl Component for Telemetry {
                 // the domain key needed to interpret its eventual reply.
                 Command::batch(probes.map(|probe| {
                     Command::request(&cx.to.health, HealthProtocolMessage::Read)
-                        .producing(health_checked(probe))
+                        .on_outcome(health_checked(probe))
                 }))
             }
             TelemetryMessage::HealthChecked { probe, event } => {

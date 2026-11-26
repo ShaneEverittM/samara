@@ -239,7 +239,7 @@ impl Component for Counter {
                 Command::request(&cx.to.quota, move |reply_with| {
                     QuotaProtocolMessage::Reserve { amount, reply_with }
                 })
-                .producing(CounterMessage::Reserved)
+                .on_outcome(CounterMessage::Reserved)
             }
             CounterMessage::Reserved(outcome) => {
                 // Request correlation is runtime machinery, but its meaningful
@@ -249,7 +249,7 @@ impl Component for Counter {
                     RequestOutcome::Replied(Reservation::Granted { amount }) => {
                         model.count += amount;
                         Effect::perform(&cx.io.persistence, PersistCount { value: model.count })
-                            .producing(CounterMessage::Persisted)
+                            .on_outcome(CounterMessage::Persisted)
                     }
                     RequestOutcome::Replied(Reservation::Denied { .. })
                     | RequestOutcome::Failed(_)

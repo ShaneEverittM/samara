@@ -1,4 +1,3 @@
-use std::convert::Infallible;
 use std::future::pending;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -121,7 +120,7 @@ struct GateEffect;
 
 impl EffectDescriptor for GateEffect {
     type Output = u8;
-    type Error = Infallible;
+    type Error = !;
 }
 
 enum GateMessage {
@@ -148,7 +147,7 @@ impl Component for GateProbe {
         message: Self::Message,
     ) -> Command<Self::Message> {
         match message {
-            GateMessage::Start => Effect::perform(&cx.io, GateEffect).discard_outcome(),
+            GateMessage::Start => Effect::perform(&cx.io, GateEffect).discard(),
             GateMessage::Noop => Command::none(),
         }
     }
@@ -169,7 +168,7 @@ struct GatedDriver {
 }
 
 impl EffectDriver<GateEffect> for GatedDriver {
-    fn execute(&self, _descriptor: GateEffect) -> BoxFuture<Result<u8, Infallible>> {
+    fn execute(&self, _descriptor: GateEffect) -> BoxFuture<Result<u8, !>> {
         let entered = self.entered.lock().unwrap().take();
         let release = self.release.lock().unwrap().take();
         let dropped = self.dropped.clone();

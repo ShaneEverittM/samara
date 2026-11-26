@@ -62,7 +62,7 @@ impl Component for TimeReader {
         match message {
             ReadMessage::Read => {
                 Command::request(&cx.to, TimeServerMessage::GetCurrentTime)
-                    .producing(ReadMessage::Received)
+                    .on_outcome(ReadMessage::Received)
             }
             ReadMessage::Received(RequestOutcome::Replied(time)) => {
                 model.push(time);

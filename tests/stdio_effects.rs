@@ -1,5 +1,3 @@
-use std::convert::Infallible;
-
 use samara::prelude::*;
 
 #[derive(Clone, Debug)]
@@ -7,7 +5,7 @@ struct ObserveOutput(bool);
 
 impl EffectDescriptor for ObserveOutput {
     type Output = ();
-    type Error = Infallible;
+    type Error = !;
 }
 
 struct OutputObserver {
@@ -15,7 +13,7 @@ struct OutputObserver {
 }
 
 impl EffectDriver<ObserveOutput> for OutputObserver {
-    fn execute(&self, descriptor: ObserveOutput) -> BoxFuture<Result<(), Infallible>> {
+    fn execute(&self, descriptor: ObserveOutput) -> BoxFuture<Result<(), !>> {
         let observations = self.observations.clone();
         Box::pin(async move {
             let _ = observations.send(descriptor.0);
@@ -31,7 +29,7 @@ struct OutputModel {
 
 enum OutputMessage {
     Start,
-    Finished(EffectOutcome<(), Infallible>),
+    Finished(EffectOutcome<(), !>),
     Observed,
 }
 
@@ -67,9 +65,9 @@ impl Component for OutputProbe {
             OutputMessage::Start => {
                 Command::batch([
                     Effect::perform(stdout, PrintStdout::text(""))
-                        .producing(OutputMessage::Finished),
+                        .on_outcome(OutputMessage::Finished),
                     Effect::perform(stderr, PrintStderr::text(""))
-                        .producing(OutputMessage::Finished),
+                        .on_outcome(OutputMessage::Finished),
                 ])
             }
             OutputMessage::Finished(outcome) => {
@@ -77,7 +75,7 @@ impl Component for OutputProbe {
                 model.succeeded += 1;
                 if cx.config.observe {
                     Effect::perform(observe, ObserveOutput(true))
-                        .producing(|_| OutputMessage::Observed)
+                        .on_outcome(|_| OutputMessage::Observed)
                 } else {
                     Command::none()
                 }
@@ -101,7 +99,7 @@ fn output_program(observe: bool) -> (Program, InstalledComponent<OutputProbe>) {
 fn standard_output_descriptors_preserve_exact_text_and_lines() {
     fn assert_output_effect<D>()
     where
-        D: EffectDescriptor<Output = (), Error = Infallible>,
+        D: EffectDescriptor<Output = (), Error = !>,
     {
     }
 
@@ -182,7 +180,7 @@ async fn bound_standard_output_drivers_write_and_flush_successfully() {
 struct DuplicateStdoutDriver;
 
 impl EffectDriver<PrintStdout> for DuplicateStdoutDriver {
-    fn execute(&self, _descriptor: PrintStdout) -> BoxFuture<Result<(), Infallible>> {
+    fn execute(&self, _descriptor: PrintStdout) -> BoxFuture<Result<(), !>> {
         Box::pin(async { Ok(()) })
     }
 }

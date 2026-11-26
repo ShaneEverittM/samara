@@ -1,9 +1,8 @@
 //! Acceptance evidence for the builder form of boundary work (ADR-0023):
 //! the verb lives on the thing a Component holds, every interaction ends
-//! with one of four finishers, and `finish_with` runs exactly one hop of
+//! with one of four finishers, and `divert_with` runs exactly one hop of
 //! work that can produce no Message.
 
-use std::convert::Infallible;
 use std::time::Duration;
 
 use samara::prelude::*;
@@ -14,7 +13,7 @@ struct Probe;
 
 impl EffectDescriptor for Probe {
     type Output = u64;
-    type Error = Infallible;
+    type Error = !;
 }
 
 /// The provider's vocabulary: ask for a reading, or ask and never hear back.
@@ -53,7 +52,7 @@ impl Component for Gauge {
             // Answer the caller straight from the effect's outcome: no private
             // Message variant carries the reply token across the hop.
             GaugeMessage::Read(reply) => {
-                Effect::perform(&cx.io, Probe).finish_with(move |outcome| {
+                Effect::perform(&cx.io, Probe).divert_with(move |outcome| {
                     Command::reply(
                         reply,
                         match outcome {
@@ -100,7 +99,7 @@ impl Component for Relay {
         RelayMessage::ReadPlusOne(reply): RelayMessage,
     ) -> Command<RelayMessage> {
         let audit = cx.to.clone();
-        Command::request(&cx.to, GaugeMessage::Read).finish_with(move |outcome| {
+        Command::request(&cx.to, GaugeMessage::Read).divert_with(move |outcome| {
             let reading = match outcome {
                 RequestOutcome::Replied(reading) => reading + 1,
                 _ => 0,
@@ -154,7 +153,7 @@ impl Component for Client {
         match message {
             ClientMessage::Start => {
                 Command::request(&cx.to.relay, RelayMessage::ReadPlusOne)
-                    .producing(ClientMessage::Got)
+                    .on_outcome(ClientMessage::Got)
             }
             ClientMessage::StartParked(patience) => {
                 Command::request(&cx.to.gauge, GaugeMessage::Park)
@@ -302,7 +301,7 @@ fn inspectors_see_builder_commands_and_skip_finishing_requests() {
         [GaugeMessage::Note(note)] if note == "hello"
     ));
 
-    let performed: Command<ClientMessage> = Effect::perform(&probe, Probe).discard_outcome();
+    let performed: Command<ClientMessage> = Effect::perform(&probe, Probe).discard();
     assert_eq!(performed.effect_intent::<Probe>(), Some(&Probe));
 
     let asked: Command<ClientMessage> = Command::request(&gauge, GaugeMessage::Read).into_command();
@@ -319,14 +318,14 @@ fn inspectors_see_builder_commands_and_skip_finishing_requests() {
     // A finishing request has no Message to map to, so it is not extracted;
     // controlled execution observes it instead.
     let finishing: Command<ClientMessage> =
-        Command::request(&gauge, GaugeMessage::Read).finish_with(|_| Command::none());
+        Command::request(&gauge, GaugeMessage::Read).divert_with(|_| Command::none());
     assert!(finishing.into_request::<GaugeMessage>().is_err());
 }
 
 struct FixedProbe(u64);
 
 impl EffectDriver<Probe> for FixedProbe {
-    fn execute(&self, _: Probe) -> BoxFuture<Result<u64, Infallible>> {
+    fn execute(&self, _: Probe) -> BoxFuture<Result<u64, !>> {
         let reading = self.0;
         Box::pin(async move { Ok(reading) })
     }

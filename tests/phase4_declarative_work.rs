@@ -4,8 +4,6 @@
 //! inert effect Commands, reuse Subscription message mappers, and exercise the
 //! pure framed Source Layer without selecting a Driver or controlled binding.
 
-use std::convert::Infallible;
-
 use samara::prelude::*;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -33,7 +31,7 @@ enum EffectMessage {
 fn v3_effect_command_exposes_descriptor_and_maps_one_outcome() {
     let (declared_0,) = <(samara::Effect<PersistValue>,) as samara::Io>::detached();
     let persist = declared_0;
-    let command = Effect::perform(&persist, PersistValue { value: 41 }).producing(|outcome| {
+    let command = Effect::perform(&persist, PersistValue { value: 41 }).on_outcome(|outcome| {
         EffectMessage::Persisted {
             request: 41,
             outcome,
@@ -61,7 +59,7 @@ fn v3_all_effect_outcomes_remain_typed_message_input() {
     let (declared_0,) = <(samara::Effect<PersistValue>,) as samara::Io>::detached();
     let persist = declared_0;
     let failed = Effect::perform(&persist, PersistValue { value: 5 })
-        .producing(|outcome| {
+        .on_outcome(|outcome| {
             EffectMessage::Persisted {
                 request: 5,
                 outcome,
@@ -84,13 +82,13 @@ fn v3_equal_effect_descriptors_remain_distinct_command_occurrences() {
     let (declared_0,) = <(samara::Effect<PersistValue>,) as samara::Io>::detached();
     let persist = declared_0;
     let command: Command<EffectMessage> = Command::batch([
-        Effect::perform(&persist, PersistValue { value: 7 }).producing(|outcome| {
+        Effect::perform(&persist, PersistValue { value: 7 }).on_outcome(|outcome| {
             EffectMessage::Persisted {
                 request: 1,
                 outcome,
             }
         }),
-        Effect::perform(&persist, PersistValue { value: 7 }).producing(|outcome| {
+        Effect::perform(&persist, PersistValue { value: 7 }).on_outcome(|outcome| {
             EffectMessage::Persisted {
                 request: 2,
                 outcome,
@@ -132,7 +130,7 @@ fn v3_equal_effect_descriptors_remain_distinct_command_occurrences() {
 
 #[derive(Debug, PartialEq, Eq)]
 enum StreamMessage {
-    Input(SourceEvent<u64, Infallible>),
+    Input(SourceEvent<u64, !>),
 }
 
 #[test]

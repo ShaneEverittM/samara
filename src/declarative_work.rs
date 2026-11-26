@@ -120,7 +120,6 @@ impl<Message> SubscriptionReconciler<Message> {
 
 #[cfg(test)]
 mod tests {
-    use std::convert::Infallible;
 
     use super::{SubscriptionChange, SubscriptionReconciler};
     use crate::component_kernel::ComponentKernel;
@@ -134,7 +133,7 @@ mod tests {
 
     impl EffectDescriptor for Write {
         type Output = u64;
-        type Error = Infallible;
+        type Error = !;
     }
 
     #[derive(Debug, PartialEq, Eq)]
@@ -145,8 +144,8 @@ mod tests {
 
     #[derive(Debug, PartialEq, Eq)]
     enum Message {
-        Old(SourceEvent<u64, Infallible>),
-        New(SourceEvent<u64, Infallible>),
+        Old(SourceEvent<u64, !>),
+        New(SourceEvent<u64, !>),
     }
 
     fn desired(
@@ -172,7 +171,7 @@ mod tests {
     enum DesiredMessage {
         Use(&'static str),
         Stop,
-        Input(SourceEvent<u64, Infallible>),
+        Input(SourceEvent<u64, !>),
     }
 
     impl Component for DesiredComponent {
@@ -224,9 +223,9 @@ mod tests {
         let write = <crate::Effect<Write> as crate::Io>::detached();
         let command = Command::batch([
             crate::Effect::perform(&write, Write(7))
-                .producing(|EffectOutcome::Succeeded(output)| Written { request: 1, output }),
+                .on_outcome(|EffectOutcome::Succeeded(output)| Written { request: 1, output }),
             crate::Effect::perform(&write, Write(7))
-                .producing(|EffectOutcome::Succeeded(output)| Written { request: 2, output }),
+                .on_outcome(|EffectOutcome::Succeeded(output)| Written { request: 2, output }),
         ]);
 
         let mut declarations = command.into_declarations().into_iter();

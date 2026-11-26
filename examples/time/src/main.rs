@@ -220,7 +220,7 @@ impl Component for Cli {
             }
             CliMessage::Command(CliCommand::GetTime) => {
                 Command::request(&cx.to.time_server, TimeServerMessage::GetCurrentTime)
-                    .producing(CliMessage::TimeReceived)
+                    .on_outcome(CliMessage::TimeReceived)
             }
             CliMessage::InvalidCommand(command) => {
                 samara::eprintln!(

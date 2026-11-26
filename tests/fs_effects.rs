@@ -1,6 +1,5 @@
 #![cfg(feature = "fs")]
 
-use std::convert::Infallible;
 use std::path::{Path, PathBuf};
 
 use samara::prelude::*;
@@ -12,13 +11,13 @@ struct Report(String);
 
 impl EffectDescriptor for Report {
     type Output = ();
-    type Error = Infallible;
+    type Error = !;
 }
 
 struct Reporter(tokio::sync::mpsc::UnboundedSender<String>);
 
 impl EffectDriver<Report> for Reporter {
-    fn execute(&self, Report(line): Report) -> BoxFuture<Result<(), Infallible>> {
+    fn execute(&self, Report(line): Report) -> BoxFuture<Result<(), !>> {
         let sender = self.0.clone();
         Box::pin(async move {
             let _ = sender.send(line);
@@ -79,23 +78,25 @@ impl Component for Walker {
             match model.step {
                 1 => {
                     Effect::perform(append, AppendToFile::line(FILE, "first"))
-                        .producing(WalkerMessage::Wrote)
+                        .on_outcome(WalkerMessage::Wrote)
                 }
                 2 => {
                     Effect::perform(append, AppendToFile::line(FILE, "second"))
-                        .producing(WalkerMessage::Wrote)
+                        .on_outcome(WalkerMessage::Wrote)
                 }
                 3 | 5 | 7 => {
-                    Effect::perform(read, ReadFile::new(FILE)).producing(WalkerMessage::Read)
+                    Effect::perform(read, ReadFile::new(FILE)).on_outcome(WalkerMessage::Read)
                 }
                 4 => {
                     Effect::perform(replace, ReplaceFile::text(FILE, "replaced"))
-                        .producing(WalkerMessage::Wrote)
+                        .on_outcome(WalkerMessage::Wrote)
                 }
-                6 => Effect::perform(remove, RemoveFile::new(FILE)).producing(WalkerMessage::Wrote),
+                6 => {
+                    Effect::perform(remove, RemoveFile::new(FILE)).on_outcome(WalkerMessage::Wrote)
+                }
                 _ => {
                     Effect::perform(report, Report("done".into()))
-                        .producing(|_| WalkerMessage::Reported)
+                        .on_outcome(|_| WalkerMessage::Reported)
                 }
             }
         };
@@ -103,14 +104,14 @@ impl Component for Walker {
             WalkerMessage::Start => next(model),
             WalkerMessage::Escape => {
                 Effect::perform(append, AppendToFile::line("../escape.log", "nope"))
-                    .producing(WalkerMessage::Wrote)
+                    .on_outcome(WalkerMessage::Wrote)
             }
             WalkerMessage::Wrote(EffectOutcome::Succeeded(())) => next(model),
             WalkerMessage::Read(EffectOutcome::Succeeded(bytes)) => {
                 let text = String::from_utf8_lossy(&bytes).into_owned();
                 model.seen.push(text.clone());
                 Command::batch([
-                    Effect::perform(report, Report(text)).producing(|_| WalkerMessage::Reported),
+                    Effect::perform(report, Report(text)).on_outcome(|_| WalkerMessage::Reported),
                     next(model),
                 ])
             }
@@ -121,7 +122,7 @@ impl Component for Walker {
                     .push((error.operation(), error.kind(), error.path().to_path_buf()));
                 let line = format!("{:?} {:?}", error.operation(), error.kind());
                 Command::batch([
-                    Effect::perform(report, Report(line)).producing(|_| WalkerMessage::Reported),
+                    Effect::perform(report, Report(line)).on_outcome(|_| WalkerMessage::Reported),
                     if model.step == 7 {
                         next(model)
                     } else {

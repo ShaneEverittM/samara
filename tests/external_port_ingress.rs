@@ -1,5 +1,4 @@
 use std::{
-    convert::Infallible,
     sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -101,7 +100,7 @@ impl Component for Provider {
             }
             ProviderMessage::Host(HostMessage::RecordIngress(value))
             | ProviderMessage::RecordIngressDirect(value) => {
-                Effect::perform(ingress_observed, IngressObserved(value)).discard_outcome()
+                Effect::perform(ingress_observed, IngressObserved(value)).discard()
             }
             ProviderMessage::Host(HostMessage::Read(reply_with)) => {
                 Command::reply(reply_with, *model)
@@ -114,7 +113,7 @@ impl Component for Provider {
                 };
                 Command::batch([
                     Effect::perform(request_observed, RequestObserved)
-                        .producing(|_| ProviderMessage::Signalled),
+                        .on_outcome(|_| ProviderMessage::Signalled),
                     Command::after(
                         delay,
                         ProviderMessage::CompleteDelayed { reply_with, value },
@@ -122,7 +121,7 @@ impl Component for Provider {
                 ])
             }
             ProviderMessage::Host(HostMessage::Held(value, reply_with)) => {
-                Effect::perform(await_release, AwaitRelease(value)).producing(
+                Effect::perform(await_release, AwaitRelease(value)).on_outcome(
                     move |EffectOutcome::Succeeded(value)| {
                         ProviderMessage::CompleteDelayed { reply_with, value }
                     },
@@ -130,7 +129,7 @@ impl Component for Provider {
             }
             ProviderMessage::Host(HostMessage::Never(_reply_with)) => {
                 Effect::perform(request_observed, RequestObserved)
-                    .producing(|_| ProviderMessage::Signalled)
+                    .on_outcome(|_| ProviderMessage::Signalled)
             }
             ProviderMessage::Host(HostMessage::Crash(_reply_with)) => {
                 panic!("provider crashed while handling an external request")
@@ -148,7 +147,7 @@ struct RequestObserved;
 
 impl EffectDescriptor for RequestObserved {
     type Output = ();
-    type Error = Infallible;
+    type Error = !;
 }
 
 struct ObservationDriver {
@@ -160,7 +159,7 @@ struct AwaitRelease(u64);
 
 impl EffectDescriptor for AwaitRelease {
     type Output = u64;
-    type Error = Infallible;
+    type Error = !;
 }
 
 struct ReleaseDriver {
@@ -169,7 +168,7 @@ struct ReleaseDriver {
 }
 
 impl EffectDriver<AwaitRelease> for ReleaseDriver {
-    fn execute(&self, descriptor: AwaitRelease) -> BoxFuture<Result<u64, Infallible>> {
+    fn execute(&self, descriptor: AwaitRelease) -> BoxFuture<Result<u64, !>> {
         let started = self.started.lock().expect("started lock").take();
         let release = self.release.lock().expect("release lock").take();
         Box::pin(async move {
@@ -187,7 +186,7 @@ impl EffectDriver<AwaitRelease> for ReleaseDriver {
 struct ImmediateReleaseDriver;
 
 impl EffectDriver<AwaitRelease> for ImmediateReleaseDriver {
-    fn execute(&self, descriptor: AwaitRelease) -> BoxFuture<Result<u64, Infallible>> {
+    fn execute(&self, descriptor: AwaitRelease) -> BoxFuture<Result<u64, !>> {
         Box::pin(async move { Ok(descriptor.0) })
     }
 }
@@ -197,7 +196,7 @@ struct IngressObserved(u64);
 
 impl EffectDescriptor for IngressObserved {
     type Output = ();
-    type Error = Infallible;
+    type Error = !;
 }
 
 struct IngressObserver {
@@ -205,7 +204,7 @@ struct IngressObserver {
 }
 
 impl EffectDriver<IngressObserved> for IngressObserver {
-    fn execute(&self, descriptor: IngressObserved) -> BoxFuture<Result<(), Infallible>> {
+    fn execute(&self, descriptor: IngressObserved) -> BoxFuture<Result<(), !>> {
         let observed = self.observed.clone();
         Box::pin(async move {
             let _ = observed.send(descriptor.0);
@@ -215,7 +214,7 @@ impl EffectDriver<IngressObserved> for IngressObserver {
 }
 
 impl EffectDriver<RequestObserved> for ObservationDriver {
-    fn execute(&self, _descriptor: RequestObserved) -> BoxFuture<Result<(), Infallible>> {
+    fn execute(&self, _descriptor: RequestObserved) -> BoxFuture<Result<(), !>> {
         let observed = self.observed.clone();
         Box::pin(async move {
             let _ = observed.send(());

@@ -19,7 +19,7 @@ impl Component for Scribe {
 
     fn init(cx: &Context<Self>) -> Init<(), ()> {
         let (file,) = &cx.io;
-        Init::new(()).with_command(File::append_line(file, cx.config).discard_outcome())
+        Init::new(()).with_command(File::append_line(file, cx.config).discard())
     }
 
     fn update(_: &Context<Self>, (): &mut (), (): ()) -> Command<()> {

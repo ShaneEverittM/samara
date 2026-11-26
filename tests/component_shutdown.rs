@@ -2,7 +2,6 @@
 //! once the Program is quiet, in what order, what a stopping Component may
 //! do, and what its peers hear.
 
-use std::convert::Infallible;
 use std::sync::{Arc, Mutex};
 
 use samara::prelude::*;
@@ -13,7 +12,7 @@ struct Farewell(&'static str);
 
 impl EffectDescriptor for Farewell {
     type Output = ();
-    type Error = Infallible;
+    type Error = !;
 }
 
 /// Holds reply tokens until it is told to answer, or until it stops.
@@ -68,7 +67,7 @@ impl Component for Vault {
             .into_iter()
             .map(|reply| Command::reply(reply, "closing"))
             .collect();
-        finishing.push(Effect::perform(&cx.io, Farewell("vault")).discard_outcome());
+        finishing.push(Effect::perform(&cx.io, Farewell("vault")).discard());
         Command::batch(finishing)
     }
 }
@@ -90,10 +89,10 @@ where
 {
     match message {
         AskerMessage::Hold => {
-            Command::request(vault, VaultMessage::Hold).producing(AskerMessage::Heard)
+            Command::request(vault, VaultMessage::Hold).on_outcome(AskerMessage::Heard)
         }
         AskerMessage::Forget => {
-            Command::request(vault, VaultMessage::Forget).producing(AskerMessage::Heard)
+            Command::request(vault, VaultMessage::Forget).on_outcome(AskerMessage::Heard)
         }
         AskerMessage::Heard(outcome) => {
             heard.push(outcome);
@@ -358,7 +357,7 @@ fn cancel_calls_no_shutdown_and_a_cut_short_drain_names_who_missed_it() {
 struct RecordingFarewell(Arc<Mutex<Vec<&'static str>>>);
 
 impl EffectDriver<Farewell> for RecordingFarewell {
-    fn execute(&self, farewell: Farewell) -> BoxFuture<Result<(), Infallible>> {
+    fn execute(&self, farewell: Farewell) -> BoxFuture<Result<(), !>> {
         let written = self.0.clone();
         Box::pin(async move {
             written.lock().unwrap().push(farewell.0);

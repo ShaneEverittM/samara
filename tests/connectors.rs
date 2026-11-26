@@ -143,7 +143,7 @@ impl Component for Monitor {
                         },
                     ),
                     Command::request(&cx.to.audit, |reply_with| AuditMessage::Tail(1, reply_with))
-                        .producing(MonitorMessage::Tail),
+                        .on_outcome(MonitorMessage::Tail),
                 ])
             }
             MonitorMessage::Tail(RequestOutcome::Replied(tail)) => {
@@ -376,12 +376,12 @@ impl Component for Teller {
                     match cx.config {
                         None => {
                             Command::request(&cx.to, TallyMessage::total)
-                                .producing(TellerMessage::Total)
+                                .on_outcome(TellerMessage::Total)
                         }
                         Some(patience) => {
                             Command::request(&cx.to, TallyMessage::park)
                                 .timeout(patience)
-                                .producing(TellerMessage::Total)
+                                .on_outcome(TellerMessage::Total)
                         }
                     },
                 ])
@@ -513,7 +513,7 @@ impl Component for DirectMonitor {
                         },
                     ),
                     Command::request(&cx.to.audit, |reply_with| AuditMessage::Tail(1, reply_with))
-                        .producing(MonitorMessage::Tail),
+                        .on_outcome(MonitorMessage::Tail),
                 ])
             }
             MonitorMessage::Tail(RequestOutcome::Replied(tail)) => {
@@ -575,7 +575,7 @@ impl Component for EagerTeller {
 
     fn init(cx: &Context<Self>) -> Init<(), TellerMessage> {
         Init::new(()).with_command(
-            Command::request(&cx.config, TallyMessage::total).producing(TellerMessage::Total),
+            Command::request(&cx.config, TallyMessage::total).on_outcome(TellerMessage::Total),
         )
     }
 
@@ -622,7 +622,7 @@ fn a_connector_request_is_inspectable_without_a_runtime() {
     let mut program = Program::builder();
     let tally = program.add_assembly::<Tally>(());
     let command: Command<TellerMessage> =
-        Command::request(&tally.connector(), TallyMessage::total).producing(TellerMessage::Total);
+        Command::request(&tally.connector(), TallyMessage::total).on_outcome(TellerMessage::Total);
     // The message is built with an inert reply token; the continuation runs on
     // an outcome the test chooses. The library's private `Inner` stays private,
     // so the test can only observe what the constructor exposes.

@@ -1,7 +1,6 @@
 //! ADR-0019 acceptance: the Program owns its typed binding obligations.
 //! ADR-0028: each obligation is a capability created for one Component.
 use samara::prelude::*;
-use std::convert::Infallible;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -10,7 +9,7 @@ use std::sync::{
 struct Read;
 impl EffectDescriptor for Read {
     type Output = u64;
-    type Error = Infallible;
+    type Error = !;
 }
 // This probe intentionally instruments init through Config to observe call timing.
 // Application state belongs in Model.
@@ -35,7 +34,7 @@ impl Component for Reader {
             model.push(value);
             Command::none()
         } else {
-            Effect::perform(read, Read).producing(|outcome| {
+            Effect::perform(read, Read).on_outcome(|outcome| {
                 match outcome {
                     EffectOutcome::Succeeded(value) => Some(value),
                     _ => None,
@@ -46,7 +45,7 @@ impl Component for Reader {
 }
 struct ReadDriver;
 impl EffectDriver<Read> for ReadDriver {
-    fn execute(&self, _: Read) -> BoxFuture<Result<u64, Infallible>> {
+    fn execute(&self, _: Read) -> BoxFuture<Result<u64, !>> {
         Box::pin(async { Ok(42) })
     }
 }

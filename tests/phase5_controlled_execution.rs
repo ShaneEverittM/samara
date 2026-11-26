@@ -7,7 +7,6 @@
 //! inspect queues, tasks, locks, or another runtime-topology choice.
 
 use std::{
-    convert::Infallible,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -181,13 +180,13 @@ struct ProbeEffect(u64);
 
 impl EffectDescriptor for ProbeEffect {
     type Output = u64;
-    type Error = Infallible;
+    type Error = !;
 }
 
 #[derive(Debug)]
 enum EffectMessage {
     Start,
-    Finished(EffectOutcome<u64, Infallible>),
+    Finished(EffectOutcome<u64, !>),
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -222,7 +221,7 @@ impl Component for EffectComponent {
             EffectMessage::Start => {
                 model.starts += 1;
                 let mapper_calls = cx.config.mapper_calls.clone();
-                Effect::perform(&cx.io, ProbeEffect(41)).producing(move |outcome| {
+                Effect::perform(&cx.io, ProbeEffect(41)).on_outcome(move |outcome| {
                     mapper_calls.fetch_add(1, Ordering::SeqCst);
                     EffectMessage::Finished(outcome)
                 })
@@ -567,7 +566,7 @@ struct RawBytes;
 impl SourceDescriptor for RawBytes {
     type Terminal = Self;
     type Item = Vec<u8>;
-    type Error = Infallible;
+    type Error = !;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -579,7 +578,7 @@ struct LengthState(Vec<u8>);
 impl Decoder for LengthPrefix {
     type Chunk = Vec<u8>;
     type Frame = Vec<u8>;
-    type Error = Infallible;
+    type Error = !;
     type State = LengthState;
 
     fn start(&self) -> Self::State {
@@ -616,7 +615,7 @@ type TwiceFramed = Framed<Framed<RawBytes, LengthPrefix>, LengthPrefix>;
 
 #[derive(Debug)]
 enum FramedMessage {
-    Event(SourceEvent<Vec<u8>, FramedError<FramedError<Infallible, Infallible>, Infallible>>),
+    Event(SourceEvent<Vec<u8>, FramedError<FramedError<!, !>, !>>),
 }
 
 #[derive(Default, Debug, PartialEq, Eq)]
@@ -1202,9 +1201,9 @@ fn v9_pending_now_counts_ready_messages_and_due_timers() {
 #[derive(Debug)]
 enum OwnershipMessage {
     Kick,
-    Effect(EffectOutcome<u64, Infallible>),
+    Effect(EffectOutcome<u64, !>),
     Request(RequestOutcome<u64>),
-    Input(SourceEvent<u64, Infallible>),
+    Input(SourceEvent<u64, !>),
     Timer,
 }
 
@@ -1238,11 +1237,11 @@ impl Component for OwnershipComponent {
         match message {
             OwnershipMessage::Kick => {
                 Command::batch([
-                    Effect::perform(effect, ProbeEffect(1)).producing(OwnershipMessage::Effect),
+                    Effect::perform(effect, ProbeEffect(1)).on_outcome(OwnershipMessage::Effect),
                     Command::request(&cx.to.port, |reply_with| {
                         EchoProtocolMessage::Echo(1, reply_with)
                     })
-                    .producing(OwnershipMessage::Request),
+                    .on_outcome(OwnershipMessage::Request),
                 ])
             }
             OwnershipMessage::Effect(outcome) => {
@@ -1503,7 +1502,7 @@ impl Component for EchoRequester {
                     Command::request(&cx.to, |reply_with| {
                         EchoProtocolMessage::Echo(7, reply_with)
                     })
-                    .producing(move |outcome| EchoRequesterMessage::Replied { slot, outcome })
+                    .on_outcome(move |outcome| EchoRequesterMessage::Replied { slot, outcome })
                 }))
             }
             EchoRequesterMessage::Replied {

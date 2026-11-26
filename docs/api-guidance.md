@@ -74,14 +74,14 @@ Continuation-bearing APIs therefore use a paired convention:
   boundary type.
 
 For example, `Effect::perform(&capability, effect).into_command()` uses `Message::from`, while
-`Effect::perform(&capability, effect).producing(mapper)` preserves an explicit
+`Effect::perform(&capability, effect).on_outcome(mapper)` preserves an explicit
 continuation.
 The same convention applies to Requests, Subscriptions, and pure HTTP response
 pipelines where their lifecycle semantics permit it.
 
-When an effect declares `Error = Infallible`, use `.succeeding(mapper)`
+When an effect declares `Error = !`, use `.on_value(mapper)`
 to map its output directly. For example,
-`Clock::system_time(&cx.io.clock).succeeding(Message::Now)` passes the
+`Clock::system_time(&cx.io.clock).on_value(Message::Now)` passes the
 `SystemTime` to the Message constructor.
 
 The Component method's concrete `Command<Message>` or
@@ -360,8 +360,8 @@ pub struct JournalIo {
 }
 
 // In update, using the Component's own file capability:
-let append = File::append_line(&io.file, format!("{name}: {from} -> {to}")).discard_outcome();
-let read = File::read(&io.file).producing(Message::ReadCompleted);
+let append = File::append_line(&io.file, format!("{name}: {from} -> {to}")).discard();
+let read = File::read(&io.file).on_outcome(Message::ReadCompleted);
 
 // The host binds the target once:
 Runtime::builder(program)
@@ -401,7 +401,7 @@ Component needs to choose relative filenames within a directory.
 ### When Should an Effect Discard Its Outcome?
 
 
-Use `Effect::perform(&capability, descriptor).discard_outcome()` when the
+Use `Effect::perform(&capability, descriptor).discard()` when the
 Component deliberately has no behavioral reaction to success, typed failure,
 or effect-contract cancellation.
 Best-effort printing is the motivating case: an artificial "print finished"
@@ -413,7 +413,7 @@ Cancel still aborts it, and Driver or runtime faults still surface. Only the
 application continuation is absent. If any terminal outcome should affect the
 Model or cause another Command, use `Effect::perform(&capability, descriptor)` with the matching
 capability when the Message has the canonical `From<EffectOutcome<...>>`
-conversion, or `.producing(map)` for an explicit mapper.
+conversion, or `.on_outcome(map)` for an explicit mapper.
 
 ### Why Have Both Layers and Drivers?
 
@@ -670,7 +670,7 @@ first-party binding associates it with one exact Source capability and consumes
 it on first activation; a competing claimant or
 later activation after end or cancellation faults explicitly. Fabricating
 another `Ended` would hide that no new receiver exists, and
-`StreamDescriptor<T>` deliberately has `Infallible` Source Error data.
+`StreamDescriptor<T>` deliberately has `!` Source Error data.
 
 The accepted TCP Driver likewise owns one connection per Source realization,
 emits `bytes::Bytes`, maps connection/read errors and peer EOF, and closes on
@@ -702,7 +702,7 @@ library's Component kind never becomes nameable outside its crate.
 
 A Connector is also an address in its own right. A Component may hold a `Connector<M>`
 in its `Connections` and reach it with `Command::send(&target, ..)`, or with
-`Command::request(&connector, Constructor).producing(map)` where `Constructor` is a
+`Command::request(&connector, Constructor).on_outcome(map)` where `Constructor` is a
 function the provider published that takes a `ReplyWith<R>`; the reply type is
 fixed by that parameter and checked against `map`. `Connector::accepting` adapts
 a library's Connector to the holder's vocabulary once, so the holder's Components
@@ -841,7 +841,7 @@ waiter with `RuntimeError` without manufacturing a Component outcome.
 ### How Do I Bound a Request's Lifetime?
 
 
-Use `Command::request(&target, constructor).timeout(duration).producing(mapper)`;
+Use `Command::request(&target, constructor).timeout(duration).on_outcome(mapper)`;
 pass `Message::from` as the mapper for the canonical
 `From<RequestOutcome<R>>` conversion or a closure to capture application
 context. The runtime starts the duration when interpreting the Command, using
@@ -1107,8 +1107,8 @@ EffectOutcomes, SourceEvents, RequestOutcomes, or Messages solely to announce
 that abort. This differs from an explicit effect-contract cancellation outcome,
 which is typed data and completes the effect exactly once when accepted: it
 invokes the canonical or explicit mapper for `Effect::perform(&capability, descriptor)` or
-`.producing(map)`, or schedules no Message for
-`.discard_outcome()`.
+`.on_outcome(map)`, or schedules no Message for
+`.discard()`.
 
 Successful shutdown always means no runtime-owned task or semantic obligation
 remains. `completed` and `cancelled` describe semantic obligations rather than

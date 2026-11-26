@@ -84,7 +84,7 @@ impl CanWrite for ReadWrite {}
 ///     type Connections = (); type Configuration = (); type Io = File<ReadAppend>;
 ///     type Model = (); type Message = ();
 ///     fn init(cx: &Context<Self>) -> Init<(), ()> {
-///         Init::new(()).with_command(File::append_line(&cx.io, "hello").discard_outcome())
+///         Init::new(()).with_command(File::append_line(&cx.io, "hello").discard())
 ///     }
 ///     fn update(_: &Context<Self>, _: &mut (), _: ()) -> Command<()> { Command::none() }
 /// }
@@ -224,7 +224,7 @@ impl<P: CanWrite> File<P> {
 /// A typed file operation coupled to the capability that authorized it.
 ///
 /// This is the general [`EffectBuilder`](crate::EffectBuilder): finish it with
-/// `producing`, `into_command`, `finish_with`, or `discard_outcome`.
+/// `on_outcome`, `into_command`, `divert_with`, or `discard`.
 pub type FileEffect<D> = crate::EffectBuilder<D>;
 
 /// A read of the file selected by its capability, with no target path argument.

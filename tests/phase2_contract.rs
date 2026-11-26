@@ -5,7 +5,7 @@
 //! staged in `docs/testing/v0-acceptance-matrix.md` rather than made green with
 //! placeholder runtime behavior.
 
-use std::{cell::Cell, convert::Infallible, marker::PhantomData};
+use std::{cell::Cell, marker::PhantomData};
 
 use samara::prelude::*;
 
@@ -22,7 +22,7 @@ struct ContractModel {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum ContractMessage {
     Add(u64),
-    Input(SourceEvent<u64, Infallible>),
+    Input(SourceEvent<u64, !>),
     Saved(EffectOutcome<(), SaveError>),
 }
 
@@ -82,7 +82,7 @@ impl Component for ContractComponent {
             ContractMessage::Add(amount) => {
                 model.total += amount;
                 Effect::perform(save, SaveTotal { value: model.total })
-                    .producing(ContractMessage::Saved)
+                    .on_outcome(ContractMessage::Saved)
             }
             ContractMessage::Input(SourceEvent::Item(amount)) => {
                 model.total += amount;

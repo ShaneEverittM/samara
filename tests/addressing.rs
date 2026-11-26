@@ -97,12 +97,12 @@ impl Component for Clerk {
                     match cx.config {
                         None => {
                             Command::request(&cx.to, LedgerMessage::Total)
-                                .producing(ClerkMessage::Total)
+                                .on_outcome(ClerkMessage::Total)
                         }
                         Some(patience) => {
                             Command::request(&cx.to, LedgerMessage::Park)
                                 .timeout(patience)
-                                .producing(ClerkMessage::Total)
+                                .on_outcome(ClerkMessage::Total)
                         }
                     },
                 ])
@@ -204,7 +204,7 @@ fn into_request_to_inspects_a_request_without_a_runtime() {
     let ledger = program.add_port::<LedgerMessage>(PortId::new("ledger"));
 
     let intent = Command::request(&ledger, LedgerMessage::Total)
-        .producing(ClerkMessage::Total)
+        .on_outcome(ClerkMessage::Total)
         .into_request::<LedgerMessage>()
         .ok()
         .expect("a request addressed with LedgerMessage");
@@ -218,7 +218,7 @@ fn into_request_to_inspects_a_request_without_a_runtime() {
     let send: Command<ClerkMessage> = Command::send(&ledger, LedgerMessage::Add(1));
     assert!(send.into_request::<LedgerMessage>().is_err());
     let other: Command<ClerkMessage> =
-        Command::request(&ledger, LedgerMessage::Total).producing(ClerkMessage::Total);
+        Command::request(&ledger, LedgerMessage::Total).on_outcome(ClerkMessage::Total);
     assert!(other.into_request::<ClerkMessage>().is_err());
 }
 

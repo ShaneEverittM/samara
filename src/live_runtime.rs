@@ -7,7 +7,6 @@
 
 use std::{
     any::{Any, TypeId},
-    convert::Infallible,
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{Arc, Mutex, MutexGuard},
 };
@@ -889,7 +888,7 @@ impl TokioPrintStdoutDriver {
 }
 
 impl EffectDriver<PrintStdout> for TokioPrintStdoutDriver {
-    fn execute(&self, descriptor: PrintStdout) -> BoxFuture<Result<(), Infallible>> {
+    fn execute(&self, descriptor: PrintStdout) -> BoxFuture<Result<(), !>> {
         let output = self.output.clone();
         let text = descriptor.into_text();
         Box::pin(print_best_effort(output, Bytes::from(text)))
@@ -917,7 +916,7 @@ impl TokioPrintStderrDriver {
 }
 
 impl EffectDriver<PrintStderr> for TokioPrintStderrDriver {
-    fn execute(&self, descriptor: PrintStderr) -> BoxFuture<Result<(), Infallible>> {
+    fn execute(&self, descriptor: PrintStderr) -> BoxFuture<Result<(), !>> {
         let output = self.output.clone();
         let text = descriptor.into_text();
         Box::pin(print_best_effort(output, Bytes::from(text)))
@@ -927,7 +926,7 @@ impl EffectDriver<PrintStderr> for TokioPrintStderrDriver {
 async fn print_best_effort<Writer>(
     output: Arc<tokio::sync::Mutex<Writer>>,
     bytes: Bytes,
-) -> Result<(), Infallible>
+) -> Result<(), !>
 where
     Writer: AsyncWrite + Unpin,
 {
@@ -3080,7 +3079,7 @@ impl LiveCore {
 fn _tcp_item_is_bytes(_: SourceEvent<Bytes, TcpError>) {}
 
 /// Marker used only to keep exhaustive type relationships explicit.
-fn _stream_error_is_infallible<T>(_: SourceEvent<T, Infallible>) {}
+fn _stream_error_is_infallible<T>(_: SourceEvent<T, !>) {}
 
 impl Default for TokioHttpDriver {
     fn default() -> Self {
@@ -3103,7 +3102,6 @@ impl Default for TokioPrintStderrDriver {
 #[cfg(test)]
 mod tests {
     use std::{
-        convert::Infallible,
         future::pending,
         io,
         pin::Pin,
@@ -3157,7 +3155,7 @@ mod tests {
 
     impl EffectDescriptor for CutoffIntent {
         type Output = ();
-        type Error = Infallible;
+        type Error = !;
     }
 
     enum CutoffMessage {
@@ -3187,7 +3185,7 @@ mod tests {
                 CutoffMessage::Start => {
                     *started = true;
                     crate::Effect::perform(&cx.io, CutoffIntent)
-                        .producing(|_| CutoffMessage::Outcome)
+                        .on_outcome(|_| CutoffMessage::Outcome)
                 }
                 CutoffMessage::Outcome => Command::none(),
             }
@@ -3200,11 +3198,11 @@ mod tests {
     impl SourceDescriptor for GenerationSource {
         type Terminal = Self;
         type Item = u64;
-        type Error = Infallible;
+        type Error = !;
     }
 
     enum GenerationMessage {
-        Event(SourceEvent<u64, Infallible>),
+        Event(SourceEvent<u64, !>),
         Replace(u8),
     }
 
@@ -3313,7 +3311,7 @@ mod tests {
         type Connections = ();
         type Configuration = FramedDrainComponentConfig;
         type Model = ();
-        type Message = SourceEvent<u64, FramedError<Infallible, &'static str>>;
+        type Message = SourceEvent<u64, FramedError<!, &'static str>>;
 
         fn init(_: &crate::Context<Self>) -> Init<Self::Model, Self::Message> {
             Init::new(())
@@ -3997,7 +3995,7 @@ mod tests {
             events.push(
                 *event
                     .value
-                    .downcast::<SourceEvent<u8, Infallible>>()
+                    .downcast::<SourceEvent<u8, !>>()
                     .expect("typed stream event"),
             );
         }

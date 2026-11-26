@@ -7,8 +7,6 @@
 //! argument, so the short form is passing `Message::from` and the explicit
 //! form is passing a closure.
 
-use std::convert::Infallible;
-
 use bytes::Bytes;
 use http::{HeaderMap, StatusCode, Version};
 use samara::prelude::*;
@@ -19,20 +17,20 @@ struct ProbeEffect;
 
 impl EffectDescriptor for ProbeEffect {
     type Output = u64;
-    type Error = Infallible;
+    type Error = !;
 }
 
 #[derive(Debug, PartialEq, Eq)]
 enum EffectMessage {
-    Canonical(EffectOutcome<u64, Infallible>),
+    Canonical(EffectOutcome<u64, !>),
     Explicit {
         context: &'static str,
-        outcome: EffectOutcome<u64, Infallible>,
+        outcome: EffectOutcome<u64, !>,
     },
 }
 
-impl From<EffectOutcome<u64, Infallible>> for EffectMessage {
-    fn from(outcome: EffectOutcome<u64, Infallible>) -> Self {
+impl From<EffectOutcome<u64, !>> for EffectMessage {
+    fn from(outcome: EffectOutcome<u64, !>) -> Self {
         Self::Canonical(outcome)
     }
 }
@@ -52,7 +50,7 @@ fn effect_default_uses_from_and_effect_with_preserves_context() {
 
     let context = "secondary read";
     let explicit: Command<EffectMessage> = Effect::perform(&probe, ProbeEffect)
-        .producing(move |outcome| EffectMessage::Explicit { context, outcome });
+        .on_outcome(move |outcome| EffectMessage::Explicit { context, outcome });
     assert_eq!(
         explicit
             .map_effect_outcome::<ProbeEffect>(EffectOutcome::Succeeded(8))
@@ -64,7 +62,7 @@ fn effect_default_uses_from_and_effect_with_preserves_context() {
         }
     );
 
-    let identity: Command<EffectOutcome<u64, Infallible>> =
+    let identity: Command<EffectOutcome<u64, !>> =
         Effect::perform(&probe, ProbeEffect).into_command();
     assert_eq!(
         identity
@@ -77,15 +75,15 @@ fn effect_default_uses_from_and_effect_with_preserves_context() {
 
 #[derive(Debug, PartialEq, Eq)]
 enum SourceMessage {
-    Canonical(SourceEvent<u64, Infallible>),
+    Canonical(SourceEvent<u64, !>),
     Explicit {
         context: &'static str,
-        event: SourceEvent<u64, Infallible>,
+        event: SourceEvent<u64, !>,
     },
 }
 
-impl From<SourceEvent<u64, Infallible>> for SourceMessage {
-    fn from(event: SourceEvent<u64, Infallible>) -> Self {
+impl From<SourceEvent<u64, !>> for SourceMessage {
+    fn from(event: SourceEvent<u64, !>) -> Self {
         Self::Canonical(event)
     }
 }
@@ -272,14 +270,14 @@ impl Component for Requester {
                 Command::request(&cx.to.echo, |reply_with| {
                     EchoProtocolMessage::Echo(11, reply_with)
                 })
-                .producing(RequesterMessage::from)
+                .on_outcome(RequesterMessage::from)
             }
             RequesterMessage::StartExplicit => {
                 let context = "second request";
                 Command::request(&cx.to.echo, |reply_with| {
                     EchoProtocolMessage::Echo(12, reply_with)
                 })
-                .producing(move |outcome| RequesterMessage::Explicit { context, outcome })
+                .on_outcome(move |outcome| RequesterMessage::Explicit { context, outcome })
             }
             RequesterMessage::Canonical(outcome) => {
                 model.canonical = Some(outcome);

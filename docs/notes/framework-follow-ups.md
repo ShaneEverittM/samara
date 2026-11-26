@@ -253,12 +253,15 @@ a journal Component; exploratory proposals, not accepted API decisions.
     owner, message, and target). A derived struct is for several. No
     `From`/`impl Into` on `add`.
 
-- [ ] **Named finishing patterns after `replying`.** `replying` landed
-  November 26, 2026 as the first finisher that names a common
-  `finish_with` shape. Open: the same for requests (forward a request and
-  reply with its outcome; `RequestOutcome` has four cases, so two arms do
-  not cover it), `EffectOutcome::into_result()` for the cases that still
-  match by hand, and whether a send-on-outcome pattern deserves a name.
+- [ ] **Finishers and routing after ADR-0034.** The effect grid landed
+  November 26, 2026. Deliberately not designed further yet; iterate from
+  use. Open: `divert_to` and per-case finishers for requests (forward a
+  request and reply with its outcome; `RequestOutcome` has four cases, so
+  `on_reply`/`on_timeout` and what happens to the reply token on the other
+  cases need deciding), `EffectOutcome::into_result()`, whether
+  `into_command()` should become an `on_`-style name, and whether a
+  required `to_self()` for results that come back is ever wanted (rejected
+  for now: it marks the rule instead of the exception).
 
 - [ ] **Default Drivers, next steps.** `supply_default(&capability)` landed
   November 15, 2026 for the first-party descriptors with an obvious Driver.
@@ -367,8 +370,8 @@ a journal Component; exploratory proposals, not accepted API decisions.
   `Command::request(&target, ctor).timeout(d)`); `HttpResponsePipeline` still spells
   its mapper finisher `into_command_with`; `Subscription::source_with` is
   the last `_with` pair; and there is no unit-test inspector for a
-  `finish_with` continuation, only controlled execution. The reply-token
-  cost recorded above is resolved by `finish_with`; pulse's journal uses it.
+  `divert_with` continuation, only controlled execution. The reply-token
+  cost recorded above is resolved by `divert_with`; pulse's journal uses it.
 
 - [ ] **Constructor-function derive.** ADR-0016 left one sending API, with
   `M::Variant { .. }` spelled at every call site. If that proves noisy once

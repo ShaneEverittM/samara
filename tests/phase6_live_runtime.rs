@@ -1,5 +1,4 @@
 use std::{
-    convert::Infallible,
     future::pending,
     sync::{
         Arc, Mutex,
@@ -15,7 +14,7 @@ struct Record(u64);
 
 impl EffectDescriptor for Record {
     type Output = ();
-    type Error = Infallible;
+    type Error = !;
 }
 
 #[derive(Clone)]
@@ -25,7 +24,7 @@ struct RecordingDriver {
 }
 
 impl EffectDriver<Record> for RecordingDriver {
-    fn execute(&self, descriptor: Record) -> BoxFuture<Result<(), Infallible>> {
+    fn execute(&self, descriptor: Record) -> BoxFuture<Result<(), !>> {
         let values = self.values.clone();
         let observed = self.observed.clone();
         Box::pin(async move {
@@ -40,7 +39,7 @@ impl EffectDriver<Record> for RecordingDriver {
 
 #[derive(Debug)]
 enum CounterMessage {
-    Input(SourceEvent<u64, Infallible>),
+    Input(SourceEvent<u64, !>),
     Add(u64),
     Recorded,
 }
@@ -77,7 +76,7 @@ impl Component for Counter {
             CounterMessage::Input(SourceEvent::Item(value)) | CounterMessage::Add(value) => {
                 model.total += value;
                 Effect::perform(&cx.io.1, Record(model.total))
-                    .producing(|_| CounterMessage::Recorded)
+                    .on_outcome(|_| CounterMessage::Recorded)
             }
             CounterMessage::Input(SourceEvent::Ended) => {
                 model.closed = true;
@@ -161,7 +160,7 @@ struct Hang;
 
 impl EffectDescriptor for Hang {
     type Output = ();
-    type Error = Infallible;
+    type Error = !;
 }
 
 struct DropFlag(Arc<AtomicBool>);
@@ -178,7 +177,7 @@ struct HangingDriver {
 }
 
 impl EffectDriver<Hang> for HangingDriver {
-    fn execute(&self, _descriptor: Hang) -> BoxFuture<Result<(), Infallible>> {
+    fn execute(&self, _descriptor: Hang) -> BoxFuture<Result<(), !>> {
         let entered = self.entered.lock().expect("entry lock").take();
         let dropped = self.dropped.clone();
         Box::pin(async move {
@@ -221,7 +220,7 @@ impl Component for CancelProbe {
         match message {
             CancelMessage::Start => {
                 let mapper_calls = cx.config.mapper_calls.clone();
-                Effect::perform(&cx.io.0, Hang).producing(move |_| {
+                Effect::perform(&cx.io.0, Hang).on_outcome(move |_| {
                     mapper_calls.fetch_add(1, Ordering::SeqCst);
                     CancelMessage::UnexpectedOutcome
                 })
@@ -399,7 +398,7 @@ impl Component for InitialCancelProbe {
 
     fn init(cx: &Context<Self>) -> Init<Self::Model, Self::Message> {
         let mapper_calls = cx.config.mapper_calls.clone();
-        Init::new(()).with_command(Effect::perform(&cx.io.0, Hang).producing(move |_| {
+        Init::new(()).with_command(Effect::perform(&cx.io.0, Hang).on_outcome(move |_| {
             mapper_calls.fetch_add(1, Ordering::SeqCst);
         }))
     }
@@ -414,7 +413,7 @@ struct CountedHangingDriver {
 }
 
 impl EffectDriver<Hang> for CountedHangingDriver {
-    fn execute(&self, _descriptor: Hang) -> BoxFuture<Result<(), Infallible>> {
+    fn execute(&self, _descriptor: Hang) -> BoxFuture<Result<(), !>> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         Box::pin(pending())
     }
@@ -497,13 +496,13 @@ struct PanicEffect;
 
 impl EffectDescriptor for PanicEffect {
     type Output = ();
-    type Error = Infallible;
+    type Error = !;
 }
 
 struct PanickingDriver;
 
 impl EffectDriver<PanicEffect> for PanickingDriver {
-    fn execute(&self, _descriptor: PanicEffect) -> BoxFuture<Result<(), Infallible>> {
+    fn execute(&self, _descriptor: PanicEffect) -> BoxFuture<Result<(), !>> {
         Box::pin(async { panic!("driver panic fixture") })
     }
 }
@@ -522,7 +521,7 @@ impl Component for PanicProbe {
     }
 
     fn update(cx: &Context<Self>, _model: &mut Self::Model, (): ()) -> Command<Self::Message> {
-        Effect::perform(&cx.io.0, PanicEffect).producing(|_| ())
+        Effect::perform(&cx.io.0, PanicEffect).on_outcome(|_| ())
     }
 }
 
@@ -600,7 +599,7 @@ struct Observe(Observation);
 
 impl EffectDescriptor for Observe {
     type Output = ();
-    type Error = Infallible;
+    type Error = !;
 }
 
 struct ObservationDriver {
@@ -608,7 +607,7 @@ struct ObservationDriver {
 }
 
 impl EffectDriver<Observe> for ObservationDriver {
-    fn execute(&self, descriptor: Observe) -> BoxFuture<Result<(), Infallible>> {
+    fn execute(&self, descriptor: Observe) -> BoxFuture<Result<(), !>> {
         let observations = self.observations.clone();
         Box::pin(async move {
             let _ = observations.send(descriptor.0);
@@ -694,7 +693,7 @@ impl Component for SourceProbe {
             }
             SourceMessage::Event(SourceEvent::Failed(error)) => {
                 Effect::perform(&cx.io.1, Observe(Observation::Failed(error)))
-                    .producing(|_| SourceMessage::Observed)
+                    .on_outcome(|_| SourceMessage::Observed)
             }
             SourceMessage::Event(SourceEvent::Ended) => {
                 let observation = if model.items.is_empty() {
@@ -703,7 +702,7 @@ impl Component for SourceProbe {
                     Observation::ItemsThenEnded(model.items.clone())
                 };
                 Effect::perform(&cx.io.1, Observe(observation))
-                    .producing(|_| SourceMessage::Observed)
+                    .on_outcome(|_| SourceMessage::Observed)
             }
             SourceMessage::Replace(generation) => {
                 model.generation = Some(generation);
@@ -715,7 +714,7 @@ impl Component for SourceProbe {
             }
             SourceMessage::Timer(value) => {
                 Effect::perform(&cx.io.1, Observe(Observation::Timer(value)))
-                    .producing(|_| SourceMessage::Observed)
+                    .on_outcome(|_| SourceMessage::Observed)
             }
             SourceMessage::Observed => Command::none(),
         }
@@ -1090,7 +1089,7 @@ impl Component for AdmissionProbe {
         match message {
             AdmissionMessage::Add => {
                 *model += 1;
-                Effect::perform(&cx.io.0, Record(*model)).producing(|_| AdmissionMessage::Recorded)
+                Effect::perform(&cx.io.0, Record(*model)).on_outcome(|_| AdmissionMessage::Recorded)
             }
             AdmissionMessage::Recorded => Command::none(),
         }
@@ -1182,7 +1181,7 @@ struct InitialEffect;
 
 impl EffectDescriptor for InitialEffect {
     type Output = ();
-    type Error = Infallible;
+    type Error = !;
 }
 
 struct InitialEffectComponent;
@@ -1195,7 +1194,7 @@ impl Component for InitialEffectComponent {
     type Message = ();
 
     fn init(cx: &Context<Self>) -> Init<Self::Model, Self::Message> {
-        Init::new(()).with_command(Effect::perform(&cx.io.0, InitialEffect).producing(|_| ()))
+        Init::new(()).with_command(Effect::perform(&cx.io.0, InitialEffect).on_outcome(|_| ()))
     }
 
     fn update(_: &Context<Self>, _model: &mut Self::Model, (): ()) -> Command<Self::Message> {
@@ -1206,7 +1205,7 @@ impl Component for InitialEffectComponent {
 struct NoopInitialDriver;
 
 impl EffectDriver<InitialEffect> for NoopInitialDriver {
-    fn execute(&self, _descriptor: InitialEffect) -> BoxFuture<Result<(), Infallible>> {
+    fn execute(&self, _descriptor: InitialEffect) -> BoxFuture<Result<(), !>> {
         Box::pin(async { Ok(()) })
     }
 }
@@ -1302,7 +1301,7 @@ struct ObserveQuery(QueryObservation);
 
 impl EffectDescriptor for ObserveQuery {
     type Output = ();
-    type Error = Infallible;
+    type Error = !;
 }
 
 struct QueryObserver {
@@ -1310,7 +1309,7 @@ struct QueryObserver {
 }
 
 impl EffectDriver<ObserveQuery> for QueryObserver {
-    fn execute(&self, descriptor: ObserveQuery) -> BoxFuture<Result<(), Infallible>> {
+    fn execute(&self, descriptor: ObserveQuery) -> BoxFuture<Result<(), !>> {
         let observations = self.observations.clone();
         Box::pin(async move {
             let _ = observations.send(descriptor.0);
@@ -1352,11 +1351,11 @@ impl Component for QueryProbe {
                 let success_calls = cx.config.mapper_calls.clone();
                 let failure_calls = cx.config.mapper_calls.clone();
                 Command::batch([
-                    Effect::perform(&cx.io.0, Query { fail: false }).producing(move |outcome| {
+                    Effect::perform(&cx.io.0, Query { fail: false }).on_outcome(move |outcome| {
                         success_calls.fetch_add(1, Ordering::SeqCst);
                         QueryMessage::Outcome(outcome)
                     }),
-                    Effect::perform(&cx.io.0, Query { fail: true }).producing(move |outcome| {
+                    Effect::perform(&cx.io.0, Query { fail: true }).on_outcome(move |outcome| {
                         failure_calls.fetch_add(1, Ordering::SeqCst);
                         QueryMessage::Outcome(outcome)
                     }),
@@ -1364,11 +1363,11 @@ impl Component for QueryProbe {
             }
             QueryMessage::Outcome(EffectOutcome::Succeeded(value)) => {
                 Effect::perform(&cx.io.1, ObserveQuery(QueryObservation::Succeeded(value)))
-                    .producing(|_| QueryMessage::Observed)
+                    .on_outcome(|_| QueryMessage::Observed)
             }
             QueryMessage::Outcome(EffectOutcome::Failed(error)) => {
                 Effect::perform(&cx.io.1, ObserveQuery(QueryObservation::Failed(error)))
-                    .producing(|_| QueryMessage::Observed)
+                    .on_outcome(|_| QueryMessage::Observed)
             }
             QueryMessage::Observed => Command::none(),
         }
@@ -1428,7 +1427,7 @@ struct GateEffect;
 
 impl EffectDescriptor for GateEffect {
     type Output = ();
-    type Error = Infallible;
+    type Error = !;
 }
 
 struct GateDriver {
@@ -1437,7 +1436,7 @@ struct GateDriver {
 }
 
 impl EffectDriver<GateEffect> for GateDriver {
-    fn execute(&self, _descriptor: GateEffect) -> BoxFuture<Result<(), Infallible>> {
+    fn execute(&self, _descriptor: GateEffect) -> BoxFuture<Result<(), !>> {
         let started = self.started.lock().expect("start lock").take();
         let release = self.release.lock().expect("release lock").take();
         Box::pin(async move {
@@ -1479,12 +1478,12 @@ impl Component for DrainGateProbe {
     ) -> Command<Self::Message> {
         match message {
             DrainGateMessage::Trigger => {
-                Effect::perform(&cx.io.0, GateEffect).producing(|_| DrainGateMessage::WantSource)
+                Effect::perform(&cx.io.0, GateEffect).on_outcome(|_| DrainGateMessage::WantSource)
             }
             DrainGateMessage::WantSource => {
                 *desired = true;
                 Effect::perform(&cx.io.1, Observe(Observation::Timer(99)))
-                    .producing(|_| DrainGateMessage::Observed)
+                    .on_outcome(|_| DrainGateMessage::Observed)
             }
             DrainGateMessage::Noop | DrainGateMessage::Observed => Command::none(),
         }
@@ -1606,7 +1605,7 @@ struct ProviderSeen;
 
 impl EffectDescriptor for ProviderSeen {
     type Output = ();
-    type Error = Infallible;
+    type Error = !;
 }
 
 struct ProviderSeenDriver {
@@ -1614,7 +1613,7 @@ struct ProviderSeenDriver {
 }
 
 impl EffectDriver<ProviderSeen> for ProviderSeenDriver {
-    fn execute(&self, _descriptor: ProviderSeen) -> BoxFuture<Result<(), Infallible>> {
+    fn execute(&self, _descriptor: ProviderSeen) -> BoxFuture<Result<(), !>> {
         let seen = self.seen.lock().expect("seen lock").take();
         Box::pin(async move {
             if let Some(seen) = seen {
@@ -1652,7 +1651,8 @@ impl Component for EchoProvider {
                 if cx.config.reply {
                     Command::reply(reply_with, value)
                 } else {
-                    Effect::perform(&cx.io.0, ProviderSeen).producing(|_| EchoProviderMessage::Seen)
+                    Effect::perform(&cx.io.0, ProviderSeen)
+                        .on_outcome(|_| EchoProviderMessage::Seen)
                 }
             }
             EchoProviderMessage::Seen => Command::none(),
@@ -1665,7 +1665,7 @@ struct ObserveReply(u64);
 
 impl EffectDescriptor for ObserveReply {
     type Output = ();
-    type Error = Infallible;
+    type Error = !;
 }
 
 struct ReplyObserver {
@@ -1673,7 +1673,7 @@ struct ReplyObserver {
 }
 
 impl EffectDriver<ObserveReply> for ReplyObserver {
-    fn execute(&self, descriptor: ObserveReply) -> BoxFuture<Result<(), Infallible>> {
+    fn execute(&self, descriptor: ObserveReply) -> BoxFuture<Result<(), !>> {
         let replies = self.replies.clone();
         Box::pin(async move {
             let _ = replies.send(descriptor.0);
@@ -1710,7 +1710,7 @@ impl Component for EchoRequester {
         match message {
             EchoRequesterMessage::Start => {
                 let continuation_calls = cx.config.clone();
-                Command::request(&cx.to, |reply_with| EchoMessage::Echo(42, reply_with)).producing(
+                Command::request(&cx.to, |reply_with| EchoMessage::Echo(42, reply_with)).on_outcome(
                     move |outcome| {
                         continuation_calls.fetch_add(1, Ordering::SeqCst);
                         EchoRequesterMessage::Outcome(outcome)
@@ -1719,7 +1719,7 @@ impl Component for EchoRequester {
             }
             EchoRequesterMessage::Outcome(RequestOutcome::Replied(value)) => {
                 Effect::perform(&cx.io.0, ObserveReply(value))
-                    .producing(|_| EchoRequesterMessage::Observed)
+                    .on_outcome(|_| EchoRequesterMessage::Observed)
             }
             EchoRequesterMessage::Outcome(_) => {
                 panic!("Phase 6 does not manufacture deferred Request outcomes")
@@ -1850,7 +1850,7 @@ struct Independent(char);
 
 impl EffectDescriptor for Independent {
     type Output = char;
-    type Error = Infallible;
+    type Error = !;
 }
 
 struct IndependentDriver {
@@ -1859,7 +1859,7 @@ struct IndependentDriver {
 }
 
 impl EffectDriver<Independent> for IndependentDriver {
-    fn execute(&self, descriptor: Independent) -> BoxFuture<Result<char, Infallible>> {
+    fn execute(&self, descriptor: Independent) -> BoxFuture<Result<char, !>> {
         let label = descriptor.0;
         let release = self
             .releases
@@ -1881,7 +1881,7 @@ struct RecordOrder(char);
 
 impl EffectDescriptor for RecordOrder {
     type Output = ();
-    type Error = Infallible;
+    type Error = !;
 }
 
 struct OrderObserver {
@@ -1889,7 +1889,7 @@ struct OrderObserver {
 }
 
 impl EffectDriver<RecordOrder> for OrderObserver {
-    fn execute(&self, descriptor: RecordOrder) -> BoxFuture<Result<(), Infallible>> {
+    fn execute(&self, descriptor: RecordOrder) -> BoxFuture<Result<(), !>> {
         let order = self.order.clone();
         Box::pin(async move {
             let _ = order.send(descriptor.0);
@@ -1900,7 +1900,7 @@ impl EffectDriver<RecordOrder> for OrderObserver {
 
 enum IndependentMessage {
     Start,
-    Completed(EffectOutcome<char, Infallible>),
+    Completed(EffectOutcome<char, !>),
     Recorded,
 }
 
@@ -1926,14 +1926,14 @@ impl Component for IndependentProbe {
             IndependentMessage::Start => {
                 Command::batch([
                     Effect::perform(&cx.io.0, Independent('A'))
-                        .producing(IndependentMessage::Completed),
+                        .on_outcome(IndependentMessage::Completed),
                     Effect::perform(&cx.io.0, Independent('B'))
-                        .producing(IndependentMessage::Completed),
+                        .on_outcome(IndependentMessage::Completed),
                 ])
             }
             IndependentMessage::Completed(EffectOutcome::Succeeded(label)) => {
                 Effect::perform(&cx.io.1, RecordOrder(label))
-                    .producing(|_| IndependentMessage::Recorded)
+                    .on_outcome(|_| IndependentMessage::Recorded)
             }
             IndependentMessage::Completed(EffectOutcome::Failed(never)) => match never {},
             IndependentMessage::Recorded => Command::none(),

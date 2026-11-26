@@ -1,6 +1,6 @@
 //! ADR-0011: one request outcome, runtime-owned deadlines, and harmless late replies.
 
-use std::{convert::Infallible, time::Duration};
+use std::time::Duration;
 
 use samara::prelude::*;
 
@@ -86,7 +86,7 @@ struct Observation {
 
 impl EffectDescriptor for Observation {
     type Output = ();
-    type Error = Infallible;
+    type Error = !;
 }
 
 enum RequesterMessage {
@@ -139,7 +139,7 @@ impl Component for Requester {
                     (Some(timeout), Some(key)) => {
                         Command::request(&cx.to.port, ask(value, delay))
                             .timeout(timeout)
-                            .producing(move |outcome| {
+                            .on_outcome(move |outcome| {
                                 RequesterMessage::Outcome(Observation {
                                     key: Some(key),
                                     outcome,
@@ -149,17 +149,17 @@ impl Component for Requester {
                     (Some(timeout), None) => {
                         Command::request(&cx.to.port, ask(value, delay))
                             .timeout(timeout)
-                            .producing(RequesterMessage::from)
+                            .on_outcome(RequesterMessage::from)
                     }
                     (None, _) => {
                         Command::request(&cx.to.port, ask(value, delay))
-                            .producing(RequesterMessage::from)
+                            .on_outcome(RequesterMessage::from)
                     }
                 }
             }
             RequesterMessage::Outcome(observation) => {
                 model.push(observation.clone());
-                Effect::perform(&cx.io, observation).discard_outcome()
+                Effect::perform(&cx.io, observation).discard()
             }
         }
     }
@@ -450,7 +450,7 @@ fn controlled_deadline_overflow_faults_explicitly() {
 struct Observer(tokio::sync::mpsc::UnboundedSender<Observation>);
 
 impl EffectDriver<Observation> for Observer {
-    fn execute(&self, observation: Observation) -> BoxFuture<Result<(), Infallible>> {
+    fn execute(&self, observation: Observation) -> BoxFuture<Result<(), !>> {
         let sender = self.0.clone();
         Box::pin(async move {
             let _ = sender.send(observation);

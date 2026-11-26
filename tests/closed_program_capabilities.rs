@@ -1,12 +1,9 @@
 //! Executable contract for ADR-0008's closed Program assembly, with the
 //! capabilities of ADR-0028: each belongs to the Component it was created for.
 
-use std::{
-    convert::Infallible,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
 };
 
 use samara::prelude::*;
@@ -47,7 +44,7 @@ struct LateEffect(u64);
 
 impl EffectDescriptor for LateEffect {
     type Output = u64;
-    type Error = Infallible;
+    type Error = !;
 }
 
 #[derive(Debug)]
@@ -84,7 +81,7 @@ impl Component for EffectComponent {
         match message {
             EffectMessage::Trigger => {
                 Effect::perform(cx.config.smuggled.as_ref().unwrap_or(own), LateEffect(41))
-                    .producing(|EffectOutcome::Succeeded(value)| EffectMessage::Finished(value))
+                    .on_outcome(|EffectOutcome::Succeeded(value)| EffectMessage::Finished(value))
             }
             EffectMessage::Finished(value) => {
                 *model = Some(value);
@@ -113,13 +110,13 @@ struct LateSource;
 impl SourceDescriptor for LateSource {
     type Terminal = Self;
     type Item = u64;
-    type Error = Infallible;
+    type Error = !;
 }
 
 #[derive(Debug)]
 enum SourceMessage {
     Enable,
-    Event(SourceEvent<u64, Infallible>),
+    Event(SourceEvent<u64, !>),
 }
 
 struct SourceComponent;
@@ -303,7 +300,7 @@ struct CountingEffectDriver {
 }
 
 impl EffectDriver<LateEffect> for CountingEffectDriver {
-    fn execute(&self, descriptor: LateEffect) -> BoxFuture<Result<u64, Infallible>> {
+    fn execute(&self, descriptor: LateEffect) -> BoxFuture<Result<u64, !>> {
         let calls = self.calls.clone();
         Box::pin(async move {
             calls.fetch_add(1, Ordering::SeqCst);
@@ -363,8 +360,7 @@ impl Component for InitialEffectComponent {
     type Message = ();
 
     fn init(cx: &Context<Self>) -> Init<Self::Model, Self::Message> {
-        Init::new(())
-            .with_command(Effect::perform(&cx.config.effect, LateEffect(1)).discard_outcome())
+        Init::new(()).with_command(Effect::perform(&cx.config.effect, LateEffect(1)).discard())
     }
 
     fn update(
@@ -533,8 +529,9 @@ impl Component for InitialForeignRequest {
     type Message = ();
 
     fn init(cx: &Context<Self>) -> Init<Self::Model, Self::Message> {
-        Init::new(())
-            .with_command(Command::request(&cx.config.port, ForeignMessage::Read).producing(|_| ()))
+        Init::new(()).with_command(
+            Command::request(&cx.config.port, ForeignMessage::Read).on_outcome(|_| ()),
+        )
     }
 
     fn update(
@@ -727,8 +724,8 @@ fn controlled_exact_stream_rejects_duplicate_and_type_wide_ambiguity() {
 }
 
 enum DualStreamMessage {
-    First(SourceEvent<u64, Infallible>),
-    Second(SourceEvent<u64, Infallible>),
+    First(SourceEvent<u64, !>),
+    Second(SourceEvent<u64, !>),
 }
 
 #[derive(Debug)]
@@ -739,7 +736,7 @@ struct RecordDualStream {
 
 impl EffectDescriptor for RecordDualStream {
     type Output = ();
-    type Error = Infallible;
+    type Error = !;
 }
 
 struct RecordDualStreamDriver {
@@ -747,7 +744,7 @@ struct RecordDualStreamDriver {
 }
 
 impl EffectDriver<RecordDualStream> for RecordDualStreamDriver {
-    fn execute(&self, descriptor: RecordDualStream) -> BoxFuture<Result<(), Infallible>> {
+    fn execute(&self, descriptor: RecordDualStream) -> BoxFuture<Result<(), !>> {
         let observed = self.observed.clone();
         Box::pin(async move {
             let _ = observed.send((descriptor.lane, descriptor.value));
@@ -789,7 +786,7 @@ impl Component for DualStreamComponent {
         let (_, _, observe) = &cx.io;
         let record = |lane, value| {
             if cx.config.observe {
-                Effect::perform(observe, RecordDualStream { lane, value }).discard_outcome()
+                Effect::perform(observe, RecordDualStream { lane, value }).discard()
             } else {
                 Command::none()
             }
@@ -914,7 +911,7 @@ struct IdentityDecoder;
 impl Decoder for IdentityDecoder {
     type Chunk = u64;
     type Frame = u64;
-    type Error = Infallible;
+    type Error = !;
     type State = ();
 
     fn start(&self) -> Self::State {}
@@ -938,7 +935,7 @@ struct IncrementDecoder;
 impl Decoder for IncrementDecoder {
     type Chunk = u64;
     type Frame = u64;
-    type Error = Infallible;
+    type Error = !;
     type State = ();
 
     fn start(&self) -> Self::State {}
@@ -957,7 +954,7 @@ impl Decoder for IncrementDecoder {
 }
 
 enum FramedStreamMessage {
-    Event(SourceEvent<u64, FramedError<Infallible, Infallible>>),
+    Event(SourceEvent<u64, FramedError<!, !>>),
 }
 
 type FramedStream = Framed<StreamDescriptor<u64>, IncrementDecoder>;
@@ -997,7 +994,7 @@ impl Component for FramedStreamComponent {
                             value,
                         },
                     )
-                    .discard_outcome()
+                    .discard()
                 } else {
                     Command::none()
                 }

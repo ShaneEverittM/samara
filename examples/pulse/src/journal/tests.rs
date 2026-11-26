@@ -65,7 +65,7 @@ impl Component for JournalClient {
             ClientMessage::Transition => Command::send(&cx.to, transition()),
             ClientMessage::Recent(count) => {
                 Command::request(&cx.to, move |reply| JournalMessage::Recent { count, reply })
-                    .producing(move |outcome| ClientMessage::Replied(count, outcome))
+                    .on_outcome(move |outcome| ClientMessage::Replied(count, outcome))
             }
             ClientMessage::Replied(count, outcome) => {
                 model.push((count, outcome));

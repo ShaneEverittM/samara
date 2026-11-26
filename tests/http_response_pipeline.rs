@@ -1,5 +1,4 @@
 use std::{
-    convert::Infallible,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -137,7 +136,7 @@ impl Component for PipelineComponent {
                 };
                 model.result = Some(result.clone());
                 Effect::perform(observe, ObservePipelineResult(result))
-                    .producing(|_| PipelineMessage::Observed)
+                    .on_outcome(|_| PipelineMessage::Observed)
             }
             PipelineMessage::Observed => Command::none(),
         }
@@ -149,7 +148,7 @@ struct ObservePipelineResult(PipelineResult);
 
 impl EffectDescriptor for ObservePipelineResult {
     type Output = ();
-    type Error = Infallible;
+    type Error = !;
 }
 
 fn pipeline_program(url: impl Into<String>) -> (Program, InstalledComponent<PipelineComponent>) {
@@ -389,7 +388,7 @@ struct PipelineObserver {
 }
 
 impl EffectDriver<ObservePipelineResult> for PipelineObserver {
-    fn execute(&self, descriptor: ObservePipelineResult) -> BoxFuture<Result<(), Infallible>> {
+    fn execute(&self, descriptor: ObservePipelineResult) -> BoxFuture<Result<(), !>> {
         let observed = self.observed.clone();
         Box::pin(async move {
             let _ = observed.send(descriptor.0);

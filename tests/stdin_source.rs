@@ -8,7 +8,7 @@ struct LineLength;
 impl Decoder for LineLength {
     type Chunk = String;
     type Frame = usize;
-    type Error = std::convert::Infallible;
+    type Error = !;
     type State = ();
 
     fn start(&self) -> Self::State {}

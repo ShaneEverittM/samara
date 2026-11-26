@@ -77,7 +77,7 @@ pub trait Io: Clone + Send + 'static {
     /// ```
     /// use samara::prelude::*;
     /// let clock = Clock::detached();
-    /// let command: Command<()> = Clock::system_time(&clock).discard_outcome();
+    /// let command: Command<()> = Clock::system_time(&clock).discard();
     /// assert!(command.effect_intent::<ReadSystemTime>().is_some());
     /// ```
     fn detached() -> Self {

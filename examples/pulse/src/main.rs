@@ -45,7 +45,7 @@ impl Component for Monitor {
                         reply,
                     }
                 })
-                .producing(|response| {
+                .on_outcome(|response| {
                     match response {
                         RequestOutcome::Replied(r) => Message::JournalResponse(r.unwrap()),
                         // This would handle error or cancellation.

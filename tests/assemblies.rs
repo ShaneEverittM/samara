@@ -3,7 +3,6 @@
 //! is supplied a matching tuple of Drivers for them and the controlled
 //! builder takes nothing.
 
-use std::convert::Infallible;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -13,7 +12,7 @@ struct Stamp;
 
 impl EffectDescriptor for Stamp {
     type Output = u64;
-    type Error = Infallible;
+    type Error = !;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -22,7 +21,7 @@ struct Pulses;
 impl SourceDescriptor for Pulses {
     type Terminal = Self;
     type Item = u8;
-    type Error = Infallible;
+    type Error = !;
 }
 
 /// The Assembly's exported vocabulary, written by hand: the request variant
@@ -38,8 +37,8 @@ type RecorderNeeds = (Effect<Stamp>, Source<Pulses>);
 
 enum RecorderMessage {
     Ledger(LedgerMessage),
-    Stamped(EffectOutcome<u64, Infallible>),
-    Pulse(SourceEvent<u8, Infallible>),
+    Stamped(EffectOutcome<u64, !>),
+    Pulse(SourceEvent<u8, !>),
 }
 
 impl From<LedgerMessage> for RecorderMessage {
@@ -68,7 +67,7 @@ impl Component for Recorder {
         match message {
             RecorderMessage::Ledger(LedgerMessage::Record(entry)) => {
                 entries.push(entry);
-                Effect::perform(stamp, Stamp).producing(RecorderMessage::Stamped)
+                Effect::perform(stamp, Stamp).on_outcome(RecorderMessage::Stamped)
             }
             RecorderMessage::Ledger(LedgerMessage::Count(reply_with)) => {
                 Command::reply(reply_with, entries.len())
@@ -127,7 +126,7 @@ struct CountingStamp {
 }
 
 impl EffectDriver<Stamp> for CountingStamp {
-    fn execute(&self, _: Stamp) -> BoxFuture<Result<u64, Infallible>> {
+    fn execute(&self, _: Stamp) -> BoxFuture<Result<u64, !>> {
         let executions = self.executions.clone();
         Box::pin(async move {
             let count = executions.fetch_add(1, Ordering::SeqCst) + 1;

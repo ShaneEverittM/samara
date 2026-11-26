@@ -5,7 +5,6 @@
 //! completes the effect with any instant it likes, which is what makes
 //! time-dependent logic testable without waiting.
 
-use std::convert::Infallible;
 use std::time::SystemTime;
 
 use crate::{BoxFuture, Effect, EffectBuilder, EffectDescriptor, EffectDriver};
@@ -20,7 +19,7 @@ use crate::{BoxFuture, Effect, EffectBuilder, EffectDescriptor, EffectDriver};
 /// use samara::prelude::*;
 /// use std::time::SystemTime;
 /// let clock = Clock::detached();
-/// let command: Command<SystemTime> = Clock::system_time(&clock).succeeding(|now| now);
+/// let command: Command<SystemTime> = Clock::system_time(&clock).on_value(|now| now);
 /// assert!(command.effect_intent::<ReadSystemTime>().is_some());
 /// ```
 pub type Clock = Effect<ReadSystemTime>;
@@ -38,7 +37,7 @@ pub struct ReadSystemTime;
 
 impl EffectDescriptor for ReadSystemTime {
     type Output = SystemTime;
-    type Error = Infallible;
+    type Error = !;
 }
 
 /// Live driver that answers [`ReadSystemTime`] from the operating system clock.
@@ -46,7 +45,7 @@ impl EffectDescriptor for ReadSystemTime {
 pub struct SystemClockDriver;
 
 impl EffectDriver<ReadSystemTime> for SystemClockDriver {
-    fn execute(&self, _: ReadSystemTime) -> BoxFuture<Result<SystemTime, Infallible>> {
+    fn execute(&self, _: ReadSystemTime) -> BoxFuture<Result<SystemTime, !>> {
         Box::pin(async { Ok(SystemTime::now()) })
     }
 }

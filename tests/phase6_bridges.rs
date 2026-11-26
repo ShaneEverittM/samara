@@ -1,4 +1,4 @@
-use std::{convert::Infallible, net::SocketAddr};
+use std::net::SocketAddr;
 
 use bytes::Bytes;
 use samara::prelude::*;
@@ -15,7 +15,7 @@ struct ObserveStream(StreamObservation);
 
 impl EffectDescriptor for ObserveStream {
     type Output = ();
-    type Error = Infallible;
+    type Error = !;
 }
 
 struct StreamObserver {
@@ -23,7 +23,7 @@ struct StreamObserver {
 }
 
 impl EffectDriver<ObserveStream> for StreamObserver {
-    fn execute(&self, descriptor: ObserveStream) -> BoxFuture<Result<(), Infallible>> {
+    fn execute(&self, descriptor: ObserveStream) -> BoxFuture<Result<(), !>> {
         let observations = self.observations.clone();
         Box::pin(async move {
             let _ = observations.send(descriptor.0);
@@ -33,7 +33,7 @@ impl EffectDriver<ObserveStream> for StreamObserver {
 }
 
 enum StreamMessage {
-    Event(SourceEvent<u64, Infallible>),
+    Event(SourceEvent<u64, !>),
     Reopen,
     Observed,
 }
@@ -72,12 +72,12 @@ impl Component for StreamProbe {
         match message {
             StreamMessage::Event(SourceEvent::Item(value)) => {
                 Effect::perform(observe, ObserveStream(StreamObservation::Item(value)))
-                    .producing(|_| StreamMessage::Observed)
+                    .on_outcome(|_| StreamMessage::Observed)
             }
             StreamMessage::Event(SourceEvent::Ended) => {
                 model.desired = false;
                 Effect::perform(observe, ObserveStream(StreamObservation::Ended))
-                    .producing(|_| StreamMessage::Observed)
+                    .on_outcome(|_| StreamMessage::Observed)
             }
             StreamMessage::Event(SourceEvent::Failed(never)) => match never {},
             StreamMessage::Reopen => {
@@ -247,7 +247,7 @@ struct ObserveTcp(TcpObservation);
 
 impl EffectDescriptor for ObserveTcp {
     type Output = ();
-    type Error = Infallible;
+    type Error = !;
 }
 
 struct TcpObserver {
@@ -255,7 +255,7 @@ struct TcpObserver {
 }
 
 impl EffectDriver<ObserveTcp> for TcpObserver {
-    fn execute(&self, descriptor: ObserveTcp) -> BoxFuture<Result<(), Infallible>> {
+    fn execute(&self, descriptor: ObserveTcp) -> BoxFuture<Result<(), !>> {
         let observations = self.observations.clone();
         Box::pin(async move {
             let _ = observations.send(descriptor.0);
@@ -304,7 +304,7 @@ impl Component for TcpProbe {
             }
             TcpMessage::Observed => return Command::none(),
         };
-        Effect::perform(observe, ObserveTcp(observation)).producing(|_| TcpMessage::Observed)
+        Effect::perform(observe, ObserveTcp(observation)).on_outcome(|_| TcpMessage::Observed)
     }
 
     fn subscriptions(cx: &Context<Self>, active: &Self::Model) -> Subscriptions<Self::Message> {

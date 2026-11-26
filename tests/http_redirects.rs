@@ -1,6 +1,6 @@
 //! ADR-0012: redirects are pure policy over individually visible HTTP effects.
 
-use std::{convert::Infallible, time::Duration};
+use std::time::Duration;
 
 use http::{HeaderMap, HeaderValue, Method, Version};
 use samara::prelude::*;
@@ -13,7 +13,7 @@ type Outcome = EffectOutcome<HttpResponse, HttpError>;
 struct Observed(Outcome);
 impl EffectDescriptor for Observed {
     type Output = ();
-    type Error = Infallible;
+    type Error = !;
 }
 struct Probe;
 
@@ -41,7 +41,7 @@ impl Component for Probe {
     fn update(cx: &Context<Self>, model: &mut Self::Model, outcome: Outcome) -> Command<Outcome> {
         let (_, observed) = &cx.io;
         model.push(outcome.clone());
-        Effect::perform(observed, Observed(outcome)).discard_outcome()
+        Effect::perform(observed, Observed(outcome)).discard()
     }
 }
 fn program(request: HttpRequest, limit: usize) -> (Program, InstalledComponent<Probe>) {
@@ -268,7 +268,7 @@ fn transport_failure_ends_the_chain() {
 
 struct ObserveDriver(tokio::sync::mpsc::UnboundedSender<Outcome>);
 impl EffectDriver<Observed> for ObserveDriver {
-    fn execute(&self, value: Observed) -> BoxFuture<Result<(), Infallible>> {
+    fn execute(&self, value: Observed) -> BoxFuture<Result<(), !>> {
         let sender = self.0.clone();
         Box::pin(async move {
             sender.send(value.0).unwrap();

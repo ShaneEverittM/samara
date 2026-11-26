@@ -41,14 +41,14 @@ impl Component for Recorder {
                 match journal {
                     JournalMessage::Transition(transition) => {
                         Clock::system_time(&cx.io.clock)
-                            .succeeding(|time| Message::Time { time, transition })
+                            .on_value(|time| Message::Time { time, transition })
                     }
 
                     JournalMessage::Recent { count, reply } => {
                         File::read(&cx.io.file)
-                            .replying(reply)
-                            .succeeding(move |contents| Ok(tail(&contents, count)))
-                            .failing(|_| Err(Error::CouldNotReadJournal))
+                            .divert_to(reply)
+                            .on_success(move |contents| Ok(tail(&contents, count)))
+                            .on_failure(|_| Err(Error::CouldNotReadJournal))
                     }
                 }
             }
@@ -65,7 +65,7 @@ impl Component for Recorder {
                         time.duration_since(UNIX_EPOCH).unwrap().as_millis()
                     ),
                 )
-                .discard_outcome()
+                .discard()
             }
         }
     }
