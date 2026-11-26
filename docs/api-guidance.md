@@ -79,6 +79,11 @@ continuation.
 The same convention applies to Requests, Subscriptions, and pure HTTP response
 pipelines where their lifecycle semantics permit it.
 
+When an effect declares `Error = Infallible`, use `.succeeding(mapper)`
+to map its output directly. For example,
+`Clock::system_time(&cx.io.clock).succeeding(Message::Now)` passes the
+`SystemTime` to the Message constructor.
+
 The Component method's concrete `Command<Message>` or
 `Subscriptions<Message>` return context normally lets Rust infer the
 destination Message type. An isolated local expression may need an ordinary
@@ -351,7 +356,7 @@ Declare `File<ReadAppend>` when operations must target the same file
 #[derive(Clone, Io)]
 pub struct JournalIo {
     pub file: File<ReadAppend>,
-    pub clock: Effect<ReadSystemTime>,
+    pub clock: Clock,
 }
 
 // In update, using the Component's own file capability:

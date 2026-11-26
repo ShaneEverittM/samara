@@ -77,7 +77,7 @@ async fn a_driver_follows_its_capability_value_not_a_position() {
     );
 }
 
-type FileAndClock = (File<ReadAppend>, Effect<ReadSystemTime>);
+type FileAndClock = (File<ReadAppend>, Clock);
 
 /// Owns a file and a clock and uses neither: the tests below are about what
 /// the host must supply, not about what the Component does.
@@ -181,7 +181,7 @@ impl Component for Console {
     type Io = (
         Effect<PrintStdout>,
         Effect<PrintStderr>,
-        Effect<ReadSystemTime>,
+        Clock,
         Effect<HttpRequest>,
         Source<TcpBytes>,
     );

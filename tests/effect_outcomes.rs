@@ -136,7 +136,7 @@ enum StampMessage {
 }
 
 impl Component for Stamper {
-    type Io = Effect<ReadSystemTime>;
+    type Io = Clock;
     type Connections = ();
     type Configuration = ();
     type Model = Option<SystemTime>;
@@ -152,8 +152,7 @@ impl Component for Stamper {
         message: StampMessage,
     ) -> Command<StampMessage> {
         match message {
-            StampMessage::Stamp => Effect::perform(&cx.io, ReadSystemTime)
-                .producing(|EffectOutcome::Succeeded(now)| StampMessage::Now(now)),
+            StampMessage::Stamp => Clock::system_time(&cx.io).succeeding(StampMessage::Now),
             StampMessage::Now(now) => {
                 *model = Some(now);
                 Command::none()

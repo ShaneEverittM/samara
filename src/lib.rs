@@ -106,7 +106,7 @@ pub use samara_derive::Connections;
 ///
 /// #[derive(Clone, Io)]
 /// pub struct ReaderIo {
-///     pub clock: Effect<ReadSystemTime>,
+///     pub clock: Clock,
 ///     pub input: Source<StdinLines>,
 /// }
 /// ```
@@ -126,6 +126,14 @@ mod live_runtime;
 use component_kernel::{ComponentKernel, ErasedComponentKernel};
 use controlled_runtime::ControlledCore;
 
+pub use clock::{Clock, ReadSystemTime, SystemClockDriver};
+
+#[cfg(feature = "fs")]
+pub use file::*;
+#[cfg(feature = "fs")]
+pub use fs::{
+    AppendToFile, FsDriver, FsError, FsErrorKind, FsOperation, ReadFile, RemoveFile, ReplaceFile,
+};
 /// HTTP response status used by [`HttpResponse::status`].
 ///
 /// ```
@@ -135,13 +143,6 @@ use controlled_runtime::ControlledCore;
 /// assert!(status.is_success());
 /// assert_eq!(status.as_u16(), 200);
 /// ```
-pub use clock::{ReadSystemTime, SystemClockDriver};
-#[cfg(feature = "fs")]
-pub use file::*;
-#[cfg(feature = "fs")]
-pub use fs::{
-    AppendToFile, FsDriver, FsError, FsErrorKind, FsOperation, ReadFile, RemoveFile, ReplaceFile,
-};
 pub use http::StatusCode;
 pub use live_runtime::{
     TokioHttpDriver as HttpDriver, TokioPrintStderrDriver as StderrDriver,
@@ -162,22 +163,23 @@ pub mod prelude {
     #[cfg(unix)]
     pub use crate::StdinDriver;
     pub use crate::{
-        Addressable, Assembly, BoxFuture, CapabilityKind, Command, Component, ComponentHandle,
-        ComponentId, ComponentRef, Connections, Connector, Context, ControlledRuntime,
-        ControlledRuntimeBuilder, DeclaredCapability, DeclaredConnection, Declaring, Decoder,
-        Deliverable, DrivenSource, DriverStopped, Drivers, Effect, EffectBuilder, EffectDescriptor,
-        EffectDriver, EffectInvocation, EffectOutcome, EffectOutcomeKind, Framed, FramedError,
-        FramedLayer, HasDefaultDriver, HttpDriver, HttpError, HttpErrorKind, HttpJsonError,
-        HttpRequest, HttpResponse, HttpResponseError, HttpStatusError, Init, InstalledAssembly,
-        InstalledComponent, Io, Listing, LogicalTime, Manifest, MpscReceiver, NoMessage,
-        PendingEffect, PendingWork, Port, PortHandle, PortId, PrintStderr, PrintStdout, Program,
-        ProgramBuildError, ProgramBuilder, ReadSystemTime, ReplyWith, RequestBuilder, RequestError,
-        RequestIntent, RequestOutcome, RequestOutcomeKind, RunReport, Runtime, RuntimeError,
-        RuntimeTask, Shutdown, ShutdownReport, Source, SourceDescriptor, SourceDriver, SourceEvent,
-        SourceEventKind, SourceSink, StatusCode, StderrDriver, StdinError, StdinErrorKind,
-        StdinLines, StdoutDriver, StreamDescriptor, Subscription, SubscriptionAction,
-        SubscriptionId, Subscriptions, SystemClockDriver, TcpBytes, TcpDriver, TcpError,
-        TcpErrorKind, TraceCommandKind, TraceEvent, TraceId, TraceRecord, VendorsDrivers,
+        Addressable, Assembly, BoxFuture, CapabilityKind, Clock, Command, Component,
+        ComponentHandle, ComponentId, ComponentRef, Connections, Connector, Context,
+        ControlledRuntime, ControlledRuntimeBuilder, DeclaredCapability, DeclaredConnection,
+        Declaring, Decoder, Deliverable, DrivenSource, DriverStopped, Drivers, Effect,
+        EffectBuilder, EffectDescriptor, EffectDriver, EffectInvocation, EffectOutcome,
+        EffectOutcomeKind, Framed, FramedError, FramedLayer, HasDefaultDriver, HttpDriver,
+        HttpError, HttpErrorKind, HttpJsonError, HttpRequest, HttpResponse, HttpResponseError,
+        HttpStatusError, Init, InstalledAssembly, InstalledComponent, Io, Listing, LogicalTime,
+        Manifest, MpscReceiver, NoMessage, PendingEffect, PendingWork, Port, PortHandle, PortId,
+        PrintStderr, PrintStdout, Program, ProgramBuildError, ProgramBuilder, ReadSystemTime,
+        ReplyWith, RequestBuilder, RequestError, RequestIntent, RequestOutcome, RequestOutcomeKind,
+        RunReport, Runtime, RuntimeError, RuntimeTask, Shutdown, ShutdownReport, Source,
+        SourceDescriptor, SourceDriver, SourceEvent, SourceEventKind, SourceSink, StatusCode,
+        StderrDriver, StdinError, StdinErrorKind, StdinLines, StdoutDriver, StreamDescriptor,
+        Subscription, SubscriptionAction, SubscriptionId, Subscriptions, SystemClockDriver,
+        TcpBytes, TcpDriver, TcpError, TcpErrorKind, TraceCommandKind, TraceEvent, TraceId,
+        TraceRecord, VendorsDrivers,
     };
     #[cfg(feature = "fs")]
     pub use crate::{
@@ -3924,6 +3926,7 @@ impl<Message: Send + 'static> ErasedEffectCommand<Message> for WidenedEffect {
 ///
 /// - [`Self::producing`]: the outcome becomes a Message through a pure mapper.
 /// - [`Self::into_command`]: the same, through `Message::from`.
+/// - [`Self::succeeding`]: an infallible effect's output becomes a Message.
 /// - [`Self::finish_with`]: the outcome becomes finishing commands and no Message.
 /// - [`Self::discard_outcome`]: the outcome goes nowhere.
 ///
@@ -3934,7 +3937,7 @@ impl<Message: Send + 'static> ErasedEffectCommand<Message> for WidenedEffect {
 /// let command: Command<Message> = Effect::perform(&output, PrintStdout::line("ready")).producing(Message::Printed);
 /// assert!(command.effect_intent::<PrintStdout>().is_some());
 /// ```
-#[must_use = "finish the effect into a Command with producing, into_command, finish_with, or discard_outcome"]
+#[must_use = "finish the effect into a Command with an EffectBuilder finisher"]
 pub struct EffectBuilder<D: EffectDescriptor> {
     capability: Effect<D>,
     descriptor: D,
@@ -3962,6 +3965,25 @@ impl<D: EffectDescriptor> EffectBuilder<D> {
             effect: self.descriptor,
             map: move |outcome| EffectContinuation::Message(map(outcome)),
         })))
+    }
+
+    /// Issues an infallible effect and maps its output directly to a Message.
+    ///
+    /// `map` runs at most once and may capture context. It must be pure.
+    ///
+    /// ```compile_fail,E0271
+    /// use samara::prelude::*;
+    /// let http = <Effect<HttpRequest>>::detached();
+    /// let _: Command<()> = Effect::perform(&http, HttpRequest::get("https://example.test"))
+    ///     .succeeding(|_| ());
+    /// ```
+    pub fn succeeding<Message, Map>(self, map: Map) -> Command<Message>
+    where
+        D: EffectDescriptor<Error = std::convert::Infallible>,
+        Message: Deliverable,
+        Map: FnOnce(D::Output) -> Message + Send + 'static,
+    {
+        self.producing(|EffectOutcome::Succeeded(output)| map(output))
     }
 
     /// Issues the effect and converts its outcome with `Message::from`.
@@ -4357,9 +4379,9 @@ impl Program {
     ///
     /// ```
     /// use samara::prelude::*;
-    /// struct Clock;
-    /// impl Component for Clock {
-    ///     type Io = Effect<ReadSystemTime>;
+    /// struct Timekeeper;
+    /// impl Component for Timekeeper {
+    ///     type Io = Clock;
     ///     type Connections = (); type Configuration = ();
     ///     type Model = (); type Message = ();
     ///     fn init(_: &Context<Self>) -> Init<(), ()> { Init::default() }
@@ -4368,13 +4390,13 @@ impl Program {
     /// struct Alarm;
     /// impl Component for Alarm {
     ///     type Io = ();
-    ///     type Connections = ComponentRef<Clock>; type Configuration = ();
+    ///     type Connections = ComponentRef<Timekeeper>; type Configuration = ();
     ///     type Model = (); type Message = ();
     ///     fn init(_: &Context<Self>) -> Init<(), ()> { Init::default() }
     ///     fn update(_: &Context<Self>, _: &mut (), _: ()) -> Command<()> { Command::none() }
     /// }
     /// let mut program = Program::builder();
-    /// let clock = program.configure_component::<Clock>().name("clock").add(());
+    /// let clock = program.configure_component::<Timekeeper>().name("clock").add(());
     /// program.configure_component::<Alarm>().name("alarm").add(clock.reference().clone());
     /// let manifest = program.build()?.manifest();
     /// assert_eq!(
@@ -5418,15 +5440,15 @@ impl Error for DriverStopped {}
 ///
 /// ```
 /// use samara::prelude::*;
-/// struct Clock;
-/// impl Component for Clock {
-///     type Connections = (); type Configuration = (); type Io = Effect<ReadSystemTime>;
+/// struct Timekeeper;
+/// impl Component for Timekeeper {
+///     type Connections = (); type Configuration = (); type Io = Clock;
 ///     type Model = (); type Message = ();
 ///     fn init(_: &Context<Self>) -> Init<(), ()> { Init::default() }
 ///     fn update(_: &Context<Self>, _: &mut (), _: ()) -> Command<()> { Command::none() }
 /// }
 /// let mut program = Program::builder();
-/// let clock = program.add_component::<Clock>(());
+/// let clock = program.add_component::<Timekeeper>(());
 /// // One capability takes exactly one Driver.
 /// let result = Runtime::builder(program.build()?)
 ///     .supply(&clock.io, SystemClockDriver)

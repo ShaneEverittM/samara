@@ -8,9 +8,9 @@
 use std::convert::Infallible;
 use std::time::SystemTime;
 
-use crate::{BoxFuture, EffectDescriptor, EffectDriver};
+use crate::{BoxFuture, Effect, EffectBuilder, EffectDescriptor, EffectDriver};
 
-/// Asks the host what time it is.
+/// A Component's capability to read the system clock.
 ///
 /// Always succeeds with a [`SystemTime`]: its error type has no values, so a
 /// finisher can take the success directly. Supply [`SystemClockDriver`]
@@ -19,11 +19,20 @@ use crate::{BoxFuture, EffectDescriptor, EffectDriver};
 /// ```
 /// use samara::prelude::*;
 /// use std::time::SystemTime;
-/// let clock = <Effect<ReadSystemTime>>::detached();
-/// let command: Command<SystemTime> =
-///     Effect::perform(&clock, ReadSystemTime).producing(|EffectOutcome::Succeeded(now)| now);
+/// let clock = Clock::detached();
+/// let command: Command<SystemTime> = Clock::system_time(&clock).succeeding(|now| now);
 /// assert!(command.effect_intent::<ReadSystemTime>().is_some());
 /// ```
+pub type Clock = Effect<ReadSystemTime>;
+
+impl Effect<ReadSystemTime> {
+    /// Describes one wall-clock read through this capability.
+    pub fn system_time(&self) -> EffectBuilder<ReadSystemTime> {
+        Effect::perform(self, ReadSystemTime)
+    }
+}
+
+/// The effect descriptor issued by [`Clock::system_time`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct ReadSystemTime;
 

@@ -48,8 +48,13 @@ For an effect whose error is uninhabited the failure case does not exist,
 so the continuation can take the success directly:
 
 ```rust,ignore
-Effect::perform(clock, ReadSystemTime).producing(|EffectOutcome::Succeeded(now)| Message::Now(now))
+Clock::system_time(clock).producing(|EffectOutcome::Succeeded(now)| Message::Now(now))
 ```
+
+For descriptors with `Error = Infallible`, `succeeding` passes the output
+directly to the mapper, so the same command can be written as
+`Clock::system_time(clock).succeeding(Message::Now)`. It delegates to
+`producing` and follows the same delivery and cancellation rules.
 
 When a mechanism that cancels an effect is designed (a deadline, a
 supersession key), it adds its reason to the outcome type at the place the

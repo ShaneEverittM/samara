@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[derive(Clone, Io)]
 pub struct JournalIo {
     pub file: File<ReadAppend>,
-    pub clock: Effect<ReadSystemTime>,
+    pub clock: Clock,
 }
 
 /// Records confirmed transitions through its file.
@@ -38,11 +38,8 @@ impl Component for Recorder {
         match message {
             // An external request.
             Message::Journal(journal) => match journal {
-                JournalMessage::Transition(transition) => {
-                    Effect::perform(&cx.io.clock, ReadSystemTime).producing(
-                        |EffectOutcome::Succeeded(time)| Message::Time { time, transition },
-                    )
-                }
+                JournalMessage::Transition(transition) => Clock::system_time(&cx.io.clock)
+                    .succeeding(|time| Message::Time { time, transition }),
 
                 JournalMessage::Recent { count, reply } => {
                     File::read(&cx.io.file).finish_with(move |outcome| {

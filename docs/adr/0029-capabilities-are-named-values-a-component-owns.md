@@ -54,13 +54,13 @@ one line per field.
 #[derive(Clone, Capabilities)]
 pub struct JournalIo {
     pub file: File<ReadAppend>,
-    pub clock: Effect<ReadSystemTime>,
+    pub clock: Clock,
 }
 
 impl Component for Recorder {
     type Io = JournalIo;
     fn update(config: &(), io: &JournalIo, model: &mut Model, message: Message) -> Command<Message> {
-        // Effect::perform(&io.clock, ReadSystemTime), File::append_line(&io.file, ..)
+        // Clock::system_time(&io.clock), File::append_line(&io.file, ..)
     }
 }
 ```

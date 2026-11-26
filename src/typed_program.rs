@@ -44,7 +44,7 @@ mod private {
 ///
 /// #[derive(Clone)]
 /// pub struct ReaderIo {
-///     pub clock: Effect<ReadSystemTime>,
+///     pub clock: Clock,
 ///     pub input: Source<StdinLines>,
 /// }
 /// impl Io for ReaderIo {
@@ -61,7 +61,7 @@ mod private {
 ///
 /// ```compile_fail
 /// use samara::prelude::*;
-/// let clock: Effect<ReadSystemTime> = Effect::new();
+/// let clock: Clock = Clock::new();
 /// ```
 pub trait Io: Clone + Send + 'static {
     /// Creates one fresh capability per field.
@@ -76,8 +76,8 @@ pub trait Io: Clone + Send + 'static {
     ///
     /// ```
     /// use samara::prelude::*;
-    /// let clock = <Effect<ReadSystemTime>>::detached();
-    /// let command: Command<()> = Effect::perform(&clock, ReadSystemTime).discard_outcome();
+    /// let clock = Clock::detached();
+    /// let command: Command<()> = Clock::system_time(&clock).discard_outcome();
     /// assert!(command.effect_intent::<ReadSystemTime>().is_some());
     /// ```
     fn detached() -> Self {
@@ -261,7 +261,7 @@ impl<S: SourceDescriptor<Terminal = StdinLines>> private::Driver<Source<S>> for 
 /// [`RuntimeSetup::supply_default`].
 ///
 /// Implemented for `Effect<PrintStdout>`, `Effect<PrintStderr>`,
-/// `Effect<ReadSystemTime>`, `Effect<HttpRequest>`, any [`Source`] whose
+/// `Clock`, `Effect<HttpRequest>`, any [`Source`] whose
 /// terminal descriptor is [`StdinLines`] or [`TcpBytes`], `()`, references
 /// to those, and tuples of any of them. A capability whose Driver needs a setting, such as a `File`'s
 /// path, has no default. Sealed.
@@ -357,15 +357,15 @@ impl private::SourceDefault for TcpBytes {
 ///
 /// ```
 /// use samara::prelude::*;
-/// struct Clock;
-/// impl Component for Clock {
-///     type Connections = (); type Configuration = (); type Io = Effect<ReadSystemTime>;
+/// struct Timekeeper;
+/// impl Component for Timekeeper {
+///     type Connections = (); type Configuration = (); type Io = Clock;
 ///     type Model = (); type Message = ();
 ///     fn init(_: &Context<Self>) -> Init<(), ()> { Init::default() }
 ///     fn update(_: &Context<Self>, _: &mut (), _: ()) -> Command<()> { Command::none() }
 /// }
 /// let mut program = Program::builder();
-/// let clock = program.add_component::<Clock>(());
+/// let clock = program.add_component::<Timekeeper>(());
 /// let runtime = Runtime::builder(program.build()?)
 ///     .supply(&clock.io, SystemClockDriver)
 ///     .build()?;
@@ -376,7 +376,7 @@ impl private::SourceDefault for TcpBytes {
 ///
 /// ```compile_fail
 /// use samara::prelude::*;
-/// fn wrong(setup: samara::RuntimeSetup, clock: &Effect<ReadSystemTime>) {
+/// fn wrong(setup: samara::RuntimeSetup, clock: &Clock) {
 ///     setup.supply(clock, samara::HttpDriver::new());
 /// }
 /// ```
@@ -386,15 +386,15 @@ impl private::SourceDefault for TcpBytes {
 ///
 /// ```
 /// use samara::prelude::*;
-/// # struct Clock;
-/// # impl Component for Clock {
-/// #     type Connections = (); type Configuration = (); type Io = Effect<ReadSystemTime>;
+/// # struct Timekeeper;
+/// # impl Component for Timekeeper {
+/// #     type Connections = (); type Configuration = (); type Io = Clock;
 /// #     type Model = (); type Message = ();
 /// #     fn init(_: &Context<Self>) -> Init<(), ()> { Init::default() }
 /// #     fn update(_: &Context<Self>, _: &mut (), _: ()) -> Command<()> { Command::none() }
 /// # }
 /// let mut program = Program::builder();
-/// program.configure_component::<Clock>().name("clock").add(());
+/// program.configure_component::<Timekeeper>().name("clock").add(());
 /// let error = Runtime::builder(program.build()?).build().err().unwrap();
 /// assert!(error.to_string().contains("ReadSystemTime"));
 /// assert!(error.to_string().contains("clock"));
@@ -434,15 +434,15 @@ impl RuntimeSetup {
     ///
     /// ```
     /// use samara::prelude::*;
-    /// # struct Clock;
-    /// # impl Component for Clock {
-    /// #     type Connections = (); type Configuration = (); type Io = Effect<ReadSystemTime>;
+    /// # struct Timekeeper;
+    /// # impl Component for Timekeeper {
+    /// #     type Connections = (); type Configuration = (); type Io = Clock;
     /// #     type Model = (); type Message = ();
     /// #     fn init(_: &Context<Self>) -> Init<(), ()> { Init::default() }
     /// #     fn update(_: &Context<Self>, _: &mut (), _: ()) -> Command<()> { Command::none() }
     /// # }
     /// let mut program = Program::builder();
-    /// let clock = program.add_component::<Clock>(());
+    /// let clock = program.add_component::<Timekeeper>(());
     /// let runtime = Runtime::builder(program.build()?)
     ///     .supply_default(&clock.io)
     ///     .build()?;
@@ -681,9 +681,9 @@ impl<T> Slot<T> for GivenConfiguration<T> {
 ///
 /// ```
 /// use samara::prelude::*;
-/// struct Clock;
-/// impl Component for Clock {
-///     type Io = (Effect<ReadSystemTime>,);
+/// struct Timekeeper;
+/// impl Component for Timekeeper {
+///     type Io = (Clock,);
 ///     type Connections = (); type Configuration = u64;
 ///     type Model = (); type Message = ();
 ///     fn init(_: &Context<Self>) -> Init<(), ()> { Init::default() }
@@ -691,7 +691,7 @@ impl<T> Slot<T> for GivenConfiguration<T> {
 /// }
 /// let mut program = Program::builder();
 /// let clock = program
-///     .configure_component::<Clock>()
+///     .configure_component::<Timekeeper>()
 ///     .name("wall clock")
 ///     .config(60)
 ///     .add(());

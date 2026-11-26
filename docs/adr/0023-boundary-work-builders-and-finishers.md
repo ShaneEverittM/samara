@@ -36,7 +36,7 @@ needs no capability is rooted at `Command`.
 
 ```rust,ignore
 // Requirement-rooted: the first argument is the capability the Component declared.
-Effect::perform(clock, ReadSystemTime)               // -> EffectBuilder
+Clock::system_time(clock)                            // -> EffectBuilder<ReadSystemTime>
 File::read(file)                                     // -> EffectBuilder (FileEffect is an alias)
 File::append_line(file, text)
 
@@ -56,11 +56,18 @@ InstalledAssembly, and references to them) and are passed by reference.
 `send` and `reply` have nothing to observe and are Commands already.
 `perform`, the `File` operations, and `request` return builders.
 
-### Every builder ends with one of four finishers
+`Clock` is the Component-facing name for `Effect<ReadSystemTime>`.
+`Clock::system_time(clock)` describes one read through that exact capability.
+Drivers and controlled tests still handle the `ReadSystemTime` descriptor.
+The generic spelling `Effect::perform(clock, ReadSystemTime)` remains equivalent,
+including its binding checks, and callers can switch back to it independently.
+
+### Finishers
 
 | Finisher | The outcome becomes |
 | --- | --- |
 | `.producing(map)` | a Message, through a pure mapper |
+| `.succeeding(map)` | a Message mapped directly from the output (effects with `Error = Infallible` only) |
 | `.into_command()` | a Message, through `Message::from` |
 | `.finish_with(f)` | finishing commands and no Message |
 | `.discard_outcome()` | nothing (effects only) |
