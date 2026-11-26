@@ -45,17 +45,10 @@ impl Component for Recorder {
                     }
 
                     JournalMessage::Recent { count, reply } => {
-                        File::read(&cx.io.file).finish_with(move |outcome| {
-                            Command::reply(
-                                reply,
-                                match outcome {
-                                    EffectOutcome::Succeeded(contents) => {
-                                        Ok(tail(&contents, count))
-                                    }
-                                    EffectOutcome::Failed(_) => Err(Error::CouldNotReadJournal),
-                                },
-                            )
-                        })
+                        File::read(&cx.io.file)
+                            .replying(reply)
+                            .succeeding(move |contents| Ok(tail(&contents, count)))
+                            .failing(|_| Err(Error::CouldNotReadJournal))
                     }
                 }
             }

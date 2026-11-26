@@ -1,6 +1,16 @@
 # ADR-0023: Boundary Work Is Named `Kind::verb` and Ends with a Finisher
 
 - Status: Accepted. Amends the call spellings of ADR-0016 and ADR-0022.
+  Extended November 26, 2026 with a fifth effect finisher, `replying`:
+  `Effect::perform(..).replying(reply).succeeding(f).failing(g)` answers a
+  request with the effect's result, each arm returning the reply value. It
+  is `finish_with` for the commonest finishing work and adds no semantics:
+  no Message, no transition, the same one hop. The builder holds the reply
+  token, because two closures cannot both own something used once. A
+  fallible effect must be given both arms; an infallible one ends with
+  `.into_command()` after `succeeding`. It is intended as the template for
+  further named finishing patterns. Requests have no `replying` yet: a
+  `RequestOutcome` has more than two cases.
 - Date: November 2026
 - Deciders: Samara maintainers
 - Scope: How a Component describes effects, sends, requests, and replies;

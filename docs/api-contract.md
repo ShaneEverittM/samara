@@ -779,7 +779,11 @@ as amended by [ADR-0018](adr/0018-assemblies-export-a-connector.md),
   `Command` directly. `Command::` keeps `none`, `batch`, and `after`.
 - A builder becomes a `Command` through one finisher: `producing(map)`,
   `into_command()` (`Message::from`), `finish_with(f)`, or, for effects,
-  `discard_outcome()`.
+  `discard_outcome()`, `succeeding(map)` when the effect cannot fail, and
+  `replying(reply).succeeding(f).failing(g)`.
+- `replying` is `finish_with` specialised to answering a request: each arm
+  returns the reply value and the builder holds the reply token. A fallible
+  effect requires both arms; an infallible one ends with `.into_command()`.
 - `finish_with(f)` runs `f` on the outcome and interprets the
   `Command<NoMessage>` it returns under the issuing Component, traced as
   caused by the outcome. No transition occurs. `NoMessage` is uninhabited and

@@ -253,6 +253,13 @@ a journal Component; exploratory proposals, not accepted API decisions.
     owner, message, and target). A derived struct is for several. No
     `From`/`impl Into` on `add`.
 
+- [ ] **Named finishing patterns after `replying`.** `replying` landed
+  November 26, 2026 as the first finisher that names a common
+  `finish_with` shape. Open: the same for requests (forward a request and
+  reply with its outcome; `RequestOutcome` has four cases, so two arms do
+  not cover it), `EffectOutcome::into_result()` for the cases that still
+  match by hand, and whether a send-on-outcome pattern deserves a name.
+
 - [ ] **Default Drivers, next steps.** `supply_default(&capability)` landed
   November 15, 2026 for the first-party descriptors with an obvious Driver.
   Still open: the set is sealed, so a library's own descriptor cannot offer

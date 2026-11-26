@@ -196,6 +196,11 @@ The following evidence must pass before the Phase 2 audit:
   as `owner.field`. Using another Component's capability faults in both
   controlled and live execution. `examples/pulse` pins the journal's
   manifest text.
+- `tests/replying.rs` validates the `replying` finisher (ADR-0023,
+  extended): success and failure each reply through their own arm with no
+  extra transition in the provider, an infallible effect needs only the
+  success arm, and a fallible effect without a failure arm does not compile
+  (a doctest on `ReplyingSuccess`).
 - `tests/connections.rs` validates declared connections and configuration
   (ADR-0031): the manifest lists a bare Connector, a `ComponentRef`, a Port
   resolved to its provider, and the fields of a derived struct including

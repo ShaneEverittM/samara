@@ -173,13 +173,13 @@ pub mod prelude {
         HttpStatusError, Init, InstalledAssembly, InstalledComponent, Io, Listing, LogicalTime,
         Manifest, MpscReceiver, NoMessage, PendingEffect, PendingWork, Port, PortHandle, PortId,
         PrintStderr, PrintStdout, Program, ProgramBuildError, ProgramBuilder, ReadSystemTime,
-        ReplyWith, RequestBuilder, RequestError, RequestIntent, RequestOutcome, RequestOutcomeKind,
-        RunReport, Runtime, RuntimeError, RuntimeTask, Shutdown, ShutdownReport, Source,
-        SourceDescriptor, SourceDriver, SourceEvent, SourceEventKind, SourceSink, StatusCode,
-        StderrDriver, StdinError, StdinErrorKind, StdinLines, StdoutDriver, StreamDescriptor,
-        Subscription, SubscriptionAction, SubscriptionId, Subscriptions, SystemClockDriver,
-        TcpBytes, TcpDriver, TcpError, TcpErrorKind, TraceCommandKind, TraceEvent, TraceId,
-        TraceRecord, VendorsDrivers,
+        ReplyWith, Replying, ReplyingSuccess, RequestBuilder, RequestError, RequestIntent,
+        RequestOutcome, RequestOutcomeKind, RunReport, Runtime, RuntimeError, RuntimeTask,
+        Shutdown, ShutdownReport, Source, SourceDescriptor, SourceDriver, SourceEvent,
+        SourceEventKind, SourceSink, StatusCode, StderrDriver, StdinError, StdinErrorKind,
+        StdinLines, StdoutDriver, StreamDescriptor, Subscription, SubscriptionAction,
+        SubscriptionId, Subscriptions, SystemClockDriver, TcpBytes, TcpDriver, TcpError,
+        TcpErrorKind, TraceCommandKind, TraceEvent, TraceId, TraceRecord, VendorsDrivers,
     };
     #[cfg(feature = "fs")]
     pub use crate::{
@@ -3946,6 +3946,7 @@ impl<Message: Send + 'static> ErasedEffectCommand<Message> for WidenedEffect {
 /// - [`Self::into_command`]: the same, through `Message::from`.
 /// - [`Self::succeeding`]: an infallible effect's output becomes a Message.
 /// - [`Self::finish_with`]: the outcome becomes finishing commands and no Message.
+/// - [`Self::replying`]: the result answers a request, one arm per outcome.
 /// - [`Self::discard_outcome`]: the outcome goes nowhere.
 ///
 /// ```
@@ -4055,6 +4056,37 @@ impl<D: EffectDescriptor> EffectBuilder<D> {
         })))
     }
 
+    /// Answers a request with this effect's result.
+    ///
+    /// Give one arm for success and one for failure; each returns the reply
+    /// value. The builder holds the reply token, which is how two arms can
+    /// share something that is used once. It is [`Self::finish_with`] for
+    /// the commonest finishing work: no Message is produced and the Model is
+    /// not visible to either arm.
+    ///
+    /// ```
+    /// use samara::prelude::*;
+    /// # struct Lookup;
+    /// # struct Missing;
+    /// # impl EffectDescriptor for Lookup { type Output = u64; type Error = Missing; }
+    /// enum Asked { Find(ReplyWith<Result<u64, String>>) }
+    /// let lookup = <Effect<Lookup>>::detached();
+    /// # let reply: Option<ReplyWith<Result<u64, String>>> = None;
+    /// # if let Some(reply) = reply {
+    /// let command: Command<Asked> = Effect::perform(&lookup, Lookup)
+    ///     .replying(reply)
+    ///     .succeeding(|value| Ok(value))
+    ///     .failing(|Missing| Err("missing".to_owned()));
+    /// # drop(command);
+    /// # }
+    /// ```
+    pub fn replying<Reply>(self, reply_with: ReplyWith<Reply>) -> Replying<D, Reply> {
+        Replying {
+            effect: self,
+            reply_with,
+        }
+    }
+
     /// Issues the effect without sending its outcome anywhere.
     ///
     /// Samara still tracks the work: Drain waits for it, Cancel aborts it, and
@@ -4064,6 +4096,85 @@ impl<D: EffectDescriptor> EffectBuilder<D> {
             capability: self.capability.token,
             effect: self.descriptor,
         })))
+    }
+}
+
+/// An effect whose result will answer a request. Made by
+/// [`EffectBuilder::replying`]; say what to reply on success with
+/// [`Self::succeeding`].
+#[must_use = "say what to reply with .succeeding(..)"]
+pub struct Replying<D: EffectDescriptor, Reply> {
+    effect: EffectBuilder<D>,
+    reply_with: ReplyWith<Reply>,
+}
+
+impl<D: EffectDescriptor, Reply> Replying<D, Reply> {
+    /// The reply when the effect succeeds. `success` runs at most once and
+    /// must be pure. Follow it with [`ReplyingSuccess::failing`], or with
+    /// [`ReplyingSuccess::into_command`] when the effect cannot fail.
+    pub fn succeeding<Success>(self, success: Success) -> ReplyingSuccess<D, Reply, Success>
+    where
+        Success: FnOnce(D::Output) -> Reply + Send + 'static,
+    {
+        ReplyingSuccess {
+            replying: self,
+            success,
+        }
+    }
+}
+
+/// A [`Replying`] effect that still needs its failure arm.
+///
+/// Leaving the failure arm off a fallible effect does not compile:
+///
+/// ```compile_fail
+/// use samara::prelude::*;
+/// fn find(http: &Effect<HttpRequest>, reply: ReplyWith<u16>) -> Command<()> {
+///     Effect::perform(http, HttpRequest::get("https://example.test"))
+///         .replying(reply)
+///         .succeeding(|response| response.status().as_u16())
+///         .into_command()
+/// }
+/// ```
+#[must_use = "say what to reply on failure with .failing(..)"]
+pub struct ReplyingSuccess<D: EffectDescriptor, Reply, Success> {
+    replying: Replying<D, Reply>,
+    success: Success,
+}
+
+impl<D, Reply, Success> ReplyingSuccess<D, Reply, Success>
+where
+    D: EffectDescriptor,
+    Reply: Send + 'static,
+    Success: FnOnce(D::Output) -> Reply + Send + 'static,
+{
+    /// The reply when the effect fails, and the Command that issues it.
+    /// `failure` runs at most once and must be pure.
+    pub fn failing<Message, Failure>(self, failure: Failure) -> Command<Message>
+    where
+        Message: Deliverable,
+        Failure: FnOnce(D::Error) -> Reply + Send + 'static,
+    {
+        let Self { replying, success } = self;
+        let Replying { effect, reply_with } = replying;
+        effect.finish_with(move |outcome| {
+            Command::reply(
+                reply_with,
+                match outcome {
+                    EffectOutcome::Succeeded(output) => success(output),
+                    EffectOutcome::Failed(error) => failure(error),
+                },
+            )
+        })
+    }
+
+    /// The Command for an effect that cannot fail.
+    pub fn into_command<Message>(self) -> Command<Message>
+    where
+        D: EffectDescriptor<Error = std::convert::Infallible>,
+        Message: Deliverable,
+    {
+        self.failing(|never| match never {})
     }
 }
 
