@@ -227,8 +227,14 @@ status.
 **Http** — `Effect<HttpRequest>`, the capability to make HTTP requests.
 `Http::get(&http, url)` and `Http::send(&http, request)` return an ordinary
 effect builder with the HTTP steps `follow_redirects`, `require_success`,
-and `json`, finished like any effect (ADR-0035). *HttpResponsePipeline* is
-the historical separate builder.
+and `json`, finished like any effect (ADR-0035). The steps declare status
+policy and decoding and lower to the same raw effect plus a composed
+mapper; they are not Drivers or separately traced effects. Their error
+algebra, `HttpResponseError`, distinguishes transport `HttpError`, an
+explicit `HttpStatusError` rejection that retains the response, and
+`HttpJsonError`, which retains the response and the decode error.
+Cancellation is not a variant. *HttpResponsePipeline* is the historical
+separate builder.
 
 **StdinLines / StdinError** — The first-party terminal SourceDescriptor for
 UTF-8 lines from process stdin (ADR-0009), with line-ending stripping and one
