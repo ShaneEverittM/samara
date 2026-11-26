@@ -93,11 +93,10 @@ impl Component for HttpTimeServer {
                     current_time: state.current_time(),
                 };
 
-                let get = HttpRequest::get("https://api.coinbase.com/v2/time")
-                    .on_response()
+                let get = Http::get(&cx.io.http, "https://api.coinbase.com/v2/time")
                     .require_success()
                     .json::<TimeResponse>()
-                    .into_command(&cx.io.http);
+                    .on_outcome(From::from);
 
                 Command::batch([get, Self::TICK])
             }

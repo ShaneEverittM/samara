@@ -1,6 +1,8 @@
-//! The effect finishers (ADR-0023): each is named for what its function
-//! receives, and `divert_to` sends the result to a reply token or an address
-//! with no Message in between.
+//! The finishers (ADR-0034, ADR-0035): each is named for what its function
+//! receives, on effects and requests alike, and `divert_to` sends the result
+//! to a reply token or an address with no Message in between.
+
+use std::time::Duration;
 
 use samara::prelude::*;
 
@@ -138,12 +140,18 @@ enum Answer {
     Found(RequestOutcome<Result<u64, String>>),
     Read(RequestOutcome<u64>),
     Described(RequestOutcome<String>),
+    /// A reply, through the reply arm.
+    Reply(Result<u64, String>),
+    /// Anything but a reply, through the failure arm.
+    NoReply(RequestOutcome<!>),
 }
 
 enum ClientMessage {
     Find(&'static str),
     Read,
     Describe(&'static str),
+    /// Ask with a deadline and one function per case.
+    FindWithin(&'static str, Duration),
     Answered(Answer),
 }
 
@@ -178,8 +186,85 @@ impl Component for Client {
                 Command::request(&cx.to, move |reply| DeskMessage::Describe(key, reply))
                     .on_outcome(|outcome| ClientMessage::Answered(Answer::Described(outcome)))
             }
+            ClientMessage::FindWithin(key, patience) => {
+                Command::request(&cx.to, move |reply| DeskMessage::Find(key, reply))
+                    .timeout(patience)
+                    .on_reply(|found| ClientMessage::Answered(Answer::Reply(found)))
+                    .on_failure(|other| ClientMessage::Answered(Answer::NoReply(other)))
+            }
             ClientMessage::Answered(answer) => {
                 answers.push(answer);
+                Command::none()
+            }
+        }
+    }
+}
+
+/// Asks the Desk on a caller's behalf and answers from the Desk's reply,
+/// without the reply ever coming back here.
+struct Relay;
+
+enum RelayMessage {
+    Ask(&'static str, ReplyWith<String>),
+}
+
+impl Component for Relay {
+    type Io = ();
+    type Connections = Connector<DeskMessage>;
+    type Configuration = ();
+    /// How many Messages `update` has handled.
+    type Model = u64;
+    type Message = RelayMessage;
+
+    fn init(_: &Context<Self>) -> Init<u64, RelayMessage> {
+        Init::default()
+    }
+
+    fn update(
+        cx: &Context<Self>,
+        handled: &mut u64,
+        RelayMessage::Ask(key, reply): RelayMessage,
+    ) -> Command<RelayMessage> {
+        *handled += 1;
+        Command::request(&cx.to, move |reply| DeskMessage::Find(key, reply))
+            .timeout(Duration::from_secs(1))
+            .divert_to(reply)
+            .on_reply(|found| format!("{found:?}"))
+            .on_failure(|other| format!("{other:?}"))
+    }
+}
+
+/// Asks the Relay and records what it hears.
+struct Asker;
+
+enum AskerMessage {
+    Ask(&'static str),
+    Heard(RequestOutcome<String>),
+}
+
+impl Component for Asker {
+    type Io = ();
+    type Connections = ComponentRef<Relay>;
+    type Configuration = ();
+    type Model = Vec<RequestOutcome<String>>;
+    type Message = AskerMessage;
+
+    fn init(_: &Context<Self>) -> Init<Self::Model, AskerMessage> {
+        Init::default()
+    }
+
+    fn update(
+        cx: &Context<Self>,
+        heard: &mut Self::Model,
+        message: AskerMessage,
+    ) -> Command<AskerMessage> {
+        match message {
+            AskerMessage::Ask(key) => {
+                Command::request(&cx.to, move |reply| RelayMessage::Ask(key, reply))
+                    .on_outcome(AskerMessage::Heard)
+            }
+            AskerMessage::Heard(outcome) => {
+                heard.push(outcome);
                 Command::none()
             }
         }
@@ -191,6 +276,8 @@ struct Fixture {
     desk: InstalledComponent<Desk>,
     log: ComponentRef<Log>,
     client: ComponentRef<Client>,
+    relay: ComponentRef<Relay>,
+    asker: ComponentRef<Asker>,
 }
 
 fn fixture() -> Fixture {
@@ -198,6 +285,8 @@ fn fixture() -> Fixture {
     let log: ComponentRef<Log> = builder.add_component::<Log>(()).into();
     let desk = builder.add_component::<Desk>(log.clone());
     let client = builder.add_component::<Client>(desk.connector());
+    let relay: ComponentRef<Relay> = builder.add_component::<Relay>(desk.connector()).into();
+    let asker = builder.add_component::<Asker>(relay.clone());
     let runtime = ControlledRuntime::builder(builder.build().unwrap())
         .build()
         .unwrap();
@@ -206,6 +295,8 @@ fn fixture() -> Fixture {
         desk,
         log,
         client: client.into(),
+        relay,
+        asker: asker.into(),
     }
 }
 
@@ -327,5 +418,65 @@ fn without_divert_the_arms_come_back_as_messages() {
             kept: vec![Some(5), None],
         }
     );
+    assert!(runtime.cancel().unwrap().is_clean());
+}
+
+#[test]
+fn a_request_has_a_reply_arm_and_a_failure_arm() {
+    let Fixture {
+        mut runtime,
+        client,
+        ..
+    } = fixture();
+    let patience = Duration::from_secs(1);
+
+    runtime
+        .send(&client, ClientMessage::FindWithin("a", patience))
+        .unwrap();
+    complete_lookup(&mut runtime, EffectOutcome::Succeeded(4));
+
+    runtime
+        .send(&client, ClientMessage::FindWithin("b", patience))
+        .unwrap();
+    runtime.run_until_idle().unwrap();
+    // The Desk never answers this one.
+    runtime.advance(patience).unwrap();
+
+    assert_eq!(
+        runtime.state(&client).unwrap(),
+        &[
+            Answer::Reply(Ok(8)),
+            Answer::NoReply(RequestOutcome::TimedOut),
+        ]
+    );
+    assert!(runtime.cancel().unwrap().is_clean());
+}
+
+#[test]
+fn a_request_can_be_diverted_to_the_caller_s_reply_token() {
+    let Fixture {
+        mut runtime,
+        relay,
+        asker,
+        ..
+    } = fixture();
+
+    runtime.send(&asker, AskerMessage::Ask("a")).unwrap();
+    complete_lookup(&mut runtime, EffectOutcome::Succeeded(5));
+
+    runtime.send(&asker, AskerMessage::Ask("b")).unwrap();
+    runtime.run_until_idle().unwrap();
+    // The Desk never answers, so the Relay's deadline passes.
+    runtime.advance(Duration::from_secs(1)).unwrap();
+
+    assert_eq!(
+        runtime.state(&asker).unwrap(),
+        &[
+            RequestOutcome::Replied("Ok(10)".into()),
+            RequestOutcome::Replied("TimedOut".into()),
+        ]
+    );
+    // Neither answer came back through the Relay's `update`.
+    assert_eq!(runtime.state(&relay).unwrap(), &2);
     assert!(runtime.cancel().unwrap().is_clean());
 }

@@ -157,12 +157,13 @@ The July 25 API revision adopts one consistent continuation convention without
 changing these lifecycle semantics or the concrete
 `Component::update(...) -> Command<Message>` boundary:
 
-- `Effect::perform(&capability, effect).into_command()`,
-  `Subscription::source(&capability, descriptor)`, and
-  `HttpResponsePipeline::into_command(&capability)` use the standard
-  `Message: From<BoundaryValue>` conversion as their default mapper.
-- Their `effect_with`, `source_with`, and `into_command_with` counterparts
-  accept an explicit pure mapper. `Command::request(&target, ctor)` always takes the
+- `Subscription::source(&capability, descriptor)` uses the standard
+  `Message: From<BoundaryValue>` conversion as its default mapper, and
+  `source_with` accepts an explicit pure mapper. Effects and requests take
+  their mapper through a finisher (ADR-0034, ADR-0035); `Message::from`
+  is passed as `on_outcome(Message::from)`.
+- Historical: `effect_with` and `into_command_with` were the explicit
+  counterparts before the finishers. `Command::request(&target, ctor)` always takes the
   mapper explicitly; `Message::from` is the canonical argument (ADR-0016).
 - The default is appropriate only when one boundary type has one canonical
   Message meaning. Captured domain correlation or call-site-specific meaning
@@ -504,9 +505,13 @@ the complete inert descriptor, and never constructs a live client or touches
 the network. Mapped and discarded outcomes, Drain, Cancel, trace, and work
 accounting retain the generic Effect semantics.
 
-`HttpRequest::on_response()` consumes the request and returns a distinct
-must-use `HttpResponsePipeline`. Request modifiers use `with_*` names and are
-not available after that boundary. The response pipeline currently offers:
+`Http::get(&http, url)` and `Http::send(&http, request)` return an ordinary
+`EffectBuilder<HttpRequest>`, where `Http` is `Effect<HttpRequest>`
+([ADR-0035](adr/0035-one-builder-pattern-for-effects-requests-and-http.md)).
+Request modifiers use `with_*` names on `HttpRequest` and are applied before
+`Http::send`. The builder has these HTTP steps, in this order:
+
+- `follow_redirects(max_hops)`, the redirect Layer of ADR-0012;
 
 - `require_success()`, an explicit 2xx-only policy that retains the complete
   response in `HttpStatusError`; and
@@ -520,12 +525,11 @@ modifies the request.
 
 The non-exhaustive `HttpResponseError` distinguishes raw `HttpError`,
 status-policy rejection, and JSON decoding while leaving room for later
-explicit response operations. `into_command(&http)` uses the
-canonical `Message: From<EffectOutcome<...>>` conversion, while
-`into_command_with(&http, mapper)` accepts an explicit mapper. Both lower the
-complete chain to one ordinary Effect Command for the original `HttpRequest`;
-the pure response steps and application mapper each run at most once after the
-raw terminal outcome.
+explicit response operations. Every effect finisher applies after the
+steps, with the output and error types the steps produced. The complete
+chain lowers to one ordinary Effect Command for the original `HttpRequest`;
+the pure response steps and the finisher's functions each run at most once
+after the raw terminal outcome.
 
 Consequently, live assembly still binds only `HttpRequest`, controlled tests
 still claim `next_effect::<HttpRequest>()`, and the generic trace records only
@@ -568,8 +572,8 @@ around values issued by one `ProgramBuilder`, as amended by
 - The kernel stores these inert values in the Component's `Context` and
   passes it to every callback. They expose no I/O,
   runtime handle, Driver, or controlled-world operation.
-- `Effect::perform(&capability, descriptor).into_command()`,
-  `Effect::perform(&capability, descriptor).on_outcome(mapper)`, and
+- `Effect::perform(&capability, descriptor).on_outcome(mapper)`, the other
+  finishers of ADR-0034, and
   `Effect::perform(&capability, descriptor).discard()` are the only
   primitive public Effect issuance paths. Under ADR-0022, `File<P>`
   constructs bound `FileEffect<D>` values whose command conversion methods
@@ -780,13 +784,15 @@ as amended by [ADR-0018](adr/0018-assemblies-export-a-connector.md),
 - A builder becomes a `Command` through one finisher, named for what its
   function receives
   ([ADR-0034](adr/0034-finishers-are-named-for-what-they-receive.md)):
-  `on_outcome(map)`, `into_command()` (`Message::from`), and
-  `divert_with(f)` on effects and requests; on effects also
-  `on_success(f).on_failure(g)`, `divert_to(d)`, and `discard()`. When an
-  effect's `Error` is `!`, `on_success(f)` alone is the finisher.
+  `on_outcome(map)`, `divert_to(d)`, and `divert_with(f)` on effects and
+  requests; `on_success(f).on_failure(g)` and `discard()` on effects;
+  `on_reply(f).on_failure(g)` on requests, whose failure arm receives a
+  `RequestOutcome<!>`. When an effect's `Error` is `!`, `on_success(f)`
+  alone is the finisher. Boundary work is written as an entry point, then
+  steps specific to that work, then a finisher (ADR-0035).
 - `divert_to(d)` sends the result to a `ReplyWith` token or an address in
-  place of the issuing Component. What it returns has `on_outcome`,
-  and `on_success`, whose functions return
+  place of the issuing Component. What it returns has `on_outcome` and
+  `on_success` (or `on_reply`), whose functions return
   the value to deliver. It is `divert_with` underneath: one hop, no
   Message, no transition. `on_success` alone is not a Command; a fallible
   effect requires both arms.
@@ -899,7 +905,7 @@ Phase 2 is ready for human acceptance when:
 ## Explicit HTTP Redirect Following
 
 [ADR-0012](adr/0012-http-redirect-layer.md) adds the opt-in
-`HttpResponsePipeline::follow_redirects(max_hops)` Layer. It runs unchanged in
+`follow_redirects(max_hops)` Layer on the HTTP effect builder. It runs unchanged in
 live and controlled execution, emitting an individually visible `HttpRequest`
 for each hop and mapping only the final outcome to an application Message.
 Raw Driver behavior and pipelines without the opt-in remain unchanged. Private

@@ -101,11 +101,10 @@ fn http_idle_ignores_unsolicited_poll_completion() {
                 current_time: cached,
             };
             // Decode through the normal mapper, but deliver without issuing a poll.
-            let message = HttpRequest::get("https://example.test/time")
-                .on_response()
+            let message = Http::get(&cx.io.http, "https://example.test/time")
                 .require_success()
                 .json::<TimeResponse>()
-                .into_command(&cx.io.http)
+                .on_outcome(From::from)
                 .map_effect_outcome::<HttpRequest>(outcome)
                 .ok()
                 .unwrap();

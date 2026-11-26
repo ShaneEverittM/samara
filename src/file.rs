@@ -224,7 +224,7 @@ impl<P: CanWrite> File<P> {
 /// A typed file operation coupled to the capability that authorized it.
 ///
 /// This is the general [`EffectBuilder`](crate::EffectBuilder): finish it with
-/// `on_outcome`, `into_command`, `divert_with`, or `discard`.
+/// `on_outcome`, `on_success`, `divert_to`, `divert_with`, or `discard`.
 pub type FileEffect<D> = crate::EffectBuilder<D>;
 
 /// A read of the file selected by its capability, with no target path argument.

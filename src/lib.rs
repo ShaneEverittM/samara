@@ -163,15 +163,15 @@ pub mod prelude {
     #[cfg(unix)]
     pub use crate::StdinDriver;
     pub use crate::{
-        Addressable, Assembly, BoxFuture, CapabilityKind, Clock, Command, Component,
+        Addressable, Arm, Assembly, BoxFuture, CapabilityKind, Clock, Command, Component,
         ComponentHandle, ComponentId, ComponentRef, Connections, Connector, Context,
         ControlledRuntime, ControlledRuntimeBuilder, DeclaredCapability, DeclaredConnection,
         Declaring, Decoder, Deliverable, Destination, Diverted, DrivenSource, DriverStopped,
         Drivers, Effect, EffectBuilder, EffectDescriptor, EffectDriver, EffectInvocation,
         EffectOutcome, EffectOutcomeKind, FallibleEffect, Framed, FramedError, FramedLayer,
-        HasDefaultDriver, HttpDriver, HttpError, HttpErrorKind, HttpJsonError, HttpRequest,
+        HasDefaultDriver, Http, HttpDriver, HttpError, HttpErrorKind, HttpJsonError, HttpRequest,
         HttpResponse, HttpResponseError, HttpStatusError, Init, InstalledAssembly,
-        InstalledComponent, Io, Listing, LogicalTime, Manifest, MpscReceiver, NoMessage, OnSuccess,
+        InstalledComponent, Io, Listing, LogicalTime, Manifest, MpscReceiver, NoMessage,
         PendingEffect, PendingWork, Port, PortHandle, PortId, PrintStderr, PrintStdout, Program,
         ProgramBuildError, ProgramBuilder, ReadSystemTime, ReplyWith, RequestBuilder, RequestError,
         RequestIntent, RequestOutcome, RequestOutcomeKind, RunReport, Runtime, RuntimeError,
@@ -1019,7 +1019,7 @@ struct Perform<E, Map> {
 
 impl<Message, E, Map> ErasedEffectCommand<Message> for Perform<E, Map>
 where
-    Message: Send + 'static,
+    Message: 'static,
     E: EffectDescriptor,
     Map: FnOnce(EffectOutcome<E::Output, E::Error>) -> EffectContinuation<Message> + Send + 'static,
 {
@@ -2338,26 +2338,27 @@ impl Error for StdinError {}
 
 /// Describes an HTTP request: method, URL, headers, and body.
 ///
-/// Creating the request does not parse the URL or perform I/O. Use
-/// [`Self::on_response`] to choose how to handle the response, then return the
-/// resulting Command from your component. Live programs supply [`HttpDriver`]
-/// through [`RuntimeSetup::supply`]; controlled tests use
+/// Creating the request does not parse the URL or perform I/O. Pass it to
+/// [`Http::send`], or use [`Http::get`] for a plain GET, then choose how to
+/// handle the response and return the resulting Command from your
+/// component. Live programs supply [`HttpDriver`] through
+/// [`RuntimeSetup::supply`]; controlled tests use
 /// [`ControlledRuntimeSetup::control_all`].
 ///
 /// ```
 /// use samara::prelude::*;
-/// let http = <Effect<HttpRequest>>::detached();
-/// let command = HttpRequest::get("https://example.test/health")
-///     .on_response()
-///     .require_success()
-///     .into_command_with(&http, |outcome| outcome);
+/// let http = Http::detached();
+/// let command: Command<EffectOutcome<HttpResponse, HttpResponseError>> =
+///     Http::send(&http, HttpRequest::get("https://example.test/health"))
+///         .require_success()
+///         .on_outcome(|outcome| outcome);
 /// assert_eq!(command.effect_intent::<HttpRequest>().unwrap().url(),
 ///            "https://example.test/health");
 /// ```
 ///
 /// HTTP error statuses are responses, not transport failures. Use `require_success()`
 /// to reject non-2xx statuses. Redirects are returned unchanged unless you choose
-/// [`HttpResponsePipeline::follow_redirects`].
+/// [`EffectBuilder::follow_redirects`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HttpRequest {
     method: http::Method,
@@ -2447,39 +2448,6 @@ impl HttpRequest {
         self
     }
 
-    /// Starts a response pipeline for this request.
-    ///
-    /// Set the method, headers, and body before calling this. Then choose redirect,
-    /// status, or JSON handling and convert the pipeline to a Command.
-    ///
-    /// ```
-    /// use samara::prelude::*;
-    /// let http = <Effect<HttpRequest>>::detached();
-    /// let command = HttpRequest::get("https://example.test/config")
-    ///     .on_response().require_success().json::<serde_json::Value>()
-    ///     .into_command_with(&http, |outcome| outcome);
-    /// ```
-    ///
-    /// <details>
-    /// <summary>Compile-time checks</summary>
-    ///
-    /// ```compile_fail
-    /// use samara::HttpRequest;
-    ///
-    /// HttpRequest::get("https://example.test")
-    ///     .on_response()
-    ///     .with_body("too late");
-    /// ```
-    ///
-    /// </details>
-    pub fn on_response(self) -> HttpResponsePipeline<HttpResponse, HttpError> {
-        HttpResponsePipeline {
-            request: self,
-            redirect_limit: None,
-            transform: Box::new(|outcome| outcome),
-        }
-    }
-
     pub(crate) fn into_parts(self) -> (http::Method, Arc<str>, http::HeaderMap, bytes::Bytes) {
         (self.method, self.url, self.headers, self.body)
     }
@@ -2494,7 +2462,7 @@ impl EffectDescriptor for HttpRequest {
 ///
 /// All status codes can appear in a successful HTTP effect result, including
 /// redirects and 4xx/5xx errors. Status checks and body decoding are available on
-/// [`HttpResponsePipeline`].
+/// [`Http`].
 ///
 /// Construct responses directly in controlled tests:
 ///
@@ -2572,7 +2540,7 @@ pub enum HttpErrorKind {
 /// An HTTP error with a category and diagnostic message.
 ///
 /// HTTP status errors such as 404 are responses, not `HttpError` values.
-/// [`HttpResponsePipeline::require_success`] can turn them into [`HttpStatusError`].
+/// [`EffectBuilder::require_success`] can turn them into [`HttpStatusError`].
 ///
 /// ```
 /// use samara::{HttpError, HttpErrorKind};
@@ -2622,143 +2590,56 @@ impl fmt::Display for HttpError {
 
 impl Error for HttpError {}
 
-type HttpResponseTransform<Output, ResponseError> = Box<
-    dyn FnOnce(EffectOutcome<HttpResponse, HttpError>) -> EffectOutcome<Output, ResponseError>
-        + Send
-        + 'static,
->;
-
-/// Builds the response handling for an [`HttpRequest`].
+/// A Component's capability to make HTTP requests.
 ///
-/// Start with [`HttpRequest::on_response`], choose the handling steps, then call
-/// [`Self::into_command`] or [`Self::into_command_with`]. Construction performs
-/// no I/O. The pipeline owns the request and its response mapper and cannot be cloned.
+/// [`Http::get`] and [`Http::send`] start an [`EffectBuilder`]. HTTP adds
+/// three steps to it, in this order: [`follow_redirects`], [`require_success`],
+/// and [`json`]. Then finish it like any effect. Construction performs no I/O.
 ///
 /// ```
 /// use samara::prelude::*;
-/// let http = <Effect<HttpRequest>>::detached();
-/// let command = HttpRequest::get("https://example.test/config")
-///     .on_response()
+/// enum Message { Config(serde_json::Value), Unavailable(HttpResponseError) }
+/// let http = Http::detached();
+/// let command: Command<Message> = Http::get(&http, "https://example.test/config")
 ///     .follow_redirects(5)
 ///     .require_success()
 ///     .json::<serde_json::Value>()
-///     .into_command_with(&http, |outcome| outcome);
+///     .on_success(Message::Config)
+///     .on_failure(Message::Unavailable);
 /// ```
 ///
-/// Steps run in the order shown. A failure skips later success transformations.
-/// Redirect following issues each request through the same HTTP capability;
-/// status checks and JSON decoding only run on the response returned to the caller.
+/// Steps run in the order shown. A failure skips later success steps.
+/// Redirect following issues each request through the same capability;
+/// status checks and JSON decoding only run on the response returned to the
+/// caller.
 ///
-/// <details>
-/// <summary>Compile-time checks</summary>
-///
-/// ```compile_fail
-/// use samara::HttpRequest;
-///
-/// let pipeline = HttpRequest::get("https://example.test").on_response();
-/// let duplicate = pipeline.clone();
-/// # drop(duplicate);
-/// ```
-///
-/// </details>
-#[must_use = "an HTTP response pipeline is inert until converted into a Command"]
-pub struct HttpResponsePipeline<Output, ResponseError> {
-    request: HttpRequest,
-    redirect_limit: Option<usize>,
-    transform: HttpResponseTransform<Output, ResponseError>,
-}
+/// [`follow_redirects`]: EffectBuilder::follow_redirects
+/// [`require_success`]: EffectBuilder::require_success
+/// [`json`]: EffectBuilder::json
+pub type Http = Effect<HttpRequest>;
 
-impl<Output, ResponseError> HttpResponsePipeline<Output, ResponseError>
-where
-    Output: Send + 'static,
-    ResponseError: Send + 'static,
-{
-    fn then<NextOutput, NextError, Transform>(
-        self,
-        transform_next: Transform,
-    ) -> HttpResponsePipeline<NextOutput, NextError>
-    where
-        NextOutput: Send + 'static,
-        NextError: Send + 'static,
-        Transform: FnOnce(EffectOutcome<Output, ResponseError>) -> EffectOutcome<NextOutput, NextError>
-            + Send
-            + 'static,
-    {
-        let Self {
-            request,
-            redirect_limit,
-            transform,
-        } = self;
-        HttpResponsePipeline {
-            request,
-            redirect_limit,
-            transform: Box::new(move |outcome| transform_next(transform(outcome))),
-        }
+impl Effect<HttpRequest> {
+    /// Describes a GET of `url` through this capability.
+    pub fn get(&self, url: impl Into<Arc<str>>) -> EffectBuilder<HttpRequest> {
+        Effect::perform(self, HttpRequest::get(url))
     }
 
-    /// Creates a Command that converts the pipeline result with `Message::from`.
-    ///
-    /// Use [`Self::into_command_with`] for a closure. The capability must be one
-    /// of the component's own, from its `Io`.
+    /// Describes sending `request` through this capability. Set the method,
+    /// headers, and body on the [`HttpRequest`] first.
     ///
     /// ```
     /// use samara::prelude::*;
-    /// let http = <Effect<HttpRequest>>::detached();
+    /// let http = Http::detached();
+    /// let request = HttpRequest::new(http::Method::POST, "https://example.test/").with_body("hello");
     /// let command: Command<EffectOutcome<HttpResponse, HttpError>> =
-    ///     HttpRequest::get("https://example.test/").on_response().into_command(&http);
+    ///     Http::send(&http, request).on_outcome(|outcome| outcome);
     /// ```
-    pub fn into_command<Message>(self, capability: &Effect<HttpRequest>) -> Command<Message>
-    where
-        Message: From<EffectOutcome<Output, ResponseError>> + Send + 'static,
-    {
-        self.into_command_with(capability, Message::from)
-    }
-
-    /// Creates a Command that maps the pipeline result to a message.
-    ///
-    /// The mapper runs at most once and must not perform I/O or mutate state.
-    /// If redirects are enabled, intermediate responses do not call it. Controlled
-    /// tests inspect each HTTP request using `next_effect::<HttpRequest>()`.
-    ///
-    /// ```
-    /// use samara::prelude::*;
-    /// let http = <Effect<HttpRequest>>::detached();
-    /// let revision = 7;
-    /// let command = HttpRequest::get("https://example.test/").on_response()
-    ///     .into_command_with(&http, move |outcome| (revision, outcome));
-    /// ```
-    pub fn into_command_with<Message, Map>(
-        self,
-        capability: &Effect<HttpRequest>,
-        map: Map,
-    ) -> Command<Message>
-    where
-        Message: Send + 'static,
-        Map: FnOnce(EffectOutcome<Output, ResponseError>) -> Message + Send + 'static,
-    {
-        let Self {
-            request,
-            redirect_limit,
-            transform,
-        } = self;
-        match redirect_limit {
-            Some(limit) => {
-                http_redirect::command(
-                    capability.clone(),
-                    request,
-                    limit,
-                    Box::new(move |outcome| map(transform(outcome))),
-                )
-            }
-            None => {
-                Effect::perform(capability, request)
-                    .on_outcome(move |outcome| map(transform(outcome)))
-            }
-        }
+    pub fn send(&self, request: HttpRequest) -> EffectBuilder<HttpRequest> {
+        Effect::perform(self, request)
     }
 }
 
-impl HttpResponsePipeline<HttpResponse, HttpError> {
+impl EffectBuilder<HttpRequest> {
     /// Follows redirects, allowing at most `max_hops` additional requests.
     ///
     /// Call this before `require_success()` or `json()`. Another call replaces the
@@ -2766,10 +2647,12 @@ impl HttpResponsePipeline<HttpResponse, HttpError> {
     ///
     /// ```
     /// use samara::prelude::*;
-    /// let http = <Effect<HttpRequest>>::detached();
-    /// let command = HttpRequest::get("http://example.test/")
-    ///     .on_response().follow_redirects(5).require_success()
-    ///     .into_command_with(&http, |outcome| outcome);
+    /// let http = Http::detached();
+    /// let command: Command<EffectOutcome<HttpResponse, HttpResponseError>> =
+    ///     Http::get(&http, "http://example.test/")
+    ///         .follow_redirects(5)
+    ///         .require_success()
+    ///         .on_outcome(|outcome| outcome);
     /// ```
     ///
     /// Follows 301, 302, 303, 307, and 308 responses with a Location header, resolving
@@ -2788,35 +2671,36 @@ impl HttpResponsePipeline<HttpResponse, HttpError> {
     /// Each hop is a separate [`HttpRequest`] in controlled tests. Drain waits for
     /// the chain; Cancel stops it without a result message. The hop limit does not
     /// limit the time or size of a response.
-    pub fn follow_redirects(mut self, max_hops: usize) -> Self {
-        self.redirect_limit = Some(max_hops);
-        self
+    pub fn follow_redirects(self, max_hops: usize) -> Self {
+        let layer = http_redirect::Redirects::new(self.descriptor().clone(), max_hops);
+        self.layered(layer)
     }
 
     /// Rejects responses outside the 200–299 status range.
     ///
     /// Returns [`HttpResponseError::Status`] with the response on rejection; later
-    /// JSON decoding is skipped. Call this before [`Self::json`]. See
-    /// [`HttpResponsePipeline`] for an example.
+    /// JSON decoding is skipped. Call this before `json()`. See [`Http`] for
+    /// an example.
     ///
     /// <details>
     /// <summary>Compile-time checks</summary>
     ///
     /// ```compile_fail
-    /// use samara::HttpRequest;
+    /// use samara::prelude::*;
     /// use serde::Deserialize;
     ///
     /// #[derive(Deserialize)]
     /// struct Reply { value: u64 }
     ///
-    /// HttpRequest::get("https://example.test")
-    ///     .on_response()
-    ///     .json::<Reply>()
-    ///     .require_success();
+    /// fn wrong_order(http: &Http) {
+    ///     Http::get(http, "https://example.test")
+    ///         .json::<Reply>()
+    ///         .require_success();
+    /// }
     /// ```
     ///
     /// </details>
-    pub fn require_success(self) -> HttpResponsePipeline<HttpResponse, HttpResponseError> {
+    pub fn require_success(self) -> EffectBuilder<HttpRequest, HttpResponse, HttpResponseError> {
         self.then(|outcome| {
             match outcome {
                 EffectOutcome::Succeeded(response) if response.status().is_success() => {
@@ -2831,7 +2715,7 @@ impl HttpResponsePipeline<HttpResponse, HttpError> {
     }
 }
 
-impl<ResponseError> HttpResponsePipeline<HttpResponse, ResponseError>
+impl<ResponseError> EffectBuilder<HttpRequest, HttpResponse, ResponseError>
 where
     ResponseError: Into<HttpResponseError> + Send + 'static,
 {
@@ -2845,12 +2729,14 @@ where
     /// use samara::prelude::*;
     /// #[derive(serde::Deserialize)]
     /// struct Reply { count: u64 }
-    /// let http = <Effect<HttpRequest>>::detached();
-    /// let command = HttpRequest::get("https://example.test/count")
-    ///     .on_response().require_success().json::<Reply>()
-    ///     .into_command_with(&http, |outcome| outcome);
+    /// let http = Http::detached();
+    /// let command: Command<Option<u64>> = Http::get(&http, "https://example.test/count")
+    ///     .require_success()
+    ///     .json::<Reply>()
+    ///     .on_success(|reply| Some(reply.count))
+    ///     .on_failure(|_| None);
     /// ```
-    pub fn json<T>(self) -> HttpResponsePipeline<T, HttpResponseError>
+    pub fn json<T>(self) -> EffectBuilder<HttpRequest, T, HttpResponseError>
     where
         T: serde::de::DeserializeOwned + Send + 'static,
     {
@@ -2917,7 +2803,7 @@ impl HttpResponseError {
     }
 }
 
-/// A response rejected by [`HttpResponsePipeline::require_success`].
+/// A response rejected by [`EffectBuilder::require_success`].
 ///
 /// Use [`Self::status`] to branch on the status code and [`Self::response`] to
 /// inspect headers or the body. The response is preserved unchanged.
@@ -2963,7 +2849,7 @@ impl Error for HttpStatusError {}
 ///
 /// [`Self::source`] returns the `serde_json` error. [`Self::response`] gives access
 /// to the body and headers for diagnostics; [`Self::into_parts`] returns both.
-/// See [`HttpResponsePipeline::json`] for request construction.
+/// See [`EffectBuilder::json`] for request construction.
 #[derive(Debug, thiserror::Error)]
 #[error("failed to decode HTTP response body as JSON: {source}")]
 pub struct HttpJsonError {
@@ -3839,7 +3725,7 @@ impl<M> fmt::Debug for Connector<M> {
 /// [`Command::send`], an effect finished with
 /// [`EffectBuilder::discard`], [`Command::none`], and batches of
 /// those. Anything that would need a continuation (`on_outcome`,
-/// `into_command`, `divert_with`, [`Command::after`]) cannot be built for it.
+/// `on_success`, `divert_with`, [`Command::after`]) cannot be built for it.
 /// It is what the closure passed to `divert_with` returns, which is why a
 /// finishing continuation is exactly one hop.
 pub struct NoMessage(!, PhantomData<*const ()>);
@@ -3864,7 +3750,7 @@ impl Command<NoMessage> {
     /// `TallyMessage::total` or `|reply| LedgerMessage::Total(reply)`; its
     /// `ReplyWith<R>` parameter fixes the reply type. Returns an inert
     /// [`RequestBuilder`]: optionally bound it with `timeout`, then finish it
-    /// with `on_outcome`, `into_command`, or `divert_with`. It is written
+    /// with `on_outcome`, `on_reply`, `divert_to`, or `divert_with`. It is written
     /// `Command::request(..)` in any Component; it lives on this impl only so
     /// that the Message type need not be named before a finisher supplies it.
     pub fn request<T, R, Build>(target: &T, request: Build) -> RequestBuilder<T::Message, R, Build>
@@ -3936,18 +3822,19 @@ impl<Message: Send + 'static> ErasedEffectCommand<Message> for WidenedEffect {
 
 /// One effect, described and authorized, waiting to be told how it ends.
 ///
-/// Made by [`Effect::perform`] or by a resource capability's
-/// operation such as `File::read(&file)`. It is inert; a finisher turns it
-/// into a [`Command`]. Each finisher is named for what its function
+/// Made by [`Effect::perform`] or by a capability's own operation, such as
+/// `File::read(&file)`, `Clock::system_time(&clock)`, or `Http::get(&http,
+/// url)`. It is inert. Steps specific to the effect may refine it, as
+/// `require_success()` and `json()` do for HTTP, and then one finisher turns
+/// it into a [`Command`]. Each finisher is named for what its function
 /// receives.
 ///
 /// The result comes back to this Component as a Message:
 ///
 /// - [`Self::on_outcome`] receives the whole [`EffectOutcome`].
-/// - `on_success` then [`OnSuccess::on_failure`] take one function each. An
+/// - `on_success` then [`Arm::on_failure`] take one function each. An
 ///   effect that cannot fail (`Error = !`) has no failure arm: `on_success`
 ///   alone finishes it.
-/// - [`Self::into_command`] converts the outcome through `Message::from`.
 ///
 /// The result goes somewhere else and `update` never sees it:
 ///
@@ -3958,6 +3845,9 @@ impl<Message: Send + 'static> ErasedEffectCommand<Message> for WidenedEffect {
 ///
 /// Every function given to a finisher must be pure.
 ///
+/// `Output` and `Error` are the result's types as they stand after any
+/// steps; they start as the descriptor's own.
+///
 /// ```
 /// use samara::prelude::*;
 /// enum Message { Printed(EffectOutcome<(), !>) }
@@ -3966,9 +3856,70 @@ impl<Message: Send + 'static> ErasedEffectCommand<Message> for WidenedEffect {
 /// assert!(command.effect_intent::<PrintStdout>().is_some());
 /// ```
 #[must_use = "finish the effect into a Command with an EffectBuilder finisher"]
-pub struct EffectBuilder<D: EffectDescriptor> {
+pub struct EffectBuilder<
+    D: EffectDescriptor,
+    Output = <D as EffectDescriptor>::Output,
+    Error = <D as EffectDescriptor>::Error,
+> {
     capability: Effect<D>,
     descriptor: D,
+    layer: Option<Box<dyn EffectLayer<D>>>,
+    transform: OutcomeTransform<D, Output, Error>,
+}
+
+type OutcomeTransform<D, Output, Error> = Box<
+    dyn FnOnce(
+            EffectOutcome<<D as EffectDescriptor>::Output, <D as EffectDescriptor>::Error>,
+        ) -> EffectOutcome<Output, Error>
+        + Send
+        + 'static,
+>;
+
+type RawContinuation<D, Message> = Box<
+    dyn FnOnce(
+            EffectOutcome<<D as EffectDescriptor>::Output, <D as EffectDescriptor>::Error>,
+        ) -> EffectContinuation<Message>
+        + Send
+        + 'static,
+>;
+
+/// A pure step between an effect's raw outcome and its builder's
+/// continuation that may ask for the effect to be issued again with another
+/// descriptor, as following a redirect does. Finite by construction of each
+/// implementation.
+pub(crate) trait EffectLayer<D: EffectDescriptor>: Send + 'static {
+    fn step(self: Box<Self>, outcome: EffectOutcome<D::Output, D::Error>) -> LayerStep<D>;
+}
+
+pub(crate) enum LayerStep<D: EffectDescriptor> {
+    Done(EffectOutcome<D::Output, D::Error>),
+    Again(D, Box<dyn EffectLayer<D>>),
+}
+
+fn issue_layered<D: EffectDescriptor, Message: 'static>(
+    capability: Effect<D>,
+    descriptor: D,
+    layer: Box<dyn EffectLayer<D>>,
+    continuation: RawContinuation<D, Message>,
+) -> Command<Message> {
+    Command(CommandKind::Effect(Box::new(Perform {
+        direct_message: false,
+        capability: capability.token.clone(),
+        effect: descriptor,
+        map: move |outcome| {
+            match layer.step(outcome) {
+                LayerStep::Done(outcome) => continuation(outcome),
+                LayerStep::Again(next, layer) => {
+                    EffectContinuation::Command(issue_layered(
+                        capability,
+                        next,
+                        layer,
+                        continuation,
+                    ))
+                }
+            }
+        },
+    })))
 }
 
 impl<D: EffectDescriptor> EffectBuilder<D> {
@@ -3976,6 +3927,83 @@ impl<D: EffectDescriptor> EffectBuilder<D> {
         Self {
             capability,
             descriptor,
+            layer: None,
+            transform: Box::new(|outcome| outcome),
+        }
+    }
+
+    /// Runs `layer` on each raw outcome before anything else sees it.
+    pub(crate) fn layered(mut self, layer: impl EffectLayer<D>) -> Self {
+        self.layer = Some(Box::new(layer));
+        self
+    }
+
+    /// The descriptor this builder will issue first.
+    pub(crate) fn descriptor(&self) -> &D {
+        &self.descriptor
+    }
+}
+
+impl<D, Output, Error> EffectBuilder<D, Output, Error>
+where
+    D: EffectDescriptor,
+    Output: Send + 'static,
+    Error: Send + 'static,
+{
+    /// Refines the result with a pure step. Effect-specific builder methods
+    /// are written with this.
+    pub(crate) fn then<NextOutput, NextError, Step>(
+        self,
+        step: Step,
+    ) -> EffectBuilder<D, NextOutput, NextError>
+    where
+        NextOutput: Send + 'static,
+        NextError: Send + 'static,
+        Step: FnOnce(EffectOutcome<Output, Error>) -> EffectOutcome<NextOutput, NextError>
+            + Send
+            + 'static,
+    {
+        let Self {
+            capability,
+            descriptor,
+            layer,
+            transform,
+        } = self;
+        EffectBuilder {
+            capability,
+            descriptor,
+            layer,
+            transform: Box::new(move |outcome| step(transform(outcome))),
+        }
+    }
+
+    fn issue<Message, Continue>(
+        self,
+        direct_message: bool,
+        continuation: Continue,
+    ) -> Command<Message>
+    where
+        Message: 'static,
+        Continue:
+            FnOnce(EffectOutcome<Output, Error>) -> EffectContinuation<Message> + Send + 'static,
+    {
+        let Self {
+            capability,
+            descriptor,
+            layer,
+            transform,
+        } = self;
+        let continuation = move |outcome| continuation(transform(outcome));
+        match layer {
+            None => {
+                Command(CommandKind::Effect(Box::new(Perform {
+                    direct_message,
+                    capability: capability.token,
+                    effect: descriptor,
+                    map: continuation,
+                })))
+            }
+            Some(layer) => issue_layered(capability, descriptor, layer, Box::new(continuation)),
         }
     }
 
@@ -3985,22 +4013,11 @@ impl<D: EffectDescriptor> EffectBuilder<D> {
     pub fn on_outcome<Message, Map>(self, map: Map) -> Command<Message>
     where
         Message: Deliverable,
-        Map: FnOnce(EffectOutcome<D::Output, D::Error>) -> Message + Send + 'static,
+        Map: FnOnce(EffectOutcome<Output, Error>) -> Message + Send + 'static,
     {
-        Command(CommandKind::Effect(Box::new(Perform {
-            direct_message: true,
-            capability: self.capability.token,
-            effect: self.descriptor,
-            map: move |outcome| EffectContinuation::Message(map(outcome)),
-        })))
-    }
-
-    /// Issues the effect and converts its outcome with `Message::from`.
-    pub fn into_command<Message>(self) -> Command<Message>
-    where
-        Message: From<EffectOutcome<D::Output, D::Error>> + Deliverable,
-    {
-        self.on_outcome(Message::from)
+        self.issue(true, move |outcome| {
+            EffectContinuation::Message(map(outcome))
+        })
     }
 
     /// Sends the result somewhere other than this Component: a reply token
@@ -4027,9 +4044,9 @@ impl<D: EffectDescriptor> EffectBuilder<D> {
     /// # drop(command);
     /// # }
     /// ```
-    pub fn divert_to<To: Destination>(self, to: To) -> Diverted<D, To::Sink> {
+    pub fn divert_to<To: Destination>(self, to: To) -> Diverted<Self, To::Sink> {
         Diverted {
-            effect: self,
+            work: self,
             sink: to.into_sink(),
         }
     }
@@ -4068,21 +4085,21 @@ impl<D: EffectDescriptor> EffectBuilder<D> {
     pub fn divert_with<Message, Finish>(self, finish: Finish) -> Command<Message>
     where
         Message: Deliverable,
-        Finish: FnOnce(EffectOutcome<D::Output, D::Error>) -> Command<NoMessage> + Send + 'static,
+        Finish: FnOnce(EffectOutcome<Output, Error>) -> Command<NoMessage> + Send + 'static,
     {
-        Command(CommandKind::Effect(Box::new(Perform {
-            direct_message: false,
-            capability: self.capability.token,
-            effect: self.descriptor,
-            map: move |outcome| EffectContinuation::Command(finish(outcome).widen()),
-        })))
+        self.issue(false, move |outcome| {
+            EffectContinuation::Command(finish(outcome).widen())
+        })
     }
 
     /// Issues the effect without sending its outcome anywhere.
     ///
     /// Samara still tracks the work: Drain waits for it, Cancel aborts it, and
     /// controlled tests must complete or cancel it.
-    pub fn discard<Message>(self) -> Command<Message> {
+    pub fn discard<Message: 'static>(self) -> Command<Message> {
+        if self.layer.is_some() {
+            return self.issue(false, |_| EffectContinuation::Command(Command::none()));
+        }
         Command(CommandKind::Effect(Box::new(PerformDiscardingOutcome {
             capability: self.capability.token,
             effect: self.descriptor,
@@ -4090,14 +4107,147 @@ impl<D: EffectDescriptor> EffectBuilder<D> {
     }
 }
 
+impl<D, Output> EffectBuilder<D, Output, !>
+where
+    D: EffectDescriptor,
+    Output: Send + 'static,
+{
+    /// For an effect that cannot fail, maps its output to a Message. There
+    /// is no failure to handle, so this is the whole finisher.
+    ///
+    /// ```
+    /// use samara::prelude::*;
+    /// enum Message { Now(std::time::SystemTime) }
+    /// let clock = Clock::detached();
+    /// let command: Command<Message> = Clock::system_time(&clock).on_success(Message::Now);
+    /// assert!(command.effect_intent::<ReadSystemTime>().is_some());
+    /// ```
+    pub fn on_success<Message, Map>(self, map: Map) -> Command<Message>
+    where
+        Message: Deliverable,
+        Map: FnOnce(Output) -> Message + Send + 'static,
+    {
+        self.on_outcome(|EffectOutcome::Succeeded(output)| map(output))
+    }
+}
+
+impl<D: EffectDescriptor> Effect<D> {
+    /// Describes performing `descriptor` under this capability.
+    ///
+    /// World work is called on the capability that authorizes it: name
+    /// `Effect<D>` in the Component's `Io`, call `Effect::perform`. Returns an inert
+    /// [`EffectBuilder`]; choose how the outcome ends to get a [`Command`].
+    pub fn perform(capability: &Effect<D>, descriptor: D) -> EffectBuilder<D> {
+        EffectBuilder::new(capability.clone(), descriptor)
+    }
+}
+
+/// Work that ends in one outcome with a good case and a bad case: an
+/// [`EffectBuilder`] or a [`RequestBuilder`]. It is what [`Diverted`] and
+/// [`Arm`] are generic over. Applications do not implement it.
+pub trait Work: Sized {
+    /// The whole outcome: [`EffectOutcome`] or [`RequestOutcome`].
+    type Outcome;
+    /// What the success arm receives: the output, or the reply.
+    type Good;
+    /// What the failure arm receives: the error, or a [`RequestOutcome`]
+    /// that is not a reply.
+    type Bad;
+
+    /// Separates an outcome into its two cases.
+    fn split(outcome: Self::Outcome) -> Result<Self::Good, Self::Bad>;
+
+    /// The Command whose outcome comes back as a Message.
+    fn returning<Message, Map>(self, map: Map) -> Command<Message>
+    where
+        Message: Deliverable,
+        Map: FnOnce(Self::Outcome) -> Message + Send + 'static;
+
+    /// The Command whose outcome becomes finishing commands.
+    fn leaving<Message, Finish>(self, finish: Finish) -> Command<Message>
+    where
+        Message: Deliverable,
+        Finish: FnOnce(Self::Outcome) -> Command<NoMessage> + Send + 'static;
+}
+
+impl<D, Output, Error> Work for EffectBuilder<D, Output, Error>
+where
+    D: EffectDescriptor,
+    Output: Send + 'static,
+    Error: Send + 'static,
+{
+    type Outcome = EffectOutcome<Output, Error>;
+    type Good = Output;
+    type Bad = Error;
+
+    fn split(outcome: Self::Outcome) -> Result<Output, Error> {
+        match outcome {
+            EffectOutcome::Succeeded(output) => Ok(output),
+            EffectOutcome::Failed(error) => Err(error),
+        }
+    }
+
+    fn returning<Message, Map>(self, map: Map) -> Command<Message>
+    where
+        Message: Deliverable,
+        Map: FnOnce(Self::Outcome) -> Message + Send + 'static,
+    {
+        self.on_outcome(map)
+    }
+
+    fn leaving<Message, Finish>(self, finish: Finish) -> Command<Message>
+    where
+        Message: Deliverable,
+        Finish: FnOnce(Self::Outcome) -> Command<NoMessage> + Send + 'static,
+    {
+        self.divert_with(finish)
+    }
+}
+
+impl<M, R, Build> Work for RequestBuilder<M, R, Build>
+where
+    M: Send + 'static,
+    R: Send + 'static,
+    Build: FnOnce(ReplyWith<R>) -> M + Send + 'static,
+{
+    type Outcome = RequestOutcome<R>;
+    type Good = R;
+    type Bad = RequestOutcome<!>;
+
+    fn split(outcome: Self::Outcome) -> Result<R, RequestOutcome<!>> {
+        match outcome {
+            RequestOutcome::Replied(reply) => Ok(reply),
+            RequestOutcome::Failed(error) => Err(RequestOutcome::Failed(error)),
+            RequestOutcome::TimedOut => Err(RequestOutcome::TimedOut),
+            RequestOutcome::Cancelled => Err(RequestOutcome::Cancelled),
+        }
+    }
+
+    fn returning<Message, Map>(self, map: Map) -> Command<Message>
+    where
+        Message: Deliverable,
+        Map: FnOnce(Self::Outcome) -> Message + Send + 'static,
+    {
+        self.on_outcome(map)
+    }
+
+    fn leaving<Message, Finish>(self, finish: Finish) -> Command<Message>
+    where
+        Message: Deliverable,
+        Finish: FnOnce(Self::Outcome) -> Command<NoMessage> + Send + 'static,
+    {
+        self.divert_with(finish)
+    }
+}
+
 /// Somewhere a diverted result can go: a [`ReplyWith`] token, or a reference
-/// to anything [`Addressable`]. Passed to [`EffectBuilder::divert_to`].
-/// Applications do not implement it.
+/// to anything [`Addressable`]. Passed to `divert_to`. Applications do not
+/// implement it.
 pub trait Destination {
     /// The value the destination accepts: the reply type, or the address's
     /// message type.
     type Value;
-    /// The owned form the effect's continuation holds.
+    /// The owned form the continuation holds.
     type Sink: Sink<Value = Self::Value>;
     /// Converts this destination for the continuation to hold.
     fn into_sink(self) -> Self::Sink;
@@ -4141,63 +4291,49 @@ impl<M: Send + 'static> Sink for Address<M> {
     }
 }
 
-/// Marks an [`OnSuccess`] whose result comes back to its own Component.
+/// Marks an [`Arm`] whose result comes back to its own Component.
 pub struct Home;
 
-/// An effect whose result goes to a reply token or an address instead of
-/// back to its Component. Made by [`EffectBuilder::divert_to`].
-#[must_use = "finish with on_outcome or on_success(..)"]
-pub struct Diverted<D: EffectDescriptor, S> {
-    effect: EffectBuilder<D>,
+/// Work whose result goes to a reply token or an address instead of back to
+/// its Component. Made by `divert_to` on an [`EffectBuilder`] or a
+/// [`RequestBuilder`].
+#[must_use = "finish with on_outcome, or with on_success / on_reply and on_failure"]
+pub struct Diverted<W, S> {
+    work: W,
     sink: S,
 }
 
-impl<D: EffectDescriptor, S: Sink> Diverted<D, S> {
+impl<W: Work, S: Sink> Diverted<W, S> {
     /// Maps the whole outcome to the value to deliver.
     pub fn on_outcome<Message, Map>(self, map: Map) -> Command<Message>
     where
         Message: Deliverable,
-        Map: FnOnce(EffectOutcome<D::Output, D::Error>) -> S::Value + Send + 'static,
+        Map: FnOnce(W::Outcome) -> S::Value + Send + 'static,
     {
-        let Self { effect, sink } = self;
-        effect.divert_with(move |outcome| sink.deliver(map(outcome)))
+        let Self { work, sink } = self;
+        work.leaving(move |outcome| sink.deliver(map(outcome)))
     }
 }
 
-impl<D: EffectDescriptor<Error = !>> EffectBuilder<D> {
-    /// For an effect that cannot fail, maps its output to a Message. There
-    /// is no failure to handle, so this is the whole finisher.
-    ///
-    /// ```
-    /// use samara::prelude::*;
-    /// enum Message { Now(std::time::SystemTime) }
-    /// let clock = <Effect<ReadSystemTime>>::detached();
-    /// let command: Command<Message> = Effect::perform(&clock, ReadSystemTime).on_success(Message::Now);
-    /// assert!(command.effect_intent::<ReadSystemTime>().is_some());
-    /// ```
-    pub fn on_success<Message, Map>(self, map: Map) -> Command<Message>
-    where
-        Message: Deliverable,
-        Map: FnOnce(D::Output) -> Message + Send + 'static,
-    {
-        self.on_outcome(|EffectOutcome::Succeeded(output)| map(output))
-    }
-}
-
-impl<D: EffectDescriptor<Error = !>, S: Sink> Diverted<D, S> {
+impl<D, Output, S> Diverted<EffectBuilder<D, Output, !>, S>
+where
+    D: EffectDescriptor,
+    Output: Send + 'static,
+    S: Sink,
+{
     /// For an effect that cannot fail, maps its output to the value to
     /// deliver. This is the whole finisher.
     pub fn on_success<Message, Map>(self, map: Map) -> Command<Message>
     where
         Message: Deliverable,
-        Map: FnOnce(D::Output) -> S::Value + Send + 'static,
+        Map: FnOnce(Output) -> S::Value + Send + 'static,
     {
         self.on_outcome(|EffectOutcome::Succeeded(output)| map(output))
     }
 }
 
 /// `on_success` for an effect that can fail: it takes the success arm and
-/// must be followed by [`OnSuccess::on_failure`].
+/// must be followed by [`Arm::on_failure`].
 ///
 /// An effect whose `Error` is `!` has an inherent `on_success` that
 /// finishes on its own, and Rust prefers that one; every other effect gets
@@ -4207,140 +4343,149 @@ impl<D: EffectDescriptor<Error = !>, S: Sink> Diverted<D, S> {
 /// ```
 /// use samara::prelude::*;
 /// enum Message { Fetched(HttpResponse), Unreachable(HttpError) }
-/// let http = <Effect<HttpRequest>>::detached();
-/// let command: Command<Message> = Effect::perform(&http, HttpRequest::get("https://example.test"))
+/// let http = Http::detached();
+/// let command: Command<Message> = Http::get(&http, "https://example.test")
 ///     .on_success(Message::Fetched)
 ///     .on_failure(Message::Unreachable);
 /// assert!(command.effect_intent::<HttpRequest>().is_some());
 /// ```
 pub trait FallibleEffect: Sized {
     /// The effect being finished.
-    type Descriptor: EffectDescriptor;
+    type Work: Work;
     /// [`Home`], or the [`Sink`] the result was diverted to.
     type Route;
 
-    /// Maps success; follow with [`OnSuccess::on_failure`].
-    fn on_success<Value, Success>(
-        self,
-        success: Success,
-    ) -> OnSuccess<Self::Descriptor, Self::Route, Success>
+    /// Maps success; follow with [`Arm::on_failure`].
+    fn on_success<Value, Success>(self, success: Success) -> Arm<Self::Work, Self::Route, Success>
     where
-        Success: FnOnce(<Self::Descriptor as EffectDescriptor>::Output) -> Value + Send + 'static;
+        Success: FnOnce(<Self::Work as Work>::Good) -> Value + Send + 'static;
 }
 
-impl<D: EffectDescriptor> FallibleEffect for EffectBuilder<D> {
-    type Descriptor = D;
+impl<D, Output, Error> FallibleEffect for EffectBuilder<D, Output, Error>
+where
+    D: EffectDescriptor,
+    Output: Send + 'static,
+    Error: Send + 'static,
+{
+    type Work = Self;
     type Route = Home;
 
-    fn on_success<Value, Success>(self, success: Success) -> OnSuccess<D, Home, Success>
+    fn on_success<Value, Success>(self, success: Success) -> Arm<Self, Home, Success>
     where
-        Success: FnOnce(D::Output) -> Value + Send + 'static,
+        Success: FnOnce(Output) -> Value + Send + 'static,
     {
-        OnSuccess {
-            effect: self,
+        Arm {
+            work: self,
             route: Home,
-            success,
+            good: success,
         }
     }
 }
 
-impl<D: EffectDescriptor, S: Sink> FallibleEffect for Diverted<D, S> {
-    type Descriptor = D;
+impl<D, Output, Error, S> FallibleEffect for Diverted<EffectBuilder<D, Output, Error>, S>
+where
+    D: EffectDescriptor,
+    Output: Send + 'static,
+    Error: Send + 'static,
+    S: Sink,
+{
+    type Work = EffectBuilder<D, Output, Error>;
     type Route = S;
 
-    fn on_success<Value, Success>(self, success: Success) -> OnSuccess<D, S, Success>
+    fn on_success<Value, Success>(self, success: Success) -> Arm<Self::Work, S, Success>
     where
-        Success: FnOnce(D::Output) -> Value + Send + 'static,
+        Success: FnOnce(Output) -> Value + Send + 'static,
     {
-        OnSuccess {
-            effect: self.effect,
+        Arm {
+            work: self.work,
             route: self.sink,
-            success,
+            good: success,
         }
     }
 }
 
-/// An effect with its success arm, waiting for its failure arm. Made by
-/// [`FallibleEffect::on_success`].
+/// Work with its first arm given, waiting for [`Self::on_failure`]. Made by
+/// `on_success` on a fallible effect or `on_reply` on a request.
 ///
 /// Leaving the failure arm off does not compile:
 ///
 /// ```compile_fail
 /// use samara::prelude::*;
-/// fn find(http: &Effect<HttpRequest>, reply: ReplyWith<u16>) -> Command<()> {
-///     Effect::perform(http, HttpRequest::get("https://example.test"))
+/// fn find(http: &Http, reply: ReplyWith<u16>) -> Command<()> {
+///     Http::get(http, "https://example.test")
 ///         .divert_to(reply)
 ///         .on_success(|response| response.status().as_u16())
 /// }
 /// ```
-#[must_use = "say what happens on failure with .on_failure(..)"]
-pub struct OnSuccess<D: EffectDescriptor, Route, Success> {
-    effect: EffectBuilder<D>,
+#[must_use = "say what happens otherwise with .on_failure(..)"]
+pub struct Arm<W, Route, Good> {
+    work: W,
     route: Route,
-    success: Success,
+    good: Good,
 }
 
-impl<D: EffectDescriptor, Success> OnSuccess<D, Home, Success> {
-    /// Maps failure to a Message, and returns the Command that issues the
-    /// effect.
-    pub fn on_failure<Message, Failure>(self, failure: Failure) -> Command<Message>
+impl<W: Work, Good> Arm<W, Home, Good> {
+    /// Maps the other case to a Message, and returns the Command that issues
+    /// the work. For an effect it receives the error; for a request, a
+    /// [`RequestOutcome`] that is not a reply.
+    pub fn on_failure<Message, Bad>(self, bad: Bad) -> Command<Message>
     where
         Message: Deliverable,
-        Success: FnOnce(D::Output) -> Message + Send + 'static,
-        Failure: FnOnce(D::Error) -> Message + Send + 'static,
+        Good: FnOnce(W::Good) -> Message + Send + 'static,
+        Bad: FnOnce(W::Bad) -> Message + Send + 'static,
     {
-        let Self {
-            effect, success, ..
-        } = self;
-        effect.on_outcome(move |outcome| {
-            match outcome {
-                EffectOutcome::Succeeded(output) => success(output),
-                EffectOutcome::Failed(error) => failure(error),
+        let Self { work, good, .. } = self;
+        work.returning(move |outcome| {
+            match W::split(outcome) {
+                Ok(value) => good(value),
+                Err(other) => bad(other),
             }
         })
     }
 }
 
-impl<D: EffectDescriptor, S: Sink, Success> OnSuccess<D, S, Success> {
-    /// Maps failure to the value to deliver, and returns the Command that
-    /// issues the effect.
-    pub fn on_failure<Message, Failure>(self, failure: Failure) -> Command<Message>
+impl<W: Work, S: Sink, Good> Arm<W, S, Good> {
+    /// Maps the other case to the value to deliver, and returns the Command
+    /// that issues the work.
+    pub fn on_failure<Message, Bad>(self, bad: Bad) -> Command<Message>
     where
         Message: Deliverable,
-        Success: FnOnce(D::Output) -> S::Value + Send + 'static,
-        Failure: FnOnce(D::Error) -> S::Value + Send + 'static,
+        Good: FnOnce(W::Good) -> S::Value + Send + 'static,
+        Bad: FnOnce(W::Bad) -> S::Value + Send + 'static,
     {
-        let Self {
-            effect,
-            route,
-            success,
-        } = self;
-        effect.divert_with(move |outcome| {
-            route.deliver(match outcome {
-                EffectOutcome::Succeeded(output) => success(output),
-                EffectOutcome::Failed(error) => failure(error),
+        let Self { work, route, good } = self;
+        work.leaving(move |outcome| {
+            route.deliver(match W::split(outcome) {
+                Ok(value) => good(value),
+                Err(other) => bad(other),
             })
         })
-    }
-}
-
-impl<D: EffectDescriptor> Effect<D> {
-    /// Describes performing `descriptor` under this capability.
-    ///
-    /// World work is called on the capability that authorizes it: name
-    /// `Effect<D>` in the Component's `Io`, call `Effect::perform`. Returns an inert
-    /// [`EffectBuilder`]; choose how the outcome ends to get a [`Command`].
-    pub fn perform(capability: &Effect<D>, descriptor: D) -> EffectBuilder<D> {
-        EffectBuilder::new(capability.clone(), descriptor)
     }
 }
 
 /// One request, addressed and described, waiting to be told how its reply ends.
 ///
 /// Made by [`Command::request`]. Optionally bound with [`Self::timeout`],
-/// then finished with [`Self::on_outcome`], [`Self::into_command`], or
-/// [`Self::divert_with`].
-#[must_use = "finish the request into a Command with producing, into_command, or divert_with"]
+/// then finished the way an effect is:
+///
+/// - [`Self::on_outcome`] receives the whole [`RequestOutcome`].
+/// - [`Self::on_reply`] then [`Arm::on_failure`] take one function each. The
+///   failure arm receives a `RequestOutcome<!>`: every case but a reply.
+/// - [`Self::divert_to`] sends the result to a reply token or an address;
+///   what it returns has the same finishers.
+/// - [`Self::divert_with`] turns the outcome into finishing commands.
+///
+/// ```
+/// use samara::prelude::*;
+/// enum GaugeMessage { Read(ReplyWith<u64>) }
+/// enum Message { Reading(u64), Silent }
+/// # fn ask(gauge: &Connector<GaugeMessage>) -> Command<Message> {
+/// Command::request(gauge, GaugeMessage::Read)
+///     .on_reply(Message::Reading)
+///     .on_failure(|_| Message::Silent)
+/// # }
+/// ```
+#[must_use = "finish the request into a Command with on_outcome, on_reply, divert_to, or divert_with"]
 pub struct RequestBuilder<M: Send + 'static, R, Build> {
     address: Address<M>,
     build: Build,
@@ -4365,7 +4510,7 @@ where
         self
     }
 
-    /// Issues the request and maps its outcome to a Message.
+    /// Issues the request and maps its whole outcome to a Message.
     pub fn on_outcome<Message, Map>(self, map: Map) -> Command<Message>
     where
         Message: Deliverable,
@@ -4381,12 +4526,37 @@ where
         })))
     }
 
-    /// Issues the request and converts its outcome with `Message::from`.
-    pub fn into_command<Message>(self) -> Command<Message>
+    /// Maps the reply; follow with [`Arm::on_failure`] for every other case.
+    pub fn on_reply<Value, Reply>(self, reply: Reply) -> Arm<Self, Home, Reply>
     where
-        Message: From<RequestOutcome<R>> + Deliverable,
+        Reply: FnOnce(R) -> Value + Send + 'static,
     {
-        self.on_outcome(Message::from)
+        Arm {
+            work: self,
+            route: Home,
+            good: reply,
+        }
+    }
+
+    /// Sends the result somewhere other than this Component: a reply token
+    /// or an address. See [`EffectBuilder::divert_to`].
+    ///
+    /// ```
+    /// use samara::prelude::*;
+    /// enum GaugeMessage { Read(ReplyWith<u64>) }
+    /// enum RelayMessage { ReadPlusOne(ReplyWith<Option<u64>>) }
+    /// # fn relay(gauge: &Connector<GaugeMessage>, reply: ReplyWith<Option<u64>>) -> Command<RelayMessage> {
+    /// Command::request(gauge, GaugeMessage::Read)
+    ///     .divert_to(reply)
+    ///     .on_reply(|reading| Some(reading + 1))
+    ///     .on_failure(|_| None)
+    /// # }
+    /// ```
+    pub fn divert_to<To: Destination>(self, to: To) -> Diverted<Self, To::Sink> {
+        Diverted {
+            work: self,
+            sink: to.into_sink(),
+        }
     }
 
     /// Issues the request and finishes with commands that produce no Message.
@@ -4406,6 +4576,27 @@ where
             map: move |outcome| EffectContinuation::Command(finish(outcome).widen()),
             reply: PhantomData,
         })))
+    }
+}
+
+impl<M, R, Build, S> Diverted<RequestBuilder<M, R, Build>, S>
+where
+    M: Send + 'static,
+    R: Send + 'static,
+    Build: FnOnce(ReplyWith<R>) -> M + Send + 'static,
+    S: Sink,
+{
+    /// Maps the reply to the value to deliver; follow with
+    /// [`Arm::on_failure`] for every other case.
+    pub fn on_reply<Reply>(self, reply: Reply) -> Arm<RequestBuilder<M, R, Build>, S, Reply>
+    where
+        Reply: FnOnce(R) -> S::Value + Send + 'static,
+    {
+        Arm {
+            work: self.work,
+            route: self.sink,
+            good: reply,
+        }
     }
 }
 
@@ -6481,7 +6672,7 @@ pub struct ControlledRuntimeBuilder {
 ///     type Message = EffectOutcome<HttpResponse, HttpError>;
 ///     fn init(cx: &Context<Self>) -> Init<Self::Model, Self::Message> {
 ///         Init::default().with_command(
-///             Effect::perform(&cx.io.0, HttpRequest::get("https://example.test/health")).into_command(),
+///             Effect::perform(&cx.io.0, HttpRequest::get("https://example.test/health")).on_outcome(From::from),
 ///         )
 ///     }
 ///     fn update(_: &Context<Self>, status: &mut Self::Model, outcome: Self::Message) -> Command<Self::Message> {

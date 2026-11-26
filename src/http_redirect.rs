@@ -1,47 +1,51 @@
 //! Pure, finite redirect Layer. The terminal HTTP Driver remains single-hop.
 
 use crate::{
-    Command, CommandKind, Effect, EffectContinuation, EffectOutcome, HttpError, HttpErrorKind,
-    HttpRequest, HttpResponse, Perform,
+    EffectLayer, EffectOutcome, HttpError, HttpErrorKind, HttpRequest, HttpResponse, LayerStep,
 };
 
 // Reuse reqwest's public URL value for pure parsing/resolution only. No client
 // or runtime handle crosses this Layer boundary.
 use reqwest::Url;
 
-type Finish<Message> = Box<dyn FnOnce(EffectOutcome<HttpResponse, HttpError>) -> Message + Send>;
-
-pub(crate) fn command<Message: Send + 'static>(
-    capability: Effect<HttpRequest>,
+/// Follows redirects for one request chain. Each hop is the same effect
+/// issued again with the next request; the hop count bounds the chain.
+pub(crate) struct Redirects {
     request: HttpRequest,
     remaining: usize,
-    finish: Finish<Message>,
-) -> Command<Message> {
-    Command(CommandKind::Effect(Box::new(Perform {
-        direct_message: false,
-        capability: capability.token.clone(),
-        effect: request.clone(),
-        map: move |outcome| {
-            let outcome = match outcome {
-                EffectOutcome::Succeeded(response) => {
-                    match next_request(&request, &response, remaining) {
-                        Ok(Some(next)) => {
-                            return EffectContinuation::Command(command(
-                                capability,
-                                next,
-                                remaining - 1,
-                                finish,
-                            ));
-                        }
-                        Ok(None) => EffectOutcome::Succeeded(response),
-                        Err(error) => EffectOutcome::Failed(error),
-                    }
-                }
-                other => other,
-            };
-            EffectContinuation::Message(finish(outcome))
-        },
-    })))
+}
+
+impl Redirects {
+    pub(crate) fn new(request: HttpRequest, max_hops: usize) -> Self {
+        Self {
+            request,
+            remaining: max_hops,
+        }
+    }
+}
+
+impl EffectLayer<HttpRequest> for Redirects {
+    fn step(
+        self: Box<Self>,
+        outcome: EffectOutcome<HttpResponse, HttpError>,
+    ) -> LayerStep<HttpRequest> {
+        let EffectOutcome::Succeeded(response) = outcome else {
+            return LayerStep::Done(outcome);
+        };
+        match next_request(&self.request, &response, self.remaining) {
+            Ok(Some(next)) => {
+                LayerStep::Again(
+                    next.clone(),
+                    Box::new(Redirects {
+                        request: next,
+                        remaining: self.remaining - 1,
+                    }),
+                )
+            }
+            Ok(None) => LayerStep::Done(EffectOutcome::Succeeded(response)),
+            Err(error) => LayerStep::Done(EffectOutcome::Failed(error)),
+        }
+    }
 }
 
 fn failure(message: &str) -> HttpError {

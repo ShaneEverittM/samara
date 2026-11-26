@@ -33,10 +33,9 @@ where
     T: serde::de::DeserializeOwned + Send + 'static,
 {
     let http = <Effect<HttpRequest>>::detached();
-    HttpRequest::get("https://example.test/value")
-        .on_response()
+    Http::get(&http, "https://example.test/value")
         .json::<T>()
-        .into_command_with(&http, |outcome| outcome)
+        .on_outcome(|outcome| outcome)
 }
 
 fn successful_json_command<T>() -> Command<EffectOutcome<T, HttpResponseError>>
@@ -44,24 +43,25 @@ where
     T: serde::de::DeserializeOwned + Send + 'static,
 {
     let http = <Effect<HttpRequest>>::detached();
-    HttpRequest::get("https://example.test/value")
-        .on_response()
+    Http::get(&http, "https://example.test/value")
         .require_success()
         .json::<T>()
-        .into_command_with(&http, |outcome| outcome)
+        .on_outcome(|outcome| outcome)
 }
 
 #[test]
 fn http_response_pipeline_preserves_the_owned_raw_request_boundary() {
     let http = <Effect<HttpRequest>>::detached();
-    let command: Command<()> = HttpRequest::get("https://example.test/owned")
-        .with_header(
-            http::header::CONTENT_TYPE,
-            HeaderValue::from_static("application/octet-stream"),
-        )
-        .with_body(Bytes::from_static(b"owned request"))
-        .on_response()
-        .into_command_with(&http, |_| ());
+    let command: Command<()> = Http::send(
+        &http,
+        HttpRequest::get("https://example.test/owned")
+            .with_header(
+                http::header::CONTENT_TYPE,
+                HeaderValue::from_static("application/octet-stream"),
+            )
+            .with_body(Bytes::from_static(b"owned request")),
+    )
+    .on_outcome(|_| ());
 
     let invocation = command
         .into_effect::<HttpRequest>()
@@ -116,11 +116,10 @@ impl Component for PipelineComponent {
         let (http, observe) = &cx.io;
         match message {
             PipelineMessage::Start => {
-                HttpRequest::get(cx.config.clone())
-                    .on_response()
+                Http::get(http, cx.config.clone())
                     .require_success()
                     .json::<Payload>()
-                    .into_command_with(http, PipelineMessage::Finished)
+                    .on_outcome(PipelineMessage::Finished)
             }
             PipelineMessage::Finished(outcome) => {
                 let result = match outcome {
@@ -319,11 +318,10 @@ fn http_pipeline_transforms_and_maps_at_most_once() {
     ONCE_DECODE_CALLS.store(0, Ordering::SeqCst);
     let mapper_calls = Arc::new(AtomicUsize::new(0));
     let counted_mapper_calls = mapper_calls.clone();
-    let command = HttpRequest::get("https://example.test/once")
-        .on_response()
+    let command = Http::get(&http, "https://example.test/once")
         .require_success()
         .json::<OnceDecoded>()
-        .into_command_with(&http, move |outcome| {
+        .on_outcome(move |outcome| {
             counted_mapper_calls.fetch_add(1, Ordering::SeqCst);
             outcome
         });

@@ -1,6 +1,10 @@
 # Exploratory Design: Fluent HTTP Response Handling
 
-Status: the narrow HTTP continuation-builder recommendation was accepted on
+Status: superseded in its spelling by
+[ADR-0035](../adr/0035-one-builder-pattern-for-effects-requests-and-http.md):
+the response steps are now methods on the ordinary effect builder, entered
+with `Http::get` or `Http::send`, and `HttpResponsePipeline` is removed.
+Originally, the narrow HTTP continuation-builder recommendation was accepted on
 July 25, 2026 and is specified by
 [ADR-0005](../adr/0005-first-party-http-effect.md), including its paired
 `into_command` and `into_command_with` continuation API, and is implemented as

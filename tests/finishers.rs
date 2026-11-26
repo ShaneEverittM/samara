@@ -158,7 +158,7 @@ impl Component for Client {
             ClientMessage::StartParked(patience) => {
                 Command::request(&cx.to.gauge, GaugeMessage::Park)
                     .timeout(patience)
-                    .into_command()
+                    .on_outcome(From::from)
             }
             ClientMessage::Got(outcome) => {
                 model.push(outcome);
@@ -304,7 +304,8 @@ fn inspectors_see_builder_commands_and_skip_finishing_requests() {
     let performed: Command<ClientMessage> = Effect::perform(&probe, Probe).discard();
     assert_eq!(performed.effect_intent::<Probe>(), Some(&Probe));
 
-    let asked: Command<ClientMessage> = Command::request(&gauge, GaugeMessage::Read).into_command();
+    let asked: Command<ClientMessage> =
+        Command::request(&gauge, GaugeMessage::Read).on_outcome(From::from);
     let intent = asked
         .into_request::<GaugeMessage>()
         .ok()

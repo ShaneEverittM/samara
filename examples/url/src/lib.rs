@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use samara::prelude::*;
-use samara::{HttpResponsePipeline, eprintln, println};
+use samara::{EffectBuilder, eprintln, println};
 use url::Url;
 
 #[derive(Debug)]
@@ -49,7 +49,7 @@ enum Message {
     CheckDue {
         revision: u64,
         url: Arc<str>,
-        request: HttpResponsePipeline<HttpResponse, HttpError>,
+        request: EffectBuilder<HttpRequest>,
     },
     CheckFinished {
         revision: u64,
@@ -145,9 +145,7 @@ impl Component for Checker {
                 match command {
                     UrlCommand::Url(url) => {
                         let url = Arc::from(url.as_str());
-                        let request = HttpRequest::get(Arc::clone(&url))
-                            .on_response()
-                            .follow_redirects(5);
+                        let request = Http::get(&cx.io.http, Arc::clone(&url)).follow_redirects(5);
                         let next = model.revision().checked_add(1).expect("revision overflow");
 
                         *model = Status::Pending {
@@ -226,7 +224,7 @@ impl Component for Checker {
                     revision,
                 };
                 let log = println!(&cx.io.stdout, "Checking {}", url);
-                let request = request.into_command_with(&cx.io.http, move |r| {
+                let request = request.on_outcome(move |r| {
                     Message::CheckFinished {
                         url,
                         revision,

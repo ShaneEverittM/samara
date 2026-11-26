@@ -196,11 +196,16 @@ The following evidence must pass before the Phase 2 audit:
   as `owner.field`. Using another Component's capability faults in both
   controlled and live execution. `examples/pulse` pins the journal's
   manifest text.
-- `tests/diverting.rs` validates the effect finishers (ADR-0034): a
-  diverted reply through `on_success`/`on_failure`, through a lone `on_success`
-  for an effect that cannot fail, and through `on_outcome`, each with no extra
-  transition in the provider; a result diverted to an address; and the two
-  arms coming back as Messages without `divert`. A doctest rejects a fallible effect given only its success arm.
+- `tests/diverting.rs` validates the finishers (ADR-0034, ADR-0035). For
+  effects: a diverted reply through `on_success`/`on_failure`, through a
+  lone `on_success` for an effect that cannot fail, and through
+  `on_outcome`, each with no extra transition in the provider; a result
+  diverted to an address; and the two arms coming back as Messages without
+  `divert`. For requests: `on_reply`/`on_failure`, with a timeout arriving
+  in the failure arm, and a request diverted to the caller's reply token
+  with no transition in the relay. A doctest rejects a fallible effect
+  given only its success arm. `tests/http_redirects.rs` runs redirects, a
+  status check, and a diverted reply in one chain.
 - `tests/connections.rs` validates declared connections and configuration
   (ADR-0031): the manifest lists a bare Connector, a `ComponentRef`, a Port
   resolved to its provider, and the fields of a derived struct including
@@ -422,7 +427,7 @@ Standard `From` continuations:
 - `effect_default_uses_from_and_effect_with_preserves_context`
 - `request_to_with_message_from_uses_from_and_a_closure_preserves_context`
 - `source_default_is_reusable_and_source_with_preserves_context`
-- `http_pipeline_default_uses_from_and_into_command_with_is_explicit`
+- `http_builder_uses_from_or_an_explicit_mapper`
 
 Pressure and first-party bridges:
 

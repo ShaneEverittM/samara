@@ -1,6 +1,9 @@
 # ADR-0034: Finishers Are Named for What They Receive, and `divert` Marks a Result That Does Not Come Back
 
-- Status: Accepted.
+- Status: Accepted. Extended by
+  [ADR-0035](0035-one-builder-pattern-for-effects-requests-and-http.md):
+  requests gain `on_reply`/`on_failure` and `divert_to`, HTTP becomes steps
+  on the effect builder, and `into_command()` is removed.
 - Date: November 26, 2026
 - Deciders: Samara maintainers
 - Amends: [ADR-0023](0023-boundary-work-builders-and-finishers.md) (the

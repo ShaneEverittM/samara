@@ -73,8 +73,8 @@ Continuation-bearing APIs therefore use a paired convention:
   context or distinguish this occurrence from another occurrence with the same
   boundary type.
 
-For example, `Effect::perform(&capability, effect).into_command()` uses `Message::from`, while
-`Effect::perform(&capability, effect).on_outcome(mapper)` preserves an explicit
+For example, `Effect::perform(&capability, effect).on_outcome(Message::from)` uses
+`Message::from`, while `.on_outcome(mapper)` with a closure preserves an explicit
 continuation.
 The same convention applies to Requests, Subscriptions, and pure HTTP response
 pipelines where their lifecycle semantics permit it.
@@ -382,7 +382,7 @@ two files gives them two field names, and each is supplied its own
 For whole-file writes, use `File<WriteOnly>` or `File<ReadWrite>`:
 
 ```rust,ignore
-File::replace_text(&file, serialized_state).into_command_with(Message::Saved)
+File::replace_text(&file, serialized_state).on_outcome(Message::Saved)
 ```
 
 Both permit replacement and append; `ReadWrite` also permits reading.
@@ -498,12 +498,12 @@ A raw HTTP request still returns redirects unchanged. Opt in before status or
 body transforms when the application wants the final response:
 
 ```rust,ignore
-HttpRequest::get(url)
-    .on_response()
+Http::get(&cx.io.http, url)
     .follow_redirects(5)
     .require_success()
     .json::<Reply>()
-    .into_command_with(&self.http, Message::Finished)
+    .on_success(Message::Decoded)
+    .on_failure(Message::Failed)
 ```
 
 This Layer issues at most five additional requests through the same capability.

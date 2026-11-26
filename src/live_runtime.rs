@@ -807,7 +807,7 @@ pub struct TokioTcpDriver;
 /// HTTP status. The Driver performs no retries, redirects, proxy discovery,
 /// or decompression, and imposes no request timeout or body-size limit.
 /// It supplies `Accept: */*` when no Accept header is present. Use
-/// [`HttpResponsePipeline`](crate::HttpResponsePipeline) for response policy.
+/// [`Http`](crate::Http) for response policy.
 pub struct TokioHttpDriver {
     client: Result<reqwest::Client, HttpError>,
 }

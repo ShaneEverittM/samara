@@ -39,7 +39,8 @@ impl From<EffectOutcome<u64, !>> for EffectMessage {
 fn effect_default_uses_from_and_effect_with_preserves_context() {
     let (declared_0,) = <(samara::Effect<ProbeEffect>,) as samara::Io>::detached();
     let probe = declared_0;
-    let default: Command<EffectMessage> = Effect::perform(&probe, ProbeEffect).into_command();
+    let default: Command<EffectMessage> =
+        Effect::perform(&probe, ProbeEffect).on_outcome(From::from);
     assert_eq!(
         default
             .map_effect_outcome::<ProbeEffect>(EffectOutcome::Succeeded(7))
@@ -63,7 +64,7 @@ fn effect_default_uses_from_and_effect_with_preserves_context() {
     );
 
     let identity: Command<EffectOutcome<u64, !>> =
-        Effect::perform(&probe, ProbeEffect).into_command();
+        Effect::perform(&probe, ProbeEffect).on_outcome(From::from);
     assert_eq!(
         identity
             .map_effect_outcome::<ProbeEffect>(EffectOutcome::Succeeded(9))
@@ -152,13 +153,12 @@ fn http_response(body: &'static [u8]) -> HttpResponse {
 }
 
 #[test]
-fn http_pipeline_default_uses_from_and_into_command_with_is_explicit() {
+fn http_builder_uses_from_or_an_explicit_mapper() {
     let (declared_0,) = <(samara::Effect<HttpRequest>,) as samara::Io>::detached();
     let http = declared_0;
-    let default: Command<HttpMessage> = HttpRequest::get("https://example.test/default")
-        .on_response()
+    let default: Command<HttpMessage> = Http::get(&http, "https://example.test/default")
         .json::<Payload>()
-        .into_command(&http);
+        .on_outcome(From::from);
     let invocation = default.into_effect::<HttpRequest>().ok().unwrap();
     let message =
         invocation.map_outcome(EffectOutcome::Succeeded(http_response(br#"{"value": 41}"#)));
@@ -168,10 +168,9 @@ fn http_pipeline_default_uses_from_and_into_command_with_is_explicit() {
     assert_eq!(payload, Payload { value: 41 });
 
     let context = "secondary endpoint";
-    let explicit: Command<HttpMessage> = HttpRequest::get("https://example.test/explicit")
-        .on_response()
+    let explicit: Command<HttpMessage> = Http::get(&http, "https://example.test/explicit")
         .json::<Payload>()
-        .into_command_with(&http, move |_| HttpMessage::Explicit(context));
+        .on_outcome(move |_| HttpMessage::Explicit(context));
     let invocation = explicit.into_effect::<HttpRequest>().ok().unwrap();
     assert!(matches!(
         invocation.map_outcome(EffectOutcome::Succeeded(http_response(br#"{"value": 42}"#))),

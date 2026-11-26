@@ -30,12 +30,9 @@ impl Component for Probe {
     fn init(cx: &Context<Self>) -> Init<Self::Model, Self::Message> {
         let (http, _) = &cx.io;
         Init::default().with_command(
-            cx.config
-                .request
-                .clone()
-                .on_response()
+            Http::send(http, cx.config.request.clone())
                 .follow_redirects(cx.config.limit)
-                .into_command_with(http, |outcome| outcome),
+                .on_outcome(|outcome| outcome),
         )
     }
     fn update(cx: &Context<Self>, model: &mut Self::Model, outcome: Outcome) -> Command<Outcome> {
@@ -347,13 +344,12 @@ impl Component for JsonProbe {
     type Message = EffectOutcome<serde_json::Value, HttpResponseError>;
     fn init(cx: &Context<Self>) -> Init<Self::Model, Self::Message> {
         Init::default().with_command(
-            HttpRequest::get("https://example.test/")
-                .on_response()
+            Http::get(&cx.io, "https://example.test/")
                 .follow_redirects(0)
                 .follow_redirects(1)
                 .require_success()
                 .json::<serde_json::Value>()
-                .into_command_with(&cx.io, |outcome| outcome),
+                .on_outcome(|outcome| outcome),
         )
     }
     fn update(
@@ -436,4 +432,100 @@ async fn live_cancel_aborts_active_redirect_hop_without_application_completion()
         let mut buffer = [0; 16];
         assert_eq!(socket.read(&mut buffer).await.unwrap(), 0);
     }).await.unwrap();
+}
+
+/// Fetches on a caller's behalf and answers with the final status, through
+/// redirects, a status check, and a diverted reply.
+struct Fetcher;
+enum FetcherMessage {
+    Fetch(ReplyWith<Result<u16, String>>),
+}
+impl Component for Fetcher {
+    type Io = Http;
+    type Connections = ();
+    type Configuration = ();
+    /// How many Messages `update` has handled.
+    type Model = u64;
+    type Message = FetcherMessage;
+    fn init(_: &Context<Self>) -> Init<u64, FetcherMessage> {
+        Init::default()
+    }
+    fn update(
+        cx: &Context<Self>,
+        handled: &mut u64,
+        FetcherMessage::Fetch(reply): FetcherMessage,
+    ) -> Command<FetcherMessage> {
+        *handled += 1;
+        Http::get(&cx.io, "https://example.test/start")
+            .follow_redirects(2)
+            .require_success()
+            .divert_to(reply)
+            .on_success(|response| Ok(response.status().as_u16()))
+            .on_failure(|error| Err(error.to_string()))
+    }
+}
+struct Caller;
+enum CallerMessage {
+    Start,
+    Heard(RequestOutcome<Result<u16, String>>),
+}
+impl Component for Caller {
+    type Io = ();
+    type Connections = ComponentRef<Fetcher>;
+    type Configuration = ();
+    type Model = Vec<RequestOutcome<Result<u16, String>>>;
+    type Message = CallerMessage;
+    fn init(_: &Context<Self>) -> Init<Self::Model, CallerMessage> {
+        Init::default()
+    }
+    fn update(
+        cx: &Context<Self>,
+        heard: &mut Self::Model,
+        message: CallerMessage,
+    ) -> Command<CallerMessage> {
+        match message {
+            CallerMessage::Start => {
+                Command::request(&cx.to, FetcherMessage::Fetch).on_outcome(CallerMessage::Heard)
+            }
+            CallerMessage::Heard(outcome) => {
+                heard.push(outcome);
+                Command::none()
+            }
+        }
+    }
+}
+
+#[test]
+fn redirects_and_response_steps_compose_with_a_diverted_reply() {
+    let mut builder = Program::builder();
+    let fetcher: ComponentRef<Fetcher> = builder.add_component::<Fetcher>(()).into();
+    let caller: ComponentRef<Caller> = builder.add_component::<Caller>(fetcher.clone()).into();
+    let mut runtime = ControlledRuntime::builder(builder.build().unwrap())
+        .build()
+        .unwrap();
+
+    // Followed to a success.
+    runtime.send(&caller, CallerMessage::Start).unwrap();
+    runtime.run_until_idle().unwrap();
+    finish(&mut runtime, response(302, Some("/moved")));
+    let second = runtime.next_effect::<HttpRequest>().unwrap();
+    assert_eq!(second.intent.url(), "https://example.test/moved");
+    runtime
+        .complete(second, EffectOutcome::Succeeded(response(200, None)))
+        .unwrap();
+    runtime.run_until_idle().unwrap();
+
+    // Followed to a status the check rejects.
+    runtime.send(&caller, CallerMessage::Start).unwrap();
+    runtime.run_until_idle().unwrap();
+    finish(&mut runtime, response(302, Some("/moved")));
+    finish(&mut runtime, response(503, None));
+
+    let heard = runtime.state(&caller).unwrap();
+    assert_eq!(heard[0], RequestOutcome::Replied(Ok(200)));
+    assert!(matches!(&heard[1], RequestOutcome::Replied(Err(message)) if message.contains("503")));
+    // Neither result came back through the Fetcher's `update`.
+    assert_eq!(runtime.state(&fetcher).unwrap(), &2);
+    assert_eq!(runtime.pending_work(), PendingWork::default());
+    assert!(runtime.cancel().unwrap().is_clean());
 }

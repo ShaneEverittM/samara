@@ -253,15 +253,22 @@ a journal Component; exploratory proposals, not accepted API decisions.
     owner, message, and target). A derived struct is for several. No
     `From`/`impl Into` on `add`.
 
-- [ ] **Finishers and routing after ADR-0034.** The effect grid landed
-  November 26, 2026. Deliberately not designed further yet; iterate from
-  use. Open: `divert_to` and per-case finishers for requests (forward a
-  request and reply with its outcome; `RequestOutcome` has four cases, so
-  `on_reply`/`on_timeout` and what happens to the reply token on the other
-  cases need deciding), `EffectOutcome::into_result()`, whether
-  `into_command()` should become an `on_`-style name, and whether a
-  required `to_self()` for results that come back is ever wanted (rejected
-  for now: it marks the rule instead of the exception).
+- [ ] **Finishers and routing after ADR-0035.** Effects, requests, and
+  HTTP share one builder pattern as of November 26, 2026. Deliberately not
+  designed further yet; iterate from use. Open:
+  - Whether to fold `TimedOut` and `Cancelled` into `RequestError`, so a
+    request outcome is a reply or a typed error and requests can use
+    `on_success`. Changes a public enum and the trace vocabulary.
+  - Subscriptions keep their own dialect by decision; it should be designed
+    on its own terms, not copied from Commands.
+  - `EffectOutcome::into_result()` for the cases that still match by hand.
+  - Whether a library's own effect steps need anything public beyond
+    methods on `EffectBuilder<TheirDescriptor>`. The step helper (`then`)
+    and the Layer hook are crate-private today, so only first-party
+    effects can add steps.
+  - `divert_to(&address)` has tests and no example that needs it yet.
+  - A required `to_self()` for results that come back was rejected: it
+    marks the rule instead of the exception.
 
 - [ ] **Default Drivers, next steps.** `supply_default(&capability)` landed
   November 15, 2026 for the first-party descriptors with an obvious Driver.
@@ -367,8 +374,8 @@ a journal Component; exploratory proposals, not accepted API decisions.
   `Kind::verb` entry points and the four finishers, and ADR-0023 now records
   them. Inconsistencies that remain: `PortHandle::request_to` and `request_to_timeout` keep the old
   static shape on the host side (an awaitable builder would match
-  `Command::request(&target, ctor).timeout(d)`); `HttpResponsePipeline` still spells
-  its mapper finisher `into_command_with`; `Subscription::source_with` is
+  `Command::request(&target, ctor).timeout(d)`); the HTTP pipeline's `into_command_with` was resolved by ADR-0035;
+  `Subscription::source_with` is
   the last `_with` pair; and there is no unit-test inspector for a
   `divert_with` continuation, only controlled execution. The reply-token
   cost recorded above is resolved by `divert_with`; pulse's journal uses it.

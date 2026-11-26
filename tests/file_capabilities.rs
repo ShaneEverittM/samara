@@ -88,12 +88,12 @@ fn fixture() -> Fixture {
 fn file_operations_are_inert_and_preserve_their_typed_results() {
     let file = <File<ReadAppend>>::detached();
     let append: Command<EffectOutcome<(), FsError>> =
-        File::append_line(&file, "hello").into_command();
+        File::append_line(&file, "hello").on_outcome(From::from);
     assert_eq!(
         append.effect_intent::<FileAppend>().unwrap().as_bytes(),
         b"hello\n"
     );
-    let read: Command<EffectOutcome<Bytes, FsError>> = File::read(&file).into_command();
+    let read: Command<EffectOutcome<Bytes, FsError>> = File::read(&file).on_outcome(From::from);
     assert!(read.effect_intent::<FileRead>().is_some());
     let append = File::append_text(&file, "raw").discard::<()>();
     assert_eq!(
@@ -106,7 +106,7 @@ fn file_operations_are_inert_and_preserve_their_typed_results() {
 fn write_authority_constructs_typed_replacements() {
     let file = <File<ReadWrite>>::detached();
     let replace: Command<EffectOutcome<(), FsError>> =
-        File::replace_text(&file, "new contents").into_command();
+        File::replace_text(&file, "new contents").on_outcome(From::from);
     assert_eq!(
         replace.effect_intent::<FileReplace>().unwrap().as_str(),
         Some("new contents")
@@ -132,7 +132,7 @@ impl Component for Replacer {
     type Message = EffectOutcome<(), FsError>;
     type Model = Option<Self::Message>;
     fn init(cx: &Context<Self>) -> Init<Self::Model, Self::Message> {
-        Init::new(None).with_command(File::replace_text(&cx.io, cx.config).into_command())
+        Init::new(None).with_command(File::replace_text(&cx.io, cx.config).on_outcome(From::from))
     }
     fn update(
         _: &Context<Self>,

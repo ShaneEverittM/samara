@@ -224,13 +224,11 @@ the complete buffered status, headers, and body, and an error status is still
 a response; `HttpError` is configuration or transport failure, never a remote
 status.
 
-**HttpResponsePipeline** — The must-use pure continuation `on_response`
-produces from an `HttpRequest`. It declares status policy and decoding and
-lowers to the same raw effect plus a composed mapper; it is not a Driver,
-Layer, or separately traced effect. Its error algebra, `HttpResponseError`,
-distinguishes transport `HttpError`, an explicit `HttpStatusError` rejection
-that retains the response, and `HttpJsonError`, which retains the response and
-the decode error. Cancellation is not a variant.
+**Http** — `Effect<HttpRequest>`, the capability to make HTTP requests.
+`Http::get(&http, url)` and `Http::send(&http, request)` return an ordinary
+effect builder with the HTTP steps `follow_redirects`, `require_success`,
+and `json`, finished like any effect (ADR-0035). *HttpResponsePipeline* is
+the historical separate builder.
 
 **StdinLines / StdinError** — The first-party terminal SourceDescriptor for
 UTF-8 lines from process stdin (ADR-0009), with line-ending stripping and one
@@ -489,14 +487,15 @@ values.
 
 **Finisher** — The method that turns a described effect or request into a
 `Command` by saying how its outcome ends, named for what its function
-receives (ADR-0034): `on_outcome(map)` (the whole outcome, to a Message),
-`on_success(f).on_failure(g)` (one function each; `on_success(f)` alone
-when the effect's `Error` is `!`), `into_command()` (a
-Message through `From`), `divert_to(d)` followed by one of the `on_`
-finishers (the result goes to a reply token or an address and does not
-come back), `divert_with(f)` (finishing commands and no Message), or
-`discard()` (nothing). Requests have `on_outcome`, `into_command`, and
-`divert_with`.
+receives (ADR-0034, ADR-0035): `on_outcome(map)` (the whole outcome, to a
+Message), `on_success(f).on_failure(g)` on an effect or
+`on_reply(f).on_failure(g)` on a request (one function each;
+`on_success(f)` alone when the effect's `Error` is `!`), `divert_to(d)`
+followed by one of the `on_` finishers (the result goes to a reply token or
+an address and does not come back), `divert_with(f)` (finishing commands
+and no Message), or `discard()` (nothing; effects only). Boundary work is
+written as an entry point, then steps specific to that work such as
+`timeout` or `require_success`, then a finisher.
 The interaction itself is named `Kind::verb`, rooted at the capability type for
 world-facing work and at `Command` otherwise:
 `Effect::perform(&capability, descriptor)`, `File::read(&file)`, `Command::request(&target, ctor)`
@@ -726,6 +725,8 @@ to hold.
 | `ComponentBuilder::configuration(..)` | `ComponentBuilder::config(..)` | Renamed November 15, 2026, to match `cx.config` (ADR-0033). |
 | `producing`, `succeeding`, `finish_with`, `discard_outcome`, `replying(r).succeeding(f).failing(g)` | `on_outcome`, `on_success` alone, `divert_with`, `discard`, `divert_to(d).on_success(f).on_failure(g)` | Renamed November 26, 2026 (ADR-0034). A finisher is named for what its function receives, and `divert` marks a result that does not come back to the issuing Component. |
 | `type Error = Infallible` | `type Error = !` | Respelled November 26, 2026 (ADR-0034). Rust 1.100 stabilized the never type and made `Infallible` its alias. |
+| `HttpResponsePipeline`, `HttpRequest::on_response()`, pipeline `into_command(&http)` and `into_command_with(&http, map)` | `Http::get(&http, url)` / `Http::send(&http, request)`, then steps, then any effect finisher | Replaced November 26, 2026 (ADR-0035). HTTP response handling is steps on the ordinary `EffectBuilder`. |
+| `into_command()` on effects and requests | `on_outcome(Message::from)` | Removed November 26, 2026 (ADR-0035). |
 | `File` narrowing: `read_only()`, `append_only()`, `read_append()`, `write_only()` | None | Removed November 15, 2026 (ADR-0028, ADR-0029). Narrowing existed to hand a file to another Component; a file now has one owner and other Components send it Messages. |
 | `InstalledAssembly::capabilities()`, `InstalledComponent::capabilities()` | The public `io` field | Renamed November 15, 2026 (ADR-0029). The accessor was the interim ADR-0028 spelling. |
 | `VendorsDrivers::drivers(driver_config)` returning a driver tuple | `VendorsDrivers::supply(setup, io, driver_config)` | Replaced November 15, 2026 (ADR-0029). The Assembly supplies its own named capabilities, so no tuple order is exposed. |
