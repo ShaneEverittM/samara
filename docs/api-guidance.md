@@ -515,6 +515,53 @@ for method, credential-header, lifecycle, and tracing semantics.
 
 ## Sources and Subscriptions
 
+
+### Giving Your Own Effect an Entry Point and Steps
+
+
+Boundary work reads as an entry point, then steps, then a finisher
+([ADR-0035](adr/0035-one-builder-pattern-for-effects-requests-and-http.md)).
+A library gets the same shape for its own effect with two small pieces:
+
+```rust,ignore
+// Entry point: an associated function on a type the library owns.
+pub struct Key;
+impl Key {
+    pub fn read(store: &Effect<ReadKey>, key: impl Into<String>) -> EffectBuilder<ReadKey> {
+        Effect::perform(store, ReadKey(key.into()))
+    }
+}
+
+// A step: an extension trait over the builder, written with `map_outcome`.
+pub trait ReadKeySteps {
+    fn required(self) -> EffectBuilder<ReadKey, Vec<u8>, ReadError>;
+}
+impl ReadKeySteps for EffectBuilder<ReadKey> {
+    fn required(self) -> EffectBuilder<ReadKey, Vec<u8>, ReadError> {
+        self.map_outcome(|outcome| match outcome {
+            EffectOutcome::Succeeded(Some(bytes)) => EffectOutcome::Succeeded(bytes),
+            EffectOutcome::Succeeded(None) => EffectOutcome::Failed(ReadError::Absent),
+            EffectOutcome::Failed(error) => EffectOutcome::Failed(error.into()),
+        })
+    }
+}
+
+// In a Component:
+Key::read(&cx.io.store, "limit")
+    .required()
+    .text()
+    .number()
+    .on_success(Message::Limit)
+    .on_failure(Message::NoLimit)
+```
+
+A step is a pure function from the outcome so far to the next one. The
+builder's second and third type parameters track the result's types, so
+implementing a step for `EffectBuilder<ReadKey, Vec<u8>, ReadError>` makes
+it available only after `required()`. A controlled test still completes
+the effect with the descriptor's raw `Output` and `Error`; the steps run
+afterwards. `tests/custom_steps.rs` is a complete example.
+
 ### Why Are Commands and Subscriptions Different?
 
 

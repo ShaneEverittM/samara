@@ -1,6 +1,9 @@
 # ADR-0035: One Builder Pattern for Effects, Requests, and HTTP
 
-- Status: Accepted.
+- Status: Accepted. Extended the same day: the step helper is public as
+  `EffectBuilder::map_outcome`, so a library can give its own effect steps
+  through an extension trait. The Layer hook that lets a step issue the
+  effect again stays private.
 - Date: November 26, 2026
 - Deciders: Samara maintainers
 - Amends: [ADR-0005](0005-first-party-http-effect.md) (the HTTP response
@@ -61,8 +64,11 @@ Command::request(&cx.to.gauge, GaugeMessage::Read)
   `Command::request(&target, constructor)` for a request.
 - **Steps.** Methods that refine the work before it is finished. A
   request has `timeout`. HTTP has `follow_redirects`, `require_success`,
-  and `json`, in that order. A library adds steps for its own effects the
-  same way.
+  and `json`, in that order. A library adds steps for its own effects
+  with `EffectBuilder::map_outcome`, wrapped in an extension trait
+  implemented for `EffectBuilder<ItsDescriptor>` (an inherent method is
+  not possible from another crate), and an entry point as an associated
+  function on a type of its own: `Key::read(&cx.io.store, "limit")`.
 - **Finisher.** The ADR-0034 set, on both builders:
 
   | Function receives | Effect | Request |
@@ -136,7 +142,9 @@ once. `divert_to` remains `divert_with` underneath.
 `on_failure`, including a timeout arriving as `RequestOutcome::TimedOut`,
 and a request diverted to a caller's reply token with no transition in the
 relay. `tests/http_redirects.rs` covers redirects, a status check, and a
-diverted reply in one chain. `tests/http_response_pipeline.rs`,
+diverted reply in one chain. `tests/custom_steps.rs` builds a small
+library on the public API alone, with an entry point and three steps, and
+finishes it both ways. `tests/http_response_pipeline.rs`,
 `tests/http_effects.rs`, and the `time` and `url` examples run on the
 builder. Compile-fail doctests cover `json` before `require_success` and a
 missing failure arm.

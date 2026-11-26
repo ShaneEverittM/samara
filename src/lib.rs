@@ -2701,7 +2701,7 @@ impl EffectBuilder<HttpRequest> {
     ///
     /// </details>
     pub fn require_success(self) -> EffectBuilder<HttpRequest, HttpResponse, HttpResponseError> {
-        self.then(|outcome| {
+        self.map_outcome(|outcome| {
             match outcome {
                 EffectOutcome::Succeeded(response) if response.status().is_success() => {
                     EffectOutcome::Succeeded(response)
@@ -2740,7 +2740,7 @@ where
     where
         T: serde::de::DeserializeOwned + Send + 'static,
     {
-        self.then(|outcome| {
+        self.map_outcome(|outcome| {
             match outcome {
                 EffectOutcome::Succeeded(response) => {
                     let decoded = serde_json::from_slice(response.body());
@@ -3950,9 +3950,55 @@ where
     Output: Send + 'static,
     Error: Send + 'static,
 {
-    /// Refines the result with a pure step. Effect-specific builder methods
-    /// are written with this.
-    pub(crate) fn then<NextOutput, NextError, Step>(
+    /// Refines the result with a pure function from the outcome so far to
+    /// the next one, changing the builder's `Output` and `Error` types to
+    /// match. This is what steps are written with: `require_success()` and
+    /// `json()` are each one call to it.
+    ///
+    /// `step` runs at most once, after the effect completes and before the
+    /// finisher's function. It must be pure. It cannot issue work: a step
+    /// that needs the effect performed again is a Layer, which is not public.
+    ///
+    /// Give your own effect steps by wrapping this in an extension trait
+    /// implemented for `EffectBuilder<YourDescriptor>`. An inherent method
+    /// is not possible from another crate.
+    ///
+    /// ```
+    /// use samara::prelude::*;
+    ///
+    /// // A library's effect: read one key, which may be absent.
+    /// pub struct ReadKey(pub &'static str);
+    /// pub struct StoreDown;
+    /// impl EffectDescriptor for ReadKey {
+    ///     type Output = Option<String>;
+    ///     type Error = StoreDown;
+    /// }
+    ///
+    /// pub enum ReadError { StoreDown, Absent }
+    ///
+    /// // Its step: treat an absent key as a failure.
+    /// pub trait ReadKeySteps {
+    ///     fn required(self) -> EffectBuilder<ReadKey, String, ReadError>;
+    /// }
+    /// impl ReadKeySteps for EffectBuilder<ReadKey> {
+    ///     fn required(self) -> EffectBuilder<ReadKey, String, ReadError> {
+    ///         self.map_outcome(|outcome| match outcome {
+    ///             EffectOutcome::Succeeded(Some(value)) => EffectOutcome::Succeeded(value),
+    ///             EffectOutcome::Succeeded(None) => EffectOutcome::Failed(ReadError::Absent),
+    ///             EffectOutcome::Failed(StoreDown) => EffectOutcome::Failed(ReadError::StoreDown),
+    ///         })
+    ///     }
+    /// }
+    ///
+    /// enum Message { Greeting(String), NoGreeting(ReadError) }
+    /// let store = <Effect<ReadKey>>::detached();
+    /// let command: Command<Message> = Effect::perform(&store, ReadKey("greeting"))
+    ///     .required()
+    ///     .on_success(Message::Greeting)
+    ///     .on_failure(Message::NoGreeting);
+    /// assert!(command.effect_intent::<ReadKey>().is_some());
+    /// ```
+    pub fn map_outcome<NextOutput, NextError, Step>(
         self,
         step: Step,
     ) -> EffectBuilder<D, NextOutput, NextError>

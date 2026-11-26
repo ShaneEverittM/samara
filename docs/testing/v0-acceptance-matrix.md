@@ -206,6 +206,11 @@ The following evidence must pass before the Phase 2 audit:
   with no transition in the relay. A doctest rejects a fallible effect
   given only its success arm. `tests/http_redirects.rs` runs redirects, a
   status check, and a diverted reply in one chain.
+- `tests/custom_steps.rs` validates that a library can give its own effect
+  an entry point and steps using only the public API (ADR-0035): each step
+  refines the result or fails it, the controlled test completes the effect
+  with the descriptor's raw types, and the steps compose with
+  `on_success`/`on_failure` and with a diverted reply.
 - `tests/connections.rs` validates declared connections and configuration
   (ADR-0031): the manifest lists a bare Connector, a `ComponentRef`, a Port
   resolved to its provider, and the fields of a derived struct including

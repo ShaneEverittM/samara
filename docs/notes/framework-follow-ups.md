@@ -262,10 +262,15 @@ a journal Component; exploratory proposals, not accepted API decisions.
   - Subscriptions keep their own dialect by decision; it should be designed
     on its own terms, not copied from Commands.
   - `EffectOutcome::into_result()` for the cases that still match by hand.
-  - Whether a library's own effect steps need anything public beyond
-    methods on `EffectBuilder<TheirDescriptor>`. The step helper (`then`)
-    and the Layer hook are crate-private today, so only first-party
-    effects can add steps.
+  - Custom steps are public through `EffectBuilder::map_outcome`
+    (`tests/custom_steps.rs`). Costs seen in that trial: a library needs
+    one extension trait per stage of its type-state, since it cannot add
+    inherent methods, and its users must import each one; and every step
+    re-matches the failure arm to pass it along. Helpers such as
+    `map_success` or a `try_` form would shorten steps. The Layer hook
+    (a step that issues the effect again, as redirects do, and as retry
+    would) is still private; opening it is a Layer design, not a naming
+    one.
   - `divert_to(&address)` has tests and no example that needs it yet.
   - A required `to_self()` for results that come back was rejected: it
     marks the rule instead of the exception.
