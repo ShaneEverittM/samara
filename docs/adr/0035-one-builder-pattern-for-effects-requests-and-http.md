@@ -3,7 +3,11 @@
 - Status: Accepted. Extended the same day: the step helper is public as
   `EffectBuilder::map_outcome`, so a library can give its own effect steps
   through an extension trait. The Layer hook that lets a step issue the
-  effect again stays private.
+  effect again stays private. Also added: `Diverted::as_result()`, a
+  finisher with no functions for a destination that takes a `Result<T, E>`
+  the work's two cases convert into with `From` (which includes the same
+  types), replacing `.on_success(Ok).on_failure(Err)`; and
+  `EffectOutcome::into_result()`.
 - Date: November 26, 2026
 - Deciders: Samara maintainers
 - Amends: [ADR-0005](0005-first-party-http-effect.md) (the HTTP response

@@ -600,6 +600,22 @@ pub enum EffectOutcome<Output, EffectError> {
     Failed(EffectError),
 }
 
+impl<Output, EffectError> EffectOutcome<Output, EffectError> {
+    /// The outcome as a `Result`: `Succeeded` is `Ok`, `Failed` is `Err`.
+    ///
+    /// ```
+    /// use samara::EffectOutcome;
+    /// let outcome: EffectOutcome<u8, &str> = EffectOutcome::Succeeded(7);
+    /// assert_eq!(outcome.into_result(), Ok(7));
+    /// ```
+    pub fn into_result(self) -> Result<Output, EffectError> {
+        match self {
+            Self::Succeeded(output) => Ok(output),
+            Self::Failed(error) => Err(error),
+        }
+    }
+}
+
 /// An item, error, or end-of-input notification from a source.
 ///
 /// `Failed` and `Ended` stop that source. Samara does not restart it automatically
@@ -3839,7 +3855,8 @@ impl<Message: Send + 'static> ErasedEffectCommand<Message> for WidenedEffect {
 /// The result goes somewhere else and `update` never sees it:
 ///
 /// - [`Self::divert_to`] sends it to a reply token or an address; what it
-///   returns has the same `on_` finishers.
+///   returns has the same `on_` finishers, and [`Diverted::as_result`] when
+///   the destination takes a `Result`.
 /// - [`Self::divert_with`] turns the outcome into finishing commands.
 /// - [`Self::discard`] sends it nowhere.
 ///
@@ -4227,10 +4244,7 @@ where
     type Bad = Error;
 
     fn split(outcome: Self::Outcome) -> Result<Output, Error> {
-        match outcome {
-            EffectOutcome::Succeeded(output) => Ok(output),
-            EffectOutcome::Failed(error) => Err(error),
-        }
+        outcome.into_result()
     }
 
     fn returning<Message, Map>(self, map: Map) -> Command<Message>
@@ -4358,6 +4372,40 @@ impl<W: Work, S: Sink> Diverted<W, S> {
     {
         let Self { work, sink } = self;
         work.leaving(move |outcome| sink.deliver(map(outcome)))
+    }
+}
+
+impl<W: Work, S: Sink> Diverted<W, S> {
+    /// Delivers the result as a `Result`, with no functions to write.
+    ///
+    /// Available when the destination takes a `Result<T, E>` that the work's
+    /// two cases convert into with `From`. Every type converts into itself,
+    /// so this covers a destination that takes exactly what the work
+    /// produces, and also one whose error (or success) type has a `From`
+    /// for it, as `?` does for errors.
+    ///
+    /// ```
+    /// use samara::prelude::*;
+    /// # struct Lookup;
+    /// # struct Missing;
+    /// # impl EffectDescriptor for Lookup { type Output = u64; type Error = Missing; }
+    /// enum NotFound { Missing }
+    /// impl From<Missing> for NotFound {
+    ///     fn from(_: Missing) -> Self { Self::Missing }
+    /// }
+    /// enum Asked { Find(ReplyWith<Result<u64, NotFound>>) }
+    /// # fn find(lookup: &Effect<Lookup>, reply: ReplyWith<Result<u64, NotFound>>) -> Command<Asked> {
+    /// Effect::perform(lookup, Lookup).divert_to(reply).as_result()
+    /// # }
+    /// ```
+    pub fn as_result<Message, T, E>(self) -> Command<Message>
+    where
+        Message: Deliverable,
+        S: Sink<Value = Result<T, E>>,
+        T: From<W::Good>,
+        E: From<W::Bad>,
+    {
+        self.on_outcome(|outcome| W::split(outcome).map(T::from).map_err(E::from))
     }
 }
 

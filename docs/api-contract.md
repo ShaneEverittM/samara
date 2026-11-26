@@ -795,7 +795,9 @@ as amended by [ADR-0018](adr/0018-assemblies-export-a-connector.md),
   `on_success` (or `on_reply`), whose functions return
   the value to deliver. It is `divert_with` underneath: one hop, no
   Message, no transition. `on_success` alone is not a Command; a fallible
-  effect requires both arms.
+  effect requires both arms. When the destination takes a `Result<T, E>`
+  with `T: From<Good>` and `E: From<Bad>`, `as_result()` finishes with no
+  functions.
 - `divert_with(f)` runs `f` on the outcome and interprets the
   `Command<NoMessage>` it returns under the issuing Component, traced as
   caused by the outcome. No transition occurs. `NoMessage` is uninhabited and

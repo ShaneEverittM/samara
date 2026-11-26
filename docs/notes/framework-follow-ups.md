@@ -261,7 +261,6 @@ a journal Component; exploratory proposals, not accepted API decisions.
     `on_success`. Changes a public enum and the trace vocabulary.
   - Subscriptions keep their own dialect by decision; it should be designed
     on its own terms, not copied from Commands.
-  - `EffectOutcome::into_result()` for the cases that still match by hand.
   - Custom steps are public through `EffectBuilder::map_outcome`
     (`tests/custom_steps.rs`). Costs seen in that trial: a library needs
     one extension trait per stage of its type-state, since it cannot add

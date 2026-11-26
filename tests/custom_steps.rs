@@ -123,6 +123,8 @@ enum SettingsMessage {
     NoLimit(ReadError),
     /// Answer a caller with the greeting, without it coming back here.
     Greeting(ReplyWith<Result<String, ReadError>>),
+    /// Answer with the unrefined value.
+    Raw(ReplyWith<Result<Option<Vec<u8>>, ReadError>>),
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -171,8 +173,11 @@ impl Component for Settings {
                     .required()
                     .text()
                     .divert_to(reply)
-                    .on_success(Ok)
-                    .on_failure(Err)
+                    .as_result()
+            }
+            // The store's own error converts into `ReadError` with `From`.
+            SettingsMessage::Raw(reply) => {
+                Key::read(&cx.io, "greeting").divert_to(reply).as_result()
             }
         }
     }
@@ -184,6 +189,8 @@ struct Visitor;
 enum VisitorMessage {
     Ask,
     Heard(RequestOutcome<Result<String, ReadError>>),
+    AskRaw,
+    HeardRaw(RequestOutcome<Result<Option<Vec<u8>>, ReadError>>),
 }
 
 impl Component for Visitor {
@@ -209,6 +216,16 @@ impl Component for Visitor {
             }
             VisitorMessage::Heard(outcome) => {
                 heard.push(outcome);
+                Command::none()
+            }
+            VisitorMessage::AskRaw => {
+                Command::request(&cx.to, SettingsMessage::Raw).on_outcome(VisitorMessage::HeardRaw)
+            }
+            VisitorMessage::HeardRaw(outcome) => {
+                if let RequestOutcome::Replied(raw) = outcome {
+                    let described = raw.map(|bytes| format!("{bytes:?}"));
+                    heard.push(RequestOutcome::Replied(described));
+                }
                 Command::none()
             }
         }
@@ -315,5 +332,29 @@ fn custom_steps_compose_with_a_diverted_reply() {
     );
     // Neither result came back through `update`.
     assert_eq!(runtime.state(&settings).unwrap().handled, 2);
+    assert!(runtime.cancel().unwrap().is_clean());
+}
+
+#[test]
+fn as_result_converts_both_cases_with_from() {
+    let Fixture {
+        mut runtime,
+        visitor,
+        ..
+    } = fixture();
+
+    // The success type is exactly the store's; the error converts.
+    runtime.send(&visitor, VisitorMessage::AskRaw).unwrap();
+    complete_read(&mut runtime, "greeting", EffectOutcome::Succeeded(None));
+    runtime.send(&visitor, VisitorMessage::AskRaw).unwrap();
+    complete_read(&mut runtime, "greeting", EffectOutcome::Failed(StoreDown));
+
+    assert_eq!(
+        runtime.state(&visitor).unwrap(),
+        &[
+            RequestOutcome::Replied(Ok("None".into())),
+            RequestOutcome::Replied(Err(ReadError::StoreDown)),
+        ]
+    );
     assert!(runtime.cancel().unwrap().is_clean());
 }

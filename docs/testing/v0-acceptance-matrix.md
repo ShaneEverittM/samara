@@ -210,7 +210,9 @@ The following evidence must pass before the Phase 2 audit:
   an entry point and steps using only the public API (ADR-0035): each step
   refines the result or fails it, the controlled test completes the effect
   with the descriptor's raw types, and the steps compose with
-  `on_success`/`on_failure` and with a diverted reply.
+  `on_success`/`on_failure` and with a diverted reply. `as_result()`
+  delivers a matching `Result` with no functions and converts an error
+  through `From`.
 - `tests/connections.rs` validates declared connections and configuration
   (ADR-0031): the manifest lists a bare Connector, a `ComponentRef`, a Port
   resolved to its provider, and the fields of a derived struct including

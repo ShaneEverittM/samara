@@ -498,7 +498,8 @@ Message), `on_success(f).on_failure(g)` on an effect or
 `on_reply(f).on_failure(g)` on a request (one function each;
 `on_success(f)` alone when the effect's `Error` is `!`), `divert_to(d)`
 followed by one of the `on_` finishers (the result goes to a reply token or
-an address and does not come back), `divert_with(f)` (finishing commands
+an address and does not come back; `as_result()` in place of the `on_`
+finisher when the destination takes a matching `Result`), `divert_with(f)` (finishing commands
 and no Message), or `discard()` (nothing; effects only). Boundary work is
 written as an entry point, then steps specific to that work such as
 `timeout` or `require_success`, then a finisher.
