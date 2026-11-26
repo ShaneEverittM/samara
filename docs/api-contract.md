@@ -781,12 +781,12 @@ as amended by [ADR-0018](adr/0018-assemblies-export-a-connector.md),
   function receives
   ([ADR-0034](adr/0034-finishers-are-named-for-what-they-receive.md)):
   `on_outcome(map)`, `into_command()` (`Message::from`), and
-  `divert_with(f)` on effects and requests; on effects also `on_value(map)`
-  when `Error = !`, `on_success(f).on_failure(g)`, `divert_to(d)`, and
-  `discard()`.
+  `divert_with(f)` on effects and requests; on effects also
+  `on_success(f).on_failure(g)`, `divert_to(d)`, and `discard()`. When an
+  effect's `Error` is `!`, `on_success(f)` alone is the finisher.
 - `divert_to(d)` sends the result to a `ReplyWith` token or an address in
   place of the issuing Component. What it returns has `on_outcome`,
-  `on_value`, and `on_success(f).on_failure(g)`, whose functions return
+  and `on_success`, whose functions return
   the value to deliver. It is `divert_with` underneath: one hop, no
   Message, no transition. `on_success` alone is not a Command; a fallible
   effect requires both arms.

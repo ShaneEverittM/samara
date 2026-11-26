@@ -41,7 +41,7 @@ impl Component for Recorder {
                 match journal {
                     JournalMessage::Transition(transition) => {
                         Clock::system_time(&cx.io.clock)
-                            .on_value(|time| Message::Time { time, transition })
+                            .on_success(|time| Message::Time { time, transition })
                     }
 
                     JournalMessage::Recent { count, reply } => {

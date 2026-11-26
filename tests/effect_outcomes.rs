@@ -158,7 +158,7 @@ impl Component for Stamper {
         message: StampMessage,
     ) -> Command<StampMessage> {
         match message {
-            StampMessage::Stamp => Clock::system_time(&cx.io).on_value(StampMessage::Now),
+            StampMessage::Stamp => Clock::system_time(&cx.io).on_success(StampMessage::Now),
             StampMessage::Now(now) => {
                 *model = Some(now);
                 Command::none()

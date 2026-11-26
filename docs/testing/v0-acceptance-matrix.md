@@ -197,11 +197,10 @@ The following evidence must pass before the Phase 2 audit:
   controlled and live execution. `examples/pulse` pins the journal's
   manifest text.
 - `tests/diverting.rs` validates the effect finishers (ADR-0034): a
-  diverted reply through `on_success`/`on_failure`, through `on_value` for
-  an effect that cannot fail, and through `on_outcome`, each with no extra
+  diverted reply through `on_success`/`on_failure`, through a lone `on_success`
+  for an effect that cannot fail, and through `on_outcome`, each with no extra
   transition in the provider; a result diverted to an address; and the two
-  arms coming back as Messages without `divert`. Doctests reject `on_value`
-  on a fallible effect and a missing failure arm.
+  arms coming back as Messages without `divert`. A doctest rejects a fallible effect given only its success arm.
 - `tests/connections.rs` validates declared connections and configuration
   (ADR-0031): the manifest lists a bare Connector, a `ComponentRef`, a Port
   resolved to its provider, and the fields of a derived struct including

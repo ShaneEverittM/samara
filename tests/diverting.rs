@@ -83,7 +83,7 @@ impl Component for Desk {
             DeskMessage::Read(reply) => {
                 Effect::perform(&cx.io.reading, Reading)
                     .divert_to(reply)
-                    .on_value(|value| value + 1)
+                    .on_success(|value| value + 1)
             }
             DeskMessage::Describe(key, reply) => {
                 Effect::perform(&cx.io.lookup, Lookup(key))

@@ -34,14 +34,14 @@ work.
 | Function receives | Comes back here | Goes elsewhere |
 | --- | --- | --- |
 | The whole outcome | `.on_outcome(f)` | `.divert_to(d).on_outcome(f)` |
-| The output; the effect cannot fail | `.on_value(f)` | `.divert_to(d).on_value(f)` |
 | Success, then failure | `.on_success(f).on_failure(g)` | `.divert_to(d).on_success(f).on_failure(g)` |
+| Success; the effect cannot fail | `.on_success(f)` | `.divert_to(d).on_success(f)` |
 | The outcome, returning Commands | | `.divert_with(f)` |
 | Nothing | | `.discard()` |
 
 ```rust,ignore
 File::read(&cx.io.file).on_outcome(Message::Loaded)
-Clock::system_time(&cx.io.clock).on_value(Message::Time)
+Clock::system_time(&cx.io.clock).on_success(Message::Time)
 
 File::read(&cx.io.file)
     .divert_to(reply)
@@ -53,9 +53,20 @@ File::read(&cx.io.file)
   reference to anything `Addressable`. It changes only where the value
   goes. The finishers after it have the same names, and their functions
   return the value to deliver instead of a Message.
-- `on_success` returns an `OnSuccess` that is not a Command; `on_failure`
-  completes it. A fallible effect cannot be finished with one arm.
-- `on_value` exists only when the effect's `Error` is `!`.
+- On an effect that can fail, `on_success` returns an `OnSuccess` that is
+  not a Command; `on_failure` completes it. A fallible effect cannot be
+  finished with one arm.
+- On an effect whose `Error` is `!`, `on_success` is the whole finisher
+  and returns the Command. There is no failure arm to give and no extra
+  call to end the chain.
+
+  The two are different methods with one name. The finishing one is an
+  inherent method on builders whose descriptor has `Error = !`; the
+  two-arm one comes from the `FallibleEffect` trait, implemented for every
+  builder. Rust prefers an inherent method when its impl applies and falls
+  back to the trait method when it does not, so the error type selects
+  between them. `FallibleEffect` is in the prelude; a file that imports
+  names one by one needs it to call `on_success` on a fallible effect.
 - `divert_with(f)` is the former `finish_with`, unchanged in meaning.
 - `discard()` is the former `discard_outcome`. It is not behind
   `divert`: the word already says nothing comes back, and it is the most
@@ -90,13 +101,14 @@ underneath: one hop, no Message, no transition, the Model not visible.
 - **`Result`'s names** (`map`, `map_err`, `and_then`). `map` on a
   `Result` touches only success, and `and_then` means chaining another
   fallible step, which is the multi-hop sequencing ADR-0023 forbids.
-- **`on_output` for the effect that cannot fail.** Three letters from
-  `on_outcome`.
 - **Elm's `perform` / `attempt`.** `Effect::perform` is the builder's
   entry, and `attempt(f)` does not say what `f` receives.
-- **A lone `on_success` as the finisher when the effect cannot fail.**
-  One method would have to return a Command for some error types and a
-  builder for all others, which needs overlapping impls.
+- **`on_value` for the effect that cannot fail**, a separate name beside
+  `on_success`. It was the first form built. A reader has to learn that
+  "value" means "success, when failure does not exist"; `on_success` with
+  nothing after it says the same thing without a new word.
+- **`on_success(f).finish()` for the effect that cannot fail.** Not
+  needed once the inherent method and the trait method share the name.
 
 ## Consequences
 
@@ -110,10 +122,11 @@ underneath: one hop, no Message, no transition, the Model not visible.
 ## Evidence
 
 `tests/diverting.rs` covers each cell of the table for effects: a diverted
-reply through both arms, through `on_value`, and through `on_outcome`; a
+reply through both arms, through a lone `on_success` for an effect that
+cannot fail, and through `on_outcome`; a
 result diverted to an address; and the arms coming back as Messages
-without `divert`. Compile-fail doctests cover `on_value` on a fallible
-effect and a missing failure arm. The rest of the suite runs under the
+without `divert`. A compile-fail doctest covers a fallible effect given
+only its success arm. The rest of the suite runs under the
 new names.
 
 ## Rollback

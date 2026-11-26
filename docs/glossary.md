@@ -490,8 +490,8 @@ values.
 **Finisher** — The method that turns a described effect or request into a
 `Command` by saying how its outcome ends, named for what its function
 receives (ADR-0034): `on_outcome(map)` (the whole outcome, to a Message),
-`on_value(map)` (the output of an effect whose `Error` is `!`),
-`on_success(f).on_failure(g)` (one function each), `into_command()` (a
+`on_success(f).on_failure(g)` (one function each; `on_success(f)` alone
+when the effect's `Error` is `!`), `into_command()` (a
 Message through `From`), `divert_to(d)` followed by one of the `on_`
 finishers (the result goes to a reply token or an address and does not
 come back), `divert_with(f)` (finishing commands and no Message), or
@@ -724,7 +724,7 @@ to hold.
 | `ProgramBuilder::component`, `component_builder` ending in `.register(..)`, `assembly`, `port` | `add_component`, `configure_component` ending in `.add(..)`, `add_assembly`, `add_port` | Renamed November 15, 2026 (ADR-0032). Builder methods are verbs; the noun rule of ADR-0030 is withdrawn. |
 | `cx.connections`, `cx.configuration` | `cx.to`, `cx.config` | Renamed November 15, 2026 (ADR-0033). The fields are written on every line that uses them; the associated types keep the long names. |
 | `ComponentBuilder::configuration(..)` | `ComponentBuilder::config(..)` | Renamed November 15, 2026, to match `cx.config` (ADR-0033). |
-| `producing`, `succeeding`, `finish_with`, `discard_outcome`, `replying(r).succeeding(f).failing(g)` | `on_outcome`, `on_value`, `divert_with`, `discard`, `divert_to(d).on_success(f).on_failure(g)` | Renamed November 26, 2026 (ADR-0034). A finisher is named for what its function receives, and `divert` marks a result that does not come back to the issuing Component. |
+| `producing`, `succeeding`, `finish_with`, `discard_outcome`, `replying(r).succeeding(f).failing(g)` | `on_outcome`, `on_success` alone, `divert_with`, `discard`, `divert_to(d).on_success(f).on_failure(g)` | Renamed November 26, 2026 (ADR-0034). A finisher is named for what its function receives, and `divert` marks a result that does not come back to the issuing Component. |
 | `type Error = Infallible` | `type Error = !` | Respelled November 26, 2026 (ADR-0034). Rust 1.100 stabilized the never type and made `Infallible` its alias. |
 | `File` narrowing: `read_only()`, `append_only()`, `read_append()`, `write_only()` | None | Removed November 15, 2026 (ADR-0028, ADR-0029). Narrowing existed to hand a file to another Component; a file now has one owner and other Components send it Messages. |
 | `InstalledAssembly::capabilities()`, `InstalledComponent::capabilities()` | The public `io` field | Renamed November 15, 2026 (ADR-0029). The accessor was the interim ADR-0028 spelling. |

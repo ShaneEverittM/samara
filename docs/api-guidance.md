@@ -79,9 +79,9 @@ continuation.
 The same convention applies to Requests, Subscriptions, and pure HTTP response
 pipelines where their lifecycle semantics permit it.
 
-When an effect declares `Error = !`, use `.on_value(mapper)`
+When an effect declares `Error = !`, use `.on_success(mapper)`
 to map its output directly. For example,
-`Clock::system_time(&cx.io.clock).on_value(Message::Now)` passes the
+`Clock::system_time(&cx.io.clock).on_success(Message::Now)` passes the
 `SystemTime` to the Message constructor.
 
 The Component method's concrete `Command<Message>` or

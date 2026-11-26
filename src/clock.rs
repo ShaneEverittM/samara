@@ -19,7 +19,7 @@ use crate::{BoxFuture, Effect, EffectBuilder, EffectDescriptor, EffectDriver};
 /// use samara::prelude::*;
 /// use std::time::SystemTime;
 /// let clock = Clock::detached();
-/// let command: Command<SystemTime> = Clock::system_time(&clock).on_value(|now| now);
+/// let command: Command<SystemTime> = Clock::system_time(&clock).on_success(|now| now);
 /// assert!(command.effect_intent::<ReadSystemTime>().is_some());
 /// ```
 pub type Clock = Effect<ReadSystemTime>;
