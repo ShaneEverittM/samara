@@ -45,13 +45,9 @@ impl Component for Monitor {
                         reply,
                     }
                 })
-                .on_outcome(|response| {
-                    match response {
-                        RequestOutcome::Replied(r) => Message::JournalResponse(r.unwrap()),
-                        // This would handle error or cancellation.
-                        _ => todo!(),
-                    }
-                })
+                .on_reply(|recent| Message::JournalResponse(recent.unwrap()))
+                // This would handle a timeout or an abandoned reply.
+                .on_failure(|_| todo!())
             }
             Message::JournalResponse(r) => samara::println!(&cx.io.output, "Got response: {:?}", r),
         }
