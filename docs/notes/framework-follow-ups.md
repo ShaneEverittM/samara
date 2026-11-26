@@ -271,6 +271,15 @@ a journal Component; exploratory proposals, not accepted API decisions.
     would) is still private; opening it is a Layer design, not a naming
     one.
   - `divert_to(&address)` has tests and no example that needs it yet.
+  - **Watch: `on_success` does two jobs.** It finishes an effect whose
+    `Error` is `!` and is the first of two arms otherwise, selected by an
+    inherent method shadowing a trait method (ADR-0034). It reads right,
+    but the mechanism is cleverer than the idea. Signs it hides something
+    the programmer cares about: confusion over which form applies in
+    generic code, the unhelpful error when `FallibleEffect` is not
+    imported, or surprise when an effect's error type changes and a call
+    site silently needs a second arm. The retreat is an explicit
+    `.on_success(f).finish()` for the infallible case.
   - A required `to_self()` for results that come back was rejected: it
     marks the rule instead of the exception.
 
